@@ -134,6 +134,7 @@ and `bionemo_ir._torch.custom_ops`). Layers wrap the same ops:
 | Pairwise attention             | Token / atom attention with pair bias         | CuTeDSL → CUBIN; else SDPA              | 80, 86, 89, 90                                | [`create_attention`](../../bionemo_ir/_torch/attention_backend/utils.py) (`AttentionType.PAIRWISE`)                                                                                         |
 | Dual-GEMM `x_x`                | Triangle multiplication; SwiGLU projection    | CuTeDSL → CUBIN; else CUEQUIV / PyTorch | 80, 86, 89, 90, 100, 103; CUEQUIV on 120, 121 | [`get_dual_gemm_x_x_op`](../../bionemo_ir/_torch/custom_ops/dual_gemm_x_x/ops.py) / [`get_cute_dual_gemm_x_x_op`](../../bionemo_ir/_torch/custom_ops/dual_gemm_x_x/ops.py)                  |
 | Dual-GEMM `x0_x1`              | Triangle multiplication                       | CuTeDSL → CUBIN; else CUEQUIV           | 80, 86, 89, 90, 100, 103; CUEQUIV on 120, 121 | [`get_dual_gemm_x0_x1_op`](../../bionemo_ir/_torch/custom_ops/dual_gemm_x0_x1/ops.py)                                                                                                       |
+| TriMul KF chain                | Triangle multiplication on padded tokens      | CuTeDSL → CUBIN (bf16)                  | 90                                            | [`get_trimul_kf_k1_op`](../../bionemo_ir/_torch/custom_ops/trimul_kf_k1/ops.py) → `get_trimul_kf_k2_op` → `get_trimul_kf_k3_op`                                                             |
 | Pair-weighted averaging (PWA)  | Pair → single update                          | CuTeDSL → CUBIN                         | 80, 90, 100, 103                              | [`get_pair_weighted_averaging_op`](../../bionemo_ir/_torch/custom_ops/pair_weighted_averaging/ops.py)                                                                                       |
 | Outer-product mean (OPM)       | Single → pair update                          | CuTeDSL → CUBIN                         | 80, 86, 89, 90, 100, 103                      | [`get_outer_product_mean_op`](../../bionemo_ir/_torch/custom_ops/outer_product_mean/ops.py)                                                                                                 |
 | Gated sigmoid                  | Attention output gate                         | CuTeDSL → CUBIN                         | 80, 86, 89, 90                                | [`get_gated_sigmoid_op`](../../bionemo_ir/_torch/custom_ops/gated_sigmoid/ops.py)                                                                                                           |
@@ -148,6 +149,16 @@ transition MLP; then, in `ConditionedTransitionBlock` only, the `x_x` dual
 GEMM's silu gate for the gated projection; then the Triton fused SwiGLU. On
 SM100 / SM103 the transition MLP does not ship, so `ConditionedTransitionBlock`
 projects through the Blackwell `x_x` kernels.
+
+`TriangleMultiplicationNode` runs the TriMul KF chain when its model pads
+tokens (`enable_token_pad`, on by default) and the node is bf16 with
+`dim == hidden_dim <= 256`, without `trimul_high_precision` or
+`trimul_mean_normalization`. K1 applies the input LayerNorm and gated
+projections, K2 the triangle contraction, and K3 the output LayerNorm,
+projection, gate, and masked residual. The Boltz, Protenix, and OpenFold3
+trunks run it in their MSA, template, and pairformer stacks; OpenFold2 in its
+Evoformer and extra-MSA stacks. Confidence heads, OpenFold2 templates, and
+calls whose token counts are not multiples of 8 take the dual-GEMM path.
 
 Override backends on a config if you need a reference path, for example
 `config.trunk.set_triangle_attention_backend("SDPA")`.

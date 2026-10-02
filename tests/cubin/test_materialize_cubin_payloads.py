@@ -57,10 +57,15 @@ FAMILIES = (
     "transition_mlp",
     "triangle_attention",
     "attn_epilogue",
+    "trimul_kf_k1",
+    "trimul_kf_k2",
+    "trimul_kf_k3",
 )
+_BF16_ONLY_FAMILIES = {"transition_mlp", "trimul_kf_k1", "trimul_kf_k2", "trimul_kf_k3"}
 # Operand names, TMA rank (per operand where they differ), whether an epilogue tile is recorded,
 # and threads per block, per native-SM90 family. The attention epilogue and transition MLP run one
-# load and two compute warpgroups.
+# load and two compute warpgroups; the TriMul KF K1 and K3 mix rank-2 rows with rank-3
+# channel-major buffers.
 _SM90_LAUNCH_SHAPES = {
     "attn_epilogue": (("o", "g", "w", "z", "y", "d"), (4, 3, 2, 3, 3, 3), False, 384),
     "dual_gemm_x0_x1": (("x0", "x1", "w0", "w1", "output"), 2, True, 128),
@@ -68,6 +73,9 @@ _SM90_LAUNCH_SHAPES = {
     "pairwise_attention": (("q", "k", "v", "bias", "output"), 4, False, 128),
     "transition_mlp": (("x", "w1", "w2", "residual", "output"), 2, False, 384),
     "triangle_attention": (("q", "k", "v", "bias", "output"), 4, False, 128),
+    "trimul_kf_k1": (("x", "w_proj", "w_gate", "a", "b"), (2, 2, 2, 3, 3), False, 512),
+    "trimul_kf_k2": (("a", "b", "prod"), 3, False, 384),
+    "trimul_kf_k3": (("prod", "x", "w_out", "w_gate", "output"), (3, 2, 2, 2, 2), False, 512),
 }
 # Operand names, TMA rank, whether cluster launch fields are recorded, and threads
 # per block, per native-SM100 family. Dual GEMM runs 2-SM UMMA on a CTA-pair cluster.
@@ -104,6 +112,9 @@ def _aliases(family: str) -> list[dict[str, object]]:
         ],
         "triangle_attention": [{"head_dim": 64, "packed": False}],
         "attn_epilogue": [{"heads": 4, "head_dim": 32, "channels": 128, "has_bias": False, "has_output_gate": False}],
+        "trimul_kf_k1": [{"C": 128, "D": 128, "bucket": 256}],
+        "trimul_kf_k2": [{"D": 128, "bucket": 384, "outgoing": True}],
+        "trimul_kf_k3": [{"C": 128, "D": 128, "bucket": 128, "residual": True}],
     }[family]
 
 
@@ -223,6 +234,38 @@ def _metadata(family: str, dtype: str, kernel_sm: int) -> dict[str, object]:
             "num_threads": 384,
             "sm90_launch": _sm90_launch(family, dtype) if kernel_sm == 90 else None,
         }
+    elif family == "trimul_kf_k1":
+        concrete = {
+            "is_bfloat16": dtype == "bf16",
+            "C": 128,
+            "D": 128,
+            "kernel_variant": 1,
+            "num_threads": 512,
+            "sm90_launch": _sm90_launch(family, dtype) if kernel_sm == 90 else None,
+        }
+    elif family == "trimul_kf_k2":
+        concrete = {
+            "is_bfloat16": dtype == "bf16",
+            "outgoing": True,
+            "kernel_variant": 1,
+            "tile_m": 128,
+            "tile_n": 192,
+            "cluster_m": 1,
+            "defer_kmin": 0,
+            "split_epi": False,
+            "num_threads": 384,
+            "sm90_launch": _sm90_launch(family, dtype) if kernel_sm == 90 else None,
+        }
+    elif family == "trimul_kf_k3":
+        concrete = {
+            "is_bfloat16": dtype == "bf16",
+            "C": 128,
+            "D": 128,
+            "kernel_variant": 0,
+            "residual": True,
+            "num_threads": 512,
+            "sm90_launch": _sm90_launch(family, dtype) if kernel_sm == 90 else None,
+        }
     elif family == "dual_gemm_x_x":
         concrete = {
             "K": 64,
@@ -326,7 +369,7 @@ def _write_case(
     image_hash = hashlib.sha256(indexed_image).hexdigest()
     target_sm = kernel_sm if kernel_sm in {90, 100} else 80
     target_arch = f"sm_{target_sm}a" if target_sm in {90, 100} else "sm_80"
-    dtype = {"adaln_layernorm_sigmoid": "fp32", "transition_mlp": "bf16"}.get(family, "fp16")
+    dtype = "fp32" if family == "adaln_layernorm_sigmoid" else "bf16" if family in _BF16_ONLY_FAMILIES else "fp16"
     identity_spec = {"family_case": family, "kernel_sm": kernel_sm}
     canonical = {
         "registry_version": 2,
@@ -550,6 +593,19 @@ def test_sm90_rejects_an_operand_with_another_rank(tmp_path: Path, monkeypatch: 
 
     with pytest.raises(materializer.MaterializationError, match=r"tma_descriptors\.w\.rank must be 2"):
         materializer.verify_packs([(family, index)])
+
+
+@pytest.mark.parametrize("family", ["trimul_kf_k1", "trimul_kf_k3"])
+def test_sm90_registry_renders_per_operand_tma_ranks(tmp_path: Path, family: str) -> None:
+    """A family mixing rank-2 rows with rank-3 channel-major buffers records each operand's own rank."""
+    index = _write_case(tmp_path / "source", family, kernel_sm=90)
+    result = materializer.materialize([(family, index)], tmp_path / "build")
+    source = (result.output_dir / f"{family}_registry.cpp").read_text()
+
+    names, ranks, _, _ = _SM90_LAUNCH_SHAPES[family]
+    rendered = [int(line.strip().rstrip("U,")) for line in source.splitlines() if line.strip() in {"2U,", "3U,"}]
+    assert rendered == list(ranks)
+    assert "CU_TENSOR_MAP_DATA_TYPE_BFLOAT16" in source
 
 
 def test_sm100_registry_renders_tma_metadata(tmp_path: Path) -> None:

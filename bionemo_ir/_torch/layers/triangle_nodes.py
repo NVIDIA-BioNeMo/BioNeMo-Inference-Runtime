@@ -13,11 +13,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from collections.abc import Callable
 from dataclasses import dataclass
 from enum import IntEnum
-from functools import lru_cache
-from importlib import import_module
 
 import torch
 import torch.nn as nn
@@ -26,12 +23,14 @@ from bionemo_ir._torch.layers.linear import Linear, WeightMode, WeightsLoadingCo
 from bionemo_ir._torch.utils import CHUNK_REGISTRY, TRIANGLE_ATTENTION, ChunkPolicy
 from bionemo_ir.dsl_kernels.triton.fused_layer_norm_transpose import layer_norm_transpose
 from bionemo_ir.runtime.buffers import PreallocatedBuffers
-from bionemo_ir.utils import get_sm_version
 
 from ..attention_backend import AttentionMetadata
 from ..attention_backend.utils import precompute_pair_masks
 from ..custom_ops.dual_gemm_x0_x1 import get_cute_dual_gemm_x0_x1_residual_op, get_dual_gemm_x0_x1_op
 from ..custom_ops.dual_gemm_x_x import get_cute_dual_gemm_x_x_op, get_dual_gemm_x_x_op
+from ..custom_ops.trimul_kf_k1 import TrimulKFInputFold, TrimulKFK1Op, fold_input_weights, get_trimul_kf_k1_op
+from ..custom_ops.trimul_kf_k2 import TrimulKFK2Op, get_trimul_kf_k2_op
+from ..custom_ops.trimul_kf_k3 import TrimulKFK3Op, TrimulKFOutputFold, fold_output_weights, get_trimul_kf_k3_op
 from .attention import TriangleAttention
 
 
@@ -39,26 +38,10 @@ def _round_up(value: int, multiple: int) -> int:
     return -(-value // multiple) * multiple
 
 
-_CUEQ_TRIMUL_PAIR_DIM = 384
-_CUEQ_TRIMUL_HIDDEN_DIM = 256
-_CUEQ_TRIMUL_SEQUENCE_THRESHOLD = 256
-
 #: Token multiple that keeps the contraction on cuBLAS's SM90 bf16 kernels.
 _GEMM_TOKEN_ALIGN = 8
-
-
-@lru_cache(maxsize=1)
-def _get_cueq_trimul_api() -> tuple[Callable[..., torch.Tensor], Callable[..., bool]] | None:
-    """Return the optional internal cuEquivariance TriMul API."""
-    try:
-        module = import_module("cuequivariance_ops_torch")
-    except (ImportError, OSError):
-        return None
-    operation = getattr(module, "triangle_multiplicative_update", None)
-    is_supported = getattr(module, "triangle_multiplicative_update_is_supported", None)
-    if not callable(operation) or not callable(is_supported):
-        return None
-    return operation, is_supported
+#: Widest ``dim == hidden_dim`` the SM90 TriMul KF chain ships.
+_KF_MAX_DIM = 256
 
 
 class TriangleAttentionNodeType(IntEnum):
@@ -277,10 +260,12 @@ class TriangleMultiplicationNode(nn.Module):
         mean_normalization: bool = False,
         pair_mask_left_aligned: bool = True,
         align_contraction_tokens: bool = True,
+        pad_tokens: bool = False,
     ):
         """Triangle multiplication node.
 
-        Supported SM90 BF16 shapes may dispatch to cuEquivariance.
+        Supported SM90 BF16 shapes may dispatch to the SM90 TriMul KF chain
+        when the model pads tokens.
 
         Args:
             pair_mask_left_aligned: Whether each mask row is ``1...1 0...0``,
@@ -288,6 +273,10 @@ class TriangleMultiplicationNode(nn.Module):
                 the CuTe dual GEMM.
             align_contraction_tokens: Pad both token axes to multiples of 8 for
                 fast SM90 GEMMs. Requires CuTe and ``actual_seqlen``.
+            pad_tokens: Whether the owning model pads token axes to multiples
+                of 8 before this node runs (its ``enable_token_pad``). Enables
+                the SM90 TriMul KF chain for ``dim == hidden_dim <= 256``; see
+                :meth:`set_token_padding`.
         """
         super().__init__()
         if hidden_dim is None:
@@ -374,22 +363,115 @@ class TriangleMultiplicationNode(nn.Module):
         self._token_align_backend = self.pair_mask_left_aligned and (
             get_cute_dual_gemm_x_x_op(self.dtype, N=2 * self.hidden_dim, K=self.dim, gate="sigmoid") is not None
         )
-        self._cueq_trimul_api: tuple[Callable[..., torch.Tensor], Callable[..., bool]] | None = None
+        self._kf_ops: tuple[TrimulKFK1Op, TrimulKFK2Op, TrimulKFK3Op] | None = None
+        self._kf_folds: tuple[TrimulKFInputFold, TrimulKFOutputFold] | None = None
+        self.set_token_padding(pad_tokens)
+
+    def set_token_padding(self, enabled: bool) -> None:
+        """Set whether the owning model pads token axes to multiples of 8.
+
+        Padding enables the SM90 TriMul KF chain ``trimul_kf_k1`` ->
+        ``trimul_kf_k2`` -> ``trimul_kf_k3`` when :meth:`_get_kf_ops` finds all
+        three for this node.
+        """
+        self.pad_tokens = enabled
+        self._kf_folds = None
+        self._kf_ops = self._get_kf_ops() if enabled else None
+
+    def _get_kf_ops(self) -> tuple[TrimulKFK1Op, TrimulKFK2Op, TrimulKFK3Op] | None:
+        """The KF K1, K2 and K3 ops for this node, or ``None`` when any does not ship.
+
+        The chain covers ``dim == hidden_dim <= 256`` (N = K0 = K1) with bf16
+        output projections, plain sums and prefix-shaped masks, so
+        ``high_precision``, ``mean_normalization`` and non-left-aligned masks
+        keep the regular path.
+        """
         if (
-            not skip_create_weights
-            and self.dim == _CUEQ_TRIMUL_PAIR_DIM
-            and self.hidden_dim == _CUEQ_TRIMUL_HIDDEN_DIM
-            and self.dtype == torch.bfloat16
-            and not self.high_precision
-            and not self.mean_normalization
-            and self.p_in.bias is not None
-            and self.g_in.bias is not None
-            and self.p_out.bias is not None
-            and self.g_out.bias is not None
+            self.dim != self.hidden_dim
+            or self.dim > _KF_MAX_DIM
+            or self.high_precision
+            or self.mean_normalization
+            or not self.pair_mask_left_aligned
         ):
-            cueq_trimul_api = _get_cueq_trimul_api()
-            if cueq_trimul_api is not None and torch.cuda.is_available() and get_sm_version() == 90:
-                self._cueq_trimul_api = cueq_trimul_api
+            return None
+        outgoing = self.multiplication_type == TriangleMultiplicationNodeType.OUTGOING
+        ops = (
+            get_trimul_kf_k1_op(self.dtype, self.dim, self.hidden_dim),
+            get_trimul_kf_k2_op(self.dtype, self.hidden_dim, outgoing),
+            get_trimul_kf_k3_op(self.dtype, self.dim, self.hidden_dim),
+        )
+        return None if any(op is None for op in ops) else ops
+
+    def _prepare_kf_weights(self) -> None:
+        """Fold the LayerNorms and biases into the KF chain's weights.
+
+        The weights hold placeholders until ``load_weights`` fills them in
+        place, so the node folds on its first KF call rather than at
+        construction, and :meth:`post_load_weights` drops the folds a reload
+        makes stale.
+        """
+        self._kf_folds = (
+            fold_input_weights(
+                self.norm_in.weight,
+                self.norm_in.bias,
+                self.p_in.weight,
+                self.g_in.weight,
+                self.p_in.bias,
+                self.g_in.bias,
+            ),
+            fold_output_weights(
+                self.norm_out.weight,
+                self.norm_out.bias,
+                self.norm_in.weight,
+                self.norm_in.bias,
+                self.p_out.weight,
+                self.g_out.weight,
+                self.p_out.bias,
+                self.g_out.bias,
+            ),
+        )
+
+    def post_load_weights(self) -> None:
+        """Drop the folded KF weights, so the next KF call folds the loaded ones."""
+        self._kf_folds = None
+
+    def _kf_forward_if_supported(
+        self,
+        x: torch.Tensor,
+        mask: torch.Tensor,
+        trimul_metadata: TriangleMultiplicationMetadata,
+        residual: bool,
+    ) -> torch.Tensor | None:
+        """Run the KF chain K1 -> K2 -> K3, or return ``None`` for the regular path.
+
+        A call takes it when its token axes are 8-aligned, as model-level
+        padding guarantees. The row lengths are those the dual GEMMs use: the
+        node direction's lengths for K1 and the outgoing ones for the output,
+        or the mask's row counts for both when the metadata has none.
+        """
+        if self._kf_ops is None:
+            return None
+        k1, k2, k3 = self._kf_ops
+        outgoing = self.multiplication_type == TriangleMultiplicationNodeType.OUTGOING
+        out_seqlen = trimul_metadata.outgoing_actual_seqlen
+        k1_seqlen = out_seqlen if outgoing else trimul_metadata.incoming_actual_seqlen
+        if k1_seqlen is None or out_seqlen is None:
+            k1_seqlen = out_seqlen = (mask > 0).sum(-1, dtype=torch.int32)
+        if not k1.accepts(x, k1_seqlen):
+            return None
+        if self._kf_folds is None or self._kf_folds[0].device != x.device:
+            self._prepare_kf_weights()
+        fold_in, fold_out = self._kf_folds
+        a, b, stats = k1(x, k1_seqlen, fold_in, self.eps)
+        return k3(
+            k2(a, b),
+            x,
+            fold_out,
+            stats,
+            self.eps,
+            residual=residual,
+            actual_seqlen=out_seqlen if residual else None,
+        )
 
     def _einsum_compute(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
         if self.multiplication_type == TriangleMultiplicationNodeType.OUTGOING:
@@ -449,41 +531,6 @@ class TriangleMultiplicationNode(nn.Module):
         if x.dtype != self.dtype:
             x = x.to(self.dtype)
         return x
-
-    def _cueq_forward_if_supported(self, x: torch.Tensor, mask: torch.Tensor) -> torch.Tensor | None:
-        """Run the optional SM90 384x256 TriMul owner."""
-        if self._cueq_trimul_api is None or x.shape[-2] <= _CUEQ_TRIMUL_SEQUENCE_THRESHOLD or torch.is_grad_enabled():
-            return None
-
-        x = self._ensure_dtype(x)
-        mask_value = mask.to(dtype=x.dtype).contiguous()
-        operation, is_supported = self._cueq_trimul_api
-        direction = "outgoing" if self.multiplication_type == TriangleMultiplicationNodeType.OUTGOING else "incoming"
-        if not is_supported(
-            x,
-            direction=direction,
-            mask=mask_value,
-            c_hidden=self.hidden_dim,
-        ):
-            return None
-        return operation(
-            x,
-            direction=direction,
-            mask=mask_value,
-            norm_in_weight=self.norm_in.weight,
-            norm_in_bias=self.norm_in.bias,
-            p_in_weight=self.p_in.weight,
-            p_in_bias=self.p_in.bias,
-            g_in_weight=self.g_in.weight,
-            g_in_bias=self.g_in.bias,
-            norm_out_weight=self.norm_out.weight,
-            norm_out_bias=self.norm_out.bias,
-            p_out_weight=self.p_out.weight,
-            p_out_bias=self.p_out.bias,
-            g_out_weight=self.g_out.weight,
-            g_out_bias=self.g_out.bias,
-            eps=self.eps,
-        )
 
     def _forward_impl(
         self,
@@ -585,12 +632,25 @@ class TriangleMultiplicationNode(nn.Module):
             trimul_metadata: precomputed token padding and row lengths.
             residual: fuse ``x + update`` and the output mask when supported.
         """
-        cueq_output = self._cueq_forward_if_supported(x, mask)
-        if cueq_output is not None:
-            return x + cueq_output if residual else cueq_output
+        kf_output = self._kf_forward_if_supported(x, mask, trimul_metadata, residual)
+        if kf_output is not None:
+            return kf_output
         return self._forward_impl(
             x,
             mask,
             trimul_metadata=trimul_metadata,
             residual=residual,
         )
+
+
+def set_trimul_token_padding(module: nn.Module, enabled: bool) -> None:
+    """Propagate a model's token-padding config to every triangle multiplication under ``module``.
+
+    The owning model pads token axes to multiples of 8 before running
+    ``module``, which lets each :class:`TriangleMultiplicationNode` take the
+    SM90 TriMul KF chain. A node still falls back on any call that arrives
+    unaligned.
+    """
+    for submodule in module.modules():
+        if isinstance(submodule, TriangleMultiplicationNode):
+            submodule.set_token_padding(enabled)

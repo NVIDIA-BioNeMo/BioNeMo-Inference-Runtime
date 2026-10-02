@@ -27,6 +27,7 @@ from bionemo_ir._torch.attention_backend.utils import PrecomputedPairMasks, prec
 from bionemo_ir._torch.layers.linear import Linear
 from bionemo_ir._torch.layers.token_padding import pad_trunk_tokens, unpad_trunk_tokens
 from bionemo_ir._torch.layers.transformers.pairformer import PairformerModule
+from bionemo_ir._torch.layers.triangle_nodes import set_trimul_token_padding
 from bionemo_ir._torch.modules.openfold3.trunk import MSAModuleStack
 from bionemo_ir._torch.modules.protenix.template import ProtenixTemplateEmbedder
 from bionemo_ir.configs import BaseConfig
@@ -157,6 +158,8 @@ class ProtenixTrunk(nn.Module):
         self.linear_no_bias_s = Linear(
             c_s, c_s, bias=False, dtype=dtype, skip_create_weights=config.skip_create_weights
         )
+        # forward() pads the tokens before any stack runs.
+        set_trimul_token_padding(self, self.enable_token_pad)
 
     def forward(
         self,

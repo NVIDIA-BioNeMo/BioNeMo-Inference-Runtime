@@ -50,6 +50,9 @@ _FAMILIES = frozenset(
         "pairwise_attention",
         "transition_mlp",
         "triangle_attention",
+        "trimul_kf_k1",
+        "trimul_kf_k2",
+        "trimul_kf_k3",
     }
 )
 # Public build-contract tests use this exact baseline while the protected
@@ -58,6 +61,7 @@ _FAMILIES = frozenset(
 _PREVIOUS_FAMILIES = frozenset(
     {
         "adaln_layernorm_sigmoid",
+        "attn_epilogue",
         "dual_gemm_x0_x1",
         "dual_gemm_x_x",
         "gated_sigmoid",
@@ -68,13 +72,14 @@ _PREVIOUS_FAMILIES = frozenset(
         "triangle_attention",
     }
 )
+_BF16_ONLY_FAMILIES = frozenset({"transition_mlp", "trimul_kf_k1", "trimul_kf_k2", "trimul_kf_k3"})
 _DTYPES = {
     "adaln_layernorm_sigmoid": frozenset({"fp16", "bf16", "fp32"}),
-    "transition_mlp": frozenset({"bf16"}),
+    **{family: frozenset({"bf16"}) for family in _BF16_ONLY_FAMILIES},
     **{
         family: frozenset({"fp16", "bf16"})
         for family in _FAMILIES
-        if family not in {"adaln_layernorm_sigmoid", "transition_mlp"}
+        if family != "adaln_layernorm_sigmoid" and family not in _BF16_ONLY_FAMILIES
     },
 }
 _HEX20_RE = re.compile(r"[0-9a-f]{20}")
@@ -387,6 +392,47 @@ _FAMILY_SPECS: dict[str, _FamilySpec] = {
         # Every Hopper image records the output gate's y map; only a gated one encodes it.
         sm90=_Sm90Spec("is_native", ("o", "g", "w", "z", "y", "d"), ranks=(4, 3, 2, 3, 3, 3)),
     ),
+    "trimul_kf_k1": _FamilySpec(
+        fields=(
+            _Field("is_bfloat16", _BOOL, "bool is_bfloat16;"),
+            _Field("C", _POSITIVE, "std::int32_t C;"),
+            _Field("D", _POSITIVE, "std::int32_t D;"),
+            # N of the configs' K1_<N>.
+            _Field("kernel_variant", _INDEX, "std::int32_t kernel_variant;"),
+            _Field("num_threads", _POSITIVE, "std::uint32_t num_threads;", suffix="U"),
+        ),
+        runtime_key=("is_bfloat16", "C", "D", "kernel_variant"),
+        sm90=_Sm90Spec("enabled", ("x", "w_proj", "w_gate", "a", "b"), ranks=(2, 2, 2, 3, 3)),
+    ),
+    "trimul_kf_k2": _FamilySpec(
+        fields=(
+            _Field("is_bfloat16", _BOOL, "bool is_bfloat16;"),
+            _Field("outgoing", _BOOL, "bool outgoing;"),
+            # N of the configs' K2_<N>.
+            _Field("kernel_variant", _INDEX, "std::int32_t kernel_variant;"),
+            _Field("tile_m", _POSITIVE, "std::uint32_t tile_m;", suffix="U"),
+            _Field("tile_n", _POSITIVE, "std::uint32_t tile_n;", suffix="U"),
+            _Field("cluster_m", _POSITIVE, "std::uint32_t cluster_m;", suffix="U"),
+            _Field("defer_kmin", _COUNT, "std::uint32_t defer_kmin;", suffix="U"),
+            _Field("split_epi", _BOOL, "bool split_epi;"),
+            _Field("num_threads", _POSITIVE, "std::uint32_t num_threads;", suffix="U"),
+        ),
+        runtime_key=("is_bfloat16", "outgoing", "kernel_variant", "tile_n", "cluster_m", "defer_kmin", "split_epi"),
+        sm90=_Sm90Spec("enabled", ("a", "b", "prod"), rank=3),
+    ),
+    "trimul_kf_k3": _FamilySpec(
+        fields=(
+            _Field("is_bfloat16", _BOOL, "bool is_bfloat16;"),
+            _Field("C", _POSITIVE, "std::int32_t C;"),
+            _Field("D", _POSITIVE, "std::int32_t D;"),
+            # N of the configs' K3_<N>.
+            _Field("kernel_variant", _INDEX, "std::int32_t kernel_variant;"),
+            _Field("residual", _BOOL, "bool residual;"),
+            _Field("num_threads", _POSITIVE, "std::uint32_t num_threads;", suffix="U"),
+        ),
+        runtime_key=("is_bfloat16", "C", "D", "kernel_variant", "residual"),
+        sm90=_Sm90Spec("enabled", ("prod", "x", "w_out", "w_gate", "output"), ranks=(3, 2, 2, 2, 2)),
+    ),
 }
 
 # Public tuning aliases are index records, not launch metadata: each family
@@ -423,6 +469,9 @@ _PUBLIC_ALIAS_FIELDS: dict[str, tuple[tuple[str, int | None], ...]] = {
         ("has_bias", None),
         ("has_output_gate", None),
     ),
+    "trimul_kf_k1": (("C", 1), ("D", 1), ("bucket", 1)),
+    "trimul_kf_k2": (("D", 1), ("bucket", 1), ("outgoing", None)),
+    "trimul_kf_k3": (("C", 1), ("D", 1), ("bucket", 1), ("residual", None)),
 }
 # Implementation changes must remain buildable with the last protected artifact
 # corpus. The previous dual-GEMM index predates asymmetric K1: public aliases

@@ -100,6 +100,27 @@ void bind(nb::module_& module);
 
 } // namespace bioir::cutedsl::attn_epilogue
 
+namespace bioir::cutedsl::trimul_kf_k1
+{
+
+void bind(nb::module_& module);
+
+} // namespace bioir::cutedsl::trimul_kf_k1
+
+namespace bioir::cutedsl::trimul_kf_k2
+{
+
+void bind(nb::module_& module);
+
+} // namespace bioir::cutedsl::trimul_kf_k2
+
+namespace bioir::cutedsl::trimul_kf_k3
+{
+
+void bind(nb::module_& module);
+
+} // namespace bioir::cutedsl::trimul_kf_k3
+
 namespace
 {
 
@@ -172,5 +193,8 @@ NB_MODULE(_cutedsl_kernels, module)
   pair_weighted_averaging::bind(module);
   transition_mlp::bind(module);
   attn_epilogue::bind(module);
+  trimul_kf_k1::bind(module);
+  trimul_kf_k2::bind(module);
+  trimul_kf_k3::bind(module);
   (void) preload_registered_kernels_if_context_active();
 }

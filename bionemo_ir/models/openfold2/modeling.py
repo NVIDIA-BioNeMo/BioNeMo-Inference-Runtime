@@ -24,6 +24,7 @@ import bionemo_ir.pipeline.models.openfold2.const as residue_constants
 from bionemo_ir._torch.attention_backend import auto_select_triangle_attention_backend, get_attention_backend
 from bionemo_ir._torch.layers.normalization import replace_with_fused_layernorm
 from bionemo_ir._torch.layers.token_padding import pad_trunk_tokens, unpad_trunk_tokens
+from bionemo_ir._torch.layers.triangle_nodes import set_trimul_token_padding
 from bionemo_ir._torch.modules.openfold2.confidence import AuxiliaryHeads
 from bionemo_ir._torch.modules.openfold2.embedders import (
     ExtraMSAEmbedder,
@@ -91,6 +92,10 @@ class OpenFold2(nn.Module, OptimizedModuleSetterMixin):
                 self.template_embedder = TemplateEmbedder(self.config.template_embedder)
         self.evoformer = EvoformerStack(self.config.trunk.evoformer_stack)
         self.enable_token_pad = self.config.trunk.enable_token_pad
+        # The trunk pads the tokens for these stacks; the templates run unpadded.
+        for stack in (self.extra_msa_stack, self.evoformer):
+            if stack is not None:
+                set_trimul_token_padding(stack, self.enable_token_pad)
         self.structure_module = StructureModule(self.config.structure_module)
         self.aux_heads = AuxiliaryHeads(self.config.confidence_module)
 

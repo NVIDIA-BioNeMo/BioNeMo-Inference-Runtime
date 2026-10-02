@@ -32,7 +32,11 @@ from bionemo_ir._torch.layers.pair_averaging import PairWeightedAveraging
 from bionemo_ir._torch.layers.sequence_local_atom import build_local_attn_metadata
 from bionemo_ir._torch.layers.token_padding import pad_trunk_tokens, unpad_trunk_tokens
 from bionemo_ir._torch.layers.transformers.pairformer import PairformerModule
-from bionemo_ir._torch.layers.triangle_nodes import TriangleAttentionNode, TriangleMultiplicationNode
+from bionemo_ir._torch.layers.triangle_nodes import (
+    TriangleAttentionNode,
+    TriangleMultiplicationNode,
+    set_trimul_token_padding,
+)
 from bionemo_ir._torch.modules.openfold3.confidence import AuxiliaryHeadsAllAtom
 from bionemo_ir._torch.modules.openfold3.diffusion_module import (
     DiffusionModule,
@@ -127,6 +131,9 @@ class OpenFold3(nn.Module, OptimizedModuleSetterMixin):
 
         self.pairformer_stack = PairformerModule(config=self.config.trunk.pairformer)
         self.enable_token_pad = self.config.trunk.pairformer.enable_token_pad
+        # The trunk pads the tokens for these stacks.
+        for stack in (self.template_embedder, self.msa_module, self.pairformer_stack):
+            set_trimul_token_padding(stack, self.enable_token_pad)
         diffusion_module = DiffusionModule(config=self.config.diffusion_module_config)
         self.diffusion_sampler = OpenFold3DiffusionSampler(
             config=self.config.edm_sampling_config, diffusion_module=diffusion_module

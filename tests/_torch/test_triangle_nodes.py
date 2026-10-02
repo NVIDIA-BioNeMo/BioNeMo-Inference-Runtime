@@ -26,15 +26,16 @@ from test_utils.boltz.create_and_load_weights import (
 from test_utils.boltz.ref_layers import RefTriangleAttentionNode, RefTriangleMultiplicationNode
 
 from bionemo_ir._torch.attention_backend import AttentionType, get_attention_backend
-from bionemo_ir._torch.layers import triangle_nodes as triangle_nodes_module
 from bionemo_ir._torch.layers.triangle_nodes import (
     TriangleAttentionNode,
     TriangleAttentionNodeType,
+    TriangleMultiplicationMetadata,
     TriangleMultiplicationNode,
     TriangleMultiplicationNodeType,
     precompute_trimul_metadata,
+    set_trimul_token_padding,
 )
-from bionemo_ir._torch.utils import ChunkPolicy
+from bionemo_ir._torch.utils import ChunkPolicy, recursive_calling_load_weights
 from bionemo_ir.utils import str_dtype_to_torch
 from tests._torch import SM_VERSION, make_left_aligned_pair_mask, skip_if_no_cutedsl
 
@@ -324,186 +325,155 @@ def test_trimul_metadata_precomputes_both_padded_row_lengths() -> None:
     assert torch.count_nonzero(metadata.padded_incoming_actual_seqlen[:, 259:]) == 0
 
 
-def test_trimul_skip_create_weights_skips_cueq_bias_check(monkeypatch: pytest.MonkeyPatch) -> None:
-    calls = 0
-
-    def get_cueq_trimul_api() -> None:
-        nonlocal calls
-        calls += 1
-
-    monkeypatch.setattr(triangle_nodes_module, "_get_cueq_trimul_api", get_cueq_trimul_api)
-    node = TriangleMultiplicationNode(
-        dim=384,
-        hidden_dim=256,
-        dtype=torch.bfloat16,
-        high_precision=False,
-        bias_flags={"p_in": True, "g_in": True, "p_out": True, "g_out": True},
-        skip_create_weights=True,
-    )
-
-    assert calls == 0
-    assert node._cueq_trimul_api is None
-    for linear in (node.p_in, node.g_in, node.p_out, node.g_out):
-        assert not linear._weights_created
+_KF_NODE = {
+    "dim": 128,
+    "dtype": torch.bfloat16,
+    "high_precision": False,
+    "bias_flags": {"p_in": True, "g_in": True, "p_out": True, "g_out": True},
+    "pad_tokens": True,
+}
+_DIRECTIONS = [TriangleMultiplicationNodeType.OUTGOING, TriangleMultiplicationNodeType.INCOMING]
 
 
-def _cueq_384x256_trimul_node() -> TriangleMultiplicationNode:
-    return TriangleMultiplicationNode(
-        dim=384,
-        hidden_dim=256,
-        multiplication_type=TriangleMultiplicationNodeType.OUTGOING,
-        dtype=torch.bfloat16,
-        high_precision=False,
-        bias_flags={"p_in": True, "g_in": True, "p_out": True, "g_out": True},
-    )
-
-
-def test_cueq_trimul_api_requires_operation_and_support_query(monkeypatch: pytest.MonkeyPatch) -> None:
-    def operation(*args: object, **kwargs: object) -> None:
-        return None
-
-    def is_supported(*args: object, **kwargs: object) -> bool:
-        return True
-
-    class OperationOnly:
-        triangle_multiplicative_update = staticmethod(operation)
-
-    class CompleteApi:
-        triangle_multiplicative_update = staticmethod(operation)
-        triangle_multiplicative_update_is_supported = staticmethod(is_supported)
-
-    triangle_nodes_module._get_cueq_trimul_api.cache_clear()
-    try:
-        monkeypatch.setattr(triangle_nodes_module, "import_module", lambda _name: OperationOnly)
-        assert triangle_nodes_module._get_cueq_trimul_api() is None
-
-        triangle_nodes_module._get_cueq_trimul_api.cache_clear()
-        monkeypatch.setattr(triangle_nodes_module, "import_module", lambda _name: CompleteApi)
-        assert triangle_nodes_module._get_cueq_trimul_api() == (operation, is_supported)
-    finally:
-        triangle_nodes_module._get_cueq_trimul_api.cache_clear()
-
-
-def test_cueq_384x256_trimul_constructor_requires_internal_api_and_sm90(monkeypatch: pytest.MonkeyPatch) -> None:
-    def operation(*args: object, **kwargs: object) -> None:
-        return None
-
-    def is_supported(*args: object, **kwargs: object) -> bool:
-        return True
-
-    monkeypatch.setattr(triangle_nodes_module, "_get_cueq_trimul_api", lambda: (operation, is_supported))
-    monkeypatch.setattr(triangle_nodes_module, "get_sm_version", lambda: 89)
-    assert _cueq_384x256_trimul_node()._cueq_trimul_api is None
-
-    monkeypatch.setattr(triangle_nodes_module, "get_sm_version", lambda: 90)
-    assert _cueq_384x256_trimul_node()._cueq_trimul_api == (operation, is_supported)
-
-    calls = 0
-
-    def missing_api() -> None:
-        nonlocal calls
-        calls += 1
-        return None
-
-    monkeypatch.setattr(triangle_nodes_module, "_get_cueq_trimul_api", missing_api)
-    assert _cueq_384x256_trimul_node()._cueq_trimul_api is None
-    assert calls == 1
-
-    other_shape = TriangleMultiplicationNode(
-        dim=128,
-        hidden_dim=128,
-        dtype=torch.bfloat16,
-        high_precision=False,
-    )
-    assert other_shape._cueq_trimul_api is None
-    assert calls == 1
-
-
-def test_cueq_384x256_trimul_runtime_gate_and_bool_mask_conversion(monkeypatch: pytest.MonkeyPatch) -> None:
-    support_calls: list[tuple[torch.Tensor, str, torch.Tensor, int]] = []
-    operation_calls: list[tuple[torch.Tensor, dict[str, object]]] = []
-
-    def is_supported(
-        x: torch.Tensor,
-        *,
-        direction: str,
-        mask: torch.Tensor,
-        c_hidden: int,
-    ) -> bool:
-        support_calls.append((x, direction, mask, c_hidden))
-        return True
-
-    def operation(x: torch.Tensor, **kwargs: object) -> torch.Tensor:
-        operation_calls.append((x, kwargs))
-        return x
-
-    monkeypatch.setattr(triangle_nodes_module, "_get_cueq_trimul_api", lambda: (operation, is_supported))
-    monkeypatch.setattr(triangle_nodes_module, "get_sm_version", lambda: 90)
-    node = _cueq_384x256_trimul_node().cuda().eval()
-
-    short_x = torch.empty(1, 256, 256, 384, device="cuda", dtype=torch.bfloat16)
-    short_mask = torch.ones(1, 256, 256, device="cuda", dtype=torch.bool)
-    with torch.inference_mode():
-        assert node._cueq_forward_if_supported(short_x, short_mask) is None
-    assert support_calls == []
-    assert operation_calls == []
-
-    x = torch.ones(1, 257, 257, 384, device="cuda", dtype=torch.bfloat16)
-    mask = torch.ones(1, 257, 257, device="cuda", dtype=torch.bool)
-    trimul_metadata = precompute_trimul_metadata(x, None, None)
-    with torch.inference_mode():
-        output = node(x, mask, trimul_metadata)
-        residual_output = node(x, mask, trimul_metadata, residual=True)
-    assert output is x
-    torch.testing.assert_close(residual_output, 2 * x, atol=0, rtol=0)
-
-    assert len(support_calls) == 2
-    support_x, direction, support_mask, c_hidden = support_calls[0]
-    assert support_x is x
-    assert direction == "outgoing"
-    assert support_mask.dtype == torch.bfloat16
-    assert support_mask.is_contiguous()
-    assert c_hidden == 256
-
-    assert len(operation_calls) == 2
-    operation_x, kwargs = operation_calls[0]
-    assert operation_x is x
-    assert kwargs["mask"] is support_mask
-    assert kwargs["p_in_weight"] is node.p_in.weight
-    assert kwargs["g_in_weight"] is node.g_in.weight
-    assert kwargs["p_out_weight"] is node.p_out.weight
-    assert kwargs["g_out_weight"] is node.g_out.weight
-
-
-def test_internal_cueq_384x256_trimul_matches_bioir() -> None:
-    if triangle_nodes_module._get_cueq_trimul_api() is None:
-        pytest.skip("internal cuEquivariance TriMul API is not installed")
-    if triangle_nodes_module.get_sm_version() != 90:
-        pytest.skip("internal cuEquivariance 384x256 TriMul requires SM90")
-
-    torch.manual_seed(20260908)
-    node = _cueq_384x256_trimul_node().cuda().eval()
+def _kf_trimul_node(**overrides: object) -> TriangleMultiplicationNode:
+    """A CUDA node on the SM90 TriMul KF chain with realistic weights, or skip without the chain."""
+    if SM_VERSION != 90:
+        pytest.skip(f"the TriMul KF chain requires SM90 (current SM{SM_VERSION})")
+    node = TriangleMultiplicationNode(**(_KF_NODE | overrides)).cuda()
+    if node._kf_ops is None:
+        pytest.skip("this build ships no TriMul KF kernels for the node")
     with torch.no_grad():
         for name, parameter in node.named_parameters():
-            if "norm" in name and name.endswith("weight"):
-                parameter.fill_(1)
+            if name.startswith("norm") and name.endswith("weight"):
+                parameter.normal_(1.0, 0.2)
             elif name.endswith("bias"):
-                parameter.zero_()
+                parameter.normal_(0.0, 0.2)
             else:
-                parameter.normal_(mean=0, std=0.02)
+                parameter.normal_(0.0, parameter.shape[-1] ** -0.5)
+    return node
 
-    x = torch.randn(1, 384, 384, 384, device="cuda", dtype=torch.bfloat16)
-    mask = torch.ones(1, 384, 384, device="cuda", dtype=torch.bool)
-    cueq_api = node._cueq_trimul_api
-    assert cueq_api is not None
-    with torch.inference_mode():
-        node._cueq_trimul_api = None
-        trimul_metadata = precompute_trimul_metadata(x, None, None)
-        reference = node(x, mask, trimul_metadata)
-        node._cueq_trimul_api = cueq_api
-        actual = node(x, mask, trimul_metadata)
 
-    relative_l2 = torch.linalg.vector_norm(actual.float() - reference.float()) / torch.linalg.vector_norm(
-        reference.float()
+def _kf_inputs(tokens: int, dim: int) -> tuple[torch.Tensor, torch.Tensor, TriangleMultiplicationMetadata]:
+    """A bf16 pair, a left-aligned pair mask with two different lengths, and their row lengths."""
+    x = torch.randn(2, tokens, tokens, dim, device="cuda", dtype=torch.bfloat16)
+    lengths = torch.tensor([tokens - 7, tokens - 40], device="cuda")
+    token_mask = torch.arange(tokens, device="cuda") < lengths[:, None]
+    pair_mask = token_mask[:, :, None] & token_mask[:, None, :]
+    metadata = precompute_trimul_metadata(x, pair_mask.sum(-1, dtype=torch.int32), pair_mask.sum(-2, dtype=torch.int32))
+    return x, pair_mask, metadata
+
+
+def _relative_l2(actual: torch.Tensor, expected: torch.Tensor) -> float:
+    difference = torch.linalg.vector_norm(actual.float() - expected.float())
+    return (difference / torch.linalg.vector_norm(expected.float())).item()
+
+
+def test_trimul_kf_chain_needs_token_padding_and_a_supported_node() -> None:
+    if SM_VERSION != 90:
+        pytest.skip(f"the TriMul KF chain requires SM90 (current SM{SM_VERSION})")
+    supported = _KF_NODE | {"skip_create_weights": True}
+    nodes = torch.nn.ModuleList(
+        TriangleMultiplicationNode(**(supported | {"multiplication_type": direction, "pad_tokens": False}))
+        for direction in _DIRECTIONS
     )
-    assert relative_l2 < 5e-3
+    assert all(node._kf_ops is None for node in nodes)
+    set_trimul_token_padding(nodes, True)
+    if any(node._kf_ops is None for node in nodes):
+        pytest.skip("this build ships no TriMul KF kernels for the node")
+    assert all(node.pad_tokens for node in nodes)
+    set_trimul_token_padding(nodes, False)
+    assert all(not node.pad_tokens and node._kf_ops is None for node in nodes)
+
+    for override in (
+        {"hidden_dim": 64},
+        {"dim": 384},
+        {"dtype": torch.float32},
+        {"high_precision": True},
+        {"mean_normalization": True},
+        {"pair_mask_left_aligned": False},
+    ):
+        assert TriangleMultiplicationNode(**(supported | override))._kf_ops is None, override
+
+
+@pytest.mark.parametrize("residual", [False, True], ids=["update", "residual"])
+@pytest.mark.parametrize("multiplication_type", _DIRECTIONS, ids=lambda direction: direction.name.lower())
+@pytest.mark.parametrize(
+    ("dim", "tokens", "bias"),
+    [
+        pytest.param(128, 128, True, id="C128-N128-streaming"),
+        pytest.param(128, 256, False, id="C128-N256-pingpong-nobias"),
+        pytest.param(256, 256, True, id="C256-N256-row-stats"),
+        pytest.param(256, 256, False, id="C256-N256-row-stats-nobias"),
+    ],
+)
+def test_trimul_kf_chain_matches_dual_gemm_path(
+    dim: int,
+    tokens: int,
+    bias: bool,
+    multiplication_type: TriangleMultiplicationNodeType,
+    residual: bool,
+) -> None:
+    torch.manual_seed(31)
+    node = _kf_trimul_node(
+        dim=dim,
+        multiplication_type=multiplication_type,
+        bias_flags=dict.fromkeys(("p_in", "g_in", "p_out", "g_out"), bias),
+    )
+    x, pair_mask, metadata = _kf_inputs(tokens, dim)
+
+    with torch.inference_mode():
+        actual = node._kf_forward_if_supported(x, pair_mask, metadata, residual)
+        assert actual is not None
+        torch.testing.assert_close(node(x, pair_mask, metadata, residual=residual), actual, atol=0, rtol=0)
+        expected = node._forward_impl(x, pair_mask, metadata, residual=residual)
+
+    assert actual.shape == x.shape and actual.dtype == torch.bfloat16
+    assert _relative_l2(actual, expected) < 1e-2
+    if residual:
+        assert torch.count_nonzero(actual[~pair_mask]) == 0
+
+
+@pytest.mark.parametrize("multiplication_type", _DIRECTIONS, ids=lambda direction: direction.name.lower())
+def test_trimul_kf_chain_counts_mask_rows_without_metadata_lengths(
+    multiplication_type: TriangleMultiplicationNodeType,
+) -> None:
+    torch.manual_seed(37)
+    node = _kf_trimul_node(multiplication_type=multiplication_type)
+    x, pair_mask, metadata = _kf_inputs(256, 128)
+
+    with torch.inference_mode():
+        expected = node._kf_forward_if_supported(x, pair_mask, metadata, True)
+        actual = node._kf_forward_if_supported(x, pair_mask, TriangleMultiplicationMetadata(), True)
+
+    torch.testing.assert_close(actual, expected, atol=0, rtol=0)
+
+
+def test_trimul_kf_chain_leaves_unaligned_tokens_to_the_dual_gemm_path() -> None:
+    node = _kf_trimul_node()
+    x, pair_mask, metadata = _kf_inputs(250, 128)
+
+    with torch.inference_mode():
+        assert node._kf_forward_if_supported(x, pair_mask, metadata, True) is None
+        actual = node(x, pair_mask, metadata, residual=True)
+        expected = node._forward_impl(x, pair_mask, metadata, residual=True)
+
+    torch.testing.assert_close(actual, expected, atol=0, rtol=0)
+
+
+def test_trimul_kf_chain_refolds_after_load_weights() -> None:
+    torch.manual_seed(41)
+    node = _kf_trimul_node()
+    x, pair_mask, metadata = _kf_inputs(128, 128)
+    with torch.inference_mode():
+        before = node(x, pair_mask, metadata)
+    assert node._kf_folds is not None
+
+    norm_in = {"weight": 2 * node.norm_in.weight.detach(), "bias": node.norm_in.bias.detach() + 0.5}
+    recursive_calling_load_weights(node, {"norm_in": [norm_in]}, filter_func=lambda name, _: name != "norm_in")
+    assert node._kf_folds is None
+
+    with torch.inference_mode():
+        actual = node(x, pair_mask, metadata)
+        expected = node._forward_impl(x, pair_mask, metadata)
+    assert _relative_l2(actual, expected) < 1e-2
+    assert _relative_l2(before, expected) > 0.1

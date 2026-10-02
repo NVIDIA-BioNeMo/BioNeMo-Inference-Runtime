@@ -1,0 +1,7 @@
+{
+  "kernel_abi": "sm90",
+  "configs": {
+    "S=128": {"kernel_variant": "K1_0"},
+    "S=256": {"kernel_variant": "K1_1"}
+  }
+}

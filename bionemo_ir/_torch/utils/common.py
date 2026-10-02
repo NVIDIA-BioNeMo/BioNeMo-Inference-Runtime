@@ -89,6 +89,9 @@ def recursive_calling_load_weights(module: nn.Module, weights: dict, filter_func
         filter_func: The function to filter the modules to load weights for.
     Returns:
         The set of loaded weights.
+
+    Afterwards every module under ``module`` that defines ``post_load_weights``
+    has it called, so it can drop state derived from the old weights.
     """
     loaded_weight = set()
 
@@ -112,6 +115,11 @@ def recursive_calling_load_weights(module: nn.Module, weights: dict, filter_func
                 print(name)
                 raise e
         loaded_weight.add(name)
+    # Drop state that modules derived from the weights they held before.
+    for submodule in module.modules():
+        post_load_weights = getattr(submodule, "post_load_weights", None)
+        if post_load_weights is not None:
+            post_load_weights()
     return loaded_weight
 
 

@@ -55,6 +55,11 @@ extern "C"
     CUclusterSchedulingPolicy cluster_scheduling_policy;
     uint32_t dynamic_smem_bytes;
     CUstream stream;
+    /* Nonzero allows programmatic dependent launch: the kernel may start once
+     * its predecessor in the stream triggers it, and gates its dependent reads
+     * on griddepcontrol.wait. Zero keeps full stream serialization.
+     */
+    uint32_t programmatic_stream_serialization;
   } cubin_launch_config_t;
 
   static inline CUresult
@@ -64,7 +69,8 @@ extern "C"
       return CUDA_ERROR_INVALID_VALUE;
 
     int const uses_clusters = config->cluster_x != 0 || config->cluster_y != 0 || config->cluster_z != 0;
-    if (!uses_clusters)
+    int const uses_pdl = config->programmatic_stream_serialization != 0;
+    if (!uses_clusters && !uses_pdl)
     {
       return cuLaunchKernel(
         kernel.function,
@@ -81,21 +87,34 @@ extern "C"
     }
 
     if (
-      config->cluster_x == 0 || config->cluster_y == 0 || config->cluster_z == 0
-      || config->grid_x % config->cluster_x != 0 || config->grid_y % config->cluster_y != 0
-      || config->grid_z % config->cluster_z != 0)
+      uses_clusters
+      && (config->cluster_x == 0 || config->cluster_y == 0 || config->cluster_z == 0
+          || config->grid_x % config->cluster_x != 0 || config->grid_y % config->cluster_y != 0
+          || config->grid_z % config->cluster_z != 0))
     {
       return CUDA_ERROR_INVALID_VALUE;
     }
 
-    CUlaunchAttribute attributes[2];
+    CUlaunchAttribute attributes[3];
+    unsigned int attribute_count = 0;
     memset(attributes, 0, sizeof(attributes));
-    attributes[0].id = CU_LAUNCH_ATTRIBUTE_CLUSTER_DIMENSION;
-    attributes[0].value.clusterDim.x = config->cluster_x;
-    attributes[0].value.clusterDim.y = config->cluster_y;
-    attributes[0].value.clusterDim.z = config->cluster_z;
-    attributes[1].id = CU_LAUNCH_ATTRIBUTE_CLUSTER_SCHEDULING_POLICY_PREFERENCE;
-    attributes[1].value.clusterSchedulingPolicyPreference = config->cluster_scheduling_policy;
+    if (uses_clusters)
+    {
+      attributes[attribute_count].id = CU_LAUNCH_ATTRIBUTE_CLUSTER_DIMENSION;
+      attributes[attribute_count].value.clusterDim.x = config->cluster_x;
+      attributes[attribute_count].value.clusterDim.y = config->cluster_y;
+      attributes[attribute_count].value.clusterDim.z = config->cluster_z;
+      ++attribute_count;
+      attributes[attribute_count].id = CU_LAUNCH_ATTRIBUTE_CLUSTER_SCHEDULING_POLICY_PREFERENCE;
+      attributes[attribute_count].value.clusterSchedulingPolicyPreference = config->cluster_scheduling_policy;
+      ++attribute_count;
+    }
+    if (uses_pdl)
+    {
+      attributes[attribute_count].id = CU_LAUNCH_ATTRIBUTE_PROGRAMMATIC_STREAM_SERIALIZATION;
+      attributes[attribute_count].value.programmaticStreamSerializationAllowed = 1;
+      ++attribute_count;
+    }
 
     CUlaunchConfig driver_config = {0};
     driver_config.gridDimX = config->grid_x;
@@ -107,7 +126,7 @@ extern "C"
     driver_config.sharedMemBytes = config->dynamic_smem_bytes;
     driver_config.hStream = config->stream;
     driver_config.attrs = attributes;
-    driver_config.numAttrs = 2;
+    driver_config.numAttrs = attribute_count;
     return cuLaunchKernelEx(&driver_config, kernel.function, kernel_params, extra);
   }
 

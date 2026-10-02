@@ -25,7 +25,11 @@ from bionemo_ir._torch.layers.pair_averaging import PairWeightedAveraging
 from bionemo_ir._torch.layers.token_padding import pad_trunk_tokens, unpad_trunk_tokens
 from bionemo_ir._torch.layers.transformers.pairformer import PairformerModule, PairformerNoSeqLayer
 from bionemo_ir._torch.layers.transition import Transition
-from bionemo_ir._torch.layers.triangle_nodes import TriangleMultiplicationMetadata, precompute_trimul_metadata
+from bionemo_ir._torch.layers.triangle_nodes import (
+    TriangleMultiplicationMetadata,
+    precompute_trimul_metadata,
+    set_trimul_token_padding,
+)
 from bionemo_ir._torch.modules.boltz.template import TemplateV2Module
 from bionemo_ir._torch.utils import CHUNK_REGISTRY, PAIR_TRANSITION, recursive_calling_load_weights
 from bionemo_ir.configs import BaseConfig
@@ -305,6 +309,8 @@ class Trunk(nn.Module):
         self.z_recycle = Linear(
             token_z, token_z, bias=False, dtype=self.dtype, skip_create_weights=self.skip_create_weights
         )
+        # forward() pads the tokens before any stack runs.
+        set_trimul_token_padding(self, self.enable_token_pad)
 
     def load_weights(self, weights: dict):
         """Load weights for the Trunk module

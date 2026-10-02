@@ -185,6 +185,7 @@ def aggregate_atom_feat_to_tokens(
     gather_mask: torch.Tensor | None = None,
     gather_counts: torch.Tensor | None = None,
     num_atoms_per_token: torch.Tensor | None = None,
+    relu: bool = False,
 ) -> torch.Tensor:
     """
     Aggregate atom-level features to token-level features with mean or sum aggregation.
@@ -216,6 +217,8 @@ def aggregate_atom_feat_to_tokens(
             Valid-atom counts per token for mean aggregation.
         num_atoms_per_token:
             Ordered segment lengths for prepared layouts.
+        relu:
+            Clamp ``atom_feat`` at zero before aggregating.
     Returns:
         token_feat:
             [*, N_token, *feat_dims] Token-level features
@@ -232,6 +235,7 @@ def aggregate_atom_feat_to_tokens(
         gather_mask=gather_mask,
         gather_counts=gather_counts,
         num_atoms_per_token=num_atoms_per_token,
+        relu=relu,
     )
 
 

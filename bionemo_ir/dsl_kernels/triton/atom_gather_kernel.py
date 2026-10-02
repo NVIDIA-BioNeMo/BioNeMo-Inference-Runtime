@@ -29,7 +29,9 @@ from bionemo_ir.dsl_kernels.triton_cache import CachedKernel, TritonKernelCache
 
 # Bound verified against deterministic scatter.
 MAX_ORDERED_ATOMS = 31
-_BLOCK_CHANNELS = 128
+# 256 channels per program: 8 FP32 per thread when 16-byte aligned, else 2.
+# Measured within 2% of 128 on H100 and 8% (A100) to 20% (B200) faster.
+_BLOCK_CHANNELS = 256
 # FP32 channels per 16-byte access.
 _VECTOR = 4
 _SLOT_BUCKET = 8
@@ -76,6 +78,7 @@ def _reduce_atom_slots(
     max_slots: tl.constexpr,
     vector: tl.constexpr,
     block_channels: tl.constexpr,
+    relu: tl.constexpr,
 ):
     # Channel counts and row strides arrive in ``vector`` units, so every row
     # offset provably keeps the 16-byte alignment that wide accesses need.
@@ -104,14 +107,21 @@ def _reduce_atom_slots(
             mask=in_channels & in_row & is_valid & (atom < n_atoms),
             other=0.0,
         )
+        if relu:
+            value = tl.maximum(value, 0.0)
         total = total + value
     count = tl.load(counts_ptr + batch * count_batch_stride + token * count_token_stride).to(tl.float32)
     output = output_ptr + (sample_batch * n_tokens + token) * n_channels + channel
     tl.store(output, tl.div_rn(total, count + eps), mask=in_channels)
 
 
+def _num_warps(vector: int) -> int:
+    """Warps that give every thread two ``vector``-wide loads per slot."""
+    return _BLOCK_CHANNELS // (32 * 2 * vector)
+
+
 class _AtomReduction(TritonKernelCache):
-    def __init__(self, dtypes: tuple[torch.dtype, ...], max_slots: int, vector: int) -> None:
+    def __init__(self, dtypes: tuple[torch.dtype, ...], max_slots: int, vector: int, relu: bool = False) -> None:
         feature_dtype, index_dtype, valid_dtype, count_dtype = dtypes
         self.kernel = self.compile_for_dtypes(
             _reduce_atom_slots,
@@ -130,15 +140,26 @@ class _AtomReduction(TritonKernelCache):
             max_slots=max_slots,
             vector=vector,
             block_channels=_BLOCK_CHANNELS,
-            num_warps=_BLOCK_CHANNELS // (32 * vector),
+            relu=relu,
+            num_warps=_num_warps(vector),
             enable_fp_fusion=False,
         )[feature_dtype]
 
 
+def _cached_reduction(
+    device: int, dtypes: tuple[torch.dtype, ...], max_slots: int, vector: int, relu: bool = False
+) -> CachedKernel:
+    # Forward every argument positionally so callers that omit ``relu`` share
+    # the cache entry of callers that pass it.
+    return _compile_reduction(device, dtypes, max_slots, vector, relu)
+
+
 @cache
-def _cached_reduction(device: int, dtypes: tuple[torch.dtype, ...], max_slots: int, vector: int) -> CachedKernel:
+def _compile_reduction(
+    device: int, dtypes: tuple[torch.dtype, ...], max_slots: int, vector: int, relu: bool
+) -> CachedKernel:
     with torch.cuda.device(device):
-        return _AtomReduction(dtypes, max_slots, vector).kernel
+        return _AtomReduction(dtypes, max_slots, vector, relu).kernel
 
 
 def reduce_atom_slots(
@@ -148,6 +169,7 @@ def reduce_atom_slots(
     counts: torch.Tensor,
     n_tokens: int,
     eps: float,
+    relu: bool = False,
 ) -> torch.Tensor:
     """Mean-reduce validated short segments in packed-atom order.
 
@@ -162,6 +184,7 @@ def reduce_atom_slots(
         counts: Integer valid-atom counts shaped ``[B, T]`` or ``[B, 1, T]``.
         n_tokens: Number of output tokens, ``T``.
         eps: Offset added to the count denominator.
+        relu: Clamp each atom row at zero as it is loaded, before the sum.
 
     Returns:
         Token means shaped ``[B, S, T, C]``. Callers validate the layout and
@@ -206,12 +229,13 @@ def reduce_atom_slots(
                 max_slots=max_slots,
                 vector=vector,
                 block_channels=_BLOCK_CHANNELS,
-                num_warps=_BLOCK_CHANNELS // (32 * vector),
+                relu=relu,
+                num_warps=_num_warps(vector),
                 enable_fp_fusion=False,
             )
             return output
         dtypes = (features.dtype, indices.dtype, valid.dtype, counts.dtype)
-        kernel = _cached_reduction(features.device.index, dtypes, max_slots, vector)
+        kernel = _cached_reduction(features.device.index, dtypes, max_slots, vector, relu)
         driver = kernel.driver
         if driver is not None:
             values = (*(tensor.data_ptr() for tensor in tensors), *scalars)
@@ -220,5 +244,5 @@ def reduce_atom_slots(
                 param.value = value
             driver.launch(*grid)
         else:
-            kernel.launch(grid, *tensors, *scalars, max_slots, vector, _BLOCK_CHANNELS)
+            kernel.launch(grid, *tensors, *scalars, max_slots, vector, _BLOCK_CHANNELS, relu)
     return output

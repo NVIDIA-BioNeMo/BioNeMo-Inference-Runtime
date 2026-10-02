@@ -572,8 +572,9 @@ class AtomAttentionEncoder(nn.Module):
         self.atom_transformer = DiffusionTransformer(config=atom_transformer_config)
 
         self.c_token = c_token
+        # Its ReLU runs inside the token reduction; the index keeps the weight key.
         self.linear_q = nn.Sequential(
-            Linear(c_atom, c_token, bias=False, dtype=dtype, skip_create_weights=skip_create_weights), nn.ReLU()
+            Linear(c_atom, c_token, bias=False, dtype=dtype, skip_create_weights=skip_create_weights)
         )
 
     def get_atom_reps(
@@ -779,6 +780,7 @@ class AtomAttentionEncoder(nn.Module):
             gather_mask=batch.get("atom_gather_mask"),
             gather_counts=batch.get("atom_gather_counts"),
             num_atoms_per_token=batch.get("num_atoms_per_token"),
+            relu=True,
         )
 
         return ai, ql, cl, plm

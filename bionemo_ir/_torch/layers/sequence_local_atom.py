@@ -386,6 +386,7 @@ def aggregate_atom_features_to_tokens(
     gather_mask: torch.Tensor | None = None,
     gather_counts: torch.Tensor | None = None,
     num_atoms_per_token: torch.Tensor | None = None,
+    relu: bool = False,
 ) -> torch.Tensor:
     """Reduce packed atom features into their owning token rows.
 
@@ -408,6 +409,8 @@ def aggregate_atom_features_to_tokens(
         gather_mask: Valid atom positions in the prepared per-token slots.
         gather_counts: Valid-atom counts per token for mean aggregation.
         num_atoms_per_token: Ordered segment lengths for prepared layouts.
+        relu: Clamp ``atom_features`` at zero before reducing; the gather
+            kernel applies it while loading instead of in a separate pass.
 
     Returns:
         Token-level features with the atom axis replaced by ``N_token``.
@@ -438,7 +441,10 @@ def aggregate_atom_features_to_tokens(
     )
     if prepared_mean:
         if atom_features.is_cuda and atom_features.ndim == 4 and batch_dims == (atom_features.shape[0], 1):
-            return reduce_atom_slots(atom_features, gather_index, gather_mask, gather_counts, n_token, eps)
+            return reduce_atom_slots(atom_features, gather_index, gather_mask, gather_counts, n_token, eps, relu=relu)
+    if relu:
+        atom_features = torch.relu(atom_features)
+    if prepared_mean:
         if num_atoms_per_token is not None:
             return _reduce_ordered_atoms(num_atoms_per_token, atom_mask, atom_features, eps)
     atom_features = atom_features * atom_mask.reshape(atom_mask.shape + (1,) * len(feat_dims))

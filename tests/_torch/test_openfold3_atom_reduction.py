@@ -184,6 +184,36 @@ def test_prepared_graph_replay(sampled: bool) -> None:
         assert torch.equal(output, expected)
 
 
+@pytest.mark.parametrize("device", DEVICES)
+@pytest.mark.parametrize("prepared", [False, True])
+@pytest.mark.parametrize("sampled", [False, True])
+def test_relu_before_reduction(device: str, prepared: bool, sampled: bool) -> None:
+    batch = make_batch(device)
+    if prepared:
+        batch = prepare_atom_reduction(batch)
+    if sampled:
+        batch = {key: value.unsqueeze(1) for key, value in batch.items()}
+    shape = (2, 3, 5, 8) if sampled else (2, 5, 8)
+    features = torch.randn(shape, device=device)
+    expected = reduce_prepared(batch, torch.relu(features))
+
+    def reduce_relu(features: torch.Tensor) -> torch.Tensor:
+        return aggregate_atom_feat_to_tokens(
+            token_mask=batch["token_mask"],
+            atom_to_token_index=batch["atom_to_token_index"],
+            atom_mask=batch["atom_mask"],
+            atom_feat=features,
+            atom_dim=-2,
+            gather_index=batch.get("atom_gather_index"),
+            gather_mask=batch.get("atom_gather_mask"),
+            gather_counts=batch.get("atom_gather_counts"),
+            num_atoms_per_token=batch["num_atoms_per_token"],
+            relu=True,
+        )
+
+    assert torch.equal(reduce_relu(features), expected)
+
+
 def test_partial_metadata_rejected() -> None:
     with pytest.raises(ValueError, match="mask and counts"):
         aggregate_atom_features_to_tokens(

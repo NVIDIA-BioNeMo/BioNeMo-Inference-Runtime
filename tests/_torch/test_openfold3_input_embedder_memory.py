@@ -100,8 +100,15 @@ def test_openfold3_input_pair_build_chunks_rows_exactly(
         relpos_handle.remove()
         bond_handle.remove()
 
-    assert encoded_rows == [7, 7, 2]
-    assert relpos_projection_rows == [7, 7, 2]
+    # When the fused Triton kernel is active, relpos_complex and linear_relpos
+    # are bypassed in the chunked loop; only token-bond chunking remains visible.
+    fused = embedded_i.is_cuda and embedded_i.dtype == torch.float32 and batch["residue_index"].ndim == 2
+    if fused:
+        assert encoded_rows == []
+        assert relpos_projection_rows == []
+    else:
+        assert encoded_rows == [7, 7, 2]
+        assert relpos_projection_rows == [7, 7, 2]
     assert bond_projection_rows == [7, 7, 2]
     assert actual.dtype == (embedded_i.dtype if pair_output_dtype is None else pair_output_dtype)
     assert torch.equal(actual, expected)

@@ -240,7 +240,8 @@ class Protenix(nn.Module, OptimizedModuleSetterMixin):
         """Project precomputed or generated ``relp`` into pair channels."""
         relp = batch.get("relp")
         if relp is None:
-            relp = self.relative_position_encoding.generate_relp(
+            # Fast path: fuse generate_relp + linear into a single kernel pass.
+            return self.relative_position_encoding(
                 asym_id=batch["asym_id"],
                 residue_index=batch["residue_index"],
                 entity_id=batch["entity_id"],

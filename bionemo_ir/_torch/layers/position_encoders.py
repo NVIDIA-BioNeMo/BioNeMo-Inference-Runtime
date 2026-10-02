@@ -20,6 +20,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from bionemo_ir._torch.layers.linear import Linear
+from bionemo_ir.dsl_kernels.triton.fused_relpos_embed import fused_relpos_embed
 
 
 class FourierEmbedding(nn.Module):
@@ -229,6 +230,34 @@ class RelativePositionEncoder(nn.Module):
         """
         if relp is not None:
             return self.linear(relp.to(self.linear.weight.dtype))
+
+        # Fast path: fused Triton kernel avoids the [B,N,N,C_in] intermediate.
+        # Requires CUDA, float32 weights, and no cyclic positional encoding.
+        weight = self.linear.weight
+        can_fuse = (
+            asym_id is not None
+            and asym_id.is_cuda
+            and asym_id.ndim == 2
+            and weight.dtype == torch.float32
+            and cyclic_period is None
+        )
+        if can_fuse:
+            B, N = asym_id.shape
+            C_out = weight.shape[0]
+            z = torch.zeros(B, N, N, C_out, dtype=torch.float32, device=asym_id.device)
+            fused_relpos_embed(
+                z,
+                residue_index,
+                token_index,
+                sym_id,
+                asym_id,
+                entity_id,
+                weight,
+                max_relative_idx=self.r_max,
+                max_relative_chain=self.s_max,
+                entity_chain_cond=self.fix_sym_check,
+            )
+            return z
 
         d_residue, d_token, d_chain, b_same_entity = self._relp_buckets(
             asym_id, residue_index, entity_id, token_index, sym_id, cyclic_period

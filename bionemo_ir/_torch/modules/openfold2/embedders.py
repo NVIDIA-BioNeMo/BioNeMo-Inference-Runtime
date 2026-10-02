@@ -22,6 +22,7 @@ import torch.nn as nn
 from bionemo_ir._torch.layers.linear import Linear, WeightMode, WeightsLoadingConfig
 from bionemo_ir._torch.utils import dict_multimap, dist_one_hot, recursive_calling_load_weights, tensor_tree_map
 from bionemo_ir.configs import BaseConfig
+from bionemo_ir.dsl_kernels.triton.fused_relpos_embed import fused_relpos_embed
 
 from .template import TemplatePairStack, TemplatePointwiseAttention
 from .utils import all_atom_multimer, geometry
@@ -207,6 +208,27 @@ class InputEmbedderMultimer(nn.Module):
             rel_pos:
             Relative positional encodings of shape [*, N_res, N_res, c_z]
         """
+        weight = self.linear_relpos.weight
+        if self.use_chain_relative and asym_id.is_cuda and asym_id.ndim == 2 and weight.dtype == torch.float32:
+            B, N = asym_id.shape
+            z = torch.zeros(B, N, N, weight.shape[0], dtype=torch.float32, device=asym_id.device)
+            fused_relpos_embed(
+                z,
+                residue_index,
+                None,
+                sym_id,
+                asym_id,
+                entity_id,
+                weight,
+                max_relative_idx=self.max_relative_idx,
+                max_relative_chain=self.max_relative_chain,
+                entity_chain_cond=True,
+                has_token_feat=False,
+            )
+            if self.linear_relpos.bias is not None:
+                z = z + self.linear_relpos.bias
+            return z
+
         pos = residue_index
         asym_id_same = asym_id[..., None] == asym_id[..., None, :]
         offset = pos[..., None] - pos[..., None, :]

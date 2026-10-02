@@ -38,6 +38,7 @@ from bionemo_ir._torch.utils.common import (
     make_graph_safe_generator,
 )
 from bionemo_ir.configs.base import BaseConfig
+from bionemo_ir.dsl_kernels.triton.fused_relpos_embed import fused_relpos_embed
 
 
 class InputEmbedderAllAtom(nn.Module):
@@ -118,15 +119,31 @@ class InputEmbedderAllAtom(nn.Module):
         """Build all pair rows with the original dense statement sequence."""
         token_bonds_emb = self.linear_token_bonds(batch["token_bonds"].unsqueeze(-1).to(dtype=s_input_emb_i.dtype))
 
-        z = s_input_emb_i[..., None, :] + s_input_emb_j[..., None, :, :]
+        z = (s_input_emb_i[..., None, :] + s_input_emb_j[..., None, :, :]).contiguous()
 
-        relpos_feats = relpos_complex(
-            batch=batch,
-            max_relative_idx=self.max_relative_idx,
-            max_relative_chain=self.max_relative_chain,
-        ).to(dtype=z.dtype)
-        relpos_emb = self.linear_relpos(relpos_feats)
-        z = z + relpos_emb
+        res_idx = batch["residue_index"]
+        can_fuse = z.is_cuda and z.dtype == torch.float32 and z.ndim == 4 and res_idx.ndim == 2
+        if can_fuse:
+            weight = self.linear_relpos.weight.to(torch.float32)
+            fused_relpos_embed(
+                z,
+                res_idx,
+                batch["token_index"],
+                batch["sym_id"],
+                batch["asym_id"],
+                batch["entity_id"],
+                weight,
+                max_relative_idx=self.max_relative_idx,
+                max_relative_chain=self.max_relative_chain,
+                entity_chain_cond=True,
+            )
+        else:
+            relpos_feats = relpos_complex(
+                batch=batch,
+                max_relative_idx=self.max_relative_idx,
+                max_relative_chain=self.max_relative_chain,
+            ).to(dtype=z.dtype)
+            z = z + self.linear_relpos(relpos_feats)
 
         z = z + token_bonds_emb
         return z
@@ -152,16 +169,36 @@ class InputEmbedderAllAtom(nn.Module):
             dtype=output_dtype,
             device=s_input_emb_i.device,
         )
+        res_idx = batch["residue_index"]
+        use_fused = s_input_emb_i.is_cuda and s_input_emb_i.dtype == torch.float32 and res_idx.ndim == 2
+        weight = self.linear_relpos.weight.to(torch.float32) if use_fused else None
         for start, length in iter_chunks(num_tokens, policy.chunk_size):
-            z_rows = s_input_emb_i.narrow(-2, start, length)[..., None, :] + s_input_emb_j[..., None, :, :]
-            relpos_feats = relpos_complex(
-                batch=batch,
-                max_relative_idx=self.max_relative_idx,
-                max_relative_chain=self.max_relative_chain,
-                row_slice=slice(start, start + length),
-            ).to(dtype=z_rows.dtype)
-            z_rows.add_(self.linear_relpos(relpos_feats))
-            del relpos_feats
+            z_rows = (
+                s_input_emb_i.narrow(-2, start, length)[..., None, :] + s_input_emb_j[..., None, :, :]
+            ).contiguous()
+            if use_fused:
+                fused_relpos_embed(
+                    z_rows,
+                    batch["residue_index"],
+                    batch["token_index"],
+                    batch["sym_id"],
+                    batch["asym_id"],
+                    batch["entity_id"],
+                    weight,
+                    max_relative_idx=self.max_relative_idx,
+                    max_relative_chain=self.max_relative_chain,
+                    entity_chain_cond=True,
+                    row_start=start,
+                )
+            else:
+                relpos_feats = relpos_complex(
+                    batch=batch,
+                    max_relative_idx=self.max_relative_idx,
+                    max_relative_chain=self.max_relative_chain,
+                    row_slice=slice(start, start + length),
+                ).to(dtype=z_rows.dtype)
+                z_rows.add_(self.linear_relpos(relpos_feats))
+                del relpos_feats
             token_bonds_rows = batch["token_bonds"].narrow(-2, start, length)
             z_rows.add_(self.linear_token_bonds(token_bonds_rows.unsqueeze(-1).to(dtype=z_rows.dtype)))
             z.narrow(-3, start, length).copy_(z_rows)

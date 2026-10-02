@@ -11,12 +11,12 @@ layout: overview
 ## About BioNeMo Inference Runtime
 
 NVIDIA BioNeMo Inference Runtime (BioIR) is NVIDIA's Python library for
-accelerating biomolecular structure model inference on NVIDIA GPUs. It
-provides biology-aware PyTorch modules, GPU kernels, and graph optimizations
-for architecture-specific operations. These operations include Evoformer
-stacks and triangle operations [^alphafold2], and Pairformer stacks,
-attention with pair bias (pairwise attention), diffusion transformers, and
-atom-level modules [^alphafold3].
+accelerating biomolecular structure model inference on NVIDIA GPUs. It provides
+biology-aware PyTorch modules, GPU kernels, and graph optimizations for
+architecture-specific operations. These operations include Evoformer stacks and
+triangle operations [^alphafold2], and Pairformer stacks, attention with pair
+bias (pairwise attention), diffusion transformers, and atom-level modules
+[^alphafold3].
 
 General-purpose inference stacks do not fully optimize these specialized
 operations. BioIR is designed for foundation-model developers and machine
@@ -24,10 +24,16 @@ learning researchers who create or modify biomolecular architectures. It
 improves model-execution throughput and reduces GPU memory pressure while
 preserving a Python development workflow.
 
-The following chart shows how BioIR speedup changes with input size on an
-NVIDIA H100 GPU.
+The following chart shows how BioIR speedup changes with input size on an NVIDIA
+H100 GPU.
 
 ![Speedup against input size on H100](assets/speedup-vs-residues.png)
+
+## Disclaimer
+
+BioIR is in a Beta state, may not be fully functional, may contain errors or
+design flaws, and may be changed at any time without notice. We appreciate your
+feedback to improve and iterate on our products.
 
 ## Key Capabilities
 
@@ -56,8 +62,8 @@ BioIR provides the following key capabilities:
 - **Supported hardware and models:** BioIR supports mixed FP32 and BF16
   execution across data center and workstation GPUs. Six are qualified for this
   release; the rest of the matrix runs but is not part of that set. The
-  [support matrix](ref/support-matrix.md) lists model keys, input
-  coverage, GPU architectures, and fused-kernel availability.
+  [support matrix](ref/support-matrix.md) lists model keys, input coverage, GPU
+  architectures, and fused-kernel availability.
 
 ## Choose How to Use BioIR
 
@@ -82,21 +88,20 @@ For large batches of independent inputs, use the Ray executor to improve
 end-to-end throughput. Ray streams inputs through independently scalable
 preprocessing, GPU inference, and output-writing stages, so CPU work on one
 batch can run while GPUs process another. The inference stage assigns one
-complete model replica to each GPU, which lets available GPUs process
-different inputs concurrently.
+complete model replica to each GPU, which lets available GPUs process different
+inputs concurrently.
 
 <Warning>
-Ray does not split one prediction across multiple GPUs or
-reduce its individual latency. Use the serial executor for debugging and
-per-request timing.
+  Ray does not split one prediction across multiple GPUs or reduce its
+  individual latency. Use the serial executor for debugging and per-request
+  timing.
 </Warning>
 
-Refer to
-[Ray multi-GPU replicas](ref/api.md#ray-multi-gpu-replicas) for
+Refer to [Ray multi-GPU replicas](ref/api.md#ray-multi-gpu-replicas) for
 configuration details.
 
-The following diagram shows how the Ray executor processes independent
-inputs across CPU stages and complete GPU model replicas.
+The following diagram shows how the Ray executor processes independent inputs
+across CPU stages and complete GPU model replicas.
 
 ```mermaid
 flowchart TB
@@ -137,15 +142,21 @@ Related proteome-scale structure prediction work is described in:
   Scale][accel-structure-prediction]
 - [AlphaFold Database expands to proteome-scale quaternary structures][afdb].
 
-[accel-structure-prediction]: https://developer.nvidia.com/blog/how-to-accelerate-protein-structure-prediction-at-proteome-scale/
+{/* <!-- rumdl-disable MD013 --> */}
+[accel-structure-prediction]:
+  https://developer.nvidia.com/blog/how-to-accelerate-protein-structure-prediction-at-proteome-scale/
+{/* <!-- rumdl-enable MD013 --> */}
 [afdb]: https://research.nvidia.com/labs/dbr/assets/data/manuscripts/afdb.pdf
 [alphafold2-paper]: https://doi.org/10.1038/s41586-021-03819-2
 [alphafold3-paper]: https://doi.org/10.1038/s41586-024-07487-w
 
-[^alphafold2]: Jumper et al., ["Highly accurate protein structure prediction
-    with AlphaFold"][alphafold2-paper], *Nature* 596, 583–589 (2021).
-[^alphafold3]: Abramson et al., ["Accurate structure prediction of biomolecular
-    interactions with AlphaFold 3"][alphafold3-paper], *Nature* 630, 493–500
+[^alphafold2]:
+    Jumper et al., ["Highly accurate protein structure prediction with
+    AlphaFold"][alphafold2-paper], _Nature_ 596, 583–589 (2021).
+
+[^alphafold3]:
+    Abramson et al., ["Accurate structure prediction of biomolecular
+    interactions with AlphaFold 3"][alphafold3-paper], _Nature_ 630, 493–500
     (2024).
 
 ## Start Here

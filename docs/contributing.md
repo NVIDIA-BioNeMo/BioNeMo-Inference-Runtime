@@ -114,6 +114,9 @@ By making a contribution to this project, I certify that:
 
 - Keep PRs focused on a single concern; split unrelated changes into separate
   PRs and note dependencies.
+- Add or update documentation for every user-facing change.
+- Driver, CUDA, Python, and platform compatibility expansions require prior
+  maintainer approval and are not guaranteed acceptance.
 - Fill in the pull request template, including the DCO checkbox.
 - NVIDIA developers: include the JIRA key or NVBug ID in the PR title where
   applicable.

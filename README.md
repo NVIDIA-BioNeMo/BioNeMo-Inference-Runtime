@@ -8,10 +8,14 @@
 
 # BioNeMo Inference Runtime
 
-## Easy, fast, and memory-efficient structure prediction inference
+Easy, fast, and memory-efficient structure prediction inference
 
 GPU-accelerated inference for protein, nucleic-acid, and ligand structure
 prediction models — from FASTA/MSA to PDB/mmCIF.
+
+[![Documentation][docs-badge]][docs-site] [![License][license-badge]][license]
+[![CUDA][cuda-badge]][cuda-downloads] [![PyTorch][torch-badge]][pytorch]
+[![PyPI][pypi-badge]][pypi]
 
 ![Speedup against input size on H100](docs/assets/speedup-vs-residues.png)
 
@@ -23,6 +27,12 @@ BioNeMo Inference Runtime (BioIR) is NVIDIA's library for structure-prediction
 inference. A five-stage GPU pipeline turns AlphaFold-lineage and all-atom models
 into PDB/mmCIF with confidence scores. Models stay ordinary `nn.Module`s — no
 TensorRT engine build.
+
+## Disclaimer
+
+BioIR is in a Beta state, may not be fully functional, may contain errors or
+design flaws, and may be changed at any time without notice. We appreciate your
+feedback to improve and iterate on our products.
 
 ## Getting Started
 
@@ -43,18 +53,17 @@ TensorRT engine build.
 PyTorch and the CUDA math libraries arrive as wheel dependencies, or in
 `nvcr.io/nvidia/pytorch:26.05-py3` when you use the container. Building the
 extension from source outside a container needs a C++17 compiler and CUDA
-headers as well —
-[`docs/dev.md`](docs/dev.md#prerequisites-for-bioir-development-workflow).
+headers as well — [`docs/dev.md`][dev-prerequisites].
 
-### Release-qualified GPUs
+[dev-prerequisites]: docs/dev.md#prerequisites-for-bioir-development-workflow
 
-H200, H100, A100, L40S, GB200 and GB300. Measured speedup, memory and accuracy
-for each: [`docs/ref/benchmark.md`](docs/ref/benchmark.md).
+### Supported GPUs
 
-BioIR runs on more than these. The
-[support matrix](docs/ref/support-matrix.md#gpus) lists every architecture the
-backend covers and which fused kernels apply to each; those devices work but
-are not part of this release's qualification.
+BioIR runs on the Ampere, Ada Lovelace, Hopper, and Blackwell GPUs listed in the
+[support matrix](docs/ref/support-matrix.md#gpus). The doc also shows which
+fused kernels apply to each architecture. [Benchmarks](docs/ref/benchmark.md)
+page shows detailed speedup, memory, and accuracy for these GPUs: H200, H100,
+A100, L40S, GB200, and GB300.
 
 ### Install
 
@@ -65,10 +74,10 @@ pip install bionemo-ir
 ```
 
 The wheel ships the kernels precompiled, so nothing in the install builds CUDA
-and running it needs only the driver's `libcuda.so.1`. That is the whole
-install if you are calling BioIR from your own code — the container below is
-for working on BioIR itself. [`docs/install.md`](docs/install.md) covers the
-environment setup and the requirements in full.
+and running it needs only the driver's `libcuda.so.1`. That is the whole install
+if you are calling BioIR from your own code — the container below is for working
+on BioIR itself. [`docs/install.md`](docs/install.md) covers the environment
+setup and the requirements in full.
 
 ### Build from source
 
@@ -79,7 +88,7 @@ repository and fetch its submodules and LFS objects.
 git lfs install &&
   GIT_LFS_SKIP_SMUDGE=0 \
     git clone --recurse-submodules \
-      git@github.com:NVIDIA-BioNeMo/BioNeMo-Inference-Runtime.git &&
+    git@github.com:NVIDIA-BioNeMo/BioNeMo-Inference-Runtime.git &&
   cd BioNeMo-Inference-Runtime
 ```
 
@@ -143,8 +152,8 @@ BioIR documentation lives under [`docs/`](docs/) and is published with Fern:
 - [Config architecture](docs/ref/config.md) — model `BaseConfig` tree and
   pipeline stage configs
 - [Support matrix](docs/ref/support-matrix.md) — models, GPUs, and fused kernels
-- [Benchmarks](docs/ref/benchmark.md) — measured speedup and memory against
-  OSS PyTorch
+- [Benchmarks](docs/ref/benchmark.md) — measured speedup and memory against OSS
+  PyTorch
 - [Model weights](docs/ref/model-weights.md) — checkpoint resolution and staging
 - [Docker images](docs/ref/docker-images.md) — development and runtime images
 - [Coding guidelines](docs/coding.md) — style, naming, and tooling
@@ -197,7 +206,8 @@ and peak memory, and how to reproduce any of it:
 The [`bench-perf-oss` agent skill](.agents/skills/bench-perf-oss/SKILL.md) has
 the full gates, environment isolation, result schema, and charting protocol.
 
-[github-ssh]: https://docs.github.com/en/authentication/connecting-to-github-with-ssh
+[github-ssh]:
+  https://docs.github.com/en/authentication/connecting-to-github-with-ssh
 
 ## Contributing
 
@@ -229,6 +239,19 @@ Distribution compliance material is available here:
   LGPL-3.0-or-later; BioIR distributes it under the MPL-2.0 option
 
 [gemmi-source]: https://github.com/project-gemmi/gemmi/tree/v0.6.5
+[cuda-badge]:
+https://img.shields.io/badge/CUDA-13.2-76B900.svg?style=flat&logo=nvidia&logoColor=white
+[cuda-downloads]: https://developer.nvidia.com/cuda-downloads
+[docs-badge]:
+  https://img.shields.io/badge/docs-latest-brightgreen.svg?style=flat
+[docs-site]: https://docs.nvidia.com/bionemo/inference-runtime/
 [license]: LICENSE
+[license-badge]:
+  https://img.shields.io/badge/license-Apache%202.0-blue.svg?style=flat
+[pypi]: https://pypi.org/project/bionemo-ir/
+[pypi-badge]: https://img.shields.io/pypi/v/bionemo-ir.svg?style=flat&label=PyPI
+[pytorch]: https://pytorch.org/
+[torch-badge]:
+https://img.shields.io/badge/PyTorch-%3E%3D2.11-EE4C2C.svg?style=flat&logo=pytorch&logoColor=white
 [third-party-licenses]: LICENSES
 [third-party-notices]: THIRD_PARTY_NOTICES.md

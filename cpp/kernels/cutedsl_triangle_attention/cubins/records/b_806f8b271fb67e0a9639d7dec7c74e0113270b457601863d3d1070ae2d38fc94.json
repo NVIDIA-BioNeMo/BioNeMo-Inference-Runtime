@@ -355,6 +355,16 @@
       "variant_id": "b72fc6737919d874274c"
     },
     {
+      "executable": "7cdf919a0a4ebc2d495a9229a14204f7209f769c1da00ef48eafee7e0485bb22",
+      "runtime_metadata": {
+        "bucket": 384,
+        "head_dim": 32,
+        "packed_output": true,
+        "sm100_launch": null
+      },
+      "variant_id": "b7bd093dd59458ca0b9f"
+    },
+    {
       "executable": "39b6a57e7fe2edb2703a274ab16915040bc24c2964546666a85ddcb55d43b27f",
       "runtime_metadata": {
         "bucket": 384,

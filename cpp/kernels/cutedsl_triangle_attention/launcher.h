@@ -355,7 +355,7 @@ constexpr KernelSpecSM100 make_sm100_spec(std::int32_t target_sm, std::int32_t h
  * configuration. Dtype and packed output select distinct CUBINs but do not
  * change launch geometry.
  */
-inline std::array<KernelSpec, 38> const kKernelSpecs = {
+inline std::array<KernelSpec, 39> const kKernelSpecs = {
   /* SM80 */
   make_sm80_spec(80, 32, 0, 64, 64, 128),
   make_sm80_spec(80, 32, 384, 64, 64, 128),
@@ -386,9 +386,10 @@ inline std::array<KernelSpec, 38> const kKernelSpecs = {
   make_sm80_spec(89, 256, 0, 32, 64, 64),
   make_sm80_spec(89, 256, 384, 32, 64, 64),
 
-  /* SM90 D32 deliberately uses the Ampere ABI. */
+  /* SM90 D32 deliberately uses the Ampere ABI; 64-wide tiles up to 448 tokens. */
   make_sm80_spec(90, 32, 0, 64, 64, 128),
-  make_sm80_spec(90, 32, 384, 128, 128, 128),
+  make_sm80_spec(90, 32, 384, 64, 64, 128),
+  make_sm80_spec(90, 32, 512, 128, 128, 128),
 
   /* Native Hopper entries use host-encoded TMA descriptors. */
   make_sm90_spec(64, 0, 64, 128, 5, 4),

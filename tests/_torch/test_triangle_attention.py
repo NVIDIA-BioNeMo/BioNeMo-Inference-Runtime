@@ -125,6 +125,10 @@ def test_triangle_attention_backend(s: Scenario):
     "s",
     [
         Scenario(backend="CuTeDSL", torch_dtype="bfloat16"),
+        # Partial tiles at the S=384 and S=512 anchors; 448/449 is the switch.
+        Scenario(backend="CuTeDSL", torch_dtype="bfloat16", seq_len=320),
+        Scenario(backend="CuTeDSL", torch_dtype="float16", seq_len=448),
+        Scenario(backend="CuTeDSL", torch_dtype="bfloat16", seq_len=449),
     ],
 )
 def test_triangle_attention_cutedsl(s: Scenario):
@@ -178,6 +182,9 @@ def test_triangle_attention_cutedsl(s: Scenario):
 
     assert output.shape == ref_output_typed.shape
 
-    diff_ours = torch.max(torch.abs(output.float() - ref_output_float))
-    diff_ref = torch.max(torch.abs(ref_output_typed.float() - ref_output_float))
-    assert diff_ours <= 2.0 * diff_ref + 1e-3, f"CuTeDSL diff={diff_ours}, ref bf16 diff={diff_ref}"
+    # Rows with no valid key have no defined output.
+    valid_rows = actual_s_kv > 0
+    ref_valid = ref_output_float[valid_rows]
+    diff_ours = torch.max(torch.abs(output.float()[valid_rows] - ref_valid))
+    diff_ref = torch.max(torch.abs(ref_output_typed.float()[valid_rows] - ref_valid))
+    assert diff_ours <= 2.0 * diff_ref + 1e-3, f"CuTeDSL diff={diff_ours}, ref {s.torch_dtype} diff={diff_ref}"

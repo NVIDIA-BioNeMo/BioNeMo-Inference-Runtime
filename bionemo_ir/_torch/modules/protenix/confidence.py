@@ -22,6 +22,7 @@ import torch.nn as nn
 from bionemo_ir._torch.layers.linear import Linear
 from bionemo_ir._torch.layers.transformers.pairformer import PairformerModule
 from bionemo_ir.configs import BaseConfig
+from bionemo_ir.dsl_kernels.triton.indexed_projection import IndexedRows, indexed_projection, prepare_indexed_rows
 
 
 def _unbatch_leading(x: torch.Tensor) -> torch.Tensor:
@@ -105,6 +106,7 @@ class ProtenixConfidenceHead(nn.Module):
         single_mask: torch.Tensor,
         pair_mask: torch.Tensor,
         x_rep: torch.Tensor,
+        plddt_rows: IndexedRows | None = None,
     ) -> tuple:
         """AF3 Alg. 31 for one diffusion sample (memory-efficient path)."""
         z_pair = self._distance_embed(z_pair, x_rep)
@@ -118,7 +120,11 @@ class ProtenixConfidenceHead(nn.Module):
         pae = self.linear_no_bias_pae(self.pae_ln(z_pair))
         pde = self.linear_no_bias_pde(self.pde_ln(z_pair + z_pair.transpose(-2, -3)))
         a = s_single[..., atom_to_token_idx, :]  # [*, N_atom, c_s]
-        plddt = torch.einsum("...nc,ncb->...nb", self.plddt_ln(a), self.plddt_weight[atom_to_tokatom_idx])
+        normalized = self.plddt_ln(a)
+        if plddt_rows is not None and not torch.is_grad_enabled() and not torch.is_autocast_enabled("cuda"):
+            plddt = indexed_projection(normalized, self.plddt_weight, plddt_rows)
+        else:
+            plddt = torch.einsum("...nc,ncb->...nb", normalized, self.plddt_weight[atom_to_tokatom_idx])
         resolved = torch.einsum("...nc,ncb->...nb", self.resolved_ln(a), self.resolved_weight[atom_to_tokatom_idx])
         return plddt, pae, pde, resolved
 
@@ -153,14 +159,31 @@ class ProtenixConfidenceHead(nn.Module):
         if single_mask is None:
             single_mask = s_trunk.new_ones(s_trunk.shape[:-1])
 
+        atom_slots = _unbatch_leading(input_feature_dict["atom_to_tokatom_idx"])
+        plddt_rows = None
+        if (
+            not torch.is_grad_enabled()
+            and not torch.is_autocast_enabled("cuda")
+            and s_trunk.is_cuda
+            and self.dtype == torch.float32
+            and atom_slots.numel() >= 16384
+            and self.c_s == 384
+            and self.b_plddt == 50
+            and self.plddt_weight.is_contiguous()
+            and self.plddt_weight.dtype == torch.float32
+            and torch.cuda.get_device_capability(s_trunk.device)[0] in (8, 9, 10)
+        ):
+            plddt_rows = prepare_indexed_rows(atom_slots, self.max_atoms_per_token)
+
         return {
+            "plddt_rows": plddt_rows,
             "s_trunk": s_trunk,
             "z": z,
             "single_mask": single_mask,
             "pair_mask": pair_mask,
             "rep_mask": _unbatch_leading(input_feature_dict["distogram_rep_atom_mask"]).bool(),
             "atom_to_token_idx": _unbatch_leading(input_feature_dict["atom_to_token_idx"]),
-            "atom_to_tokatom_idx": _unbatch_leading(input_feature_dict["atom_to_tokatom_idx"]),
+            "atom_to_tokatom_idx": atom_slots,
         }
 
     def per_sample_logits(self, ctx: dict[str, Any], x_pred_coords_i: torch.Tensor) -> tuple:
@@ -185,6 +208,7 @@ class ProtenixConfidenceHead(nn.Module):
             ctx["single_mask"],
             ctx["pair_mask"],
             x_rep,
+            ctx.get("plddt_rows"),
         )
 
     def forward(

@@ -19,8 +19,51 @@ import torch.nn as nn
 
 from bionemo_ir._torch.attention_backend import AttentionMetadata
 from bionemo_ir._torch.layers.linear import Linear
+from bionemo_ir._torch.modules.openfold3.utils.atomize_utils import prepare_atom_reduction
 from bionemo_ir.configs import BaseConfig
+from bionemo_ir.dsl_kernels.triton.atom_gather_kernel import reduce_atom_slots
 from bionemo_ir.runtime.buffers import PreallocatedBuffers
+
+
+def prepare_atom_to_token(atom_to_token: torch.Tensor) -> dict[str, torch.Tensor] | None:
+    """Derive ordered per-token atom slots from a one-hot ``[B, N_atoms, N_res]`` map once per rollout.
+
+    Args:
+        atom_to_token: The one-hot atom-to-token map :class:`AtomAttentionEncoder` and
+            :class:`AtomAttentionDecoder` receive, with zero rows for padded atoms.
+
+    Returns:
+        Gather slots for :func:`reduce_atom_slots`, the owning token per atom and the
+        atom mask, or ``None`` when the map is not a one-hot of token-contiguous atoms
+        on CUDA, in which case both modules keep the dense contraction.
+    """
+    if atom_to_token.ndim != 3 or not atom_to_token.is_cuda or torch.cuda.is_current_stream_capturing():
+        return None
+    atoms_per_row = atom_to_token.sum(dim=-1)
+    one_hot = ((atom_to_token == 0) | (atom_to_token == 1)).all() & (atoms_per_row <= 1).all()
+    if not bool(one_hot):
+        return None
+    counts = atom_to_token.sum(dim=1).long()
+    owners = atom_to_token.argmax(dim=-1)
+    atom_mask = atoms_per_row > 0
+    prepared = prepare_atom_reduction(
+        {
+            "num_atoms_per_token": counts,
+            "start_atom_index": counts.cumsum(dim=-1) - counts,
+            "atom_mask": atom_mask,
+            "atom_to_token_index": owners,
+            "token_mask": counts > 0,
+        }
+    )
+    if "atom_gather_index" not in prepared:
+        return None
+    return {
+        "gather_index": prepared["atom_gather_index"].unsqueeze(1),
+        "gather_mask": prepared["atom_gather_mask"].unsqueeze(1),
+        "gather_counts": prepared["atom_gather_counts"].unsqueeze(1),
+        "atom_to_token_index": owners,
+        "atom_mask": atom_mask,
+    }
 
 
 class AtomTransformer(nn.Module):
@@ -250,6 +293,7 @@ class AtomAttentionEncoder(nn.Module):
         attn_metadata: AttentionMetadata | None = None,
         buffers: PreallocatedBuffers | None = None,
         prepared_pair_biases: list[torch.Tensor] | None = None,
+        prepared_atom_to_token: dict[str, torch.Tensor] | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         Args:
@@ -267,6 +311,9 @@ class AtomAttentionEncoder(nn.Module):
                 The residue coordinates. Shape [B, multiplicity, N_atoms, 3]
             prepared_pair_biases: list[torch.Tensor]
                 Biases from :meth:`prepare_pair_biases`; they replace ``bias`` and carry the key mask.
+            prepared_atom_to_token: dict[str, torch.Tensor]
+                Slots from :func:`prepare_atom_to_token`; they replace the dense
+                contraction over ``atom_to_token`` with an ordered per-token reduction.
         Returns:
             a: torch.Tensor
                 The atom feature tensor. Shape [B, multiplicity, N_res, 2 * token_s]
@@ -316,13 +363,23 @@ class AtomAttentionEncoder(nn.Module):
         with torch.autocast("cuda", enabled=False):
             # [B, multiplicity, N_atoms, 2 * token_s]
             q_to_a = self.atom_to_token_trans(q.float())
-            atom_to_token_mean = atom_to_token.float() / (atom_to_token.sum(dim=1, keepdim=True) + 1e-6)
-            atom_to_token_mean = atom_to_token_mean.unsqueeze(1)
-            atom_to_token_mean = atom_to_token_mean.repeat_interleave(
-                multiplicity, 1
-            )  # [B, multiplicity, N_atoms, N_res]
+            if prepared_atom_to_token is not None:
+                a = reduce_atom_slots(
+                    q_to_a,
+                    prepared_atom_to_token["gather_index"],
+                    prepared_atom_to_token["gather_mask"],
+                    prepared_atom_to_token["gather_counts"],
+                    atom_to_token.shape[-1],
+                    1e-6,
+                )  # [B, multiplicity, N_res, D]
+            else:
+                atom_to_token_mean = atom_to_token.float() / (atom_to_token.sum(dim=1, keepdim=True) + 1e-6)
+                atom_to_token_mean = atom_to_token_mean.unsqueeze(1)
+                atom_to_token_mean = atom_to_token_mean.repeat_interleave(
+                    multiplicity, 1
+                )  # [B, multiplicity, N_atoms, N_res]
 
-            a = torch.einsum("bijd,bijk->bikd", q_to_a, atom_to_token_mean)  # [B, multiplicity, N_res, D]
+                a = torch.einsum("bijd,bijk->bikd", q_to_a, atom_to_token_mean)  # [B, multiplicity, N_res, D]
 
         a = a.to(q)
         return a, q, c
@@ -412,6 +469,7 @@ class AtomAttentionDecoder(nn.Module):
         attn_metadata: AttentionMetadata | None = None,
         buffers: PreallocatedBuffers | None = None,
         prepared_pair_biases: list[torch.Tensor] | None = None,
+        prepared_atom_to_token: dict[str, torch.Tensor] | None = None,
     ) -> torch.Tensor:
         """
         Args:
@@ -431,6 +489,9 @@ class AtomAttentionDecoder(nn.Module):
                 The multiplicity that used for the structure prediction.
             prepared_pair_biases: list[torch.Tensor]
                 Biases from :meth:`prepare_pair_biases`; they replace ``bias`` and carry the key mask.
+            prepared_atom_to_token: dict[str, torch.Tensor]
+                Slots from :func:`prepare_atom_to_token`; they replace the dense
+                contraction over ``atom_to_token`` with a per-atom gather.
         """
         assert a.ndim == 4, "a must be 4D, shape: (B, multiplicity, N_res, 2 * token_s)"
         assert attn_metadata is not None, "Attention metadata is required for AtomAttentionDecoder"
@@ -438,14 +499,19 @@ class AtomAttentionDecoder(nn.Module):
         _, multiplicity, _, _ = a.shape
 
         with torch.autocast("cuda", enabled=False):
-            atom_to_token = atom_to_token.unsqueeze(1)
-            # [B, multiplicity, N_atoms, N_res]
-            atom_to_token = atom_to_token.repeat_interleave(multiplicity, 1)
             # [B, multiplicity, N_res, 2*token_s]
             a_to_q = self.a_to_q_trans(a.float())
 
             # [B, multiplicity, N_atoms, 2*token_s]
-            a_to_q = torch.einsum("bikj,bijd->bikd", atom_to_token.float(), a_to_q)
+            if prepared_atom_to_token is not None:
+                owners = prepared_atom_to_token["atom_to_token_index"][:, None, :, None]
+                a_to_q = a_to_q.gather(2, owners.expand(-1, multiplicity, -1, a_to_q.shape[-1]))
+                a_to_q = a_to_q * prepared_atom_to_token["atom_mask"][:, None, :, None]
+            else:
+                atom_to_token = atom_to_token.unsqueeze(1)
+                # [B, multiplicity, N_atoms, N_res]
+                atom_to_token = atom_to_token.repeat_interleave(multiplicity, 1)
+                a_to_q = torch.einsum("bikj,bijd->bikd", atom_to_token.float(), a_to_q)
 
         # Auto broadcast the q and a_to_q
         if q.ndim == 3:

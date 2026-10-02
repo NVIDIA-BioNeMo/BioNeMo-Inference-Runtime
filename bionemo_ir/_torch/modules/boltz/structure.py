@@ -33,7 +33,11 @@ from bionemo_ir._torch.layers.conditioning import PairwiseConditioning, SingleCo
 from bionemo_ir._torch.layers.linear import Linear
 from bionemo_ir._torch.layers.position_encoders import FourierEmbedding
 from bionemo_ir._torch.layers.random_augmentation import random_rotations
-from bionemo_ir._torch.layers.transformers.atom import AtomAttentionDecoder, AtomAttentionEncoder
+from bionemo_ir._torch.layers.transformers.atom import (
+    AtomAttentionDecoder,
+    AtomAttentionEncoder,
+    prepare_atom_to_token,
+)
 from bionemo_ir._torch.layers.transformers.diffusion_transformer import BoltzDiffusionTransformer
 from bionemo_ir._torch.layers.transition import ConditionedTransitionBlock
 from bionemo_ir._torch.modules.boltz.embedders import AtomEmbedding
@@ -389,6 +393,8 @@ class DiffusionModule(nn.Module):
                 - prepared_atom_enc_bias / prepared_atom_dec_bias: optional
                   per-layer layouts from the atom encoder's and decoder's
                   prepare_pair_biases, which replace the raw biases
+                - prepared_atom_to_token: optional per-token atom slots from
+                  prepare_atom_to_token, which replace the one-hot contraction
             attn_metadata: AttentionMetadata | None
                 The attention metadata.
         Returns:
@@ -430,6 +436,7 @@ class DiffusionModule(nn.Module):
             attn_metadata=attn_metadata,
             buffers=buffers,
             prepared_pair_biases=diffusion_conditioning_kwargs.get("prepared_atom_enc_bias"),
+            prepared_atom_to_token=diffusion_conditioning_kwargs.get("prepared_atom_to_token"),
         )
         # a: [B, multiplicity, N_res, 2 * token_s]
         # q_skip: [B, multiplicity, N_atoms, atom_s]
@@ -466,6 +473,7 @@ class DiffusionModule(nn.Module):
             attn_metadata=attn_metadata,
             buffers=buffers,
             prepared_pair_biases=diffusion_conditioning_kwargs.get("prepared_atom_dec_bias"),
+            prepared_atom_to_token=diffusion_conditioning_kwargs.get("prepared_atom_to_token"),
         )
 
         return r_update, a
@@ -1347,6 +1355,11 @@ class BoltzDiffusionSampler(nn.Module):
                 network_condition_kwargs[f"prepared_{name}"] = attention.prepare_pair_biases(
                     network_condition_kwargs[name], atom_pad_mask, attn_metadata
                 )
+            # The atom-to-token map is step-invariant too: resolve its per-token
+            # atom slots once instead of contracting the one-hot at every step.
+            prepared_atom_to_token = prepare_atom_to_token(feature_dict["atom_to_token"])
+            if prepared_atom_to_token is not None:
+                network_condition_kwargs["prepared_atom_to_token"] = prepared_atom_to_token
 
         def predict(atom_coords_noisy: torch.Tensor, sigma_hat: float) -> BoltzDenoisePrediction:
             atom_coords_denoised = torch.zeros_like(atom_coords_noisy)

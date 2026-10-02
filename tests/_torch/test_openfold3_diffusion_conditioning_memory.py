@@ -290,6 +290,8 @@ def test_dense_prepared_pair_matches_full_conditioning_across_timesteps(batch_si
             parameter.normal_(mean=0.0, std=0.1)
         prepared = module.prepare_pair(batch=batch, zij_trunk=zij_trunk)
         original_prepared = prepared.clone()
+        prepared_si = module.prepare_single(si_input, si_trunk)
+        original_prepared_si = prepared_si.clone()
         singles = []
         for noise_level in (80.0, 1.5, 0.01):
             t = torch.full((batch_size, 1), noise_level, device=device)
@@ -298,12 +300,17 @@ def test_dense_prepared_pair_matches_full_conditioning_across_timesteps(batch_si
             )
             single = module.forward_single(batch=batch, t=t, si_input=si_input, si_trunk=si_trunk)
             torch.testing.assert_close(single, expected_si, atol=0, rtol=0)
+            cached_single = module.forward_single(
+                batch=batch, t=t, si_input=si_input, si_trunk=si_trunk, prepared_si=prepared_si
+            )
+            torch.testing.assert_close(cached_single, expected_si, atol=0, rtol=0)
             torch.testing.assert_close(prepared, expected_zij, atol=0, rtol=0)
             singles.append(single)
 
     assert not torch.equal(singles[0], singles[-1])
     assert torch.equal(zij_trunk, original_trunk)
     assert torch.equal(prepared, original_prepared)
+    assert torch.equal(prepared_si, original_prepared_si)
 
 
 def test_openfold3_diffusion_pair_projection_preserves_autocast_dtype() -> None:

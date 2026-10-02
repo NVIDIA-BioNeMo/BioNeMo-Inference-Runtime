@@ -53,7 +53,14 @@ _NUM_DRIVE_CALLS = 4
 _SAMPLE_IDS = ("T1038", "T1047s1")
 # Rollout caches a capture may carry; tests needing a raw step drop them.
 _BIAS_KEYS = ("prepared_atom_encoder_pair_biases", "prepared_atom_decoder_pair_biases")
-_PREPARED_KEYS = ("prepared_zij", "prepared_atom_cl", "prepared_atom_plm", *_BIAS_KEYS, "prepared_token_pair_biases")
+_PREPARED_KEYS = (
+    "prepared_zij",
+    "prepared_si",
+    "prepared_atom_cl",
+    "prepared_atom_plm",
+    *_BIAS_KEYS,
+    "prepared_token_pair_biases",
+)
 
 
 @pytest.fixture(scope="module")
@@ -163,6 +170,8 @@ def test_of3_diffusion_module_b1_cuda_graph_byte_identical(_of3_diffusion_captur
             assert torch.equal(module(**kwargs), eager_out)
             kwargs.update(_prepare_token_biases(module, kwargs["prepared_zij"]))
             assert torch.equal(module(**kwargs), eager_out)
+            kwargs["prepared_si"] = _prepare_single(module, kwargs)
+            assert torch.equal(module(**kwargs), eager_out)
 
     # --- Drive the CUDA-graph tracker: warmup -> capture -> replay ------------
     tracker = CUDAGraphOptimizationTracker(_diffusion_graph_config(), inner_module=module).eval()
@@ -192,10 +201,12 @@ def test_of3_diffusion_module_b1_cuda_graph_byte_identical(_of3_diffusion_captur
         # Reuse the graph for another rollout with equal shapes but new pair
         # values. The tracker must stage the new cache, not replay stale data.
         kwargs["zij_trunk"] = kwargs["zij_trunk"] + 0.125
+        kwargs["si_trunk"] = kwargs["si_trunk"] + 0.125
         with torch.no_grad():
             kwargs["prepared_zij"] = module.diffusion_conditioning.prepare_pair(
                 batch=kwargs["batch"], zij_trunk=kwargs["zij_trunk"]
             )
+            kwargs["prepared_si"] = _prepare_single(module, kwargs)
             kwargs.update(_prepare_token_biases(module, kwargs["prepared_zij"]))
             refreshed_eager = module(**kwargs).clone()
             refreshed_graph = tracker(**kwargs).clone()
@@ -224,6 +235,10 @@ def _prepare_atom_cache(module: DiffusionModule, kwargs: dict, pair: torch.Tenso
     }
 
 
+def _prepare_single(module: DiffusionModule, kwargs: dict) -> torch.Tensor:
+    return module.diffusion_conditioning.prepare_single(kwargs["si_input"], kwargs["si_trunk"])
+
+
 def _prepare_token_biases(module: DiffusionModule, pair: torch.Tensor) -> dict:
     return {"prepared_token_pair_biases": module.diffusion_transformer.prepare_pair_biases(pair)}
 
@@ -247,12 +262,20 @@ def test_of3_prepared_atom_conditioning_matches_uncached_step(_of3_diffusion_cap
         biases = {key: atom_cache.pop(key) for key in _BIAS_KEYS}
         cached = module(**kwargs, prepared_zij=pair, **atom_cache)
         cached_biases = module(**kwargs, prepared_zij=pair, **atom_cache, **biases)
-        cached_token = module(
-            **kwargs, prepared_zij=pair, **atom_cache, **biases, **_prepare_token_biases(module, pair)
+        token_biases = _prepare_token_biases(module, pair)
+        cached_token = module(**kwargs, prepared_zij=pair, **atom_cache, **biases, **token_biases)
+        cached_single = module(
+            **kwargs,
+            prepared_zij=pair,
+            prepared_si=_prepare_single(module, kwargs),
+            **atom_cache,
+            **biases,
+            **token_biases,
         )
     assert torch.equal(cached, uncached)
     assert torch.equal(cached_biases, uncached)
     assert torch.equal(cached_token, uncached)
+    assert torch.equal(cached_single, uncached)
 
 
 @pytest.mark.parametrize("prepare_pair", [False, True])
@@ -278,6 +301,7 @@ def test_of3_diffusion_module_b2_cuda_graph_byte_identical(_of3_diffusion_captur
         with torch.no_grad():
             batched.update(_prepare_atom_cache(module, batched, batched["prepared_zij"]))
             batched.update(_prepare_token_biases(module, batched["prepared_zij"]))
+            batched["prepared_si"] = _prepare_single(module, batched)
     assert batched["xl_noisy"].shape[0] == len(_SAMPLE_IDS), (
         f"expected a B={len(_SAMPLE_IDS)} input, got {tuple(batched['xl_noisy'].shape)}"
     )

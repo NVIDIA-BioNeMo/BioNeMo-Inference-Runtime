@@ -311,6 +311,8 @@ def test_openfold3_sampler_composes_shared_edm_runtime(use_conditioning: bool, u
     prepared_plm = torch.ones(1, 1, 4, 4, 2)
     encoder_biases = (torch.ones(1, 1, 4, 4),)
     decoder_biases = (torch.zeros(1, 1, 4, 4),)
+    prepared_si = torch.ones(1, 1, 2, 2)
+    prepare_single = Mock(return_value=prepared_si)
     get_atom_reps = Mock(return_value=(None, prepared_cl, prepared_plm))
     prepare_encoder_biases = Mock(return_value=encoder_biases)
     prepare_decoder_biases = Mock(return_value=decoder_biases)
@@ -330,12 +332,14 @@ def test_openfold3_sampler_composes_shared_edm_runtime(use_conditioning: bool, u
                 prepare_pair_biases=prepare_encoder_biases,
             )
             self.atom_attn_dec = SimpleNamespace(prepare_pair_biases=prepare_decoder_biases)
+            self.diffusion_conditioning = SimpleNamespace(prepare_single=prepare_single)
             self.diffusion_transformer = token_transformer
 
         def forward(self, *, xl_noisy, **_kwargs):
             self.calls += 1
             assert _kwargs.get("prepared_zij") is prepared_zij
             assert _kwargs["use_conditioning"] is use_conditioning
+            assert _kwargs.get("prepared_si") is (prepared_si if cache_atoms else None)
             assert _kwargs.get("prepared_atom_cl") is (prepared_cl if cache_atoms else None)
             assert _kwargs.get("prepared_atom_plm") is (prepared_plm if cache_atoms else None)
             assert _kwargs.get("prepared_atom_encoder_pair_biases") is (encoder_biases if cache_atoms else None)
@@ -369,7 +373,10 @@ def test_openfold3_sampler_composes_shared_edm_runtime(use_conditioning: bool, u
     assert get_atom_reps.call_count == int(cache_atoms)
     assert [prepare.call_count for prepare in prepare_biases] == [int(cache_atoms)] * 2
     assert prepare_token_biases.call_count == int(cache_atoms)
+    assert prepare_single.call_count == int(cache_atoms)
     if cache_atoms:
+        si_input, si_trunk = prepare_single.call_args.args
+        assert si_input is kwargs["si_input"] and si_trunk is kwargs["si_trunk"]
         assert all(prepare.call_args.args[0] is prepared_plm for prepare in prepare_biases)
         assert prepare_token_biases.call_args.args[0] is prepared_zij
         assert get_atom_reps.call_args.kwargs["zij_trunk"] is prepared_zij

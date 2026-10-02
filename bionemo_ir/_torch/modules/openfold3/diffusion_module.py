@@ -83,6 +83,7 @@ from bionemo_ir.configs import BaseConfig
         "si_trunk",
         "zij_trunk",
         "prepared_zij",
+        "prepared_si",
         "prepared_atom_cl",
         "prepared_atom_plm",
         "prepared_atom_encoder_pair_biases",
@@ -183,6 +184,7 @@ class DiffusionModule(nn.Module):
         attn_metadata: AttentionMetadata,
         use_conditioning: bool = True,
         prepared_zij: torch.Tensor | None = None,
+        prepared_si: torch.Tensor | None = None,
         prepared_atom_cl: torch.Tensor | None = None,
         prepared_atom_plm: torch.Tensor | None = None,
         prepared_atom_encoder_pair_biases: list[torch.Tensor] | None = None,
@@ -225,6 +227,10 @@ class DiffusionModule(nn.Module):
                 the sampler owner. When set with conditioning enabled, only
                 single conditioning is recomputed for this denoising step.
                 Unconditioned calls ignore this cache and rebuild the pair.
+            prepared_si:
+                Optional noise-independent single projection from
+                ``DiffusionConditioning.prepare_single``; used only with
+                ``prepared_zij``.
             prepared_atom_cl, prepared_atom_plm:
                 Optional reference/trunk atom conditioning and pair representation
                 shared by all denoising steps of a conditioned rollout.
@@ -253,6 +259,7 @@ class DiffusionModule(nn.Module):
                 si_input=si_input,
                 si_trunk=si_trunk,
                 use_conditioning=use_conditioning,
+                prepared_si=prepared_si,
             )
             zij = prepared_zij
 
@@ -380,6 +387,7 @@ class OpenFold3DiffusionSampler(nn.Module):
         attn_metadata: AttentionMetadata,
         use_conditioning: bool,
         prepared_zij: torch.Tensor | None = None,
+        prepared_si: torch.Tensor | None = None,
         prepared_atom_cl: torch.Tensor | None = None,
         prepared_atom_plm: torch.Tensor | None = None,
         prepared_atom_encoder_pair_biases: list[torch.Tensor] | None = None,
@@ -400,6 +408,8 @@ class OpenFold3DiffusionSampler(nn.Module):
         }
         if prepared_zij is not None:
             diffusion_kwargs["prepared_zij"] = prepared_zij
+            if prepared_si is not None:
+                diffusion_kwargs["prepared_si"] = prepared_si
             if prepared_token_pair_biases is not None:
                 diffusion_kwargs["prepared_token_pair_biases"] = prepared_token_pair_biases
         if prepared_atom_cl is not None and prepared_atom_plm is not None:
@@ -468,6 +478,7 @@ class OpenFold3DiffusionSampler(nn.Module):
         )
         use_conditioning = self.use_conditioning if use_conditioning is None else use_conditioning
 
+        prepared_si = None
         prepared_atom_cl = None
         prepared_atom_plm = None
         prepared_atom_encoder_pair_biases = None
@@ -477,6 +488,8 @@ class OpenFold3DiffusionSampler(nn.Module):
             # Reference and trunk conditioning do not depend on noisy atom
             # coordinates or the diffusion time. Prepare them once before the
             # denoiser's CUDA graph is captured and replayed for every step.
+            module = self.diffusion_module
+            prepared_si = module.diffusion_conditioning.prepare_single(si_input, si_trunk)
             zero_positions = torch.zeros((*atom_mask.shape, 3), device=atom_mask.device, dtype=noise_schedule.dtype)
             _, prepared_atom_cl, prepared_atom_plm = self.diffusion_module.atom_attn_enc.get_atom_reps(
                 batch=batch,
@@ -487,7 +500,6 @@ class OpenFold3DiffusionSampler(nn.Module):
             )
             # The decoder reuses the encoder's pair, so both project it once, and
             # add the fixed atom mask's key mask once.
-            module = self.diffusion_module
             prepared_atom_encoder_pair_biases = module.atom_attn_enc.prepare_pair_biases(
                 prepared_atom_plm, atom_mask, attn_metadata
             )
@@ -511,6 +523,7 @@ class OpenFold3DiffusionSampler(nn.Module):
                 attn_metadata=attn_metadata,
                 use_conditioning=use_conditioning,
                 prepared_zij=prepared_zij,
+                prepared_si=prepared_si,
                 prepared_atom_cl=prepared_atom_cl,
                 prepared_atom_plm=prepared_atom_plm,
                 prepared_atom_encoder_pair_biases=prepared_atom_encoder_pair_biases,

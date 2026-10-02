@@ -418,6 +418,10 @@ class DiffusionConditioning(nn.Module):
         zij = self._project_pair_inputs(zij_trunk, batch)
         return self._apply_pair_transitions(zij, batch["token_mask"], inplace_safe=True)
 
+    def prepare_single(self, si_input: torch.Tensor, si_trunk: torch.Tensor) -> torch.Tensor:
+        """Project the noise-independent single inputs once per rollout."""
+        return self.linear_s(self.layer_norm_s(torch.cat([si_trunk, si_input], dim=-1)))
+
     def forward_single(
         self,
         batch: dict,
@@ -425,13 +429,18 @@ class DiffusionConditioning(nn.Module):
         si_input: torch.Tensor,
         si_trunk: torch.Tensor,
         use_conditioning: bool = True,
+        prepared_si: torch.Tensor | None = None,
     ) -> torch.Tensor:
-        """Compute the noise-dependent single conditioning for one EDM step."""
+        """Compute the noise-dependent single conditioning for one EDM step.
+
+        ``prepared_si`` is :meth:`prepare_single` of the conditioned inputs;
+        unconditioned calls ignore it and project the zeroed trunk.
+        """
         if not use_conditioning:
             si_trunk = si_trunk.zero_()
+            prepared_si = None
 
-        si = torch.cat([si_trunk, si_input], dim=-1)
-        si = self.linear_s(self.layer_norm_s(si))
+        si = self.prepare_single(si_input, si_trunk) if prepared_si is None else prepared_si
 
         n = 0.25 * torch.log(t / self.sigma_data)
         n = self.fourier_emb(n)

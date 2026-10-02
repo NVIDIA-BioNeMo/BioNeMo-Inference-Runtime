@@ -212,6 +212,7 @@ def _assemble_batched_kwargs(per_sample):
         kw.pop("attn_metadata", None)
         # Rollout caches depend on the original atom windows and token padding.
         for key in (
+            "prepared_si",
             "prepared_atom_cl",
             "prepared_atom_plm",
             "prepared_atom_encoder_pair_biases",

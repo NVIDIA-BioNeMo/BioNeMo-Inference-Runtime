@@ -489,6 +489,19 @@
       "target_arch": "sm_86",
       "target_sm": 86
     },
+    "a840cc810f9ccf79ef396c80a63cc11551eb8169ec87e4cca36eac2e48b3699e": {
+      "dtype": "bf16",
+      "dynamic_smem_bytes": 230400,
+      "image_sha256": "144a079e401becbc0a0f325583c314e08c7c31e56e1327af1894a7149239538c",
+      "image_size": 48144,
+      "kernel_sm": 90,
+      "kernel_symbol": "82558db058f348ce61909c75b75ce99164184a84b1ef80c18a92123f55649a14",
+      "launch_abi": "dual_gemm_x_x_sm90_resident_mask_ptr_v1",
+      "non_portable_cluster_size_allowed": true,
+      "sm90_launch": "3fa1f962c00daababba92edc874bc32a68afc05999c1c63286e318c6d8838ae4",
+      "target_arch": "sm_90a",
+      "target_sm": 90
+    },
     "a863fa75b07d302378a233388ebb126777edc85f0f64b9676ff64220fa1c3ba3": {
       "dtype": "bf16",
       "dynamic_smem_bytes": 214016,
@@ -1332,18 +1345,6 @@
           {
             "N": 512,
             "bucket": 256
-          },
-          {
-            "N": 512,
-            "bucket": 512
-          },
-          {
-            "N": 512,
-            "bucket": 768
-          },
-          {
-            "N": 512,
-            "bucket": 1536
           }
         ],
         "sm100_launch": null,
@@ -1578,6 +1579,29 @@
         "transpose_out": true
       },
       "variant_id": "a0f5c7f94c5ad3b8da65"
+    },
+    {
+      "executable": "4f84df0d94378af913f277976b22106f68d916a806c5eec93a9b22378ff854fb",
+      "runtime_metadata": {
+        "K": 128,
+        "has_bias": false,
+        "is_silu_gate": false,
+        "legacy_has_mask": false,
+        "num_threads": 384,
+        "raster_factor": 0,
+        "runtime_aliases": [
+          {
+            "N": 256,
+            "bucket": 384
+          }
+        ],
+        "sm100_launch": null,
+        "tile_k": 128,
+        "tile_m": 64,
+        "tile_n": 128,
+        "transpose_out": true
+      },
+      "variant_id": "a0f89fd0c8b680417293"
     },
     {
       "executable": "113d99210950d726214e70148b8faf45b8520216d0b85325ec507958dc6050c2",
@@ -1882,6 +1906,33 @@
       "variant_id": "a2175c2219d1a47d7ed8"
     },
     {
+      "executable": "ef88a68859cf3f56234f2b3978f4e3e899411cfbe9b10ed59370545ad21a0ed5",
+      "runtime_metadata": {
+        "K": 256,
+        "has_bias": true,
+        "is_silu_gate": false,
+        "legacy_has_mask": false,
+        "num_threads": 384,
+        "raster_factor": 0,
+        "runtime_aliases": [
+          {
+            "N": 512,
+            "bucket": 512
+          },
+          {
+            "N": 512,
+            "bucket": 768
+          }
+        ],
+        "sm100_launch": null,
+        "tile_k": 64,
+        "tile_m": 64,
+        "tile_n": 128,
+        "transpose_out": true
+      },
+      "variant_id": "a27ecef78c105de649e6"
+    },
+    {
       "executable": "2b52e906827f3f1ac748bb4a5654f7379e29b9aea640448d5a8f5396d1491a7f",
       "runtime_metadata": {
         "K": 384,
@@ -2083,10 +2134,6 @@
           {
             "N": 128,
             "bucket": 384
-          },
-          {
-            "N": 256,
-            "bucket": 2048
           }
         ],
         "sm100_launch": null,
@@ -2137,18 +2184,6 @@
           {
             "N": 512,
             "bucket": 256
-          },
-          {
-            "N": 512,
-            "bucket": 512
-          },
-          {
-            "N": 512,
-            "bucket": 768
-          },
-          {
-            "N": 512,
-            "bucket": 1536
           }
         ],
         "sm100_launch": null,
@@ -2318,6 +2353,29 @@
         "transpose_out": true
       },
       "variant_id": "a369a5f9aae9732cb534"
+    },
+    {
+      "executable": "f5c4414af860fc4140d16687a0ca501d957ea138af58550ba1b4d6992c8f0c1b",
+      "runtime_metadata": {
+        "K": 128,
+        "has_bias": true,
+        "is_silu_gate": true,
+        "legacy_has_mask": false,
+        "num_threads": 384,
+        "raster_factor": 0,
+        "runtime_aliases": [
+          {
+            "N": 256,
+            "bucket": 768
+          }
+        ],
+        "sm100_launch": null,
+        "tile_k": 128,
+        "tile_m": 64,
+        "tile_n": 128,
+        "transpose_out": true
+      },
+      "variant_id": "a38eaf75b74258acab09"
     },
     {
       "executable": "be5a7134cbafc4944557bf63404c954276c42a9330affe371a648574df9aaee4",
@@ -2791,10 +2849,6 @@
         "num_threads": 384,
         "raster_factor": 0,
         "runtime_aliases": [
-          {
-            "N": 256,
-            "bucket": 2048
-          },
           {
             "N": 512,
             "bucket": 128
@@ -3346,29 +3400,6 @@
       "variant_id": "a72888d478ad365bd179"
     },
     {
-      "executable": "8eacbef85d02e26485e72ef04291015a4a0011219c73176c335e6916977771de",
-      "runtime_metadata": {
-        "K": 128,
-        "has_bias": false,
-        "is_silu_gate": true,
-        "legacy_has_mask": false,
-        "num_threads": 384,
-        "raster_factor": 1,
-        "runtime_aliases": [
-          {
-            "N": 256,
-            "bucket": 384
-          }
-        ],
-        "sm100_launch": null,
-        "tile_k": 64,
-        "tile_m": 64,
-        "tile_n": 128,
-        "transpose_out": true
-      },
-      "variant_id": "a72cf9ef2a5a758070fb"
-    },
-    {
       "executable": "73b60f164e2c859bd8c5720b30ba223d45c200f5d30955f2dccdc1a962d9705a",
       "runtime_metadata": {
         "K": 128,
@@ -3378,10 +3409,6 @@
         "num_threads": 384,
         "raster_factor": 0,
         "runtime_aliases": [
-          {
-            "N": 256,
-            "bucket": 768
-          },
           {
             "N": 512,
             "bucket": 512
@@ -4210,10 +4237,6 @@
           {
             "N": 128,
             "bucket": 768
-          },
-          {
-            "N": 256,
-            "bucket": 384
           }
         ],
         "sm100_launch": null,

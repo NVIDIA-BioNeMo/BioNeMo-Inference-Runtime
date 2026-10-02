@@ -890,6 +890,19 @@
       "target_arch": "sm_90a",
       "target_sm": 90
     },
+    "1ca7b6205406c3c776c6f70f30ffbad71ef189e98a35b656accad7afbf2cc0bf": {
+      "dtype": "fp16",
+      "dynamic_smem_bytes": 232448,
+      "image_sha256": "80913d5ab243af1fe93424ee05e73af0a3106f745a5b3c595b5235ea6bb8f0dd",
+      "image_size": 66576,
+      "kernel_sm": 90,
+      "kernel_symbol": "2705bec4326c64ac2a52b55c1fe5ac01dda6a06777b6b9bbf35c3194cdddceac",
+      "launch_abi": "dual_gemm_x_x_sm90_resident_mask_ptr_v1",
+      "non_portable_cluster_size_allowed": true,
+      "sm90_launch": "b61f178e216624a49361a18f899718290fd1fe45385c2908ce180bad6af16ff1",
+      "target_arch": "sm_90a",
+      "target_sm": 90
+    },
     "1cb081727001f79d796782fc7095c2f416cdaecbfbb60b2822fcf6a8014a2f90": {
       "dtype": "bf16",
       "dynamic_smem_bytes": 36864,
@@ -1437,18 +1450,6 @@
           {
             "N": 512,
             "bucket": 256
-          },
-          {
-            "N": 512,
-            "bucket": 512
-          },
-          {
-            "N": 512,
-            "bucket": 768
-          },
-          {
-            "N": 512,
-            "bucket": 1536
           }
         ],
         "sm100_launch": null,
@@ -2790,10 +2791,6 @@
           {
             "N": 128,
             "bucket": 768
-          },
-          {
-            "N": 256,
-            "bucket": 384
           }
         ],
         "sm100_launch": null,
@@ -2945,6 +2942,33 @@
         "transpose_out": true
       },
       "variant_id": "15e6424b6d57f60cb016"
+    },
+    {
+      "executable": "fe23d82a5499a44fe89cf94f3ed01ea7813a72c83d95d53cd277079bae8be38c",
+      "runtime_metadata": {
+        "K": 256,
+        "has_bias": true,
+        "is_silu_gate": false,
+        "legacy_has_mask": false,
+        "num_threads": 384,
+        "raster_factor": 0,
+        "runtime_aliases": [
+          {
+            "N": 512,
+            "bucket": 512
+          },
+          {
+            "N": 512,
+            "bucket": 768
+          }
+        ],
+        "sm100_launch": null,
+        "tile_k": 64,
+        "tile_m": 64,
+        "tile_n": 128,
+        "transpose_out": false
+      },
+      "variant_id": "16477d3e4fa941285346"
     },
     {
       "executable": "0c14e810ef68fde914d4f66981ce0e42bbb4051646c26bc6fa814d49b429be68",
@@ -4075,6 +4099,52 @@
       "variant_id": "1aa70de5d00f48ad3315"
     },
     {
+      "executable": "4f84df0d94378af913f277976b22106f68d916a806c5eec93a9b22378ff854fb",
+      "runtime_metadata": {
+        "K": 128,
+        "has_bias": false,
+        "is_silu_gate": false,
+        "legacy_has_mask": false,
+        "num_threads": 384,
+        "raster_factor": 0,
+        "runtime_aliases": [
+          {
+            "N": 256,
+            "bucket": 1536
+          }
+        ],
+        "sm100_launch": null,
+        "tile_k": 128,
+        "tile_m": 64,
+        "tile_n": 128,
+        "transpose_out": true
+      },
+      "variant_id": "1ac98daacdc736945284"
+    },
+    {
+      "executable": "3df314dadb7904d825406160e2cb5b3f255357e8e68fbe645a7fb7423e458682",
+      "runtime_metadata": {
+        "K": 256,
+        "has_bias": true,
+        "is_silu_gate": true,
+        "legacy_has_mask": false,
+        "num_threads": 384,
+        "raster_factor": 0,
+        "runtime_aliases": [
+          {
+            "N": 512,
+            "bucket": 1536
+          }
+        ],
+        "sm100_launch": null,
+        "tile_k": 64,
+        "tile_m": 64,
+        "tile_n": 128,
+        "transpose_out": false
+      },
+      "variant_id": "1ade97c77304a80dadbd"
+    },
+    {
       "executable": "865c9a9ab520752a2e92e3213d639eb9dbf17bc1765f0e8ee65c3b0c509302f9",
       "runtime_metadata": {
         "K": 64,
@@ -4485,29 +4555,6 @@
       "variant_id": "1bf3fe6820569d9d440a"
     },
     {
-      "executable": "ea5c30edd96aabe713bc4754afb2e13d0483320581b69c72cdf02f772a3862a9",
-      "runtime_metadata": {
-        "K": 128,
-        "has_bias": true,
-        "is_silu_gate": true,
-        "legacy_has_mask": false,
-        "num_threads": 384,
-        "raster_factor": 1,
-        "runtime_aliases": [
-          {
-            "N": 256,
-            "bucket": 384
-          }
-        ],
-        "sm100_launch": null,
-        "tile_k": 64,
-        "tile_m": 64,
-        "tile_n": 128,
-        "transpose_out": true
-      },
-      "variant_id": "1bf5b41010e7c55841ea"
-    },
-    {
       "executable": "3b92f4b5efd882c195e696f50ab2823865cc66bc3935af4be22f62d525139239",
       "runtime_metadata": {
         "K": 768,
@@ -4809,18 +4856,6 @@
           {
             "N": 512,
             "bucket": 256
-          },
-          {
-            "N": 512,
-            "bucket": 512
-          },
-          {
-            "N": 512,
-            "bucket": 768
-          },
-          {
-            "N": 512,
-            "bucket": 1536
           }
         ],
         "sm100_launch": null,

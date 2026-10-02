@@ -143,8 +143,9 @@ leaves existing headers — including year ranges — untouched.
 
 ## Commits
 
-Commit messages follow [Conventional Commits][conventional] so history can drive
-changelog generation and other automation.
+Commit messages follow [Conventional Commits][conventional] so history stays
+readable and can drive automation. The changelog is written by hand in
+[`CHANGELOG.md`](../CHANGELOG.md), not generated from commits.
 
 The project lives in two repos kept in sync by [Copybara][copybara]: an
 internal GitLab (source of truth) and GitHub (open source). Accepted internal
@@ -170,22 +171,19 @@ enforced unit:
 - **Per-commit (local aid).** The `commitizen` `commit-msg` hook checks each
   commit title is Conventional Commits — the ticket key is **not** required on
   commits, so you can commit freely while experimenting. Squash discards these
-  commits, so the MR/PR title is the real gate; the same tool generates the
-  changelog later.
+  commits, so the MR/PR title is the real gate.
 
 Only the **title** is enforced. Body conventions are recommended, not gated:
 
 - **Body wrap** at ~72–80 cols for readability.
-- **Breaking changes:** `type!:`, a `BREAKING CHANGE: <desc>` footer, or both —
-  drives a major version bump in the changelog.
+- **Breaking changes:** `type!:`, a `BREAKING CHANGE: <desc>` footer, or both,
+  so the release owner can find them when writing `CHANGELOG.md`.
 - **Footer trailers** (git-trailer `Token: value`): `Refs: PROJ-123`,
   `Signed-off-by:` (DCO), `Co-authored-by:`. Copybara preserves trailers across
   the sync.
 
-> To carry an MR/PR description into the squashed commit body (so it reaches the
-> changelog), set the platform's squash commit template to include the
-> description. Changelog generation itself (`commitizen` or `git-cliff` → the
-> Keep-a-Changelog sections) is a later step.
+> To carry an MR/PR description into the squashed commit body, set the
+> platform's squash commit template to include the description.
 
 [conventional]: https://www.conventionalcommits.org/
 [copybara]: https://github.com/google/copybara

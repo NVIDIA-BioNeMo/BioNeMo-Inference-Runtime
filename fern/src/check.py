@@ -26,6 +26,7 @@ import check_doc_links
 import check_fern_versions
 import check_math
 import check_public_api
+import release_notes
 from common import DEFAULT_SITE_ROOT, REPO_ROOT, report
 
 
@@ -38,6 +39,11 @@ def _parser() -> argparse.ArgumentParser:
         "--no-sync",
         action="store_true",
         help="run checks only; do not compose the generated Fern tree",
+    )
+    parser.add_argument(
+        "--production",
+        action="store_true",
+        help="compose only final release tags, without the working-tree preview",
     )
     return parser
 
@@ -52,6 +58,7 @@ def main() -> int:
             *check_public_api.check(source_root),
             *check_doc_links.check(source_root / "docs", source_root / "fern"),
             *check_math.check(source_root),
+            *release_notes.check(source_root),
         ]
     except ValueError as exc:
         print(f"error: {exc}", file=sys.stderr)
@@ -60,9 +67,15 @@ def main() -> int:
     if status or args.no_sync:
         return status
 
+    gitleaks = source_root / "sync" / ".tools" / "bin" / "gitleaks"
     try:
-        check_fern_versions.sync_development(source_root, site_root)
-    except ValueError as exc:
+        check_fern_versions.sync_site(
+            source_root,
+            site_root,
+            preview=not args.production,
+            gitleaks=gitleaks if gitleaks.is_file() else None,
+        )
+    except (KeyError, OSError, ValueError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
     return 0

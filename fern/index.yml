@@ -83,6 +83,13 @@ navigation:
           - page: GPU Stack
             path: ../docs/ref/gpu-stack.md
             slug: gpu-stack
+  - section: Release Notes
+    slug: release-notes
+    contents:
+      - page: All releases
+        path: ../docs/release-notes/index.md
+        slug: overview
+      # bioir:release-note-pages
   - section: Community
     slug: community
     contents:

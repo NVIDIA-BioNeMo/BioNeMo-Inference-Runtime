@@ -46,12 +46,12 @@ feature, and engine stages. The following diagram shows the stages and what
 passes between them:
 
 ```mermaid
-flowchart LR
-    REQ[InputRequest] --> P[ParserStage]
-    P -->|InputParsed| T[TokenizerStage]
-    T -->|context| F[FeatureGeneratorStage]
-    F -->|feature dict| E[FoldingEngineStage]
-    E -->|FoldingOutput| W[WriterStage]
+flowchart TB
+    REQ["InputRequest"] --> P["Parser<br/>ParserStage"]
+    P -->|InputParsed| T["Tokenizer<br/>TokenizerStage"]
+    T -->|context| F["Feature generator<br/>FeatureGeneratorStage"]
+    F -->|feature dict| E["Folding engine<br/>FoldingEngineStage"]
+    E -->|FoldingOutput| W["Writer<br/>WriterStage"]
 ```
 
 Each stage does the following:

@@ -71,6 +71,7 @@ license-files = ["LICENSE", "THIRD_PARTY_NOTICES.md", "LICENSES/*.txt"]
 [project.urls]
 Homepage = "https://github.com/NVIDIA-BioNeMo/BioNeMo-Inference-Runtime"
 Documentation = "https://docs.nvidia.com/bionemo/inference-runtime"
+Changelog = "https://docs.nvidia.com/bionemo/inference-runtime/latest/release-notes/overview"
 Repository = "https://github.com/NVIDIA-BioNeMo/BioNeMo-Inference-Runtime"
 Issues = "https://github.com/NVIDIA-BioNeMo/BioNeMo-Inference-Runtime/issues"
 

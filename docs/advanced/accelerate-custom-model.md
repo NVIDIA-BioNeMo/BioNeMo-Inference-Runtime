@@ -44,12 +44,12 @@ A swap has four parts. You write each part once per module type:
 The following diagram shows how the parts connect:
 
 ```mermaid
-flowchart LR
-    CKPT[Your checkpoint] --> CONV[Weight converter]
-    CFG[BioIR config] --> MOD[BioIR module]
+flowchart TB
+    CKPT["Your checkpoint"] --> CONV["Weight converter"]
+    CFG["BioIR config"] --> MOD["BioIR module"]
     CONV --> MOD
-    MOD --> AD[Adapter]
-    AD -->|replaces| SUB[Original submodule]
+    MOD --> AD["Adapter"]
+    AD -->|replaces| SUB["Original submodule"]
 ```
 
 ## Before You Begin

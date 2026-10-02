@@ -29,7 +29,6 @@ REPO_ROOT = FERN_ROOT.parent
 DOCS_ROOT = REPO_ROOT / "docs"
 DEFAULT_SITE_ROOT = FERN_ROOT / ".build" / "site"
 SITE_PREFIX = "/bionemo/inference-runtime"
-LATEST_VERSION_SLUG = "latest"
 GITHUB_REPOSITORY = "github.com/NVIDIA-BioNeMo/BioNeMo-Inference-Runtime"
 # Shared media for every canonical page. The generated Fern tree mirrors the
 # docs directory, so this directory is copied verbatim and links into it are
@@ -39,6 +38,7 @@ PAGE_ROUTES = {
     Path("advanced/accelerate-custom-model.md"): "references/accelerate-custom-model",
     Path("advanced/port-data-pipeline.md"): "references/port-data-pipeline",
     Path("advanced/validate-data-pipeline.md"): "references/validate-data-pipeline",
+    Path("release-notes/index.md"): "release-notes/overview",
     Path("coding.md"): "references/coding",
     Path("CODE_OF_CONDUCT.md"): "community/code-of-conduct",
     Path("contributing.md"): "community/contributing",

@@ -30,12 +30,9 @@ navbar-links:
   - type: github
     value: https://github.com/NVIDIA-BioNeMo/BioNeMo-Inference-Runtime
 
-versions:
-  # The generated site publishes the development documentation from main.
-  - display-name: latest
-    path: index.yml
-    slug: latest
-    availability: beta
+# Replaced when composed: final release tags, newest first as `latest`, behind
+# the working-tree preview outside production.
+versions: []
 
 redirects:
   # Paths include the multi-source site prefix so these rules cannot capture

@@ -1,0 +1,123 @@
+{
+  "kernel_abi": "sm90",
+  "kernel_variant": "streamed",
+  "configs": {
+    "R=1024": {
+      "kernel_abi": "sm80",
+      "kernel_variant": "tiled",
+      "tile_m": 32,
+      "tile_k": 64,
+      "num_stages": 4,
+      "atom_layout_mnk": [2, 1, 2],
+      "tile_n": 64
+    },
+    "R=4096": {
+      "kernel_abi": "sm80",
+      "kernel_variant": "tiled",
+      "tile_m": 32,
+      "tile_k": 64,
+      "num_stages": 3,
+      "atom_layout_mnk": [2, 2, 1],
+      "tile_n": 256
+    },
+    "R=9216": {
+      "tile_j": 64,
+      "a_layout": "swizzled",
+      "k_chunk": 64,
+      "num_stages": 0,
+      "w_stages": 3,
+      "z_stages": 1,
+      "epi_tile_n": 64,
+      "epi_stage": 2,
+      "tile_n": 256
+    },
+    "R=16384": {
+      "tile_j": 64,
+      "a_layout": "swizzled",
+      "k_chunk": 64,
+      "num_stages": 0,
+      "w_stages": 3,
+      "z_stages": 1,
+      "epi_tile_n": 64,
+      "epi_stage": 2,
+      "tile_n": 256
+    },
+    "R=36864": {
+      "tile_j": 64,
+      "a_layout": "swizzled",
+      "k_chunk": 64,
+      "num_stages": 0,
+      "w_stages": 3,
+      "z_stages": 2,
+      "epi_tile_n": 128,
+      "epi_stage": 1,
+      "tile_n": 256
+    },
+    "R=65536": {
+      "tile_j": 64,
+      "a_layout": "swizzled",
+      "k_chunk": 64,
+      "num_stages": 0,
+      "w_stages": 3,
+      "z_stages": 2,
+      "epi_tile_n": 64,
+      "epi_stage": 2,
+      "tile_n": 256
+    },
+    "R=147456": {
+      "tile_j": 64,
+      "a_layout": "swizzled",
+      "k_chunk": 64,
+      "num_stages": 0,
+      "w_stages": 3,
+      "z_stages": 1,
+      "epi_tile_n": 64,
+      "epi_stage": 2,
+      "tile_n": 256
+    },
+    "R=262144": {
+      "tile_j": 64,
+      "a_layout": "swizzled",
+      "k_chunk": 64,
+      "num_stages": 0,
+      "w_stages": 3,
+      "z_stages": 2,
+      "epi_tile_n": 128,
+      "epi_stage": 1,
+      "tile_n": 256
+    },
+    "R=589824": {
+      "tile_j": 64,
+      "a_layout": "swizzled",
+      "k_chunk": 64,
+      "num_stages": 0,
+      "w_stages": 3,
+      "z_stages": 1,
+      "epi_tile_n": 64,
+      "epi_stage": 2,
+      "tile_n": 256
+    },
+    "R=1048576": {
+      "tile_j": 64,
+      "a_layout": "swizzled",
+      "k_chunk": 64,
+      "num_stages": 0,
+      "w_stages": 3,
+      "z_stages": 2,
+      "epi_tile_n": 128,
+      "epi_stage": 1,
+      "tile_n": 256
+    },
+    "R=2359296": {
+      "tile_j": 64,
+      "a_layout": "swizzled",
+      "k_chunk": 64,
+      "num_stages": 0,
+      "w_stages": 3,
+      "z_stages": 2,
+      "epi_tile_n": 128,
+      "epi_stage": 1,
+      "tile_n": 256
+    }
+  }
+}

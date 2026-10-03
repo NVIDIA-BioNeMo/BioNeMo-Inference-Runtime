@@ -42,11 +42,12 @@ ENTRY_KERNEL_ABIS = ("sm80", "sm90")
 # The output gate's tile doubles the residual stages, which leaves no room
 # beside the 128 KB resident weight of H*D == 512.
 OUTPUT_GATE_WIDTHS = (128, 256)
-# Layers too wide for a resident weight, such as the diffusion token
-# transformers, take the streamed SM90 kernel, or for few rows the
-# channel-tiled SM80 one, with any head split of this H*D. SM80, SM86 and
-# SM89 take the channel-tiled kernel at every size.
-STREAMED_WIDTHS = (768,)
+# Layers projecting to more than 128 channels, such as Protenix's 256-channel
+# triangle attention and the diffusion token transformers, take the streamed
+# SM90 kernel, or for few rows the channel-tiled SM80 one, with any head split
+# of these H*D. SM80, SM86 and SM89 take the channel-tiled kernel at every
+# size.
+STREAMED_WIDTHS = (256, 768)
 
 
 @dataclass(frozen=True)

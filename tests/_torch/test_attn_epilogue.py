@@ -20,6 +20,7 @@ import torch
 
 from bionemo_ir._torch.custom_ops.attn_epilogue import AttnEpilogue, get_attn_epilogue_op
 from bionemo_ir._torch.custom_ops.attn_epilogue import cutedsl as epilogue_cutedsl
+from bionemo_ir._torch.layers.attention import MSAAttention
 from bionemo_ir._torch.layers.triangle_nodes import TriangleAttentionNode, TriangleAttentionNodeType
 from bionemo_ir._torch.utils import ChunkPolicy
 from tests._torch import (
@@ -49,13 +50,15 @@ def _node(
     attn_backend: str = "CuTeDSL",
     chunk_size: int = 0,
     bias: bool = False,
+    channels: int = 128,
+    num_heads: int = 4,
 ) -> TriangleAttentionNode:
     torch.manual_seed(0)
     policy = ChunkPolicy(chunk_size=chunk_size, min_size=1) if chunk_size else ChunkPolicy(enabled=False)
     node = TriangleAttentionNode(
-        c_in=128,
+        c_in=channels,
         c_hidden=head_dim,
-        num_heads=4,
+        num_heads=num_heads,
         node_type=node_type,
         dtype=dtype,
         attn_backend=attn_backend,
@@ -84,8 +87,8 @@ def _count_o_proj_calls(node: TriangleAttentionNode) -> list[int]:
     return calls
 
 
-def _inputs(batch: int, seq_len: int, dtype: torch.dtype) -> tuple[torch.Tensor, torch.Tensor]:
-    x = torch.randn(batch, seq_len, seq_len, 128, device="cuda", dtype=dtype)
+def _inputs(batch: int, seq_len: int, dtype: torch.dtype, channels: int = 128) -> tuple[torch.Tensor, torch.Tensor]:
+    x = torch.randn(batch, seq_len, seq_len, channels, device="cuda", dtype=dtype)
     return x, make_left_aligned_pair_mask(batch, seq_len, dtype=dtype, device="cuda")
 
 
@@ -129,6 +132,99 @@ def test_fused_epilogue_matches_separate_residual_add(
         assert stored.data_ptr() == residual.data_ptr()
     else:
         assert torch.equal(residual, x)
+
+
+@pytest.mark.parametrize("mode", MODES)
+@pytest.mark.parametrize("node_type", NODE_TYPES, ids=lambda t: t.name.lower())
+@pytest.mark.parametrize("inplace", [False, True], ids=["out_of_place", "inplace"])
+@pytest.mark.parametrize(("seq_len", "chunk_size"), [(40, 0), (100, 0), (100, 24), (200, 0)])
+def test_streamed_epilogue_matches_separate_residual_add(
+    mode: str,
+    monkeypatch: pytest.MonkeyPatch,
+    node_type: TriangleAttentionNodeType,
+    inplace: bool,
+    seq_len: int,
+    chunk_size: int,
+) -> None:
+    """Protenix's 256-channel pair, H=8 and D=32, takes the streamed kernel, or the tiled SM80 one for few rows."""
+    _require_mode(mode)
+    node = _fused_node(node_type, channels=256, num_heads=8, chunk_size=chunk_size)
+    calls = _count_o_proj_calls(node)
+    x, mask = _inputs(1, seq_len, torch.bfloat16, channels=256)
+    with torch.inference_mode():
+        expected = x + node(x, mask)
+        calls.clear()
+        actual = run_cutedsl_test_mode(
+            mode,
+            monkeypatch,
+            epilogue_cutedsl.AttnEpilogueCuTe,
+            epilogue_cutedsl,
+            lambda: node(x.clone(), mask, residual=True, inplace_residual=inplace),
+        )
+        residual = x.clone()
+        stored = node(residual, mask, residual=True, inplace_residual=inplace)
+
+    assert not calls
+    torch.testing.assert_close(actual, expected, atol=1e-2, rtol=1.6e-2)
+    assert torch.equal(stored, actual)
+    if inplace:
+        assert stored.data_ptr() == residual.data_ptr()
+    else:
+        assert torch.equal(residual, x)
+
+
+@pytest.mark.parametrize("mode", MODES)
+@pytest.mark.parametrize("column", [False, True], ids=["row", "column"])
+@pytest.mark.parametrize("inplace", [False, True], ids=["out_of_place", "inplace"])
+@pytest.mark.parametrize(("channels", "fused"), [(256, True), (64, False)], ids=["c256", "c64"])
+def test_msa_attention_residual_matches_separate_add(
+    mode: str, monkeypatch: pytest.MonkeyPatch, column: bool, inplace: bool, channels: int, fused: bool
+) -> None:
+    """OpenFold2's MSA row and column attention add their residual in the epilogue when it serves the shape."""
+    _require_mode(mode)
+    torch.manual_seed(0)
+    layer = MSAAttention(
+        local_layer_idx=0,
+        c_in=channels,
+        num_heads=8,
+        c_z=128,
+        triangle_attn_backend="CuTeDSL",
+        need_project_z=not column,
+        transpose_input=column,
+        dtype=torch.bfloat16,
+    ).cuda()
+    with torch.no_grad():
+        for name, parameter in layer.named_parameters():
+            if parameter.ndim == 2:
+                parameter.normal_(0, parameter.shape[1] ** -0.5)
+            else:
+                parameter.normal_(1 if name.endswith("weight") else 0, 0.1)
+    if fused and layer.mha._epilogue is None:
+        pytest.skip("the fused epilogue needs SM90 and the CuTeDSL sources")
+    assert (layer.mha._epilogue is not None) == fused
+    calls = _count_o_proj_calls(layer)
+    m = torch.randn(1, 24, 100, channels, device="cuda", dtype=torch.bfloat16)
+    z = None if column else torch.randn(1, 100, 100, 128, device="cuda", dtype=torch.bfloat16)
+    mask = torch.ones(1, 24, 100, device="cuda", dtype=torch.bfloat16)
+    with torch.inference_mode():
+        expected = m + layer(m, z, mask)
+        calls.clear()
+        residual = m.clone()
+        actual = run_cutedsl_test_mode(
+            mode,
+            monkeypatch,
+            epilogue_cutedsl.AttnEpilogueCuTe,
+            epilogue_cutedsl,
+            lambda: layer(residual.copy_(m), z, mask, residual=True, inplace_residual=inplace),
+        )
+
+    assert bool(calls) != fused
+    assert actual.shape == m.shape
+    torch.testing.assert_close(actual, expected, atol=1e-2, rtol=1.6e-2)
+    if inplace and fused:
+        assert actual.data_ptr() == residual.data_ptr()
+    elif not inplace:
+        assert torch.equal(residual, m)
 
 
 @pytest.mark.parametrize("mode", MODES)

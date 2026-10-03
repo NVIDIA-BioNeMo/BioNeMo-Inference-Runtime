@@ -153,10 +153,9 @@ class ExtraMSABlock(EvoformerBlock):
         """
         if self.opm_first:
             m, z = self._compute_opm(m, z, msa_mask)
-        m = m + self.msa_att_row(m, z, mask=msa_mask, attn_metadata=attn_metadata)
+        m = self.msa_att_row(m, z, mask=msa_mask, attn_metadata=attn_metadata, residual=True)
         m = m + self.msa_att_col(m, mask=msa_mask)
-        msa_trans_mask = msa_mask
-        m = m + self.msa_transition(m, mask=msa_trans_mask)
+        m = self.msa_transition(m, mask=msa_mask, residual=True)
 
         if not self.opm_first:
             m, z = self._compute_opm(m, z, msa_mask)
@@ -174,8 +173,7 @@ class ExtraMSABlock(EvoformerBlock):
             z = self.tri_attn_start(z, mask=pair_mask, attn_metadata=attn_metadata, residual=True)
             z = self.tri_attn_end(z, mask=pair_mask, attn_metadata=attn_metadata, residual=True)
 
-        pair_trans_mask = pair_mask
-        z = z + self.pair_transition(z, mask=pair_trans_mask)
+        z = self.pair_transition(z, mask=pair_mask, residual=True)
 
         return m, z
 

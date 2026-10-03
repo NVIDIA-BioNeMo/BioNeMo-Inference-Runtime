@@ -206,8 +206,9 @@ struct KernelSpec
   bool has_bias;
   bool has_output_gate;
   std::uint32_t tile_j;
-  /* Output channels per tile; below channels, the kernel streams Wo (SM90)
-   * or splits the channels over grid.z (SM80). */
+  /* Output channels per tile; divides channels. Layers wider than 128
+   * channels stream Wo (SM90) or split the channels over grid.z (SM80) in
+   * tiles of tile_n, which may cover every channel. */
   std::uint32_t tile_n;
   std::uint32_t num_threads;
   /* The folded-rows tuning anchor this CUBIN was tuned for. */

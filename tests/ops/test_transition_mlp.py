@@ -752,7 +752,9 @@ def test_msa_transition_runs_fused(mode, c_m, residual, monkeypatch):
 
 
 @pytest.mark.parametrize("mode", _CUTEDSL_MODES)
-@pytest.mark.parametrize(("dim", "factor", "masked"), [(128, 4, False), (64, 4, False), (64, 2, True)])
+@pytest.mark.parametrize(
+    ("dim", "factor", "masked"), [(128, 4, False), (64, 4, False), (64, 2, True), (256, 4, False), (64, 2, False)]
+)
 def test_swiglu_transition_runs_its_update_fused(mode, dim, factor, masked, monkeypatch):
     """Without a residual, SwiGLU transitions return only the update, from the fused op."""
     skip_if_not_sm90()
@@ -769,10 +771,12 @@ def test_swiglu_transition_runs_its_update_fused(mode, dim, factor, masked, monk
 
 
 @pytest.mark.parametrize("mode", _CUTEDSL_MODES)
-@pytest.mark.parametrize(("dim", "factor", "masked"), [(128, 4, False), (64, 4, False), (64, 2, True)])
+@pytest.mark.parametrize(
+    ("dim", "factor", "masked"), [(128, 4, False), (64, 4, False), (64, 2, True), (256, 4, False), (64, 2, False)]
+)
 @pytest.mark.parametrize("inplace", [False, True])
 def test_swiglu_transition_fuses_its_residual(mode, dim, factor, masked, inplace, monkeypatch):
-    """Boltz and OpenFold2-SwiGLU transitions match ``x + update``, in place when asked."""
+    """Boltz, OpenFold2-SwiGLU and Protenix transitions match ``x + update``, in place when asked."""
     skip_if_not_sm90()
     layer = _init(Transition(dim, dim * factor, dtype=torch.bfloat16).cuda())
     assert layer._fused_mlp_ops[(masked, True)] is not None

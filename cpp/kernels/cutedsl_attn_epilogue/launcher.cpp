@@ -38,6 +38,9 @@ constexpr char kSM80LaunchAbi[] = "attn_epilogue_sm80_v1";
 constexpr char kSM80TiledLaunchAbi[] = "attn_epilogue_sm80_tiled_v1";
 constexpr char kSM90LaunchAbi[] = "attn_epilogue_sm90_v1";
 constexpr char kSM90StreamedLaunchAbi[] = "attn_epilogue_sm90_streamed_v1";
+/* Output channels of the resident-weight kernels; wider layers take the
+ * streamed SM90 or channel-tiled SM80 kernel. */
+constexpr std::int32_t kResidentChannels = 128;
 
 /* Bytes from the first to one past the last element the tensor can address. */
 std::uint64_t span_bytes(TmaTensorSource const& source, std::uint32_t rank)
@@ -115,12 +118,13 @@ void validate_launch(KernelConfig const& config, LaunchParams const& params)
   {
     throw std::invalid_argument("attention epilogue CUBIN has invalid launch geometry");
   }
-  /* Fewer channels per tile than the layer has: Wo streamed on SM90, channel
-   * tiles over grid.z on SM80. */
-  bool const tiled = config.spec.tile_n < static_cast<std::uint32_t>(config.spec.channels);
+  /* Only kResidentChannels leave room for a resident Wo. Wider layers stream
+   * Wo on SM90 and tile the channels over grid.z on SM80, even when one tile
+   * covers every channel. */
+  bool const wide = config.spec.channels > kResidentChannels;
   char const* const expected_abi = config.cubin.kernel_sm == 90
-    ? (tiled ? kSM90StreamedLaunchAbi : kSM90LaunchAbi)
-    : (config.cubin.kernel_sm == 80 ? (tiled ? kSM80TiledLaunchAbi : kSM80LaunchAbi) : nullptr);
+    ? (wide ? kSM90StreamedLaunchAbi : kSM90LaunchAbi)
+    : (config.cubin.kernel_sm == 80 ? (wide ? kSM80TiledLaunchAbi : kSM80LaunchAbi) : nullptr);
   if (
     expected_abi == nullptr || config.cubin.launch_abi == nullptr
     || std::strcmp(config.cubin.launch_abi, expected_abi) != 0 || config.spec.kernel_sm != config.cubin.kernel_sm)

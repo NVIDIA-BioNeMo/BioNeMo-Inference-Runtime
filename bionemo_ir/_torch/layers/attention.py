@@ -1119,6 +1119,8 @@ class MSAAttention(nn.Module):
         mask: torch.Tensor,
         attn_metadata: AttentionMetadata | None = None,
         buffers: PreallocatedBuffers | None = None,
+        residual: bool = False,
+        inplace_residual: bool = False,
     ):
         """
         Args:
@@ -1126,6 +1128,9 @@ class MSAAttention(nn.Module):
             z: [*, I, I, c_z]
             mask: [*, J, I]
             buffers: Shared pre-allocated buffer dict.
+            residual: Return ``m + update`` instead of the update; on SM90 the
+                output projection's epilogue adds ``m``.
+            inplace_residual: Accumulate into ``m``, which the caller must own.
         """
         if self.transpose_input:
             m = permute_final_dims(m, (1, 0, 2))
@@ -1149,9 +1154,15 @@ class MSAAttention(nn.Module):
             if self.triangle_attn_backend != "VANILLA":
                 z_shape = [*m.shape[: m.ndim - 3], self.num_heads, m.size(-2), m.size(-2)]
                 z = torch.zeros(z_shape, dtype=self.dtype, device=m.device)
-        m = self.layer_norm_m(m)
-
-        output = self.mha(m, mask_bias, triangle_bias=z, attn_metadata=attn_metadata, buffers=buffers)
+        output = self.mha(
+            self.layer_norm_m(m),
+            mask_bias,
+            triangle_bias=z,
+            attn_metadata=attn_metadata,
+            buffers=buffers,
+            residual=m if residual else None,
+            inplace_residual=inplace_residual,
+        )
         if self.transpose_input:
             output = permute_final_dims(output, (1, 0, 2))
         return output

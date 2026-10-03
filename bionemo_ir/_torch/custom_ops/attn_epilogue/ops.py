@@ -32,7 +32,7 @@ WIDTHS = (128, 256, 512)
 CHANNELS = 128
 SUPPORTED_SMS = (80, 86, 89, 90)
 # The channels a STREAMED_WIDTHS layer projects to.
-STREAMED_CHANNELS = (768,)
+STREAMED_CHANNELS = (256, 768)
 # Both kernels read the contiguous heads-inner output in slabs of this many
 # channels, so they see H*D / SLAB heads of SLAB channels whatever the split.
 SLAB = 64
@@ -264,9 +264,9 @@ def get_attn_epilogue_op(
     The kernels take bf16 layers on SM80, SM86, SM89 and SM90 whose ``H*D`` is
     128, 256 or 512 with ``D`` of 32, 64 or 128, projecting to 128 channels,
     and need a tuning for the exact shape and device. An output gate needs
-    ``H*D`` of 128 or 256. Layers whose ``H*D`` and channels are both 768,
-    such as the diffusion token transformers, take any head split, output
-    gate included: on SM90 the streamed kernel or the channel-tiled SM80 one,
+    ``H*D`` of 128 or 256. Layers whose ``H*D`` and channels are both 256 or
+    both 768, such as Protenix's triangle attention and the diffusion token
+    transformers, take any head split, output gate included: on SM90 the streamed kernel or the channel-tiled SM80 one,
     and on SM80, SM86 and SM89 the channel-tiled one. Each call takes the
     tuning whose ``R=<rows>`` anchor is nearest its folded rows.
     """

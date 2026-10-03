@@ -1,0 +1,106 @@
+{
+  "executables": {
+    "da64446b65d2cf42f6369c31f194ca8fb9b5716e88995919a0a6d9881e63ead1": {
+      "dtype": "bf16",
+      "dynamic_smem_bytes": 214016,
+      "image_sha256": "1dd65d1d9ae5298dbceda8a21b583a3cb8703cbd3a0ea5fcbad418b5a56029fe",
+      "image_size": 21936,
+      "kernel_sm": 90,
+      "kernel_symbol": "fa6457e2abaec55cd18be954f27e1234e96c8697b7206d0d835b2f855b5bedfc",
+      "launch_abi": "trimul_kf_k2_sm90_v1",
+      "sm90_launch": "c51e65f498a4a05685938f9aa9e1a0c7cdd071dc9ad3ea49c983c008d8b95c9a",
+      "target_arch": "sm_90a",
+      "target_sm": 90
+    }
+  },
+  "kernel_symbols": {
+    "db22f3c4c5f4080c473b58bfb0cffe78fde1a4856b2ae76144ea39795946ad6e": "k665a18047e8a233ed8f6727813033b980c730f497157f84eab5750cf0d5db82d____________________________________________________________________________________________________________________________"
+  },
+  "sm90_launches": {
+    "d20db644396f9a3d81f40e932cd054ec327737c294fe5c16ada876829110c450": {
+      "block_dims": [
+        384,
+        1,
+        1
+      ],
+      "cluster_dims": [
+        2,
+        1,
+        1
+      ],
+      "cluster_scheduling_policy": "default",
+      "tma_descriptors": {
+        "a": {
+          "box_dims": [
+            64,
+            128,
+            1
+          ],
+          "data_type": "bfloat16",
+          "element_strides": [
+            1,
+            1,
+            1
+          ],
+          "global_dim_order": [
+            1,
+            0,
+            2
+          ],
+          "interleave": "none",
+          "l2_promotion": "128b",
+          "oob_fill": "none",
+          "rank": 3,
+          "swizzle": "128b"
+        },
+        "b": {
+          "box_dims": [
+            64,
+            128,
+            1
+          ],
+          "data_type": "bfloat16",
+          "element_strides": [
+            1,
+            1,
+            1
+          ],
+          "global_dim_order": [
+            1,
+            0,
+            2
+          ],
+          "interleave": "none",
+          "l2_promotion": "128b",
+          "oob_fill": "none",
+          "rank": 3,
+          "swizzle": "128b"
+        },
+        "prod": {
+          "box_dims": [
+            32,
+            128,
+            1
+          ],
+          "data_type": "bfloat16",
+          "element_strides": [
+            1,
+            1,
+            1
+          ],
+          "global_dim_order": [
+            1,
+            0,
+            2
+          ],
+          "interleave": "none",
+          "l2_promotion": "128b",
+          "oob_fill": "none",
+          "rank": 3,
+          "swizzle": "64b"
+        }
+      }
+    }
+  },
+  "variants": []
+}

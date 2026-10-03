@@ -1,0 +1,82 @@
+{
+  "compile_fingerprint": "fa59ad8e8dc8c7a82ec3ed50d63f69a5a75f8e1ecc4f672758aaa996310b4c6f",
+  "family": "trimul_kf_k1",
+  "format": "bioir-cubin-pack-v2",
+  "packs": {
+    "sm_90a": {
+      "sha256": "2b9f3f3d28306cd335d197c9f4bcfd52e5ae95b9818b32c9b977097a12f0d93a",
+      "size": 41736
+    }
+  },
+  "registry_version": 2,
+  "shards": {
+    "0": {
+      "sha256": "e58627c3effe463f7191f0b8e944244716d2a1e85e2347ee07afedf220507b34",
+      "size": 89
+    },
+    "1": {
+      "sha256": "fba895a2b3252484b524db35270a1cec0017900d59b0b28770b470b5fea78795",
+      "size": 915
+    },
+    "2": {
+      "sha256": "a0961e933c7ec8c484c8956d57cb951da6083afd336fc53fdfc97d7500c39c15",
+      "size": 2590
+    },
+    "3": {
+      "sha256": "850030ae70a3b7a5423c05ba6ae82f6a4ce99d1dfc892e96f6645afc384fa858",
+      "size": 921
+    },
+    "4": {
+      "sha256": "71bb6b0d7d4374e4107fb34f35be277960fa3ac57cad04cac9f2449b547f69dd",
+      "size": 3957
+    },
+    "5": {
+      "sha256": "418b74297d97554500dcc141c07bbfeaf606c1109f0b692c2dc357912710f2e9",
+      "size": 629
+    },
+    "6": {
+      "sha256": "be4016d95649f0531a469ba5f3dcd9b5a6acb69d3f98211cc4e61bae8657ab0e",
+      "size": 2588
+    },
+    "7": {
+      "sha256": "2189a0954c3dbced09eec324888623f371c494c712055ffc1d33ba6cfbe27c53",
+      "size": 635
+    },
+    "8": {
+      "sha256": "e58627c3effe463f7191f0b8e944244716d2a1e85e2347ee07afedf220507b34",
+      "size": 89
+    },
+    "9": {
+      "sha256": "6b9d979e769a2d95af89a98d069f3a406f32fc3cac433060fb72433ec72e7476",
+      "size": 3143
+    },
+    "a": {
+      "sha256": "8eb65195451221f0a3312bfc6468a1574eecb3a215100316dc44e3dbe4b7bfa5",
+      "size": 2857
+    },
+    "b": {
+      "sha256": "8debb34f225f61c2093e04fb5e0fea1d86d22bfaeea092daad183fab55b901d1",
+      "size": 886
+    },
+    "c": {
+      "sha256": "2d7c08e519fb4eaff6c2bb51698ea93c4d6731d7518eb9f155852add55af895c",
+      "size": 1205
+    },
+    "d": {
+      "sha256": "d866f7ed6bd76d5ede0f906766625349656ee7defd531a34cad8bf9c32e676e9",
+      "size": 364
+    },
+    "e": {
+      "sha256": "e58627c3effe463f7191f0b8e944244716d2a1e85e2347ee07afedf220507b34",
+      "size": 89
+    },
+    "f": {
+      "sha256": "37c8e416b84be26c04e17ddd7ad48f08525d5bd9f0fee55174aa7c0e3f9216ef",
+      "size": 648
+    }
+  },
+  "toolchain": {
+    "compile_environment": "sha256:222d8b18e671be5c3ef91cb41727a2572a0b23f59ded6c39f373a96946f6f2ba",
+    "nvidia-cutlass-dsl": "4.5.2"
+  }
+}

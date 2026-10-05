@@ -897,9 +897,14 @@ def process_msa_features(
                 deletion[r_off : r_off + n_body, col : col + Lc] = body_del[i][:n_body]
             col += Lc
     # Keep layout (N_MSA, L) to match Boltz2 featurizerv2; do not transpose.
-    msa_one_hot = one_hot(msa, num_classes=num_tokens)
     msa_mask = torch.ones_like(msa, dtype=torch.float32)
-    profile = msa_one_hot.float().mean(dim=0)
+    if msa.shape[0] > 2**24:
+        profile = one_hot(msa, num_classes=num_tokens).float().mean(dim=0)
+    else:
+        profile_counts = torch.zeros((num_tokens, msa.shape[1]), dtype=torch.int32, device=msa.device)
+        profile_counts.scatter_add_(0, msa, torch.ones_like(msa, dtype=torch.int32))
+        profile = (profile_counts.float() / msa.shape[0]).transpose(0, 1).contiguous()
+        del profile_counts
 
     # Real per-row deletion counts, matching the reference implementation in
     # the upstream Boltz project (an external dependency, not vendored here:

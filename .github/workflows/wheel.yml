@@ -1,11 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
-# Builds the wheel, which needs no GPU and no driver. `cpp/CMakeLists.txt`
-# declares `LANGUAGES CXX ASM`, so nvcc compiles nothing here -- the kernels are
-# precompiled CUBINs assembled in as `.incbin` shards, and the only CUDA
-# dependency is `CUDA::cuda_driver`, resolved against the libcuda stub the
-# toolkit ships. Nothing links PyTorch.
+# Build native kernels without a GPU.
 #
 # Its own file rather than a third job in ci.yml, because it is the one gate
 # worth starting by hand: `workflow_dispatch` builds a wheel from any branch or
@@ -42,6 +38,8 @@ jobs:
         with:
           lfs: false
           fetch-depth: 0
+      - name: Fetch CUTLASS headers
+        run: git submodule update --init --depth 1 3rdparty/cutlass
       - uses: ./.github/actions/cubin-packs
 
       - uses: ./.github/actions/uv
@@ -62,9 +60,7 @@ jobs:
           fi
           echo "version=${version}" >>"${GITHUB_OUTPUT}"
 
-      # Headers and the libcuda stub, nothing more. `setup.py` reads the
-      # toolkit version for the wheel's `+cuXYZ` local version segment, so nvcc
-      # has to be on PATH rather than just the headers being present.
+      # nvcc compiles the source-visible CUDA kernels.
       #
       # The only third-party action here, so it is pinned to a commit rather
       # than a tag, which is what NVIDIA ProdSec asks for and what NVIDIA/warp
@@ -86,7 +82,8 @@ jobs:
         env:
           SOURCE_REVISION: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
-          export SOURCE_DATE_EPOCH="$(git show -s --format=%ct "${SOURCE_REVISION}")"
+          SOURCE_DATE_EPOCH="$(git show -s --format=%ct "${SOURCE_REVISION}")"
+          export SOURCE_DATE_EPOCH
           scripts/build_wheel.sh --out-dir dist
           ls -l dist/
 

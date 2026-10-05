@@ -14,7 +14,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Validate canonical documentation and compose the generated Fern tree."""
+"""Validate canonical documentation."""
 
 from __future__ import annotations
 
@@ -23,36 +23,26 @@ import sys
 from pathlib import Path
 
 import check_doc_links
-import check_fern_versions
 import check_math
 import check_public_api
 import release_notes
-from common import DEFAULT_SITE_ROOT, REPO_ROOT, report
+from common import REPO_ROOT, report
 
 
 def _parser() -> argparse.ArgumentParser:
     """Build the unified documentation-check parser."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source-root", type=Path, default=REPO_ROOT)
-    parser.add_argument("--site-root", type=Path, default=DEFAULT_SITE_ROOT)
     parser.add_argument(
         "--no-sync",
         action="store_true",
-        help="run checks only; do not compose the generated Fern tree",
-    )
-    parser.add_argument(
-        "--production",
-        action="store_true",
-        help="compose only final release tags, without the working-tree preview",
+        help="compatibility flag; checks never compose a site",
     )
     return parser
 
 
-def main() -> int:
-    """Run documentation checks and the requested composition command."""
-    args = _parser().parse_args()
-    source_root = args.source_root.expanduser().resolve()
-    site_root = args.site_root.expanduser().resolve()
+def check(source_root: Path) -> int:
+    """Validate canonical documentation under the source root."""
     try:
         findings = [
             *check_public_api.check(source_root),
@@ -63,22 +53,13 @@ def main() -> int:
     except ValueError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
-    status = report(findings)
-    if status or args.no_sync:
-        return status
+    return report(findings)
 
-    gitleaks = source_root / "sync" / ".tools" / "bin" / "gitleaks"
-    try:
-        check_fern_versions.sync_site(
-            source_root,
-            site_root,
-            preview=not args.production,
-            gitleaks=gitleaks if gitleaks.is_file() else None,
-        )
-    except (KeyError, OSError, ValueError) as exc:
-        print(f"error: {exc}", file=sys.stderr)
-        return 2
-    return 0
+
+def main() -> int:
+    """Run documentation checks."""
+    args = _parser().parse_args()
+    return check(args.source_root.expanduser().resolve())
 
 
 if __name__ == "__main__":

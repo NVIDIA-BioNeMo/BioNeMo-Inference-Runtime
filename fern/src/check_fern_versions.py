@@ -28,9 +28,8 @@ import posixpath
 import re
 import shutil
 import subprocess
-import sys
 import tempfile
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -56,9 +55,6 @@ from release_notes import (
     tag_date,
     version_key,
 )
-
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "sync"))
-from validate import ValidationError, validate_public_payloads  # noqa: E402
 
 RELEASE_NOTES_NAV_MARKER = "      # bioir:release-note-pages"
 PREVIEW_SLUG = "preview"
@@ -319,7 +315,7 @@ def _write_release_snapshot(
     tag: str,
     notes: dict[str, Note],
     dates: dict[str, str | None],
-    gitleaks: Path | None = None,
+    validate_payloads: Callable[[Mapping[str, bytes]], None],
 ) -> None:
     """Compose one immutable public-doc snapshot from a release tag."""
     fern_path = _tag_fern_path(repo, tag)
@@ -341,8 +337,8 @@ def _write_release_snapshot(
             path = raw.decode("utf-8")
             payloads[path] = _git_bytes(repo, "show", f"{tag}:{path}")
         try:
-            validate_public_payloads(payloads, gitleaks)
-        except (ValidationError, subprocess.CalledProcessError) as error:
+            validate_payloads(payloads)
+        except (ValueError, subprocess.CalledProcessError) as error:
             raise ValueError(f"release documentation failed outbound validation for {tag}") from error
         for path, content in payloads.items():
             target = source_root / path
@@ -371,13 +367,14 @@ def sync_site(
     *,
     preview: bool,
     release_tags: list[tuple[str, str]] | None = None,
-    gitleaks: Path | None = None,
+    validate_payloads: Callable[[Mapping[str, bytes]], None] | None = None,
 ) -> None:
     """Compose final release snapshots, newest first, behind an optional preview.
 
     Production publishes only final release tags; the newest is the default
     version under the ``latest`` slug. A preview adds the working-tree
     documentation first so a merge request can review it.
+    Release snapshots require a payload validator before writing output.
     """
     source_docs, source_fern = source_paths(source_root)
     destination_fern = site_root / "fern"
@@ -386,6 +383,8 @@ def sync_site(
     releases = final_release_tags(source_root) if release_tags is None else release_tags
     if not releases and not preview:
         raise ValueError("no final release tag to publish; production docs are built from release/X.Y.Z tags")
+    if releases and validate_payloads is None:
+        raise ValueError("release snapshots require an outbound validator")
     notes = load_notes(source_root)
     missing = [tag for version, tag in releases if version not in notes]
     if missing:
@@ -409,12 +408,13 @@ def sync_site(
             list(notes),
         )
         versions.append(Version(PREVIEW_SLUG, "Preview", "beta"))
-    for position, (version, tag) in enumerate(releases):
-        slug = LATEST_SLUG if position == 0 else version
-        shipped = {key: note for key, note in notes.items() if version_key(key) <= version_key(version)}
-        _write_release_snapshot(source_root, destination_fern, slug, tag, shipped, dates, gitleaks)
-        label = f"{version} (latest)" if position == 0 else version
-        versions.append(Version(slug, label, "stable"))
+    if validate_payloads is not None:
+        for position, (version, tag) in enumerate(releases):
+            slug = LATEST_SLUG if position == 0 else version
+            shipped = {key: note for key, note in notes.items() if version_key(key) <= version_key(version)}
+            _write_release_snapshot(source_root, destination_fern, slug, tag, shipped, dates, validate_payloads)
+            label = f"{version} (latest)" if position == 0 else version
+            versions.append(Version(slug, label, "stable"))
     shutil.copy2(source_fern / "fern.config.json", destination_fern / "fern.config.json")
     _write_versions(destination_fern / "docs.yml", (source_fern / "docs.yml").read_text(encoding="utf-8"), versions)
 

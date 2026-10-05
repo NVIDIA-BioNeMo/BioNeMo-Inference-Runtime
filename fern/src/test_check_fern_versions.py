@@ -18,10 +18,12 @@
 from __future__ import annotations
 
 import subprocess
+from collections.abc import Mapping
 from pathlib import Path
 
 import pytest
-from check_fern_versions import Version, _tag_pages, _write_release_snapshot, _write_versions
+from check_fern_versions import Version, _tag_pages, _write_release_snapshot, _write_versions, sync_site
+from common import REPO_ROOT
 from release_notes import Note
 
 
@@ -60,7 +62,18 @@ def test_release_snapshot_uses_tagged_public_pages(tmp_path: Path, legacy: bool)
 
     output = tmp_path / "site/fern"
     notes = {"0.2.0": Note("0.2.0", "## Highlights\n\n- Tagged change.", ("a" * 40,))}
-    _write_release_snapshot(repo, output, "latest", "release/0.2.0", notes, {"0.2.0": "2026-10-02"})
+    validated: dict[str, bytes] = {}
+
+    def validate(payloads: Mapping[str, bytes]) -> None:
+        assert not output.exists()
+        validated.update(payloads)
+
+    _write_release_snapshot(repo, output, "latest", "release/0.2.0", notes, {"0.2.0": "2026-10-02"}, validate)
+
+    assert validated["docs/install.md"] == b"Tagged installation guide\n"
+    assert validated["docs/assets/example.png"] == b"public asset"
+    assert f"{fern.relative_to(repo)}/index.yml" in validated
+    assert "docs/unlisted.md" not in validated
 
     assert (output / "pages-latest/install.md").read_text() == "Tagged installation guide\n"
     assert (output / "pages-latest/assets/example.png").read_bytes() == b"public asset"
@@ -103,9 +116,24 @@ def test_historical_page_is_validated_before_snapshot_output(tmp_path: Path) -> 
     _git(repo, "tag", "release/0.2.0")
 
     output = tmp_path / "site/fern"
+
+    def reject(payloads: Mapping[str, bytes]) -> None:
+        assert payloads["docs/install.md"] == b"password=example\n"
+        raise ValueError("rejected release payload")
+
     with pytest.raises(ValueError, match="failed outbound validation"):
-        _write_release_snapshot(repo, output, "0.2.0", "release/0.2.0", {}, {})
+        _write_release_snapshot(repo, output, "0.2.0", "release/0.2.0", {}, {}, reject)
     assert not (output / "pages-0.2.0").exists()
+
+
+def test_release_requires_validator(tmp_path: Path) -> None:
+    output = tmp_path / "fern"
+    output.mkdir()
+    marker = output / "existing.txt"
+    marker.write_text("previous site")
+    with pytest.raises(ValueError, match="require an outbound validator"):
+        sync_site(REPO_ROOT, tmp_path, preview=False, release_tags=[("0.2.0", "release/0.2.0")])
+    assert marker.read_text() == "previous site"
 
 
 def test_versions_block_lists_entries_in_order(tmp_path: Path) -> None:

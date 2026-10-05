@@ -192,30 +192,6 @@ def test_public_citations_must_ship_in_their_release(tmp_path: Path) -> None:
     assert errors == [f"GitHub tag v0.2.0 points at {public_later}; the mirror of release/0.2.0 is {public_second}"]
 
 
-def test_production_site_lists_final_releases_with_earlier_notes(tmp_path: Path) -> None:
-    releases = final_release_tags(REPO_ROOT)
-    if [version for version, _ in releases][-2:] != ["0.1.1", "0.1.0"]:
-        pytest.skip("release/0.1.0 and release/0.1.1 tags are not fetched")
-
-    sync_site(REPO_ROOT, tmp_path, preview=False, release_tags=releases[-2:])
-    generated = tmp_path / "fern"
-    config = (generated / "docs.yml").read_text()
-
-    assert "Preview" not in config
-    assert config.index("display-name: 0.1.1 (latest)") < config.index("display-name: 0.1.0")
-    assert "slug: latest" in config
-    assert {path.name for path in (generated / "pages-latest/release-notes").iterdir()} == {
-        "index.md",
-        "0.1.0.md",
-        "0.1.1.md",
-    }
-    assert {path.name for path in (generated / "pages-0.1.0/release-notes").iterdir()} == {"index.md", "0.1.0.md"}
-    assert (
-        "/bionemo/inference-runtime/0.1.0/release-notes/0.1.0"
-        in (generated / "pages-0.1.0/release-notes/index.md").read_text()
-    )
-
-
 def test_preview_site_puts_working_tree_first(tmp_path: Path) -> None:
     sync_site(REPO_ROOT, tmp_path, preview=True, release_tags=[])
     config = (tmp_path / "fern/docs.yml").read_text()

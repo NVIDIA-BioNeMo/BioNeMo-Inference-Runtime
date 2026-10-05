@@ -219,3 +219,38 @@ def test_prepared_graph_replay() -> None:
         graph.replay()
         expected = integrator.step(0, state, plan, predict, eager_context)
         torch.testing.assert_close(captured, expected, atol=0, rtol=0)
+
+
+@pytest.mark.parametrize("device", _DEVICES)
+def test_host_schedule_moves_to_device(device: str) -> None:
+    """A CPU-built schedule is validated on the host and lands on the rollout device."""
+    device = torch.device("cuda:0" if device == "cuda" else device)
+    schedule = torch.tensor([8.0, 2.0, 1.0, 0.1, 0.0])
+    config = EDMIntegratorConfig()
+    plan = EDMRolloutPlan(schedule, (1, 3), device, torch.float32, integrator_config=config)
+    assert plan.schedule.device == device
+    assert plan.churn_levels.schedule_host.device.type == "cpu"
+    torch.testing.assert_close(plan.schedule.cpu(), schedule, atol=0, rtol=0)
+    direct = EDMRolloutPlan(schedule.to(device), (1, 3), device, torch.float32, integrator_config=config)
+    assert plan.churn_levels.scalar_steps == direct.churn_levels.scalar_steps
+    torch.testing.assert_close(plan.churn_levels.sigma_hat, direct.churn_levels.sigma_hat, atol=0, rtol=0)
+    with pytest.raises(ValueError, match="nonincreasing"):
+        EDMRolloutPlan(torch.tensor([1.0, 2.0]), (1, 3), device, torch.float32)
+    if device.type == "cuda":
+        with pytest.raises(ValueError, match="device must match"):
+            EDMRolloutPlan(schedule.to(device), (1, 3), torch.device("cpu"), torch.float32)
+
+
+@pytest.mark.parametrize("device", _DEVICES)
+@pytest.mark.parametrize(("sigma_hat", "sigma_next"), [(80.0, 2.0), (2.0, 1.0), (0.01, 0.0)])
+def test_euler_update_scalar_matches_tensor(device: str, sigma_hat: float, sigma_next: float) -> None:
+    from bionemo_ir._torch.sampling.edm import edm_euler_update
+
+    generator = torch.Generator(device=device).manual_seed(0)
+    x_noisy = torch.randn(2, 3, 17, 3, device=device, generator=generator) * sigma_hat
+    x_denoised = torch.randn(2, 3, 17, 3, device=device, generator=generator)
+    fused = edm_euler_update(x_noisy, x_denoised, sigma_hat, sigma_next, 1.5)
+    reference = edm_euler_update(
+        x_noisy, x_denoised, torch.tensor(sigma_hat, device=device), torch.tensor(sigma_next, device=device), 1.5
+    )
+    torch.testing.assert_close(fused, reference, atol=1e-5, rtol=1e-5)

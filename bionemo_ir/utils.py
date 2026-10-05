@@ -15,9 +15,15 @@
 
 """Small shared utilities used across the framework."""
 
+import os
 from functools import lru_cache
 
 import torch
+
+# Opt-in device-side input validation. Each check reads a device tensor back to
+# the host, which drains the launch queue and is illegal under CUDA-graph
+# capture, so production leaves it off.
+DEBUG_ASSERTS: bool = os.getenv("BIOIR_DEBUG_ASSERTS", "0") == "1"
 
 _STR_TO_TORCH_DTYPE = {
     "bfloat16": torch.bfloat16,

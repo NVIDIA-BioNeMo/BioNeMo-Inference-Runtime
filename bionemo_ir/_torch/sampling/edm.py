@@ -141,6 +141,10 @@ class _PreparedEDMLevels:
     schedule: torch.Tensor
     gamma: torch.Tensor
     sigma_hat: torch.Tensor
+    # Host copies of ``schedule`` / ``gamma``: the scalar steps read them
+    # without a device synchronization.
+    schedule_host: torch.Tensor
+    gamma_host: torch.Tensor
 
     @cached_property
     def tensor_steps(self) -> tuple[tuple[torch.Tensor, torch.Tensor, torch.Tensor], ...]:
@@ -149,7 +153,7 @@ class _PreparedEDMLevels:
     @cached_property
     def scalar_steps(self) -> tuple[tuple[float, float, float], ...]:
         # Preserve Boltz's Python arithmetic after dtype rounding.
-        values = torch.stack((self.schedule[:-1], self.schedule[1:], self.gamma), dim=-1).tolist()
+        values = torch.stack((self.schedule_host[:-1], self.schedule_host[1:], self.gamma_host), dim=-1).tolist()
         return tuple((last, next_, gamma) for last, next_, gamma in values)
 
 
@@ -161,6 +165,8 @@ class EDMRolloutPlan(SamplingRolloutPlan[torch.Tensor]):
     and ``t_{i+1}``. ``augment_coordinates`` enables a protein-specific rigid
     augmentation before churn; it is not part of EDM Algorithm 2.
     Prepared plans snapshot the input schedule. Treat plan tensors as read-only.
+    A CPU ``schedule`` is validated on the host and moved to ``device`` without
+    any device synchronization; a device schedule costs one read-back.
     """
 
     schedule: torch.Tensor
@@ -176,21 +182,28 @@ class EDMRolloutPlan(SamplingRolloutPlan[torch.Tensor]):
         schedule = self.schedule
         if schedule.ndim != 1 or schedule.numel() < 2:
             raise ValueError("schedule must be one-dimensional with at least two points")
-        if not bool(torch.isfinite(schedule).all()):
+        schedule_host = schedule.detach().to("cpu", copy=True)
+        if not bool(torch.isfinite(schedule_host).all()):
             raise ValueError("schedule must contain only finite values")
-        if not bool((schedule >= 0).all()):
+        if not bool((schedule_host >= 0).all()):
             raise ValueError("schedule must be nonnegative")
-        if not bool((schedule[:-1] >= schedule[1:]).all()):
+        if not bool((schedule_host[:-1] >= schedule_host[1:]).all()):
             raise ValueError("EDM schedule must be nonincreasing")
         if schedule.device != self.device:
-            raise ValueError("schedule and rollout device must match")
+            if schedule.device.type != "cpu":
+                raise ValueError("schedule and rollout device must match")
+            schedule = schedule.to(self.device)
+            object.__setattr__(self, "schedule", schedule)
         if len(self.coords_shape) < 2 or self.coords_shape[-1] != 3:
             raise ValueError("coords_shape must end in [N_atom, 3]")
         if integrator_config is not None:
             schedule = schedule.clone()
             object.__setattr__(self, "schedule", schedule)
             gamma = integrator_config.churn_rates(schedule[1:])
-            levels = _PreparedEDMLevels(integrator_config, schedule, gamma, schedule[:-1] * (gamma + 1))
+            gamma_host = integrator_config.churn_rates(schedule_host[1:])
+            levels = _PreparedEDMLevels(
+                integrator_config, schedule, gamma, schedule[:-1] * (gamma + 1), schedule_host, gamma_host
+            )
             object.__setattr__(self, "churn_levels", levels)
 
     @property
@@ -283,6 +296,10 @@ def edm_euler_update(
     one reproduces the paper's first-order update; AF3 uses a configurable
     scale. This function does not apply Algorithm 2's Heun correction.
     """
+    if isinstance(sigma_hat, float) and isinstance(sigma_next, float):
+        # Python noise levels fold the whole update into one fused kernel:
+        # x + c (x - D) == lerp(x, D, -c) with c = step_scale (s_next - s_hat) / s_hat.
+        return torch.lerp(x_noisy, x_denoised, -step_scale * (sigma_next - sigma_hat) / sigma_hat)
     direction = (x_noisy - x_denoised) / sigma_hat
     return x_noisy + step_scale * (sigma_next - sigma_hat) * direction
 

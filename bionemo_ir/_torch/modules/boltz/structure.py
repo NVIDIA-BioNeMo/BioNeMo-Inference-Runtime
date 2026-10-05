@@ -1204,9 +1204,11 @@ class BoltzDiffusionSampler(nn.Module):
     def sample_schedule(self, num_sampling_steps=None):
         # Shared AF3 schedule: Boltz uses ``num_sampling_steps`` points and
         # appends a trailing 0 (``final="append_zero"``).
+        # Built on the host: the rollout plan validates it and derives the
+        # per-step Python scalars there, then moves one copy to the device.
         return edm_sampling.EDMScheduleConfig(
             sigma_data=self.sigma_data, s_max=self.sigma_max, s_min=self.sigma_min, rho=self.rho, final="append_zero"
-        ).build(num_steps=num_sampling_steps, device=self.device, dtype=torch.float32)
+        ).build(num_steps=num_sampling_steps, dtype=torch.float32)
 
     def build_denoise_hook_pipeline(
         self,

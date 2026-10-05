@@ -121,7 +121,10 @@ class RelativePositionEncoder(nn.Module):
         Args:
             asym_id / residue_index / entity_id / token_index / sym_id:
                 integer token features, each ``[B, N_token]``.
-            cyclic_period: optional ``[B, N_token]`` cyclic period.
+            cyclic_period: optional ``[B, N_token]`` cyclic period. Pass
+                ``None`` when no chain is cyclic; a tensor always applies the
+                periodic wrap (period 10000 where zero, the identity for
+                offsets below 5000), so no device value is read on the host.
 
         Returns:
             ``(d_residue, d_token, d_chain, b_same_entity)``, each
@@ -131,7 +134,7 @@ class RelativePositionEncoder(nn.Module):
         b_same_residue = torch.eq(residue_index[:, :, None], residue_index[:, None, :])
         b_same_entity = torch.eq(entity_id[:, :, None], entity_id[:, None, :])
         d_residue = residue_index[:, :, None] - residue_index[:, None, :]
-        if self.cyclic_pos_enc and cyclic_period is not None and torch.any(cyclic_period > 0):
+        if self.cyclic_pos_enc and cyclic_period is not None:
             period = torch.where(
                 cyclic_period > 0,
                 cyclic_period,

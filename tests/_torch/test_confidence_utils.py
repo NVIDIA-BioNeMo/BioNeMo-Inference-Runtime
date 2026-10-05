@@ -109,3 +109,81 @@ def test_bf16_logits_reduce_in_fp32():
 
     assert out.dtype == torch.float32
     torch.testing.assert_close(out, _reference_contact_prob(logits), rtol=0, atol=0)
+
+
+def _reference_frame_pred(pred_atom_coords, frames_idx_true, feats):
+    """The previous ``compute_frame_pred``: per-chain ``unique``/``item`` loop with boolean gathers."""
+    from bionemo_ir.pipeline.models.boltz2.const import chain_type_ids
+
+    asym_id_token = feats["asym_id"]
+    asym_id_atom = torch.bmm(feats["atom_to_token"].float(), asym_id_token.unsqueeze(-1).float()).squeeze(-1)
+    _, multiplicity, _, _ = pred_atom_coords.shape
+    frames_idx_pred = repeat_with_multiplicity(frames_idx_true, multiplicity)
+    for i, pred_atom_coord in enumerate(pred_atom_coords):
+        token_idx = 0
+        atom_idx = 0
+        for chain_id in torch.unique(asym_id_token[i]):
+            mask_chain_token = (asym_id_token[i] == chain_id) * feats["token_pad_mask"][i]
+            mask_chain_atom = (asym_id_atom[i] == chain_id) * feats["atom_pad_mask"][i]
+            num_tokens = int(mask_chain_token.sum().item())
+            num_atoms = int(mask_chain_atom.sum().item())
+            if feats["mol_type"][i, token_idx] != chain_type_ids["NONPOLYMER"] or num_atoms < 3:
+                token_idx += num_tokens
+                atom_idx += num_atoms
+                continue
+            chain_coords = pred_atom_coord[:, mask_chain_atom.bool()]
+            dist_mat = ((chain_coords[:, None, :, :] - chain_coords[:, :, None, :]) ** 2).sum(-1) ** 0.5
+            indices = torch.sort(dist_mat, dim=2).indices
+            frames = torch.cat([indices[:, :, 1:2], indices[:, :, 0:1], indices[:, :, 2:3]], dim=2) + atom_idx
+            frames_idx_pred[i, :, token_idx : token_idx + num_atoms, :] = frames
+            token_idx += num_tokens
+            atom_idx += num_atoms
+    return frames_idx_pred
+
+
+def _frame_feats(device: torch.device) -> tuple[dict[str, torch.Tensor], torch.Tensor]:
+    """Protein chain (3 tokens x 4 atoms), ligand (5 atoms), 2-atom ligand (skipped), then padding."""
+    from bionemo_ir.pipeline.models.boltz2.const import chain_type_ids
+
+    n_tokens, n_atoms = 12, 24
+    token_chain = [0] * 3 + [1] * 5 + [2] * 2 + [0] * 2  # padded tokens carry asym_id 0
+    token_pad = [1] * 10 + [0] * 2
+    mol_type = [chain_type_ids["PROTEIN"]] * 3 + [chain_type_ids["NONPOLYMER"]] * 7 + [chain_type_ids["PROTEIN"]] * 2
+    atom_token = [0] * 4 + [1] * 4 + [2] * 4 + [3, 4, 5, 6, 7] + [8, 9]
+    atom_to_token = torch.zeros(1, n_atoms, n_tokens, device=device)
+    atom_to_token[0, torch.arange(len(atom_token)), torch.tensor(atom_token)] = 1.0
+    atom_pad = torch.zeros(1, n_atoms, device=device)
+    atom_pad[0, : len(atom_token)] = 1.0
+    feats = {
+        "asym_id": torch.tensor([token_chain], device=device),
+        "token_pad_mask": torch.tensor([token_pad], device=device, dtype=torch.float32),
+        "mol_type": torch.tensor([mol_type], device=device),
+        "atom_to_token": atom_to_token,
+        "atom_pad_mask": atom_pad,
+    }
+    frames_idx_true = torch.randint(0, len(atom_token), (1, n_tokens, 3), device=device)
+    return feats, frames_idx_true
+
+
+@pytest.mark.parametrize(
+    "device",
+    ["cpu", pytest.param("cuda", marks=pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA unavailable"))],
+)
+@pytest.mark.parametrize("multiplicity", [1, 3])
+def test_compute_frame_pred_matches_reference(device: str, multiplicity: int) -> None:
+    from bionemo_ir._torch.modules.boltz.confidence_utils import chain_table, compute_frame_pred
+
+    torch.manual_seed(0)
+    device = torch.device(device)
+    feats, frames_idx_true = _frame_feats(device)
+    pred = torch.randn(1, multiplicity, feats["atom_pad_mask"].shape[1], 3, device=device)
+    chains = chain_table(feats)
+    assert chains.asym_ids == (0, 1, 2)
+    assert chains.frame_spans == (((3, 12, 5),),)
+    frames, collinear = compute_frame_pred(pred, frames_idx_true, feats, chains=chains)
+    frames_default, collinear_default = compute_frame_pred(pred, frames_idx_true, feats)
+    expected = _reference_frame_pred(pred, frames_idx_true, feats)
+    torch.testing.assert_close(frames, expected, atol=0, rtol=0)
+    torch.testing.assert_close(frames_default, expected, atol=0, rtol=0)
+    torch.testing.assert_close(collinear, collinear_default, atol=0, rtol=0)
+    assert collinear.shape == (1, multiplicity, feats["asym_id"].shape[1])

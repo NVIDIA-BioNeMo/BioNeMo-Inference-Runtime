@@ -137,3 +137,14 @@ def test_rpe_slice_order_matters():
         w[:, 0:n_pos], w[:, n_pos : 2 * n_pos] = (w[:, n_pos : 2 * n_pos].clone(), w[:, 0:n_pos].clone())
         permuted = rpe(**inputs)
     assert not torch.allclose(ref, permuted)
+
+
+def test_rpe_acyclic_tensor_matches_none():
+    """An all-zero ``cyclic_period`` wraps with period 10000, the identity below 5000 residues; callers
+    pass ``None`` for the fused path, so both spellings must agree without reading the tensor back."""
+    rpe = _boltz2_rpe()
+    inputs = _boltz2_inputs(cyclic=False)
+    with torch.no_grad():
+        with_tensor = rpe(**inputs)
+        without = rpe(**{**inputs, "cyclic_period": None})
+    torch.testing.assert_close(with_tensor, without, rtol=0, atol=0)

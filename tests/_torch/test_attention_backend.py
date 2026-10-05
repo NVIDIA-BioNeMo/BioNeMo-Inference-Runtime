@@ -213,3 +213,18 @@ def test_cutedsl_test_modes_rejects_invalid_values(monkeypatch, value):
 
     with pytest.raises(pytest.UsageError, match=CUTEDSL_TEST_MODES_ENV):
         cutedsl_test_modes()
+
+
+@pytest.mark.parametrize("debug", [False, True])
+def test_cutedsl_pair_mask_validation_is_debug_only(monkeypatch: pytest.MonkeyPatch, debug: bool) -> None:
+    """The left-aligned check reads the mask back to the host, so production skips it."""
+    monkeypatch.setattr(attention_utils, "DEBUG_ASSERTS", debug)
+    pair_mask = make_left_aligned_pair_mask(2, 8)
+    valid = attention_utils._cutedsl_precompute_pair_masks(pair_mask)
+    torch.testing.assert_close(valid.mask_bias, (pair_mask > 0.5).sum(-1).to(torch.int32))
+    pair_mask[0, 1, 2] = 0  # interior zero -> not left-aligned
+    if debug:
+        with pytest.raises(ValueError, match="left-aligned"):
+            attention_utils._cutedsl_precompute_pair_masks(pair_mask)
+    else:
+        attention_utils._cutedsl_precompute_pair_masks(pair_mask)

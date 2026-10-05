@@ -39,6 +39,8 @@ from bionemo_ir.pipeline.models.boltz2.const import (
 )
 
 from .confidence_utils import (
+    ChainTable,
+    chain_table,
     compute_aggregated_metric,
     compute_distogram,
     compute_ptms,
@@ -134,7 +136,9 @@ class Boltz2ConfidenceHeads(nn.Module):
         self.to_resolved_logits.load_weights(weights["to_resolved_logits"])
         self.to_plddt_logits.load_weights(weights["to_plddt_logits"])
 
-    def _compute_pae_outputs(self, z, x_pred, feats, multiplicity, is_same_chain=None, is_different_chain=None):
+    def _compute_pae_outputs(
+        self, z, x_pred, feats, multiplicity, is_same_chain=None, is_different_chain=None, chains=None
+    ):
         """Compute the pae-derived outputs (``pae`` + ptm/iptm/...) in a helper."""
         if self.use_separate_heads:
             pae_intra_logits = self.to_pae_intra_logits(z)
@@ -149,7 +153,9 @@ class Boltz2ConfidenceHeads(nn.Module):
 
         out: dict[str, torch.Tensor] = {"pae": compute_aggregated_metric(pae_logits, end=32)}
         try:
-            ptm, iptm, ligand_iptm, protein_iptm, pair_chains_iptm = compute_ptms(pae_logits, x_pred, feats)
+            ptm, iptm, ligand_iptm, protein_iptm, pair_chains_iptm = compute_ptms(
+                pae_logits, x_pred, feats, chains=chains
+            )
             out["ptm"] = ptm
             out["iptm"] = iptm
             out["ligand_iptm"] = ligand_iptm
@@ -185,6 +191,7 @@ class Boltz2ConfidenceHeads(nn.Module):
         feats: dict[str, torch.Tensor] | None,
         prob_contact: torch.Tensor,
         multiplicity: int = 1,
+        chains: ChainTable | None = None,
     ):
         """
         Args:
@@ -204,6 +211,8 @@ class Boltz2ConfidenceHeads(nn.Module):
                 ``compute_contact_prob``. Shape, [B, N_tokens, N_tokens].
             multiplicity: int
                 multiplicity from the confidence module.
+            chains: ChainTable | None
+                Host chain layout from ``chain_table(feats)``, shared across samples.
         Returns:
             dict[str, torch.Tensor]
                 Output dictionary containing the confidence heads.
@@ -219,7 +228,7 @@ class Boltz2ConfidenceHeads(nn.Module):
 
         # Compute the pae + pde outputs here, in helpers, so their [N, N, num_bins] logits and the
         # softmax-aggregation temporaries free on return.
-        pae_out = self._compute_pae_outputs(z, x_pred, feats, multiplicity, is_same_chain, is_different_chain)
+        pae_out = self._compute_pae_outputs(z, x_pred, feats, multiplicity, is_same_chain, is_different_chain, chains)
         pde = self._compute_pde(z, is_same_chain, is_different_chain)
 
         plddt_logits = self.to_plddt_logits(s)
@@ -512,7 +521,7 @@ class Boltz2ConfidenceModule(nn.Module):
                 asym_id=feats["asym_id"],
                 residue_index=feats["residue_index"],
                 entity_id=feats["entity_id"],
-                cyclic_period=feats["cyclic_period"],
+                cyclic_period=feats["cyclic_period"] if feats.get("has_cyclic_period", True) else None,
                 token_index=feats["token_index"],
                 sym_id=feats["sym_id"],
             )
@@ -541,6 +550,9 @@ class Boltz2ConfidenceModule(nn.Module):
             feats.pop(_feat_key, None)
 
         token_to_rep_atom = feats["token_to_rep_atom"]
+        # Chain layout for the pTM heads: one host copy per forward instead of
+        # per-sample ``unique``/``item`` round trips.
+        chains = chain_table(feats)
         out_dicts_chunks = []
 
         x_chunks = x_pred.chunk(niter, dim=1)
@@ -577,6 +589,7 @@ class Boltz2ConfidenceModule(nn.Module):
                     feats=feats,
                     multiplicity=current_multiplicity,
                     prob_contact=prob_contact,
+                    chains=chains,
                 )
             )
             out_dicts_chunks.append(out_dict)

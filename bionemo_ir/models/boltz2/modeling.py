@@ -443,6 +443,21 @@ class Boltz2(nn.Module, OptimizedModuleSetterMixin):
         if steering_args is None:
             steering_args = self.steering_args
 
+        # Host-side branch decisions first, while the launch queue is empty: a
+        # device read later in the forward drains the queue and idles the GPU
+        # until the host catches up.
+        has_templates = feed_dict.get("has_templates", True)
+        if isinstance(has_templates, torch.Tensor):
+            has_templates = bool(has_templates.reshape(-1)[0].item())
+        has_cyclic_period = feed_dict.get("has_cyclic_period")
+        if has_cyclic_period is None:
+            cyclic_period = feed_dict.get("cyclic_period")
+            has_cyclic_period = cyclic_period is not None and bool((cyclic_period > 0).any())
+        elif isinstance(has_cyclic_period, torch.Tensor):
+            has_cyclic_period = bool(has_cyclic_period.any())
+        # Plain bool shared with the confidence module's relative position encoding.
+        feed_dict["has_cyclic_period"] = has_cyclic_period
+
         # Setup query to keys function for sequence local attention
         B, N_atoms, N_tokens = feed_dict["atom_to_token"].shape
         attn_metadata = self.create_attn_metadata(N_atoms)
@@ -458,6 +473,9 @@ class Boltz2(nn.Module, OptimizedModuleSetterMixin):
         # Initialize pairwise embeddings
         z_init = self.z_init_1(s_inputs)[:, :, None] + self.z_init_2(s_inputs)[:, None, :]
         rel_pos_feats = self.get_module_feed_dict(feed_dict, "relative_position_encoding")
+        if not has_cyclic_period:
+            # No cyclic chain: skip the periodic wrap and take the fused relpos path.
+            rel_pos_feats["cyclic_period"] = None
         relative_position_encoding = self.rel_pos(**rel_pos_feats)
         # In-place accumulation: z_init is a freshly-owned [B,N,N,c_z] (from the broadcast add
         # above), so fold each term into it rather than allocating a new z_init per '+' (each of
@@ -479,12 +497,8 @@ class Boltz2(nn.Module, OptimizedModuleSetterMixin):
         # templates (dummy ``template_*`` tensors alone would still burn a
         # full T·N² pairformer pass per recycle).
         template_feats = None
-        if getattr(self.trunk_config, "use_templates_v2", False):
-            has_templates = feed_dict.get("has_templates", True)
-            if isinstance(has_templates, torch.Tensor):
-                has_templates = bool(has_templates.reshape(-1)[0].item())
-            if has_templates:
-                template_feats = self.get_module_feed_dict(feed_dict, "template")
+        if getattr(self.trunk_config, "use_templates_v2", False) and has_templates:
+            template_feats = self.get_module_feed_dict(feed_dict, "template")
         s, z = self.trunk(
             s_init=s_init,
             z_init=z_init,

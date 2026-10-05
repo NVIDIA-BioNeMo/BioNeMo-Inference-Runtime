@@ -357,6 +357,11 @@ uv run --locked pytest -q tests/_torch
 uv run --locked pytest -q tests/ops/test_gated_sigmoid.py::test_gated_sigmoid_config_selection_is_source_free
 ```
 
+`BIOIR_DEBUG_ASSERTS=1` turns on device-side input validation (for example
+the left-aligned pair-mask check of the CuTeDSL attention backends). Each
+check reads a device tensor back to the host, which stalls the launch queue
+and is illegal inside CUDA-graph capture, so it is off by default.
+
 ## Lint and Format
 
 Style is enforced by [prek](https://github.com/j178/prek), which runs the hooks

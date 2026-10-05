@@ -25,6 +25,7 @@ from test_utils.boltz.create_and_load_weights import (
 from test_utils.boltz.ref_layers import RefPairformerLayer
 
 from bionemo_ir._torch.attention_backend import AttentionType, get_attention_backend
+from bionemo_ir._torch.attention_backend import utils as attention_utils
 from bionemo_ir._torch.attention_backend.utils import (
     PrecomputedPairMasks,
     precompute_pair_masks,
@@ -253,20 +254,23 @@ def test_precompute_pair_masks_cutedsl_left_aligned(dtype: torch.dtype, seq_len:
 
 
 @pytest.mark.parametrize("seq_len", [16, 13])
-def test_precompute_pair_masks_cutedsl_rejects_non_left_aligned(seq_len: int):
+@pytest.mark.parametrize("debug", [False, True])
+def test_precompute_pair_masks_cutedsl_rejects_non_left_aligned(
+    monkeypatch: pytest.MonkeyPatch, seq_len: int, debug: bool
+):
     """CuTeDSL precompute requires a left-aligned ``pair_mask``.
 
     The underlying left-mask kernel interprets ``actual_s_kv = sum(>0.5)``
     as the count of leading 1s per row (i.e. the row is ``1...1 0...0``).
-    Feeding a non-left-aligned mask would silently produce wrong attention
-    masking, so the precompute now rejects such inputs with an explicit
-    AssertionError instead of swallowing the bug.
+    The check reads the mask back to the host, so it runs only with
+    ``BIOIR_DEBUG_ASSERTS=1``; production trusts the tokenizer's layout.
     """
+    monkeypatch.setattr(attention_utils, "DEBUG_ASSERTS", debug)
     device = torch.device("cuda")
     B, I, J = 2, seq_len, seq_len
 
     # Random 0/1 mask: with high probability it is not non-increasing along
-    # at least one axis, so the precompute must reject it.
+    # at least one axis, so the debug check must reject it.
     torch.manual_seed(0)
     pair_mask = torch.randint(0, 2, (B, I, J), dtype=torch.float32, device=device)
     # Force an interior zero so the input is guaranteed non-left-aligned
@@ -275,7 +279,10 @@ def test_precompute_pair_masks_cutedsl_rejects_non_left_aligned(seq_len: int):
     pair_mask[0, 0, 1] = 0.0
     pair_mask[0, 0, 2] = 1.0
 
-    with pytest.raises(AssertionError, match="left-aligned"):
+    if debug:
+        with pytest.raises(ValueError, match="left-aligned"):
+            precompute_pair_masks("CuTeDSL", pair_mask)
+    else:
         precompute_pair_masks("CuTeDSL", pair_mask)
 
 

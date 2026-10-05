@@ -87,15 +87,6 @@ files distributed by an upstream package remain authoritative for that package.
   - The copied `fa3_utils.h` excerpt retains its FlashAttention-3
     BSD-3-Clause copyright and license notice
 
-- **CUTLASS C++ headers**
-  - Version: 4.5.2, pinned by the `3rdparty/cutlass` submodule
-  - Copyright: NVIDIA Corporation and affiliates
-  - License: BSD-3-Clause
-  - Source: [CUTLASS][cutlass]
-  - Distribution: build-time only. The headers are not vendored and do not
-    ship; `cpp/kernels/claude_kit_triangle_attention_sm90_D32/` compiles
-    against them and the resulting object code ships
-
 - **CUTLASS-derived CuTe DSL source**
   - Version: source excerpts associated with nvidia-cutlass-dsl 4.5.2
   - Copyright: NVIDIA Corporation and affiliates
@@ -257,6 +248,21 @@ distribution.
 - **nvidia-cutlass-dsl** — LicenseRef-NVIDIA-SOFTWARE-LICENSE;
   [package and terms][cutlass-dsl-license]
 
+## Build Submodules
+
+These pinned submodules provide build-time source dependencies. The headers
+are not shipped, but the compiled object code is included in BioIR.
+
+- **CUTLASS**
+  - Version: 4.5.2
+  - Commit: `db1c288993354c88e551c40c19a8fb93a774a241`
+  - Copyright: NVIDIA Corporation and affiliates
+  - License: BSD-3-Clause
+  - Source and license: [CUTLASS commit][cutlass-commit]
+  - Distribution: `cpp/kernels/claude_kit_triangle_attention_sm90_D32/`
+    compiles against the C++ headers in `3rdparty/cutlass`; the resulting
+    object code ships
+
 ## Reference Submodules
 
 The following pinned submodules support parity and reference tests. They do not
@@ -316,6 +322,7 @@ resolved operating-system and base-image package closure.
 [cueq-ops-torch-cu13]: https://pypi.org/project/cuequivariance-ops-torch-cu13/
 [cuequivariance]: https://github.com/NVIDIA/cuEquivariance
 [cutlass]: https://github.com/NVIDIA/cutlass
+[cutlass-commit]: https://github.com/NVIDIA/cutlass/tree/db1c288993354c88e551c40c19a8fb93a774a241
 [cutlass-dsl-license]: https://docs.nvidia.com/cutlass/latest/media/docs/pythonDSL/license.html
 [datasets]: https://github.com/huggingface/datasets
 [einops]: https://github.com/arogozhnikov/einops

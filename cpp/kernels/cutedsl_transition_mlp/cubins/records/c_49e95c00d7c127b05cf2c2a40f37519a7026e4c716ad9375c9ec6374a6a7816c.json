@@ -133,6 +133,18 @@
       "target_arch": "sm_89",
       "target_sm": 89
     },
+    "cd21f57f3ef653e03235fde7b5a04d98ac05cc3b67c2bcd693069ea83bceb381": {
+      "dtype": "bf16",
+      "dynamic_smem_bytes": 230400,
+      "image_sha256": "2bf7e02886b49c34186e1c18b0ea272f6cc7aaffee30a48861a5cb02297c18cc",
+      "image_size": 128696,
+      "kernel_sm": 90,
+      "kernel_symbol": "d7c5ebfb6d9186edd1c0b20e154bc01ffbf6a491cc0503b27d4b9947057cc33c",
+      "launch_abi": "transition_mlp_sm90_v1",
+      "sm90_launch": "446cc90528832f4b0f353574e990f22074dc24b36788ba45fd8ca4d03ef98a06",
+      "target_arch": "sm_90a",
+      "target_sm": 90
+    },
     "cd33b680715875fc7ccbc4b1f5475248c029339377612b77866f2314ff278501": {
       "dtype": "bf16",
       "dynamic_smem_bytes": 101376,
@@ -154,6 +166,18 @@
       "launch_abi": "transition_mlp_sm80_v1",
       "target_arch": "sm_89",
       "target_sm": 89
+    },
+    "cea04d7b1b3ad0e4f726880ef3f0d2c864371ab2b17721bee162162ab70aaa7c": {
+      "dtype": "bf16",
+      "dynamic_smem_bytes": 230400,
+      "image_sha256": "3d05b76354e445e666562eb0cb9e99d8d7c8bd4fac79b6c0c491ca9823d6dab0",
+      "image_size": 62136,
+      "kernel_sm": 90,
+      "kernel_symbol": "d7c5ebfb6d9186edd1c0b20e154bc01ffbf6a491cc0503b27d4b9947057cc33c",
+      "launch_abi": "transition_mlp_sm90_v1",
+      "sm90_launch": "dcdbd47aad15b25d7d1141254207332d1d3f940cec0101685e9a2833458e0fc0",
+      "target_arch": "sm_90a",
+      "target_sm": 90
     }
   },
   "kernel_symbols": {
@@ -161,6 +185,22 @@
   },
   "sm90_launches": {},
   "variants": [
+    {
+      "executable": "94e0017d971239d55483c81a6d86165a1ffb6608c392f56c5c3155af15583595",
+      "runtime_metadata": {
+        "bucket": 2048,
+        "has_bias": false,
+        "has_mask": true,
+        "has_residual": true,
+        "hidden": 512,
+        "is_silu_gate": true,
+        "is_three_way": false,
+        "num_threads": 384,
+        "tile_m": 128,
+        "width": 128
+      },
+      "variant_id": "c011dcbcd60a30a913f0"
+    },
     {
       "executable": "188dd78b59d905168c15e4b95ee341a7e919284114988ac85bc43eb921dea201",
       "runtime_metadata": {
@@ -208,6 +248,22 @@
         "width": 64
       },
       "variant_id": "c074ea7598719340d8cb"
+    },
+    {
+      "executable": "af26a9af90a24d0dd224e858f29b37ac8bb95d000669f86fc10302d64cf1c55c",
+      "runtime_metadata": {
+        "bucket": 384,
+        "has_bias": false,
+        "has_mask": true,
+        "has_residual": true,
+        "hidden": 256,
+        "is_silu_gate": true,
+        "is_three_way": false,
+        "num_threads": 128,
+        "tile_m": 64,
+        "width": 64
+      },
+      "variant_id": "c0d4cacb45789d75db17"
     },
     {
       "executable": "8d2a64d67f4970ada5650ff438564ba11f1df8c9ba5b05b5f71230aed95ae7b6",
@@ -386,6 +442,22 @@
       "variant_id": "c47fa06b47ff6a7999a8"
     },
     {
+      "executable": "b8bc400c3f233717e7d492bca2e4cf18e2f968ae8127e8d257e9e69c019a09fd",
+      "runtime_metadata": {
+        "bucket": 64,
+        "has_bias": false,
+        "has_mask": true,
+        "has_residual": true,
+        "hidden": 512,
+        "is_silu_gate": true,
+        "is_three_way": false,
+        "num_threads": 384,
+        "tile_m": 128,
+        "width": 128
+      },
+      "variant_id": "c4e5cabdc2ac5734f29f"
+    },
+    {
       "executable": "63b90c3dda8b1b6ef8f3fac4cc6c7b00df7b082207a37c812399a390884f81ff",
       "runtime_metadata": {
         "bucket": 1536,
@@ -402,6 +474,22 @@
       "variant_id": "c51e5731f971ba3f3172"
     },
     {
+      "executable": "57627731530103a32a44cc5cfa745bcb582f6dd5a7cba37344a38e26520688f3",
+      "runtime_metadata": {
+        "bucket": 64,
+        "has_bias": false,
+        "has_mask": true,
+        "has_residual": true,
+        "hidden": 512,
+        "is_silu_gate": true,
+        "is_three_way": false,
+        "num_threads": 128,
+        "tile_m": 64,
+        "width": 128
+      },
+      "variant_id": "c53eed3fa6cda8b0ddc3"
+    },
+    {
       "executable": "63b90c3dda8b1b6ef8f3fac4cc6c7b00df7b082207a37c812399a390884f81ff",
       "runtime_metadata": {
         "bucket": 384,
@@ -416,6 +504,22 @@
         "width": 64
       },
       "variant_id": "c56c72a5eefac4ad7f4d"
+    },
+    {
+      "executable": "44e11995f1b16cf8604d984672e1031fccc07be1f98de9e7baa971f3133a4220",
+      "runtime_metadata": {
+        "bucket": 64,
+        "has_bias": false,
+        "has_mask": true,
+        "has_residual": true,
+        "hidden": 1024,
+        "is_silu_gate": true,
+        "is_three_way": false,
+        "num_threads": 64,
+        "tile_m": 32,
+        "width": 256
+      },
+      "variant_id": "c58a1c103c0b002d51d4"
     },
     {
       "executable": "f95bb3217668d2ab95ce8aae91b92a11f92222d3e3ba4d072bedc5a6e675dd04",
@@ -530,6 +634,22 @@
       "variant_id": "c93da766488495cdf844"
     },
     {
+      "executable": "eeffac50cef51c1321fdc62ae6f64500269b65a28d2b4ca5295b6cd0c4a900ba",
+      "runtime_metadata": {
+        "bucket": 2048,
+        "has_bias": false,
+        "has_mask": true,
+        "has_residual": true,
+        "hidden": 256,
+        "is_silu_gate": true,
+        "is_three_way": false,
+        "num_threads": 128,
+        "tile_m": 64,
+        "width": 64
+      },
+      "variant_id": "c952a4800fdb8a8160f2"
+    },
+    {
       "executable": "b61db6f6567f714fd4acb05ea6d0c12b078fa78f528cad814899381da1cfa8c4",
       "runtime_metadata": {
         "bucket": 256,
@@ -624,6 +744,22 @@
         "width": 64
       },
       "variant_id": "cbcadd3c4b5291b0db19"
+    },
+    {
+      "executable": "af26a9af90a24d0dd224e858f29b37ac8bb95d000669f86fc10302d64cf1c55c",
+      "runtime_metadata": {
+        "bucket": 512,
+        "has_bias": false,
+        "has_mask": true,
+        "has_residual": true,
+        "hidden": 256,
+        "is_silu_gate": true,
+        "is_three_way": false,
+        "num_threads": 128,
+        "tile_m": 64,
+        "width": 64
+      },
+      "variant_id": "cbd33edb7c219fc685fc"
     },
     {
       "executable": "5a3885f5c27707a0a8077e0367dd4794c3606de2afcb898167221c9a2991ceca",

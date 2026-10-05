@@ -67,11 +67,34 @@
       "target_arch": "sm_89",
       "target_sm": 89
     },
+    "e56276425f8b4ea48aa0fefca6c67275be8a878562e79e2c7de1420f3bc7c66a": {
+      "dtype": "bf16",
+      "dynamic_smem_bytes": 90112,
+      "image_sha256": "dba61c42fbd11ce3a2d4fe3d71b0c611e4835614cf609a3382ae5be29b99cd37",
+      "image_size": 33952,
+      "kernel_sm": 80,
+      "kernel_symbol": "f2953f49361cf24f708ae91ecdcba91dae2c33c1dfa0114b37fdf3dddd09b6eb",
+      "launch_abi": "transition_mlp_sm80_v1",
+      "target_arch": "sm_86",
+      "target_sm": 86
+    },
     "e7e3c94c48c9359e0d89e250b0a8a9bc53c37f42255d38d6575fb086b44e4ea4": {
       "dtype": "bf16",
       "dynamic_smem_bytes": 150528,
       "image_sha256": "32ddfce7da357cf971239d3547b04817e3b84ea79a26476145e43dc5782fc4ca",
       "image_size": 27336,
+      "kernel_sm": 90,
+      "kernel_symbol": "d7c5ebfb6d9186edd1c0b20e154bc01ffbf6a491cc0503b27d4b9947057cc33c",
+      "launch_abi": "transition_mlp_sm90_v1",
+      "sm90_launch": "1b0bc60a1b9f723c5e5f76283710eaeebf4532e11fb6e3eeda82f4f826f7e40c",
+      "target_arch": "sm_90a",
+      "target_sm": 90
+    },
+    "e81ceaa4da3c0dfca0fdb718ef2496744700239ce2381f49ce4129f8b7638916": {
+      "dtype": "bf16",
+      "dynamic_smem_bytes": 132096,
+      "image_sha256": "82526782916b60a4ccacd601e587aa548bcaa8e41e1d4291c6ff2a20aa9a75bc",
+      "image_size": 38584,
       "kernel_sm": 90,
       "kernel_symbol": "d7c5ebfb6d9186edd1c0b20e154bc01ffbf6a491cc0503b27d4b9947057cc33c",
       "launch_abi": "transition_mlp_sm90_v1",
@@ -201,6 +224,17 @@
       "launch_abi": "transition_mlp_sm80_v1",
       "target_arch": "sm_89",
       "target_sm": 89
+    },
+    "eeffac50cef51c1321fdc62ae6f64500269b65a28d2b4ca5295b6cd0c4a900ba": {
+      "dtype": "bf16",
+      "dynamic_smem_bytes": 32768,
+      "image_sha256": "42911e4907ea3cb1add23bd8e1aa159a8cda86d91d8c9aea312e8ebd4e3f8586",
+      "image_size": 19616,
+      "kernel_sm": 80,
+      "kernel_symbol": "2f1f1b079a794731736537417326dd95e4471ed8f6dc42e193910f5640865177",
+      "launch_abi": "transition_mlp_sm80_v1",
+      "target_arch": "sm_80",
+      "target_sm": 80
     },
     "ef6511f71703081f707dbcafaf2ab2151d86ea336f1423e6b52f35fcefd1d3dd": {
       "dtype": "bf16",
@@ -391,6 +425,22 @@
       "variant_id": "e330114c15f34ccf942d"
     },
     {
+      "executable": "7d489ef8eaf13fec851b5bf92b6f03c1d50145b5200a2ec53b11d28fe997b933",
+      "runtime_metadata": {
+        "bucket": 2048,
+        "has_bias": false,
+        "has_mask": true,
+        "has_residual": true,
+        "hidden": 256,
+        "is_silu_gate": true,
+        "is_three_way": false,
+        "num_threads": 128,
+        "tile_m": 128,
+        "width": 64
+      },
+      "variant_id": "e3459bd6d7b3fdc73424"
+    },
+    {
       "executable": "c43dfe1ce660089555512ffa2d8fb12d1a48064886a9b2bfe869bb63df229ce0",
       "runtime_metadata": {
         "bucket": 1024,
@@ -469,6 +519,22 @@
         "width": 64
       },
       "variant_id": "e5016e8b6f9a0041407f"
+    },
+    {
+      "executable": "e81ceaa4da3c0dfca0fdb718ef2496744700239ce2381f49ce4129f8b7638916",
+      "runtime_metadata": {
+        "bucket": 1536,
+        "has_bias": false,
+        "has_mask": true,
+        "has_residual": true,
+        "hidden": 256,
+        "is_silu_gate": true,
+        "is_three_way": false,
+        "num_threads": 384,
+        "tile_m": 128,
+        "width": 64
+      },
+      "variant_id": "e51575a0302e1206777f"
     },
     {
       "executable": "359e92ddaab4ed2d8ae478adbab4098b33dc3bb6206f1f67f0f24c1b468df51f",
@@ -551,6 +617,22 @@
       "variant_id": "e596d6fda69d4162ed5c"
     },
     {
+      "executable": "771c4300232eb9f734eba67f97b7e12dbfd64f32454fc2fbb4ab9b888ba2cc95",
+      "runtime_metadata": {
+        "bucket": 96,
+        "has_bias": false,
+        "has_mask": true,
+        "has_residual": true,
+        "hidden": 1024,
+        "is_silu_gate": true,
+        "is_three_way": false,
+        "num_threads": 256,
+        "tile_m": 128,
+        "width": 256
+      },
+      "variant_id": "e5b809d1cdb418f2d692"
+    },
+    {
       "executable": "659e0eeb474177dc60fa968f7d28265c5814342c86a734fa075fff064fd7032b",
       "runtime_metadata": {
         "bucket": 128,
@@ -581,6 +663,22 @@
         "width": 64
       },
       "variant_id": "e5e7b62352a261509bb5"
+    },
+    {
+      "executable": "f9892994872693032a1bd89fb327f6e524f3dd9a609972623d13c09d892691c9",
+      "runtime_metadata": {
+        "bucket": 64,
+        "has_bias": false,
+        "has_mask": true,
+        "has_residual": true,
+        "hidden": 1024,
+        "is_silu_gate": true,
+        "is_three_way": false,
+        "num_threads": 128,
+        "tile_m": 64,
+        "width": 256
+      },
+      "variant_id": "e5eb433fed2d102bad07"
     },
     {
       "executable": "4ab9c2d9a9849d66f9552d9722ed99e4e314dfc705b944fc5eff97c3fa332f98",
@@ -743,6 +841,22 @@
       "variant_id": "e83421c53b4e976d29ff"
     },
     {
+      "executable": "b8bc400c3f233717e7d492bca2e4cf18e2f968ae8127e8d257e9e69c019a09fd",
+      "runtime_metadata": {
+        "bucket": 128,
+        "has_bias": false,
+        "has_mask": true,
+        "has_residual": true,
+        "hidden": 512,
+        "is_silu_gate": true,
+        "is_three_way": false,
+        "num_threads": 384,
+        "tile_m": 128,
+        "width": 128
+      },
+      "variant_id": "e873f6643ac73a1b608e"
+    },
+    {
       "executable": "245de645e5b86aeb4a64ffdd1839c500a38c7affe0c577f440485846ee774a1c",
       "runtime_metadata": {
         "bucket": 1536,
@@ -757,6 +871,22 @@
         "width": 64
       },
       "variant_id": "e8aa5bc551d00546d805"
+    },
+    {
+      "executable": "e81ceaa4da3c0dfca0fdb718ef2496744700239ce2381f49ce4129f8b7638916",
+      "runtime_metadata": {
+        "bucket": 1024,
+        "has_bias": false,
+        "has_mask": true,
+        "has_residual": true,
+        "hidden": 256,
+        "is_silu_gate": true,
+        "is_three_way": false,
+        "num_threads": 384,
+        "tile_m": 128,
+        "width": 64
+      },
+      "variant_id": "e923d6a12b6e517a5704"
     },
     {
       "executable": "77627ce204ea7b348edab78134f5959a3462620239b9e4c93ef085768b2544e4",

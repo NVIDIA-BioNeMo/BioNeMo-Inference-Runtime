@@ -38,7 +38,7 @@ from bionemo_ir._torch.attention_backend.pairwise_attention import _config as pw
 from bionemo_ir._torch.attention_backend.pairwise_attention import _cubin as pw_cubin
 from bionemo_ir._torch.attention_backend.pairwise_attention import cutedsl as pw_cutedsl
 from bionemo_ir._torch.utils.kernel import _cutedsl_kernel_library as library_runtime
-from tests._torch import SM_VERSION, cutedsl_test_modes, skip_cutedsl
+from tests._torch import SM_VERSION, cutedsl_test_modes, require_cubin_library, skip_cutedsl
 
 pytestmark = skip_cutedsl
 
@@ -205,7 +205,7 @@ def test_rectangular_and_broadcast_batch(monkeypatch, mode):
 
 def test_unavailable_cubin_variant_raises(monkeypatch):
     """A missing CUBIN must fail loudly rather than silently degrade."""
-    pytest.importorskip("bionemo_ir.libs._cutedsl_kernels")
+    require_cubin_library()
 
     def missing_source(_implementation):
         raise ModuleNotFoundError("CuTeDSL kernel source removed")
@@ -238,7 +238,7 @@ def _forced_backend(head_dim, num_heads=4):
 
 def test_force_cubin_takes_the_library_path_with_sources_present(monkeypatch):
     """The flag must reach the CUBINs without deleting the kernel sources."""
-    pytest.importorskip("bionemo_ir.libs._cutedsl_kernels")
+    require_cubin_library()
     monkeypatch.setenv(FORCE_CUBIN_ENV, "1")
     PairwiseAttentionCuTeLeftMask._compiled_cache.clear()
 
@@ -252,7 +252,7 @@ def test_force_cubin_takes_the_library_path_with_sources_present(monkeypatch):
 
 def test_force_cubin_error_names_the_flag(monkeypatch):
     """A forced run must not blame absent sources when the CUBIN is missing."""
-    pytest.importorskip("bionemo_ir.libs._cutedsl_kernels")
+    require_cubin_library()
 
     def unavailable(*_args, **_kwargs):
         raise library_runtime.CuTeDSLKernelVariantUnavailable("no such variant")
@@ -268,7 +268,7 @@ def test_force_cubin_error_names_the_flag(monkeypatch):
 
 def _cubin_launch_args(head_dim, num_heads=4, batch=2, seqlen=96):
     """One valid launch through the CUBIN adapter, ready to be perturbed."""
-    library = pytest.importorskip("bionemo_ir.libs._cutedsl_kernels")
+    library = require_cubin_library()
     executable = pw_cubin.PairwiseAttentionCubinExecutable(
         library, library.pairwise_attention, SM_VERSION, head_dim, 0, torch.float16, False
     )

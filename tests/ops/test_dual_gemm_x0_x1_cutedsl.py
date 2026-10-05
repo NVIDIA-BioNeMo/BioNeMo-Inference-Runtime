@@ -16,7 +16,6 @@
 
 from __future__ import annotations
 
-import importlib
 import json
 import re
 from pathlib import Path
@@ -540,7 +539,7 @@ def test_cubin_and_python_agree_on_the_bucket(monkeypatch):
     """Nearest-anchor selection is implemented twice; they must not diverge."""
     skip_if_no_cutedsl(_OP)
     _configure_mode("cubin", monkeypatch)
-    library = importlib.import_module("bionemo_ir.libs._cutedsl_kernels")
+    library = require_cubin_library()
     launcher = library.dual_gemm_x0_x1
     for K, N in ((128, 128), (256, 256)):
         anchors = dg_config.bucket_anchors(dg_config.load_bundle(SM_VERSION, K, N).configs, True)
@@ -563,7 +562,7 @@ def test_every_shipped_config_is_reachable_through_the_cubin_path(monkeypatch):
     """A tuned entry the CUBIN path cannot select is a variant nobody runs."""
     skip_if_no_cutedsl(_OP)
     _configure_mode("cubin", monkeypatch)
-    library = importlib.import_module("bionemo_ir.libs._cutedsl_kernels")
+    library = require_cubin_library()
     launcher = library.dual_gemm_x0_x1
     dtypes = {"bf16": launcher.DType.BFLOAT16, "fp16": launcher.DType.FLOAT16}
     checked = 0
@@ -606,7 +605,7 @@ def test_production_cubin_corpus_excludes_plain_variants():
     skip_if_no_cutedsl(_OP)
     if SM_VERSION not in _RESIDUAL_ONLY_SMS:
         pytest.skip(f"residual-only corpus policy does not apply to SM{SM_VERSION}")
-    library = importlib.import_module("bionemo_ir.libs._cutedsl_kernels")
+    library = require_cubin_library()
     launcher = library.dual_gemm_x0_x1
     args = (SM_VERSION, 128, 128, 256, launcher.DType.BFLOAT16, True)
     with pytest.raises(ValueError, match="No embedded dual-GEMM x0_x1 CUBIN"):
@@ -619,7 +618,7 @@ def test_unavailable_variant_raises_instead_of_falling_back(monkeypatch):
     """An unsupported shape must fail loudly, not silently pick another kernel."""
     skip_if_no_cutedsl(_OP)
     _configure_mode("cubin", monkeypatch)
-    library = importlib.import_module("bionemo_ir.libs._cutedsl_kernels")
+    library = require_cubin_library()
     launcher = library.dual_gemm_x0_x1
     # nanobind maps the launcher's std::invalid_argument onto ValueError.
     with pytest.raises(ValueError, match="No embedded dual-GEMM x0_x1 CUBIN"):

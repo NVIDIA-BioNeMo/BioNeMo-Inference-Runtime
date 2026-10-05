@@ -173,10 +173,13 @@ def test_streamed_epilogue_matches_separate_residual_add(
         assert torch.equal(residual, x)
 
 
-@pytest.mark.parametrize("mode", MODES)
 @pytest.mark.parametrize("column", [False, True], ids=["row", "column"])
 @pytest.mark.parametrize("inplace", [False, True], ids=["out_of_place", "inplace"])
-@pytest.mark.parametrize(("channels", "fused"), [(256, True), (64, False)], ids=["c256", "c64"])
+@pytest.mark.parametrize(
+    ("mode", "channels", "fused"),
+    [pytest.param(mode, 256, True, id=f"c256-{mode}") for mode in MODES]
+    + [pytest.param("fallback", 64, False, id="c64-fallback")],
+)
 def test_msa_attention_residual_matches_separate_add(
     mode: str, monkeypatch: pytest.MonkeyPatch, column: bool, inplace: bool, channels: int, fused: bool
 ) -> None:

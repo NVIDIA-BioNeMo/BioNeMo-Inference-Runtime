@@ -271,6 +271,9 @@ def test_transition_normalize_false_skips_layernorm():
     device = torch.device("cuda")
     dim, hidden = 32, 64
     module = Transition(dim, hidden, dtype=torch.float32, normalize=False).to(device)
+    with torch.no_grad():
+        for parameter in module.parameters():
+            parameter.normal_(mean=0.0, std=0.1)
     assert module.norm is None
     assert "norm.weight" not in module.state_dict()
 

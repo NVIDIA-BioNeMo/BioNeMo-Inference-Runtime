@@ -17,6 +17,7 @@
 
 from __future__ import annotations
 
+import math
 from collections.abc import Iterator
 from typing import TYPE_CHECKING
 
@@ -32,6 +33,7 @@ from bionemo_ir._torch.modules.openfold3.utils.atomize_utils import (
     get_token_representative_atoms,
     max_atom_per_token_masked_select,
 )
+from bionemo_ir._torch.modules.openfold3.utils.confidence import pae_reduction_rows, reduce_pae_logits
 from bionemo_ir._torch.utils import (
     CHUNK_REGISTRY,
     CONFIDENCE_PAIR_EMBEDDING,
@@ -852,6 +854,9 @@ class AuxiliaryHeadsAllAtom(nn.Module):
         self.skip_create_weights = config.skip_create_weights
         self.apply_per_sample = config.memory_efficient_mode
         self.offload_pairformer_outputs = config.offload_pairformer_outputs
+        self.compact_output = config.compact_output
+        if self.compact_output and not self.apply_per_sample:
+            raise ValueError("compact_output requires memory_efficient_mode")
 
         self.pairformer_embedding = PairformerEmbedding(
             pairformer=config.pairformer,
@@ -936,6 +941,92 @@ class AuxiliaryHeadsAllAtom(nn.Module):
             and self.offload_pairformer_outputs
             and (not zij.is_cuda or not torch.cuda.is_current_stream_capturing())
         )
+
+    def _should_compact(self, zij: torch.Tensor) -> bool:
+        """Compact outputs serve uncaptured per-sample inference only."""
+        return (
+            self.compact_output
+            and self.apply_per_sample
+            and not self.training
+            and not torch.is_grad_enabled()
+            and (not zij.is_cuda or not torch.cuda.is_current_stream_capturing())
+        )
+
+    def _project_pae_rows(self, zij_rows: torch.Tensor) -> torch.Tensor:
+        """The PAE head on a ``[rows, N, C_z]`` block; both layers are position-wise."""
+        return self.pae.linear(self.pae.layer_norm(zij_rows))
+
+    def _stream_compact_heads(
+        self,
+        *,
+        batch: dict[str, torch.Tensor],
+        frames: torch.Tensor | None,
+        si_input: torch.Tensor,
+        si: torch.Tensor,
+        zij: torch.Tensor,
+        x_pred: torch.Tensor,
+        single_mask: torch.Tensor,
+        pair_mask: torch.Tensor,
+    ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
+        """Reduce each completed Pairformer sample to FP32 PAE, pTM and ipTM on its device.
+
+        The PAE head projects one row block at a time straight into the shared
+        reducer, so a sample never holds its full logits, and its pair embedding
+        is released before the next sample's is built. Every sample's reduction
+        is retained so the caller can select the winning sample once.
+
+        Logits retain the head's precision before FP32 reduction. Unlike raw
+        outputs, they are not cast to the coordinate dtype first, so compact
+        confidence values can differ when those dtypes differ.
+        """
+        no_samples = x_pred.shape[-3]
+        if no_samples < 1:
+            raise RuntimeError("per-sample confidence requires at least one diffusion sample")
+        batch_shape = x_pred.shape[:-3]
+        n_padded = zij.shape[-2]
+        si_output = torch.empty((*batch_shape, no_samples, *si.shape[-2:]), dtype=si.dtype, device=zij.device)
+        compact: dict[str, torch.Tensor] = {}
+        if self.config.pae.enabled:
+            if frames is None:
+                raise ValueError("compact PAE needs the per-sample frame mask")
+            token_counts = batch["token_mask"].reshape(-1, n_padded).sum(dim=-1).tolist()
+            chains = batch["asym_id"].reshape(-1, n_padded)
+            batch_count = math.prod(batch_shape)
+            if len(token_counts) != batch_count or chains.shape[0] != batch_count:
+                raise ValueError("compact confidence needs one token mask and chain id row per batch element")
+            compact["pae"] = torch.zeros(
+                (*batch_shape, no_samples, n_padded, n_padded), dtype=torch.float32, device=zij.device
+            )
+            compact["ptm"] = torch.empty((*batch_shape, no_samples), dtype=torch.float32, device=zij.device)
+            compact["iptm"] = torch.empty_like(compact["ptm"])
+            pae_flat = compact["pae"].view(batch_count, no_samples, n_padded, n_padded)
+            scores_flat = tuple(compact[name].view(batch_count, no_samples) for name in ("ptm", "iptm"))
+            frames_flat = frames.reshape(batch_count, no_samples, n_padded)
+            rows = pae_reduction_rows(n_padded, self.pae.c_out, zij.device)
+
+        for sample_idx, si_sample, zij_sample in self.pairformer_embedding.iter_per_sample_pairformer_emb(
+            si_input, si, zij, x_pred, single_mask, pair_mask
+        ):
+            si_output.select(-3, sample_idx).copy_(si_sample)
+            if self.config.pae.enabled:
+                pairs = zij_sample.reshape(batch_count, n_padded, n_padded, zij_sample.shape[-1])
+                for batch_idx in range(batch_count):
+                    n_tokens = int(token_counts[batch_idx])
+                    reduced = reduce_pae_logits(
+                        pairs[batch_idx],
+                        n_tokens,
+                        chains[batch_idx],
+                        frames_flat[batch_idx, sample_idx],
+                        rows=rows,
+                        pae_out=pae_flat[batch_idx, sample_idx, :n_tokens, :n_tokens],
+                        project=self._project_pae_rows,
+                    )
+                    for destination, score in zip(scores_flat, reduced.scores, strict=True):
+                        destination[batch_idx, sample_idx] = score
+                    del reduced
+                del pairs
+            del si_sample, zij_sample
+        return si_output, compact
 
     def _stream_pair_heads(
         self,
@@ -1025,6 +1116,13 @@ class AuxiliaryHeadsAllAtom(nn.Module):
             heads return logits. With offload_pairformer_outputs enabled,
             PAE and PDE logits remain on CPU; other outputs stay on the
             predicted-coordinate device. All outputs use the coordinate dtype.
+
+            Compact inference (``compact_output``, per-sample, uncaptured, no
+            autograd) returns "plddt_logits" and, with the PAE head,
+            "valid_frame_mask" plus FP32 "pae" ([*, S, N_token, N_token],
+            zero beyond each element's token count), "ptm" and "iptm"
+            ([*, S]) for every sample on the coordinate device. It skips the
+            PDE, distogram and resolved heads and never forms pair archives.
         """
         aux_out = {}
 
@@ -1033,12 +1131,15 @@ class AuxiliaryHeadsAllAtom(nn.Module):
         zij = output["zij_trunk"].to(dtype=self.dtype)
         atom_positions_predicted = output["atom_positions_predicted"].to(dtype=si.dtype)
 
+        compact_output = self._should_compact(zij)
         pair_offload_enabled = self.offload_pairformer_outputs and (
             not zij.is_cuda or not torch.cuda.is_current_stream_capturing()
         )
         stream_pair_heads_on_device = self._should_stream_pair_heads_on_device(zij)
         stream_pair_heads_to_cpu = self._should_stream_pair_heads_to_cpu(zij)
-        defer_distogram = stream_pair_heads_on_device or self._should_defer_offloaded_distogram(zij)
+        defer_distogram = not compact_output and (
+            stream_pair_heads_on_device or self._should_defer_offloaded_distogram(zij)
+        )
         if defer_distogram:
             # Allocate persistent head outputs before Pairformer scratch so
             # later split segments can be returned at their last-use boundary.
@@ -1046,7 +1147,7 @@ class AuxiliaryHeadsAllAtom(nn.Module):
 
         # The deferred paths compute this after pair-head finalization so its
         # FP32 output does not span the current confidence memory peak.
-        if not defer_distogram:
+        if not defer_distogram and not compact_output:
             aux_out["distogram_logits"] = self.distogram(z=zij)
 
         token_mask = batch["token_mask"]
@@ -1063,7 +1164,22 @@ class AuxiliaryHeadsAllAtom(nn.Module):
 
         out_device = atom_positions_predicted.device
         # Embed trunk outputs
-        if stream_pair_heads_on_device or stream_pair_heads_to_cpu:
+        frames = None
+        if compact_output:
+            if self.config.pae.enabled:
+                frames = get_token_frame_mask(batch=batch, x=atom_positions_predicted, atom_mask=batch["atom_mask"])
+            si, streamed_pair_outputs = self._stream_compact_heads(
+                batch=batch,
+                frames=frames,
+                si_input=si_input,
+                si=si,
+                zij=zij,
+                x_pred=repr_x_pred,
+                single_mask=repr_x_mask,
+                pair_mask=pair_mask,
+            )
+            del zij
+        elif stream_pair_heads_on_device or stream_pair_heads_to_cpu:
             pair_output_device = torch.device("cpu") if stream_pair_heads_to_cpu else zij.device
             pair_output_dtype = out_dtype if stream_pair_heads_to_cpu else zij.dtype
             si, streamed_pair_outputs = self._stream_pair_heads(
@@ -1102,6 +1218,15 @@ class AuxiliaryHeadsAllAtom(nn.Module):
 
         si = si.to(device=out_device)
         aux_out["plddt_logits"] = self.plddt(s=si, max_atom_per_token_mask=max_atom_per_token_mask)
+
+        if compact_output:
+            del si
+            aux_out["plddt_logits"] = aux_out["plddt_logits"].to(dtype=out_dtype)
+            if frames is not None:
+                aux_out["valid_frame_mask"] = frames.to(device=out_device, dtype=out_dtype)
+            aux_out.update(streamed_pair_outputs)
+            streamed_pair_outputs.clear()
+            return aux_out
 
         aux_out["experimentally_resolved_logits"] = self.experimentally_resolved(si, max_atom_per_token_mask)
         del si

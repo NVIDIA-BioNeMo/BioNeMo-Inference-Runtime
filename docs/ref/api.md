@@ -425,21 +425,36 @@ That sets `executor_backend="ray"` and sizes CPU stages from
 
 Inherits `ProcessorConfig`. Pass only documented fields.
 
-| Field                                                                                            | Default  | Role                                                                     |
-| ------------------------------------------------------------------------------------------------ | -------- | ------------------------------------------------------------------------ |
-| `model_source`                                                                                   | required | FoldingSupportMatrix key                                                 |
-| `executor_backend`                                                                               | `None`   | `None` = serial; `"ray"` = Ray Data                                      |
-| `engine_kwargs`                                                                                  | `{}`     | Passed into the folding engine (refer to the following)                  |
-| `runtime_args`                                                                                   | `{}`     | Merged on top of factory defaults, then forwarded to `model.forward`     |
-| `metadata`                                                                                       | `None`   | `{ccd_path, mol_dir, …}`. Auto-loaded when omitted                       |
-| `metadata_loader`                                                                                | `None`   | Callable used when `metadata` is omitted                                 |
-| `parser_stage` / `tokenizer_stage` / `feature_generator_stage` / `engine_stage` / `writer_stage` | `True`   | `bool`, `dict`, or the matching `*StageConfig`                           |
-| `batch_size`                                                                                     | `1`      | Rows per `map_batches` call                                              |
-| `concurrency`                                                                                    | `1`      | Default actor pool size for CPU stages                                   |
-| `should_continue_on_error`                                                                       | `False`  | If `True`, failed rows get `__inference_error__` instead of raising      |
-| `max_concurrent_batches`                                                                         | `8`      | Ray engine-stage overlap                                                 |
-| `runtime_env`                                                                                    | `None`   | Ray runtime env                                                          |
-| `accelerator_type`                                                                               | `None`   | Optional Ray accelerator label                                           |
+| Field                                                                                            | Default  | Role                                                                      |
+| ------------------------------------------------------------------------------------------------ | -------- | ------------------------------------------------------------------------- |
+| `model_source`                                                                                   | required | FoldingSupportMatrix key                                                  |
+| `executor_backend`                                                                               | `None`   | `None` = serial; `"ray"` = Ray Data                                       |
+| `engine_kwargs`                                                                                  | `{}`     | Passed into the folding engine (refer to the following)                   |
+| `runtime_args`                                                                                   | `{}`     | Merged on top of factory defaults, then forwarded to `model.forward`      |
+| `compact_confidence`                                                                             | `False`  | OpenFold3: reduce confidence to PAE/pTM/ipTM on device, skip unread heads |
+| `metadata`                                                                                       | `None`   | `{ccd_path, mol_dir, …}`. Auto-loaded when omitted                        |
+| `metadata_loader`                                                                                | `None`   | Callable used when `metadata` is omitted                                  |
+| `parser_stage` / `tokenizer_stage` / `feature_generator_stage` / `engine_stage` / `writer_stage` | `True`   | `bool`, `dict`, or the matching `*StageConfig`                            |
+| `batch_size`                                                                                     | `1`      | Rows per `map_batches` call                                               |
+| `concurrency`                                                                                    | `1`      | Default actor pool size for CPU stages                                    |
+| `should_continue_on_error`                                                                       | `False`  | If `True`, failed rows get `__inference_error__` instead of raising       |
+| `max_concurrent_batches`                                                                         | `8`      | Ray engine-stage overlap                                                  |
+| `runtime_env`                                                                                    | `None`   | Ray runtime env                                                           |
+| `accelerator_type`                                                                               | `None`   | Optional Ray accelerator label                                            |
+
+OpenFold3's `compact_confidence=True` enables
+`auxiliary_heads_config.compact_output`. It requires per-sample confidence
+(`memory_efficient_mode=True`) and applies during uncaptured inference with
+autograd disabled. Training and confidence graph capture retain raw outputs.
+
+Both raw and compact modes share one PAE softmax per row block across PAE,
+pTM and ipTM. Compact mode also streams the PAE projection and omits unused
+heads. It reduces logits at head precision, without the raw path's cast to
+the predicted-coordinate dtype. FP32 heads with BF16 coordinates therefore
+retain more precision in compact mode and can report different confidence
+values. This opt-in precision change has no universal error bound against
+raw outputs. pLDDT logits retain the same coordinate dtype and sample-selection
+rule. Chunking can also change the last bits of floating-point reductions.
 
 `engine_kwargs` keys consumed by the folding engine:
 

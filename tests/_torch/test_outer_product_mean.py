@@ -37,7 +37,13 @@ from bionemo_ir._torch.custom_ops.outer_product_mean.ops import _invoke_vanilla_
 from bionemo_ir._torch.layers.outer_product_mean import OuterProductMean
 from bionemo_ir._torch.utils import ChunkPolicy
 from bionemo_ir.utils import str_dtype_to_torch
-from tests._torch import SM_VERSION, cutedsl_test_modes, run_cutedsl_test_mode, skip_if_no_cutedsl
+from tests._torch import (
+    SM_VERSION,
+    cutedsl_test_modes,
+    require_cubin_library,
+    run_cutedsl_test_mode,
+    skip_if_no_cutedsl,
+)
 
 _CUTEDSL_SM = (80, 86, 89, 90, 100, 103)
 _CUTEDSL_MODES = cutedsl_test_modes("bionemo_ir._torch.custom_ops.outer_product_mean._source")
@@ -234,7 +240,7 @@ def test_outer_product_mean_force_cubin_ignores_warmed_source(monkeypatch):
     [("a", 32), ("b", 32), ("output", 128)],
 )
 def test_outer_product_mean_cubin_rejects_wrong_static_tail(operand, tail):
-    library = pytest.importorskip("bionemo_ir.libs._cutedsl_kernels")
+    library = require_cubin_library()
     if SM_VERSION not in _CUTEDSL_SM:
         pytest.skip(f"OPM CUBINs do not target SM{SM_VERSION}")
 

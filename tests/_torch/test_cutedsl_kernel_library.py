@@ -16,7 +16,6 @@
 
 from __future__ import annotations
 
-import importlib
 from importlib.machinery import EXTENSION_SUFFIXES
 from types import SimpleNamespace
 
@@ -114,10 +113,7 @@ def test_launch_library_executable_does_not_require_tvm_ffi():
 
 @pytest.mark.parametrize("qkv_packed", [False, True], ids=["separate", "packed"])
 def test_triangle_attention_uses_library_when_source_is_missing(monkeypatch, qkv_packed):
-    try:
-        kernel_library = importlib.import_module("bionemo_ir.libs._cutedsl_kernels")
-    except ImportError:
-        pytest.skip("_cutedsl_kernels extension is not installed")
+    kernel_library = require_cubin_library()
     if not torch.cuda.is_available():
         pytest.skip("CUDA is required")
 
@@ -204,7 +200,7 @@ def test_triangle_attention_uses_library_when_source_is_missing(monkeypatch, qkv
 
 @pytest.mark.parametrize("operand", ["q", "k", "v", "output"])
 def test_triangle_cubin_rejects_wrong_static_head_dim(operand):
-    library = pytest.importorskip("bionemo_ir.libs._cutedsl_kernels")
+    library = require_cubin_library()
     if not torch.cuda.is_available():
         pytest.skip("CUDA is required")
     major, minor = torch.cuda.get_device_capability()
@@ -551,7 +547,8 @@ def test_dlopen_failure_is_reported_as_unavailable(monkeypatch):
     assert attempts == [library_runtime._KERNEL_LIBRARY_MODULE]
 
 
-def test_require_cubin_library_shares_the_runtime_import_cache(monkeypatch):
+@pytest.mark.parametrize("probe", ["helper", "triangle", "head_dim"])
+def test_require_cubin_library_shares_the_runtime_import_cache(monkeypatch, probe):
     """Two import sites would re-enter PyInit and abort the worker."""
     monkeypatch.setattr(library_runtime, "_kernel_library", None)
     monkeypatch.setattr(library_runtime, "_kernel_library_error", None)
@@ -566,6 +563,11 @@ def test_require_cubin_library_shares_the_runtime_import_cache(monkeypatch):
     with pytest.raises(library_runtime.CuTeDSLKernelLibraryUnavailable):
         library_runtime._load_kernel_library()
     with pytest.raises(pytest.fail.Exception):
-        require_cubin_library()
+        if probe == "triangle":
+            test_triangle_attention_uses_library_when_source_is_missing(monkeypatch, False)
+        elif probe == "head_dim":
+            test_triangle_cubin_rejects_wrong_static_head_dim("q")
+        else:
+            require_cubin_library()
 
     assert attempts == [library_runtime._KERNEL_LIBRARY_MODULE]

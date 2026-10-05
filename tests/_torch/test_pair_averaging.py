@@ -339,7 +339,7 @@ def test_pair_weighted_averaging_config_selects_n_bucket_before_s():
 )
 def test_pwa_cubin_and_python_select_same_rectangular_bucket(D, c_m, I, J, S):
     skip_if_no_cutedsl("pair_weighted_averaging")
-    library = importlib.import_module("bionemo_ir.libs._cutedsl_kernels")
+    library = require_cubin_library()
     launcher = library.pair_weighted_averaging
     selected, _ = _select_pwa_config_selection_bucket(
         SM_VERSION,

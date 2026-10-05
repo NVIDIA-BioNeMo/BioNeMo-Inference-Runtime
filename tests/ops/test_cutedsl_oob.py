@@ -35,7 +35,7 @@ from pathlib import Path
 import pytest
 import torch
 
-from tests._torch import SM_VERSION, skip_if_no_cutedsl, source_module_available
+from tests._torch import SM_VERSION, require_cubin_library, skip_if_no_cutedsl, source_module_available
 from tests.common.test_utils.cuda_guard_page import GuardedArena, vmm_supported
 
 OK_SENTINEL = "OOB_PROBE_OK"
@@ -296,7 +296,7 @@ def test_cutedsl_kernel_stays_in_bounds(case: str, mode: str, sm: int | None):
 
     cmd = [sys.executable, "-u", str(Path(__file__).resolve()), case]
     if mode == "cubin":
-        pytest.importorskip("bionemo_ir.libs._cutedsl_kernels")
+        require_cubin_library()
         env[FORCE_CUBIN_ENV] = "1"
     else:
         if not source_module_available(_SOURCE_MODULES[type(CASES[case])]):

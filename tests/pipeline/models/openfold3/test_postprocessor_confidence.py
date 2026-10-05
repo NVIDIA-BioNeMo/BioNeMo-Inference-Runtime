@@ -12,7 +12,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Confidence-score math in the OpenFold3 postprocessor: bins, pTM, ipTM.
+"""Confidence-score math in the OpenFold3 postprocessor: bins, PAE, pTM, ipTM.
 
 Two things here are easy to get subtly wrong and impossible to notice from the
 output alone, since both failures return a plausible number in [0, 1]:
@@ -28,30 +28,64 @@ output alone, since both failures return a plausible number in [0, 1]:
     not comparable with AF3-calibrated thresholds.
 
 Only a token with a valid frame may be the aligned token, so the maximum is
-restricted to ``valid_frame_mask`` from the confidence head. These tests pin
-the reduction, the restriction, and parity against the vendored ``openfold-3``.
+restricted to ``valid_frame_mask`` from the confidence head. The shared reducer
+normalizes one row block at a time; these tests pin the reduction, the
+restriction, the block tiling and parity against the vendored ``openfold-3``.
 """
 
 import numpy as np
 import pytest
 import torch
 
+from bionemo_ir._torch.modules.openfold3.utils.confidence import (
+    PAE_BLOCK_BYTES,
+    bin_centers,
+    pae_reduction_rows,
+    reduce_pae_logits,
+    tm_per_bin,
+)
 from bionemo_ir.pipeline.models.openfold3.postprocessor import (
-    _bin_centers,
-    _compute_iptm,
-    _compute_pae,
-    _compute_pae_scores,
     _compute_plddt,
-    _compute_ptm,
     _frame_mask,
     _pae_logits,
     _plddt_per_atom,
+    _reduce_confidence,
     _select_best_sample,
-    _tm_score_from_pae_logits,
 )
 
 N_PAE_BINS = 64
 PAE_RANGE = (0.0, 32.0)
+DEVICES = ["cpu"] + (["cuda"] if torch.cuda.is_available() else [])
+
+
+def _dense_tm_score(
+    logits: torch.Tensor,
+    n_tokens: int,
+    pair_mask: torch.Tensor | None = None,
+    has_frame: torch.Tensor | None = None,
+) -> float:
+    """The whole-matrix pTM / ipTM reduction, as the postprocessor computed it before blocking."""
+    probs = torch.softmax(logits.float(), dim=-1)
+    tm_per_pair = (probs * tm_per_bin(probs.shape[-1], n_tokens).to(probs.device)).sum(dim=-1)
+    if pair_mask is None:
+        pair_mask = torch.ones_like(tm_per_pair)
+    n_scored = pair_mask.sum(dim=-1)
+    tm_per_aligned = (tm_per_pair * pair_mask).sum(dim=-1) / n_scored.clamp(min=1)
+    eligible = n_scored > 0
+    if has_frame is not None:
+        eligible = eligible & has_frame.to(device=eligible.device)
+    if not bool(eligible.any()):
+        return float("nan")
+    return float(tm_per_aligned[eligible].max())
+
+
+def _dense_pae(logits: torch.Tensor) -> torch.Tensor:
+    probs = torch.softmax(logits.float(), dim=-1)
+    return (probs * bin_centers(*PAE_RANGE, probs.shape[-1]).to(probs.device)).sum(dim=-1)
+
+
+def _interface_mask(chain_indices: torch.Tensor) -> torch.Tensor:
+    return (chain_indices[:, None] != chain_indices[None, :]).float()
 
 
 def _pae_output(logits: torch.Tensor, valid_frame_mask: torch.Tensor | None = None) -> dict:
@@ -72,14 +106,18 @@ def _confident_for_token(n_tokens: int, token: int) -> torch.Tensor:
     return logits
 
 
+def _ptm(logits: torch.Tensor, n_tokens: int, has_frame: torch.Tensor | None = None) -> float:
+    return float(reduce_pae_logits(logits, n_tokens, torch.zeros(n_tokens, dtype=torch.long), has_frame).ptm)
+
+
 def test_bin_centers_are_midpoints_not_edges():
     """The documented convention, and the one the rest of BioIR already uses."""
-    pae = _bin_centers(*PAE_RANGE, N_PAE_BINS)
+    pae = bin_centers(*PAE_RANGE, N_PAE_BINS)
     assert pae.shape == (N_PAE_BINS,)
     assert pae[0] == pytest.approx(0.25)
     assert pae[-1] == pytest.approx(31.75)
 
-    plddt = _bin_centers(0.0, 1.0, 50)
+    plddt = bin_centers(0.0, 1.0, 50)
     assert plddt[0] == pytest.approx(0.01)
     assert plddt[-1] == pytest.approx(0.99)
 
@@ -98,12 +136,10 @@ def test_ptm_is_a_max_over_aligned_tokens_not_a_mean():
     n_tokens = 24
     logits = _confident_for_token(n_tokens, token=3)
 
-    ptm = _compute_ptm(_pae_logits(_pae_output(logits), 0, n_tokens), n_tokens)
+    ptm = _ptm(_pae_logits(_pae_output(logits), 0, n_tokens), n_tokens)
 
     # The per-pair mean of the same quantity, i.e. the reduction to avoid.
-    d0 = 1.24 * (max(n_tokens, 19) - 15) ** (1.0 / 3.0) - 1.8
-    tm_per_bin = 1.0 / (1.0 + (_bin_centers(*PAE_RANGE, N_PAE_BINS) / d0) ** 2)
-    per_pair_mean = float((torch.softmax(logits, dim=-1) * tm_per_bin).sum(-1).mean())
+    per_pair_mean = float((torch.softmax(logits, dim=-1) * tm_per_bin(N_PAE_BINS, n_tokens)).sum(-1).mean())
 
     assert ptm > 0.8
     assert per_pair_mean < 0.1
@@ -116,12 +152,12 @@ def test_has_frame_restricts_the_aligned_token():
     n_tokens = 24
     logits = _confident_for_token(n_tokens, token=3)
 
-    unrestricted = _compute_ptm(_pae_logits(_pae_output(logits), 0, n_tokens), n_tokens)
+    unrestricted = _ptm(_pae_logits(_pae_output(logits), 0, n_tokens), n_tokens)
 
     frames = torch.ones(n_tokens, dtype=torch.bool)
     frames[3] = False
     output = _pae_output(logits, valid_frame_mask=frames)
-    restricted = _compute_ptm(_pae_logits(output, 0, n_tokens), n_tokens, has_frame=_frame_mask(output, 0, n_tokens))
+    restricted = _ptm(_pae_logits(output, 0, n_tokens), n_tokens, has_frame=_frame_mask(output, 0, n_tokens))
 
     assert restricted < unrestricted
 
@@ -137,7 +173,7 @@ def test_no_frame_eligible_token_gives_nan():
     frames = torch.zeros(n_tokens, dtype=torch.bool)
     output = _pae_output(logits, valid_frame_mask=frames)
 
-    ptm = _compute_ptm(_pae_logits(output, 0, n_tokens), n_tokens, has_frame=_frame_mask(output, 0, n_tokens))
+    ptm = _ptm(_pae_logits(output, 0, n_tokens), n_tokens, has_frame=_frame_mask(output, 0, n_tokens))
     assert np.isnan(ptm)
 
 
@@ -154,32 +190,14 @@ def test_iptm_scores_only_inter_chain_pairs_and_is_nan_for_one_chain():
     logits[:4, :4, 0] = 8.0
     pae_logits = _pae_logits(_pae_output(logits), 0, n_tokens)
 
-    iptm = _compute_iptm(pae_logits, n_tokens, chain_indices=chains_two)
-    ptm = _compute_ptm(pae_logits, n_tokens)
+    pae, ptm, iptm = _reduce_confidence(pae_logits, n_tokens, chains_two, None)
     assert iptm < 0.1 < ptm
+    assert pae.shape == (n_tokens, n_tokens)
 
-    assert np.isnan(_compute_iptm(pae_logits, n_tokens, chain_indices=chains_one))
-    # Absent PAE head: no logits, so no scores.
-    assert np.isnan(_compute_ptm(None, n_tokens))
-    assert np.isnan(_compute_iptm(None, n_tokens, chain_indices=chains_two))
-
-
-@pytest.mark.parametrize("chains", [[0, 0, 0, 1, 1, 2], [0, 0, 0, 0, 0, 0]])
-@pytest.mark.parametrize("with_frames", [False, True])
-def test_shared_pae_scores_match_separate_reductions(chains: list[int], with_frames: bool):
-    """One softmax feeds pTM, ipTM and PAE without changing any of them."""
-    n_tokens = len(chains)
-    logits = torch.randn(n_tokens, n_tokens, N_PAE_BINS, generator=torch.Generator().manual_seed(0))
-    chain_indices = np.array(chains, dtype=np.int64)
-    has_frame = torch.tensor([True, False, True, True, False, True]) if with_frames else None
-
-    ptm, iptm, pae = _compute_pae_scores(logits, n_tokens, chain_indices, has_frame=has_frame)
-
-    assert ptm == _compute_ptm(logits, n_tokens, has_frame=has_frame)
-    expected_iptm = _compute_iptm(logits, n_tokens, chain_indices, has_frame=has_frame)
-    assert iptm == expected_iptm or (np.isnan(iptm) and np.isnan(expected_iptm))
-    np.testing.assert_array_equal(pae, _compute_pae(logits))
-    assert _compute_pae_scores(None, n_tokens, chain_indices)[2] is None
+    assert np.isnan(_reduce_confidence(pae_logits, n_tokens, chains_one, None)[2])
+    # Absent PAE head: no logits, so no scores and no matrix.
+    assert _reduce_confidence(None, n_tokens, chains_two, None)[0] is None
+    assert all(np.isnan(score) for score in _reduce_confidence(None, n_tokens, chains_two, None)[1:])
 
 
 def test_frame_mask_reader_handles_sample_axis_padding_and_dtype():
@@ -257,12 +275,14 @@ _OPENFOLD3_PTM_FIXTURES = [
 
 
 @pytest.mark.parametrize(("seed", "expected_ptm", "expected_iptm"), _OPENFOLD3_PTM_FIXTURES)
-def test_matches_vendored_openfold3_compute_ptm(seed, expected_ptm, expected_iptm):
+@pytest.mark.parametrize("rows", [None, 7])
+def test_matches_vendored_openfold3_compute_ptm(seed, expected_ptm, expected_iptm, rows):
     """Parity with upstream, which is the definition of these scores.
 
     Expected values come from the pinned OpenFold3 0.4.3 ``compute_ptm`` in
     float32. Keeping them here makes the parity check independent of whether the
-    vendored submodule is present.
+    vendored submodule is present. The 7-row tiling splits every fixture into
+    ragged blocks, so the maximum has to be taken across block boundaries.
     """
     rng = np.random.default_rng(seed)
     g = torch.Generator().manual_seed(seed)
@@ -272,9 +292,103 @@ def test_matches_vendored_openfold3_compute_ptm(seed, expected_ptm, expected_ipt
     frames = torch.rand(n_tokens, generator=g) < 0.7
     frames[int(rng.integers(n_tokens))] = True  # keep at least one eligible
 
-    assert _tm_score_from_pae_logits(logits, n_tokens, has_frame=frames) == pytest.approx(expected_ptm, abs=1e-6)
+    reduced = reduce_pae_logits(logits, n_tokens, torch.as_tensor(chain_indices), frames, rows=rows)
+    assert float(reduced.ptm) == pytest.approx(expected_ptm, abs=1e-6)
+    assert float(reduced.iptm) == pytest.approx(expected_iptm, abs=1e-6)
 
-    ci = torch.as_tensor(chain_indices, dtype=torch.long)
-    pair_mask = (ci.unsqueeze(-1) != ci.unsqueeze(-2)).float()
-    got_iptm = _tm_score_from_pae_logits(logits, n_tokens, pair_mask=pair_mask, has_frame=frames)
-    assert got_iptm == pytest.approx(expected_iptm, abs=1e-6)
+
+@pytest.mark.parametrize("device", DEVICES)
+@pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16])
+@pytest.mark.parametrize("n_tokens", [1, 5, 19, 37])
+@pytest.mark.parametrize("rows", [None, 0, 1, 8])
+@pytest.mark.parametrize("case", ["multichain", "monomer", "no-frame"])
+def test_blocked_reduction_matches_dense(device, dtype, n_tokens, rows, case):
+    """One softmax per block gives the dense matrix' PAE, pTM and ipTM, crop and padding included."""
+    generator = torch.Generator().manual_seed(n_tokens * 31 + (rows or 0))
+    n_padded = n_tokens + 3
+    logits = (torch.randn(n_padded, n_padded, N_PAE_BINS, generator=generator) * 2.0).to(dtype=dtype, device=device)
+    original = logits.clone()
+    chains = (torch.arange(n_padded) % 3 if case == "multichain" else torch.zeros(n_padded, dtype=torch.long)).to(
+        device
+    )
+    frames = (torch.arange(n_padded) % 2 == 0 if case != "no-frame" else torch.zeros(n_padded, dtype=torch.bool)).to(
+        device
+    )
+
+    reduced = reduce_pae_logits(logits, n_tokens, chains, frames, rows=rows)
+
+    cropped = logits[:n_tokens, :n_tokens]
+    expected_pae = _dense_pae(cropped)
+    expected_ptm = _dense_tm_score(cropped, n_tokens, has_frame=frames[:n_tokens])
+    expected_iptm = _dense_tm_score(
+        cropped, n_tokens, pair_mask=_interface_mask(chains[:n_tokens]), has_frame=frames[:n_tokens]
+    )
+    assert reduced.pae.shape == (n_tokens, n_tokens)
+    assert reduced.pae.dtype == reduced.scores.dtype == torch.float32
+    assert reduced.pae.device == reduced.scores.device == logits.device
+    torch.testing.assert_close(reduced.pae, expected_pae, atol=1e-6, rtol=0)
+    assert float(reduced.ptm) == pytest.approx(expected_ptm, abs=1e-6, nan_ok=True)
+    assert float(reduced.iptm) == pytest.approx(expected_iptm, abs=1e-6, nan_ok=True)
+    if case == "no-frame":
+        assert np.isnan(float(reduced.ptm)) and np.isnan(float(reduced.iptm))
+    elif case == "monomer":
+        assert np.isnan(float(reduced.iptm)) and not np.isnan(float(reduced.ptm))
+    assert torch.equal(logits, original)
+
+
+def test_reduction_normalizes_each_block_once_and_writes_in_place(monkeypatch: pytest.MonkeyPatch):
+    """Softmax runs once per row block over the cropped width; scratch never spans the matrix."""
+    n_tokens, n_padded, rows = 11, 16, 4
+    logits = torch.randn(n_padded, n_padded, N_PAE_BINS)
+    seen: list[tuple[int, ...]] = []
+    original_softmax = torch.softmax
+
+    def record_softmax(value: torch.Tensor, dim: int) -> torch.Tensor:
+        seen.append(tuple(value.shape))
+        return original_softmax(value, dim=dim)
+
+    monkeypatch.setattr(torch, "softmax", record_softmax)
+    destination = torch.full((n_tokens, n_tokens), float("nan"))
+    reduced = reduce_pae_logits(
+        logits,
+        n_tokens,
+        torch.arange(n_padded) % 2,
+        torch.ones(n_padded, dtype=torch.bool),
+        rows=rows,
+        pae_out=destination,
+    )
+
+    assert seen == [(4, n_tokens, N_PAE_BINS)] * 2 + [(3, n_tokens, N_PAE_BINS)]
+    assert reduced.pae is destination
+    assert torch.isfinite(destination).all()
+    torch.testing.assert_close(destination, _dense_pae(logits[:n_tokens, :n_tokens]), atol=1e-6, rtol=0)
+
+
+def test_postprocessor_reduction_rounds_pae_and_returns_host_scalars():
+    """The pipeline receives a rounded host matrix and plain floats, whatever the logits' device."""
+    n_tokens = 6
+    generator = torch.Generator().manual_seed(6)
+    logits = torch.randn(n_tokens, n_tokens, N_PAE_BINS, generator=generator)
+    chains = np.array([0, 0, 0, 1, 1, 1], dtype=np.int64)
+    frames = torch.ones(n_tokens, dtype=torch.bool)
+
+    pae, ptm, iptm = _reduce_confidence(logits, n_tokens, chains, frames)
+
+    assert isinstance(pae, np.ndarray) and pae.dtype == np.float32
+    np.testing.assert_array_equal(pae, np.round(_dense_pae(logits).numpy(), 3))
+    assert isinstance(ptm, float) and isinstance(iptm, float)
+    assert ptm == pytest.approx(_dense_tm_score(logits, n_tokens, has_frame=frames), abs=1e-6)
+    assert iptm == pytest.approx(
+        _dense_tm_score(logits, n_tokens, pair_mask=_interface_mask(torch.as_tensor(chains)), has_frame=frames),
+        abs=1e-6,
+    )
+
+
+@pytest.mark.parametrize(
+    ("device", "n_tokens", "expected"),
+    [("cpu", 1734, 18), ("cpu", 256, 128), ("cuda", 1734, 302), ("cuda", 32, 16384), ("cpu", 100000, 1)],
+)
+def test_block_rows_follow_the_device_byte_budget(device, n_tokens, expected):
+    """Blocks stay cache-resident on CPU and launch-efficient on CUDA; a huge N still makes progress."""
+    assert pae_reduction_rows(n_tokens, N_PAE_BINS, torch.device(device)) == expected
+    assert expected * n_tokens * N_PAE_BINS * 4 <= PAE_BLOCK_BYTES[device] or expected == 1

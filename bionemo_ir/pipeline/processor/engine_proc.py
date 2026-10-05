@@ -101,6 +101,14 @@ class EngineProcessorConfig(ProcessorConfig):
         "diffusion_samples, sampling_seed, steering_args, etc.",
     )
 
+    compact_confidence: bool = Field(
+        default=False,
+        description="Enable the model's compact confidence outputs (OpenFold3 "
+        "`auxiliary_heads_config.compact_output`): the confidence head reduces every "
+        "sample's PAE logits to PAE, pTM and ipTM on the device and skips the heads "
+        "the pipeline does not read. Reduces logits at head precision without casting to coordinate dtype, "
+        "so confidence values can differ from raw outputs. Raises for models without that option.",
+    )
     max_pending_requests: int | None = Field(
         default=None,
         description="The maximum number of pending requests. If not specified, "
@@ -166,7 +174,28 @@ class EngineProcessorConfig(ProcessorConfig):
         if "config" in self.engine_kwargs:
             # Override the default pretrained config
             result = self.engine_kwargs["config"]
-        return result
+        return self._apply_compact_confidence(result)
+
+    def _apply_compact_confidence(self, model_config):
+        """Return ``model_config`` with compact confidence outputs enabled when the pipeline asks for them.
+
+        The caller's config object is left untouched; the engine receives a copy.
+        """
+        if not self.compact_confidence:
+            return model_config
+        heads = getattr(model_config, "auxiliary_heads_config", None)
+        if heads is None or not hasattr(heads, "compact_output"):
+            raise ValueError(f"{self.model_source} has no compact confidence outputs")
+        model_config = model_config.model_copy(deep=True)
+        model_config.auxiliary_heads_config.compact_output = True
+        return model_config
+
+    def folding_engine_kwargs(self) -> dict[str, Any]:
+        """``engine_kwargs`` for the folding engine, carrying the compact-confidence config when enabled."""
+        kwargs = dict(self.engine_kwargs)
+        if self.compact_confidence:
+            kwargs["config"] = self.get_model_pretrained_config()
+        return kwargs
 
 
 def _build_parser_stage(config: EngineProcessorConfig, processor_defaults: dict[str, Any]) -> StatefulStage:
@@ -266,7 +295,7 @@ def _build_folding_engine_stage(config: EngineProcessorConfig, processor_default
 
     fn_constructor_kwargs = {
         "model": config.model_source,
-        "engine_kwargs": config.engine_kwargs,
+        "engine_kwargs": config.folding_engine_kwargs(),
         "max_pending_requests": config.max_pending_requests,
         "should_continue_on_error": config.should_continue_on_error,
         "parallelism_mode": engine_stage_cfg.parallelism_mode,

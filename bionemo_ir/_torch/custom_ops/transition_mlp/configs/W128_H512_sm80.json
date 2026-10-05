@@ -115,6 +115,21 @@
       "num_warps": 4,
       "stages": 6,
       "tile_m": 64
+    },
+    "S=64|act=silu_gate|bias=0|mask=1|res=1": {
+      "num_warps": 4,
+      "stages": 3,
+      "tile_m": 64
+    },
+    "S=256|act=silu_gate|bias=0|mask=1|res=1": {
+      "num_warps": 4,
+      "stages": 3,
+      "tile_m": 64
+    },
+    "S=1024|act=silu_gate|bias=0|mask=1|res=1": {
+      "num_warps": 4,
+      "stages": 6,
+      "tile_m": 64
     }
   }
 }

@@ -26,6 +26,7 @@ from test_utils.boltz.create_and_load_weights import (
 from test_utils.boltz.ref_layers import RefTriangleAttentionNode, RefTriangleMultiplicationNode
 
 from bionemo_ir._torch.attention_backend import AttentionType, get_attention_backend
+from bionemo_ir._torch.layers.normalization import replace_with_fused_layernorm
 from bionemo_ir._torch.layers.triangle_nodes import (
     TriangleAttentionNode,
     TriangleAttentionNodeType,
@@ -51,6 +52,7 @@ class AttnNodeScenario:
     chunk_size: int = 0
     torch_dtype: str = "float32"
     starting: bool = True
+    fused_layer_norm: bool = False
 
 
 @dataclass(kw_only=True, frozen=True)
@@ -72,6 +74,9 @@ class MulNodeScenario:
         AttnNodeScenario(backend="VANILLA", chunk_size=8),
         AttnNodeScenario(backend="VANILLA", torch_dtype="bfloat16", chunk_size=16),
         AttnNodeScenario(backend="VANILLA", torch_dtype="bfloat16", chunk_size=8),
+        AttnNodeScenario(backend="SDPA", torch_dtype="bfloat16", starting=False),
+        AttnNodeScenario(backend="SDPA", torch_dtype="bfloat16", starting=False, fused_layer_norm=True),
+        AttnNodeScenario(backend="VANILLA", starting=False, fused_layer_norm=True),
     ],
 )
 def test_triangle_attention_node(s: AttnNodeScenario):
@@ -102,6 +107,8 @@ def test_triangle_attention_node(s: AttnNodeScenario):
     )
     node.to(device)
     load_triangle_attention_node_weights_torch(node, weights_and_biases, dtype)
+    if s.fused_layer_norm:
+        assert replace_with_fused_layernorm(node) == 1
     attn_metadata = metadata_cls()
     x = torch.randn(bs, s.seq_len, s.seq_len, s.c_in, dtype=torch.float32).cuda()
     mask = make_left_aligned_pair_mask(bs, s.seq_len, dtype=torch.float32, device="cuda")

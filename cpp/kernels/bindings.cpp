@@ -121,6 +121,22 @@ void bind(nb::module_& module);
 
 } // namespace bioir::cutedsl::trimul_kf_k3
 
+#if defined(BIOIR_WITH_CLAUDE_KIT)
+namespace bioir::claude_kit_triangle_attention_sm90_d32
+{
+
+void bind(nb::module_& module);
+
+} // namespace bioir::claude_kit_triangle_attention_sm90_d32
+#endif
+
+namespace bioir::heuristic
+{
+
+void bind(nb::module_& module);
+
+} // namespace bioir::heuristic
+
 namespace
 {
 
@@ -201,5 +217,9 @@ NB_MODULE(_cutedsl_kernels, module)
   trimul_kf_k1::bind(module);
   trimul_kf_k2::bind(module);
   trimul_kf_k3::bind(module);
+#if defined(BIOIR_WITH_CLAUDE_KIT)
+  bioir::claude_kit_triangle_attention_sm90_d32::bind(module);
+#endif
+  bioir::heuristic::bind(module);
   (void) preload_registered_kernels_if_context_active();
 }

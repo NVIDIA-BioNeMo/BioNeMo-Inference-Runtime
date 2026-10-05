@@ -21,6 +21,7 @@ from bionemo_ir._torch.attention_backend import AttentionMetadata
 from bionemo_ir._torch.attention_backend.utils import (
     PrecomputedPairMasks,
     PrecomputedSingleMasks,
+    backend_uses_preallocated_buffers,
     precompute_pair_masks,
     precompute_single_masks,
 )
@@ -191,14 +192,14 @@ class PairformerLayerV1(nn.Module):
     ) -> torch.Tensor:
         can_update_inplace = inplace_safe and (not z.is_cuda or not torch.cuda.is_current_stream_capturing())
 
-        # Reuse CuTeDSL's int32 row lengths only for left-aligned masks.
+        # Reuse optimized backends' int32 row lengths only for left-aligned masks.
         # Otherwise, let the wrapper derive masking from ``pair_mask``.
         z = self.tri_mul_out(z, mask=pair_mask, trimul_metadata=trimul_metadata, residual=True)
         z = self.tri_mul_in(z, mask=pair_mask, trimul_metadata=trimul_metadata, residual=True)
         z = z.to(self.dtype)
 
         tri_attn_metadata = (attn_metadatas or {}).get("triangle_attn")
-        # Same left-aligned gate as tri_mul: CuTeDSL int32 row lengths are
+        # Same left-aligned gate as tri_mul: int32 row lengths are
         # invalid for bipartite / interior-zero masks.
         if self.pair_mask_left_aligned and precomputed_masks is not None:
             mb_start = precomputed_masks.mask_bias
@@ -345,7 +346,7 @@ class PairformerNoSeqModule(nn.Module):
             inf=first_layer.tri_attn_start.inf,
             dtype=first_layer.dtype,
         )
-        if buffers is None and first_layer.triangle_attn_backend == "CuTeDSL":
+        if buffers is None and backend_uses_preallocated_buffers(first_layer.triangle_attn_backend):
             buffers = {}
         trimul_metadata = precompute_trimul_metadata(
             z,
@@ -525,8 +526,11 @@ class PairformerModule(nn.Module):
             mask,
             inf=self.config.mask_inf,
         )
-        _uses_cute = "CuTeDSL" in (self.config.triangle_attention_backend, self.config.pairwise_attention_backend)
-        if buffers is None and _uses_cute:
+        uses_preallocated_buffers = any(
+            backend_uses_preallocated_buffers(backend_name)
+            for backend_name in (self.config.triangle_attention_backend, self.config.pairwise_attention_backend)
+        )
+        if buffers is None and uses_preallocated_buffers:
             buffers = {}
         trimul_metadata = precompute_trimul_metadata(
             z,

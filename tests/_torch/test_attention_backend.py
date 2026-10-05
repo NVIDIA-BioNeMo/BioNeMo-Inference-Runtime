@@ -46,6 +46,12 @@ def test_attention_backend_exports_are_importable(module):
         (attention_backend.AttentionType.TRIANGLE, "SDPA", triangle_attention.SDPATriangleAttention),
         (attention_backend.AttentionType.TRIANGLE, "CUEQUIV", triangle_attention.CuEquivAttention),
         (attention_backend.AttentionType.TRIANGLE, "CuTeDSL", triangle_attention.TriangleAttentionCuTeLeftMask),
+        (
+            attention_backend.AttentionType.TRIANGLE,
+            "ClaudeKit",
+            triangle_attention.ClaudeKitTriangleAttentionSM90D32,
+        ),
+        (attention_backend.AttentionType.TRIANGLE, "Heuristic", triangle_attention.HeuristicTriangleAttention),
         (attention_backend.AttentionType.PAIRWISE, "VANILLA", pairwise_attention.VanillaPairwiseAttention),
         (attention_backend.AttentionType.PAIRWISE, "SDPA", pairwise_attention.SDPAPairwiseAttention),
         (attention_backend.AttentionType.PAIRWISE, "CuTeDSL", pairwise_attention.PairwiseAttentionCuTeLeftMask),
@@ -80,10 +86,10 @@ def test_triangle_auto_select_falls_back_to_sdpa(monkeypatch):
 
 
 @pytest.mark.parametrize("sm", [80, 86, 89, 90, 100, 103])
-def test_triangle_auto_select_uses_cutedsl_on_supported_sm(monkeypatch, sm):
+def test_triangle_auto_select_uses_heur_on_supported_sm(monkeypatch, sm):
     monkeypatch.setattr(attention_utils, "get_sm_version", lambda: sm)
 
-    assert attention_backend.auto_select_triangle_attention_backend(torch.bfloat16) == "CuTeDSL"
+    assert attention_backend.auto_select_triangle_attention_backend(torch.bfloat16) == "Heuristic"
 
 
 @pytest.mark.parametrize("sm", [100, 103])
@@ -101,6 +107,31 @@ def test_triangle_default_mask_precompute_registry(backend_name):
 
     assert result.mask_bias.shape == (1, 8, 1, 1, 8)
     assert result.mask_bias_transposed.shape == (1, 8, 1, 1, 8)
+
+
+@pytest.mark.parametrize("backend_name", ["CuTeDSL", "ClaudeKit", "Heuristic"])
+def test_triangle_left_mask_precompute_registry(backend_name):
+    pair_mask = make_left_aligned_pair_mask(2, 8, dtype=torch.float32, device="cpu")
+    result = attention_backend.precompute_pair_masks(backend_name, pair_mask)
+
+    assert result.mask_bias.shape == (2, 8)
+    assert result.mask_bias_transposed.shape == (2, 8)
+    assert result.mask_bias.dtype == torch.int32
+    assert result.mask_bias_transposed.dtype == torch.int32
+
+
+@pytest.mark.parametrize("backend_name", ["CuTeDSL", "ClaudeKit", "Heuristic"])
+def test_optimized_attention_backends_use_preallocated_buffers(backend_name):
+    assert attention_backend.backend_uses_preallocated_buffers(backend_name)
+    assert attention_backend.backend_uses_left_mask(backend_name)
+    assert attention_backend.triangle_bias_pad_multiple(backend_name) == 8
+
+
+@pytest.mark.parametrize("backend_name", ["VANILLA", "SDPA", "CUEQUIV"])
+def test_fallback_attention_backends_do_not_require_preallocated_buffers(backend_name):
+    assert not attention_backend.backend_uses_preallocated_buffers(backend_name)
+    assert not attention_backend.backend_uses_left_mask(backend_name)
+    assert attention_backend.triangle_bias_pad_multiple(backend_name) == -1
 
 
 def test_cutedsl_test_modes_auto_detects_private_source(monkeypatch):

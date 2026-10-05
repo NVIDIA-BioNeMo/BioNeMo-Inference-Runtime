@@ -23,14 +23,25 @@ from ._config import (
     get_kernel_config,
     get_nearest_bucket,
 )
+from .claude_kit import (
+    ClaudeKitTriangleAttentionMetadata,
+    ClaudeKitTriangleAttentionSM90D32,
+    ClaudeKitTriangleAttentionUnavailable,
+)
 from .cuequiv import CuEquivAttention, CuEquivAttentionMetadata
 from .cutedsl import TriangleAttentionCuTeLeftMask, TriangleAttentionCuTeLeftMaskMetadata
+from .heuristic import HeuristicTriangleAttention, HeuristicTriangleAttentionMetadata
 from .sdpa import SDPATriangleAttention
 from .vanilla import VanillaTriangleAttention
 
 __all__ = [
+    "ClaudeKitTriangleAttentionMetadata",
+    "ClaudeKitTriangleAttentionSM90D32",
+    "ClaudeKitTriangleAttentionUnavailable",
     "CuEquivAttention",
     "CuEquivAttentionMetadata",
+    "HeuristicTriangleAttention",
+    "HeuristicTriangleAttentionMetadata",
     "SDPAAttentionMetadata",
     "SDPATriangleAttention",
     "TriangleAttentionCuTeLeftMask",

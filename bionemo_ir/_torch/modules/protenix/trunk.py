@@ -216,14 +216,21 @@ class ProtenixTrunk(nn.Module):
         s = torch.zeros_like(s_init)
 
         msa_precomputed = self.msa_module.build_pair_masks(pair_mask)
+        use_template = (
+            self.use_template and self.template_embedder.n_blocks > 0 and "template_aatype" in input_feature_dict
+        )
+        # Template features do not change across cycles, so find the duplicates once.
+        template_representatives = (
+            self.template_embedder.template_representatives(input_feature_dict) if use_template else None
+        )
 
         n_cycle = self.n_cycle if num_cycles is None else num_cycles
         for _ in range(n_cycle):
             # Projection result is freshly owned — safe in-place accumulator.
             z = self.linear_no_bias_z_cycle(self.layernorm_z_cycle(z.to(self.dtype)))
             z.add_(z_init)
-            if self.use_template and self.template_embedder.n_blocks > 0:
-                z.add_(self.template_embedder(input_feature_dict, z, pair_mask))
+            if use_template:
+                z.add_(self.template_embedder(input_feature_dict, z, pair_mask, template_representatives))
             z = self.msa_module(
                 input_feature_dict,
                 z.to(self.pair_state_dtype),

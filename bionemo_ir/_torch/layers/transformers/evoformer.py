@@ -17,7 +17,11 @@ import torch
 import torch.nn as nn
 
 from bionemo_ir._torch.attention_backend import AttentionMetadata
-from bionemo_ir._torch.attention_backend.utils import PrecomputedPairMasks, precompute_pair_masks
+from bionemo_ir._torch.attention_backend.utils import (
+    PrecomputedPairMasks,
+    backend_uses_preallocated_buffers,
+    precompute_pair_masks,
+)
 from bionemo_ir._torch.layers.attention import MSAAttention
 from bionemo_ir._torch.layers.linear import Linear
 from bionemo_ir._torch.layers.outer_product_mean import OuterProductMean
@@ -226,7 +230,7 @@ class EvoformerBlock(nn.Module):
             precomputed_masks:
                 Optional precomputed mask biases (avoids redundant computation
                 when called inside a layer loop).
-            buffers: Shared pre-allocated buffer dict for CuTeDSL kernels.
+            buffers: Shared pre-allocated buffer dict for optimized kernels.
         """
         if self.opm_first:
             m, z = self._compute_opm(m, z, msa_mask)
@@ -237,12 +241,12 @@ class EvoformerBlock(nn.Module):
 
         if not self.opm_first:
             m, z = self._compute_opm(m, z, msa_mask)
-        # Reuse CuTeDSL's int32 row lengths only for left-aligned masks.
+        # Reuse optimized backends' int32 row lengths only for left-aligned masks.
         # Otherwise, let the wrapper derive masking from ``pair_mask``.
         z = self.tri_mul_out(z, mask=pair_mask, trimul_metadata=trimul_metadata, residual=True)
         z = self.tri_mul_in(z, mask=pair_mask, trimul_metadata=trimul_metadata, residual=True)
 
-        # Same left-aligned gate as tri_mul: CuTeDSL int32 row lengths are
+        # Same left-aligned gate as tri_mul: int32 row lengths are
         # invalid for bipartite / interior-zero masks.
         if self.pair_mask_left_aligned and precomputed_masks is not None:
             mb_start = precomputed_masks.mask_bias
@@ -331,7 +335,7 @@ class EvoformerStack(nn.Module):
             precomputed.mask_bias_transposed if precomputed.mask_bias_transposed.dtype == torch.int32 else None,
             enabled=self.pair_mask_left_aligned,
         )
-        buffers: PreallocatedBuffers | None = {} if backend == "CuTeDSL" else None
+        buffers: PreallocatedBuffers | None = {} if backend_uses_preallocated_buffers(backend) else None
         for block in self.blocks:
             m, z = block(
                 m,

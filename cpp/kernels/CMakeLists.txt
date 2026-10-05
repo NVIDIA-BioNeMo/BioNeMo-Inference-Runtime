@@ -17,6 +17,47 @@ nanobind_add_module(_cutedsl_kernels bindings.cpp cubin_runtime.cpp)
 target_include_directories(_cutedsl_kernels PRIVATE "${CMAKE_CURRENT_LIST_DIR}")
 target_link_libraries(_cutedsl_kernels PRIVATE CUDA::cuda_driver)
 
+if(BIOIR_BUILD_CLAUDE_KIT_KERNELS)
+  target_link_libraries(_cutedsl_kernels PRIVATE CUDA::cudart
+                                                   bioir_cutlass_headers)
+  set(BIOIR_CLAUDE_KIT_TRIATTN_DIR
+      "${CMAKE_CURRENT_LIST_DIR}/claude_kit_triangle_attention_sm90_D32")
+  target_sources(
+    _cutedsl_kernels
+    PRIVATE "${BIOIR_CLAUDE_KIT_TRIATTN_DIR}/bindings.cpp"
+            "${BIOIR_CLAUDE_KIT_TRIATTN_DIR}/kernel.cu"
+            "${BIOIR_CLAUDE_KIT_TRIATTN_DIR}/launcher.cpp"
+            "${BIOIR_CLAUDE_KIT_TRIATTN_DIR}/stage_bias.cu"
+            "${BIOIR_CLAUDE_KIT_TRIATTN_DIR}/fa3_utils.h"
+            "${BIOIR_CLAUDE_KIT_TRIATTN_DIR}/kernel.cuh"
+            "${BIOIR_CLAUDE_KIT_TRIATTN_DIR}/launcher.h")
+  target_include_directories(_cutedsl_kernels
+                             PRIVATE "${BIOIR_CLAUDE_KIT_TRIATTN_DIR}")
+  target_compile_definitions(
+    _cutedsl_kernels
+    PRIVATE BIOIR_WITH_CLAUDE_KIT=1
+            $<$<COMPILE_LANGUAGE:CUDA>:CUTE_SM90_EXTENDED_MMA_SHAPES_ENABLED>)
+  target_compile_options(
+    _cutedsl_kernels
+    PRIVATE
+      $<$<COMPILE_LANGUAGE:CUDA>:--expt-relaxed-constexpr>
+      $<$<COMPILE_LANGUAGE:CUDA>:--expt-extended-lambda>
+      $<$<COMPILE_LANGUAGE:CUDA>:--use_fast_math>
+      $<$<COMPILE_LANGUAGE:CUDA>:--ftemplate-backtrace-limit=0>
+      $<$<COMPILE_LANGUAGE:CUDA>:-lineinfo>
+      $<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=-Wno-psabi>
+      $<$<COMPILE_LANGUAGE:CUDA>:-diag-suppress=177,550>)
+  set_target_properties(_cutedsl_kernels PROPERTIES CUDA_ARCHITECTURES 90a)
+endif()
+
+set(BIOIR_HEURISTIC_DIR "${CMAKE_CURRENT_LIST_DIR}/heuristic")
+target_sources(
+  _cutedsl_kernels
+  PRIVATE "${BIOIR_HEURISTIC_DIR}/bindings.cpp"
+          "${BIOIR_HEURISTIC_DIR}/policy.cpp"
+          "${BIOIR_HEURISTIC_DIR}/policy.h")
+target_include_directories(_cutedsl_kernels PRIVATE "${BIOIR_HEURISTIC_DIR}")
+
 if(NOT DEFINED BIOIR_CUBIN_MATERIALIZED_DIR OR
    BIOIR_CUBIN_MATERIALIZED_DIR STREQUAL "")
   message(

@@ -15,3 +15,6 @@
 
 include("${CMAKE_CURRENT_LIST_DIR}/deps/cudatoolkit.cmake")
 include("${CMAKE_CURRENT_LIST_DIR}/deps/nanobind.cmake")
+if(BIOIR_BUILD_CLAUDE_KIT_KERNELS)
+  include("${CMAKE_CURRENT_LIST_DIR}/deps/cutlass.cmake")
+endif()

@@ -498,7 +498,7 @@ rather than failing the batch — a bad request does not take down the run.
 | `bionemo_ir/hubs/`     | checkpoint + metadata resolution, `FoldingSupportMatrix`                  |
 | `bionemo_ir/runtime/`  | backend / buffer helpers                                                  |
 | `cpp/`                 | native extension build (CMake)                                            |
-| `3rdparty/`            | git submodules for upstream refs (`openfold-3`, `protenix`)               |
+| `3rdparty/`            | git submodules: upstream refs (`openfold-3`, `protenix`) and `cutlass`    |
 | `examples/`, `tests/`  | folding demos + sample data; GPU test suite                               |
 
 ## Related

@@ -194,7 +194,7 @@ def test_fused_norm_rejects_wrong_weight_shape() -> None:
         layer_norm_transpose(x, weight, None, rms_norm=True)
 
 
-@pytest.mark.parametrize("layout", ["dbij->bijd", "bijd->bijd", "bdij->bijd"])
+@pytest.mark.parametrize("layout", ["dbij->bijd", "bijd->bijd", "bdij->bijd", "bijd->bjid"])
 @pytest.mark.parametrize("pad_multiple", [8, 16])
 def test_pad_multiple_zero_extends_without_changing_values(layout: str, pad_multiple: int) -> None:
     """The pad tail is zero and the real channels are untouched."""
@@ -204,6 +204,7 @@ def test_pad_multiple_zero_extends_without_changing_values(layout: str, pad_mult
         "dbij->bijd": (D, B, I, J),
         "bijd->bijd": (B, I, J, D),
         "bdij->bijd": (B, D, I, J),
+        "bijd->bjid": (B, I, J, D),
     }[layout]
     x = torch.randn(*shape, device="cuda", dtype=torch.bfloat16)
     weight = torch.randn(D, device="cuda", dtype=torch.bfloat16)
@@ -252,6 +253,28 @@ def test_token_pad_multiple_places_the_output_inside_a_padded_buffer(
     # storage there would turn an inf into a nan rather than stay harmless.
     assert torch.all(padded[:, I:, :] == 0)
     assert torch.all(padded[:, :I, J:] == 0)
+
+
+@pytest.mark.parametrize("tokens", [(16, 16), (17, 19), (1, 8)])
+@pytest.mark.parametrize("D", [128, 196, 5003])
+def test_swap_ij_matches_the_norm_of_the_transposed_pair(tokens: tuple[int, int], D: int) -> None:
+    """``bijd->bjid`` stores what ``bijd->bijd`` gives for ``x.transpose(1, 2)``, bit for bit."""
+    torch.manual_seed(13)
+    B = 2
+    I, J = tokens
+    x = torch.randn(B, I, J, D, device="cuda", dtype=torch.bfloat16)
+    weight = torch.randn(D, device="cuda", dtype=torch.bfloat16)
+    bias = torch.randn(D, device="cuda", dtype=torch.bfloat16)
+
+    with torch.inference_mode():
+        actual = layer_norm_transpose(x, weight, bias, layout="bijd->bjid")
+        expected = layer_norm_transpose(x.transpose(1, 2).contiguous(), weight, bias, layout="bijd->bijd")
+        reference = F.layer_norm(x.transpose(1, 2).float(), (D,), weight.float(), bias.float(), 1e-5)
+
+    assert actual.shape == (B, J, I, D)
+    assert actual.is_contiguous()
+    assert torch.equal(actual, expected)
+    torch.testing.assert_close(actual.float(), reference, atol=2e-2, rtol=2e-2)
 
 
 def test_token_pad_multiple_rejects_layouts_without_a_token_pair() -> None:

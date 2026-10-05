@@ -23,7 +23,9 @@ from bionemo_ir.utils import DEBUG_ASSERTS, get_sm_version
 from .interface import AttentionBackend, AttentionType
 from .pairwise_attention import PairwiseAttentionCuTeLeftMask, SDPAPairwiseAttention, VanillaPairwiseAttention
 from .triangle_attention import (
+    ClaudeKitTriangleAttentionSM90D32,
     CuEquivAttention,
+    HeuristicTriangleAttention,
     SDPATriangleAttention,
     TriangleAttentionCuTeLeftMask,
     VanillaTriangleAttention,
@@ -37,7 +39,10 @@ def auto_select_triangle_attention_backend(
     """Return the fastest available triangle attention backend name.
 
     Selection priority (highest to lowest):
-      1. **CuTeDSL** — SM80/SM86/SM89/SM90/SM100/SM103, fp16/bf16 only.
+      1. **Heuristic** — optimized router on
+         SM80/SM86/SM89/SM90/SM100/SM103, fp16/bf16 only. It selects
+         ``ClaudeKit`` for SM90 BF16 D=32 calls of at least 23M attention
+         scores and CuTeDSL otherwise.
       2. **CUEQUIV** — all SKUs, all dtypes (fp32, fp16, bf16).
       3. **SDPA** — PyTorch scaled-dot-product attention, all SKUs/dtypes.
 
@@ -56,7 +61,7 @@ def auto_select_triangle_attention_backend(
     supports_head_dim = padded_head_dim is None or padded_head_dim in supported_head_dims
 
     if sm in (80, 86, 89, 90, 100, 103) and is_half and supports_head_dim:
-        return "CuTeDSL"
+        return "Heuristic"
 
     try:
         import cuequivariance_ops_torch  # noqa: F401
@@ -66,6 +71,24 @@ def auto_select_triangle_attention_backend(
         pass
 
     return "SDPA"
+
+
+_LEFT_MASK_TRIANGLE_BACKENDS = frozenset({"CuTeDSL", "ClaudeKit", "Heuristic"})
+
+
+def backend_uses_preallocated_buffers(backend_name: str) -> bool:
+    """Return whether an attention backend reuses output and LSE buffers."""
+    return backend_name in _LEFT_MASK_TRIANGLE_BACKENDS
+
+
+def backend_uses_left_mask(backend_name: str) -> bool:
+    """Return whether triangle attention consumes precomputed KV lengths."""
+    return backend_name in _LEFT_MASK_TRIANGLE_BACKENDS
+
+
+def triangle_bias_pad_multiple(backend_name: str) -> int:
+    """Return the key-axis alignment for optimized triangle pair bias."""
+    return 8 if backend_uses_left_mask(backend_name) else -1
 
 
 def auto_select_pairwise_attention_backend(
@@ -97,6 +120,8 @@ def get_attention_backend(
             "SDPA": SDPATriangleAttention,
             "CUEQUIV": CuEquivAttention,
             "CuTeDSL": TriangleAttentionCuTeLeftMask,
+            "ClaudeKit": ClaudeKitTriangleAttentionSM90D32,
+            "Heuristic": HeuristicTriangleAttention,
         }
     elif attention_type == AttentionType.PAIRWISE:
         backends = {
@@ -147,7 +172,8 @@ class PrecomputedPairMasks:
             Shape / semantics depend on the backend:
               * default backends (VANILLA / SDPA / CUEQUIV): additive
                 bias of shape ``[B, I, 1, 1, J]``;
-              * CuTeDSL left-mask kernel: ``int32`` count of valid KV
+              * CuTeDSL / ``ClaudeKit`` / ``Heuristic`` left-mask kernels:
+                ``int32`` count of valid KV
                 positions per row (``actual_s_kv``), shape ``[B, I]``,
                 ``mask_bias[b, i] = (pair_mask[b, i, :] > 0.5).sum()``.
                 Assumes a left-aligned ``1...1 0...0`` mask, which holds when
@@ -313,6 +339,8 @@ def _cutedsl_precompute_pair_masks(
 
 
 register_precompute_pair_masks("CuTeDSL", _cutedsl_precompute_pair_masks)
+register_precompute_pair_masks("ClaudeKit", _cutedsl_precompute_pair_masks)
+register_precompute_pair_masks("Heuristic", _cutedsl_precompute_pair_masks)
 
 # ---------------------------------------------------------------------------
 # Precomputed single-mask registry (for pairwise / DiffusionTransformer)

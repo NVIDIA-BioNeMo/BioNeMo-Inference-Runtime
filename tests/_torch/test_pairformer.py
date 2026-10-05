@@ -647,3 +647,30 @@ def test_pairformer_no_seq_wrappers_forward_inplace_safe(monkeypatch: pytest.Mon
     assert stack(z, pair_mask, inplace_safe=True) is z
     assert seen == [True, True]
     assert trimul_metadata[0] is trimul_metadata[1]
+
+
+def test_pairformer_no_seq_heur_reuses_preallocated_buffers(monkeypatch: pytest.MonkeyPatch) -> None:
+    stack = PairformerNoSeqModule(
+        num_blocks=2,
+        token_z=8,
+        pairwise_head_width=4,
+        pairwise_num_heads=2,
+        dtype=torch.bfloat16,
+        triangle_attn_backend="Heuristic",
+        pairwise_attn_backend="VANILLA",
+        skip_create_weights=True,
+    )
+    seen: list[dict[str, torch.Tensor]] = []
+
+    def record_forward(self, *, z: torch.Tensor, **kwargs):
+        seen.append(kwargs["buffers"])
+        return None, z
+
+    monkeypatch.setattr(PairformerLayerV1, "forward", record_forward)
+    z = torch.randn(1, 4, 4, 8, dtype=torch.bfloat16)
+    pair_mask = torch.ones(1, 4, 4, dtype=torch.bfloat16)
+
+    assert stack(z, pair_mask) is z
+    assert len(seen) == 2
+    assert seen[0] is seen[1]
+    assert seen[0] == {}

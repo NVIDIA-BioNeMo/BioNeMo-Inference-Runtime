@@ -176,7 +176,8 @@ class MSAModuleBlock(EvoformerBlock):
         msa_trans_mask = msa_mask
 
         if self.msa_transition is not None:
-            m = m + self.msa_transition(m, mask=msa_trans_mask.unsqueeze(-1))
+            # ``m`` is the row update's fresh sum, so the residual can accumulate in place.
+            m = self.msa_transition(m, mask=msa_trans_mask.unsqueeze(-1), residual=True, inplace=True)
 
         if not self.opm_first:
             m, z = self._compute_opm(m, z, msa_mask)
@@ -195,7 +196,8 @@ class MSAModuleBlock(EvoformerBlock):
             z = self.tri_attn_end(z, mask=pair_mask, attn_metadata=attn_metadata, residual=True)
 
         pair_trans_mask = pair_mask
-        z = z + self.pair_transition(z, mask=pair_trans_mask.unsqueeze(-1))
+        # ``z`` is the triangle attention's fresh output, so the residual can accumulate in place.
+        z = self.pair_transition(z, mask=pair_trans_mask.unsqueeze(-1), residual=True, inplace=True)
 
         return m, z
 

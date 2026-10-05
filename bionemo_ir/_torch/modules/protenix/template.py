@@ -50,6 +50,14 @@ class ProtenixTemplateEmbedder(nn.Module):
         "template_restype_j": 32,
     }
     n_restypes: int = 32  # len(STD_RESIDUES_WITH_GAP)
+    # Every per-template input of a template's embedding; the rest is shared.
+    template_features: tuple[str, ...] = (
+        "template_aatype",
+        "template_distogram",
+        "template_pseudo_beta_mask",
+        "template_unit_vector",
+        "template_backbone_frame_mask",
+    )
 
     # Checkpoint layout of linear_no_bias_a weight columns (split-projection path).
     _DGRAM_END: int = input_feature1["template_distogram"]
@@ -139,8 +147,34 @@ class ProtenixTemplateEmbedder(nn.Module):
 
         return projected
 
+    def template_representatives(self, input_feature_dict: dict[str, Any]) -> list[int]:
+        """For each template, the first template whose features are bitwise identical to its own.
+
+        Identical templates embed identically, so :meth:`forward` runs the pair stack once per
+        representative. With template search off, the OSS featurizer emits four identical empty ones.
+        """
+        features = [input_feature_dict[name] for name in self.template_features]
+        num_templates = features[0].shape[1]
+        pairs = [(template_id, earlier) for template_id in range(1, num_templates) for earlier in range(template_id)]
+        representatives = list(range(num_templates))
+        if not pairs:
+            return representatives
+        # One host sync for every pair.
+        same = torch.stack(
+            [torch.stack([(f[:, t] == f[:, r]).all() for f in features]).all() for t, r in pairs]
+        ).tolist()
+        for (template_id, earlier), equal in zip(pairs, same, strict=True):
+            # Pairs come in ascending ``earlier``, so the first match is the earliest.
+            if equal and representatives[template_id] == template_id:
+                representatives[template_id] = earlier
+        return representatives
+
     def forward(
-        self, input_feature_dict: dict[str, Any], z: torch.Tensor, pair_mask: torch.Tensor | None = None
+        self,
+        input_feature_dict: dict[str, Any],
+        z: torch.Tensor,
+        pair_mask: torch.Tensor | None = None,
+        representatives: list[int] | None = None,
     ) -> torch.Tensor:
         """Template pair update from ``N_templ`` features.
 
@@ -152,12 +186,16 @@ class ProtenixTemplateEmbedder(nn.Module):
                 ``template_backbone_frame_mask`` ``[B, N_templ, N, N]``,
                 plus ``asym_id`` ``[B, N_token]``
             z: ``[B, N_token, N_token, c_z]``
+            representatives: :meth:`template_representatives` of ``input_feature_dict``, which a
+                recycling caller computes once; ``None`` computes it here.
 
         Returns:
             ``[B, N_token, N_token, c_z]`` (zeros when no templates)
         """
         if "template_aatype" not in input_feature_dict or self.n_blocks < 1:
             return z.new_zeros(z.shape)
+        if representatives is None:
+            representatives = self.template_representatives(input_feature_dict)
 
         asym_id = input_feature_dict["asym_id"]
         multichain_mask = (asym_id[..., :, None] == asym_id[..., None, :]).to(z.dtype)  # [B, N, N]
@@ -165,15 +203,23 @@ class ProtenixTemplateEmbedder(nn.Module):
             pair_mask = z.new_ones(z.shape[:-1])
         masked_by = multichain_mask * pair_mask
 
-        num_templates = input_feature_dict["template_aatype"].shape[1]
+        num_templates = len(representatives)
         z = self.layernorm_z(z)
         z_proj = self.linear_no_bias_z(z)
 
+        # A duplicate reuses its representative's update; the sum keeps the per-template order.
+        repeated = {rep for template_id, rep in enumerate(representatives) if rep != template_id}
+        updates: dict[int, torch.Tensor] = {}
         u = z.new_zeros((*z.shape[:-1], self.c))
-        for template_id in range(num_templates):
-            v = self._project_single_template_features(input_feature_dict, template_id, masked_by)
-            v.add_(z_proj)
-            v = self.pairformer_stack(z=v.to(self.pairformer_dtype), pair_mask=pair_mask)
-            u = u + self.layernorm_v(v.to(self.dtype))
+        for rep in representatives:
+            update = updates.get(rep)
+            if update is None:
+                v = self._project_single_template_features(input_feature_dict, rep, masked_by)
+                v.add_(z_proj)
+                v = self.pairformer_stack(z=v.to(self.pairformer_dtype), pair_mask=pair_mask)
+                update = self.layernorm_v(v.to(self.dtype))
+                if rep in repeated:
+                    updates[rep] = update
+            u = u + update
         u = u / (1e-7 + num_templates)
         return self.linear_no_bias_u(F.relu(u))

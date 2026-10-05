@@ -210,13 +210,16 @@ def test_msa_attention_residual_matches_separate_add(
         expected = m + layer(m, z, mask)
         calls.clear()
         residual = m.clone()
-        actual = run_cutedsl_test_mode(
-            mode,
-            monkeypatch,
-            epilogue_cutedsl.AttnEpilogueCuTe,
-            epilogue_cutedsl,
-            lambda: layer(residual.copy_(m), z, mask, residual=True, inplace_residual=inplace),
-        )
+        if fused:
+            actual = run_cutedsl_test_mode(
+                mode,
+                monkeypatch,
+                epilogue_cutedsl.AttnEpilogueCuTe,
+                epilogue_cutedsl,
+                lambda: layer(residual.copy_(m), z, mask, residual=True, inplace_residual=inplace),
+            )
+        else:
+            actual = layer(residual, z, mask, residual=True, inplace_residual=inplace)
 
     assert bool(calls) != fused
     assert actual.shape == m.shape

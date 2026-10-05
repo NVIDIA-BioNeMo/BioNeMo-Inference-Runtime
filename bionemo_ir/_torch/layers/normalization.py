@@ -193,6 +193,21 @@ class FusedLayerNorm(nn.LayerNorm):
         )
         return out.view(x.shape)
 
+    def forward_swap_ij(self, x: torch.Tensor) -> torch.Tensor:
+        """``forward(x.transpose(1, 2))`` for ``x`` ``[B, I, J, C]``, as a contiguous ``[B, J, I, C]``.
+
+        One pass reads ``x`` and writes the swapped pair; ``forward`` on the
+        transposed view would copy it first.
+        """
+        return layer_norm_transpose(
+            x,
+            self.weight,
+            self.bias,
+            eps=self.eps,
+            elementwise_affine=self.weight is not None or self.bias is not None,
+            layout="bijd->bjid",
+        )
+
 
 def replace_with_fused_layernorm(
     module: nn.Module,

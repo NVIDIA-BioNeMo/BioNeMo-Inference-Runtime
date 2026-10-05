@@ -32,6 +32,7 @@ from ..custom_ops.trimul_kf_k1 import TrimulKFInputFold, TrimulKFK1Op, fold_inpu
 from ..custom_ops.trimul_kf_k2 import TrimulKFK2Op, get_trimul_kf_k2_op
 from ..custom_ops.trimul_kf_k3 import TrimulKFK3Op, TrimulKFOutputFold, fold_output_weights, get_trimul_kf_k3_op
 from .attention import TriangleAttention
+from .normalization import FusedLayerNorm
 
 
 def _round_up(value: int, multiple: int) -> int:
@@ -208,8 +209,13 @@ class TriangleAttentionNode(nn.Module):
         """
         if x.dtype != self.dtype:
             x = x.to(self.dtype)
+        normed = None
         if self.node_type == TriangleAttentionNodeType.ENDING:
+            if isinstance(self.layer_norm, FusedLayerNorm):
+                normed = self.layer_norm.forward_swap_ij(x)
             x = x.transpose(1, 2)
+        if normed is None:
+            normed = self.layer_norm(x)
 
         if mask_bias is None:
             if mask is None:
@@ -220,7 +226,7 @@ class TriangleAttentionNode(nn.Module):
             mask_bias = precomputed.mask_bias
 
         output = self.mha(
-            self.layer_norm(x),
+            normed,
             mask_bias,
             attn_metadata=attn_metadata,
             buffers=buffers,

@@ -75,6 +75,7 @@ class Layout(enum.IntEnum):
     BND_BDN = 2
     DBN_BND = 3
     BND_DBN = 4
+    BIJD_BJID = 5
 
 
 @triton.jit
@@ -99,6 +100,9 @@ def layer_norm_transpose_forward_kernel(
     out_ptr,
     B,
     N,
+    # Token grid ``[I, J]`` of layout 5, which stores row ``i * J + j`` at ``j * I + i``.
+    PAIR_I,
+    PAIR_J,
     D: tl.constexpr,
     D_OUT: tl.constexpr,
     EPS: tl.constexpr,
@@ -156,11 +160,11 @@ def layer_norm_transpose_forward_kernel(
     elif LAYOUT == 3:  # dbn->bnd
         x_ptrs = x_ptr + offs_d[None, :] * B * N + pid_b * N + offs_n[:, None]
         x_step = TILE_D * B * N
-    else:  # bnd->bnd, bnd->bdn, bnd->dbn
+    else:  # bnd->bnd, bnd->bdn, bnd->dbn, bijd->bjid
         x_ptrs = x_ptr + pid_b * n_in * D + in_n[:, None] * D + offs_d[None, :]
         x_step = TILE_D
 
-    # Layouts 0/1/3 write D contiguously, so ``D_OUT`` is their row stride.
+    # Layouts 0/1/3/5 write D contiguously, so ``D_OUT`` is their row stride.
     # Layouts 2/4 keep D as an outer axis (the launcher pins ``D_OUT == D``
     # for them, since widening D there would not align anything).
     if LAYOUT == 2:  # bnd->bdn
@@ -169,6 +173,10 @@ def layer_norm_transpose_forward_kernel(
     elif LAYOUT == 4:  # bnd->dbn
         out_ptrs = out_ptr + offs_d[None, :] * B * N + pid_b * N + offs_n[:, None]
         out_step = TILE_D * B * N
+    elif LAYOUT == 5:  # bijd->bjid
+        out_n = (offs_n % PAIR_J) * PAIR_I + offs_n // PAIR_J
+        out_ptrs = out_ptr + pid_b * N * D_OUT + out_n[:, None] * D_OUT + offs_d[None, :]
+        out_step = TILE_D
     else:
         out_ptrs = out_ptr + pid_b * N * D_OUT + offs_n[:, None] * D_OUT + offs_d[None, :]
         out_step = TILE_D
@@ -292,7 +300,7 @@ def _allocate_output(
     token_pad: TokenPad | None = None,
 ) -> tuple[torch.Tensor, int, int, int, int]:
     out_dtype = x.dtype if out_dtype is None else out_dtype
-    if layout == Layout.BND_BND:
+    if layout in (Layout.BND_BND, Layout.BIJD_BJID):
         B, N, D = x.shape
         D_OUT = _padded_channels(D, pad_multiple)
         if token_pad is not None:
@@ -538,6 +546,7 @@ def _launch_layer_norm_transpose(
     pad_multiple: int = -1,
     out_dtype: torch.dtype | None = None,
     token_pad: TokenPad | None = None,
+    pair_ij: tuple[int, int] = (0, 0),
 ) -> torch.Tensor:
     if not x.is_cuda:
         raise ValueError("fused LayerNorm/RMSNorm requires a CUDA input")
@@ -590,6 +599,7 @@ def _launch_layer_norm_transpose(
         out,
         B,
         N,
+        *pair_ij,
         D=D,
         D_OUT=D_OUT,
         EPS=eps,
@@ -659,6 +669,7 @@ def layer_norm_transpose(
     if token_pad_multiple > 0 and layout != "bijd->bijd":
         raise ValueError(f"token_pad_multiple is only supported for 'bijd->bijd', got {layout!r}")
     token_pad = None
+    pair_ij = (0, 0)
 
     supported_layouts = (
         "nd->nd",  # codespell:ignore nd
@@ -674,6 +685,7 @@ def layer_norm_transpose(
         "bdij->bijd",
         "dbij->bijd",
         "bijd->dbij",
+        "bijd->bjid",
     )
 
     if layout == "nd->nd":  # codespell:ignore nd
@@ -745,6 +757,12 @@ def layer_norm_transpose(
         out_shape = (D, B, I, J)
         x = x.contiguous().view(B, I * J, D)
         kernel_layout = Layout.BND_DBN
+    elif layout == "bijd->bjid":
+        B, I, J, D = x.shape
+        out_shape = (B, J, I, D)
+        x = x.contiguous().view(B, I * J, D)
+        kernel_layout = Layout.BIJD_BJID
+        pair_ij = (I, J)
     else:
         raise ValueError(f"layout {layout} not supported; expected one of {supported_layouts}")
 
@@ -759,6 +777,7 @@ def layer_norm_transpose(
         pad_multiple,
         out_dtype,
         token_pad,
+        pair_ij,
     )
     if pad_multiple > 0:
         # Padding is rejected above unless D is the trailing output axis.

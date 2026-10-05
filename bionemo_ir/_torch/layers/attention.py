@@ -29,7 +29,7 @@ from bionemo_ir.dsl_kernels.triton.moveaxis_pad import MoveaxisPad
 from bionemo_ir.runtime.buffers import PreallocatedBuffers, ensure_buffer
 
 from ..attention_backend import AttentionMetadata, AttentionType
-from ..attention_backend.utils import create_attention
+from ..attention_backend.utils import backend_uses_left_mask, create_attention, triangle_bias_pad_multiple
 
 
 def _make_norm(norm_type: str, dim: int, eps: float = 1e-5, dtype: torch.dtype = None, bias: bool = True) -> nn.Module:
@@ -168,7 +168,7 @@ class TriangleAttention(nn.Module):
             else None
         )
         if bias_proj:
-            self._bias_pad_multiple = 8 if attn_backend == "CuTeDSL" else -1
+            self._bias_pad_multiple = triangle_bias_pad_multiple(attn_backend)
             self._moveaxis_pad = MoveaxisPad(H=self.num_heads, dtype=dtype or torch.bfloat16)
         self.attn = create_attention(
             attn_backend,
@@ -1070,7 +1070,7 @@ class MSAAttention(nn.Module):
         self.dtype = dtype
         self.transpose_input = transpose_input
         self.triangle_attn_backend = triangle_attn_backend
-        self.J_padded_multiple = 8 if triangle_attn_backend == "CuTeDSL" else -1
+        self.J_padded_multiple = triangle_bias_pad_multiple(triangle_attn_backend)
 
         self.layer_norm_m = nn.LayerNorm(c_in, dtype=dtype, eps=eps)
 
@@ -1135,7 +1135,7 @@ class MSAAttention(nn.Module):
         if self.transpose_input:
             m = permute_final_dims(m, (1, 0, 2))
             mask = permute_final_dims(mask, (1, 0))
-        if self.triangle_attn_backend == "CuTeDSL":
+        if backend_uses_left_mask(self.triangle_attn_backend):
             mask_bias = (mask > 0.5).sum(dim=-1).to(torch.int32).contiguous()
         else:
             mask_bias = (mask - 1.0) * self.inf

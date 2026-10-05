@@ -26,7 +26,7 @@ from test_utils.openfold.create_and_load_weights import (
 from test_utils.openfold.ref_layers import RefEvoformerBlock
 
 from bionemo_ir._torch.attention_backend.utils import PrecomputedPairMasks, precompute_pair_masks
-from bionemo_ir._torch.layers.transformers.evoformer import EvoformerBlock
+from bionemo_ir._torch.layers.transformers.evoformer import EvoformerBlock, EvoformerStack
 from bionemo_ir._torch.layers.triangle_nodes import TriangleMultiplicationMetadata, precompute_trimul_metadata
 from bionemo_ir.utils import str_dtype_to_torch
 from tests._torch import make_left_aligned_mask
@@ -353,3 +353,38 @@ def test_evoformer_block_actual_seqlen_wiring():
     module(m, z, msa_mask, pair_mask, precomputed_masks=None, trimul_metadata=no_lengths)
     assert module.tri_mul_out.call_args.kwargs["trimul_metadata"] is no_lengths
     assert module.tri_mul_in.call_args.kwargs["trimul_metadata"] is no_lengths
+
+
+def test_evoformer_stack_heur_reuses_preallocated_buffers():
+    class BufferSpyBlock(torch.nn.Module):
+        triangle_attn_backend = "Heuristic"
+        inf = 1e9
+        dtype = torch.bfloat16
+
+        def __init__(self):
+            super().__init__()
+            self.buffers = None
+
+        def forward(self, m, z, *args, buffers=None, **kwargs):
+            self.buffers = buffers
+            return m, z
+
+    stack = EvoformerStack.__new__(EvoformerStack)
+    torch.nn.Module.__init__(stack)
+    blocks = [BufferSpyBlock(), BufferSpyBlock()]
+    stack.blocks = torch.nn.ModuleList(blocks)
+    stack.linear = torch.nn.Identity()
+    stack.pair_mask_left_aligned = True
+
+    m = torch.randn(1, 2, 4, 8, dtype=torch.bfloat16)
+    z = torch.randn(1, 4, 4, 8, dtype=torch.bfloat16)
+    msa_mask = torch.ones(1, 2, 4, dtype=torch.bfloat16)
+    pair_mask = torch.ones(1, 4, 4, dtype=torch.bfloat16)
+
+    output_m, output_z, output_s = stack(m, z, msa_mask, pair_mask)
+
+    assert output_m is m
+    assert output_z is z
+    assert output_s.shape == (1, 4, 8)
+    assert blocks[0].buffers is blocks[1].buffers
+    assert blocks[0].buffers == {}

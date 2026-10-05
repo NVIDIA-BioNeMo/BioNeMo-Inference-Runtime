@@ -95,6 +95,11 @@
       "num_warps": 4,
       "stages": 4,
       "tile_m": 64
+    },
+    "act=silu_gate|bias=0|mask=1|res=1": {
+      "num_warps": 4,
+      "stages": 4,
+      "tile_m": 64
     }
   }
 }

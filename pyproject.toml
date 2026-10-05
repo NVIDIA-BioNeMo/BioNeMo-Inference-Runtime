@@ -2,6 +2,7 @@
 ###############################  BUILD CONFIGURATION  ##############################################
 ####################################################################################################
 [build-system]
+# CUTLASS headers come from the 3rdparty/cutlass submodule, not a wheel.
 requires = ["cmake>=3.27", "nanobind==2.10.2", "setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
@@ -154,9 +155,19 @@ cache-keys = [
   { file = "cpp/cmake/**/*.cmake" },
   { file = "cpp/cmake/**/*.py" },
   { file = "cpp/kernels/**/*.cpp" },
+  { file = "cpp/kernels/**/*.cu" },
+  { file = "cpp/kernels/**/*.cuh" },
   { file = "cpp/kernels/**/*.h" },
   { file = "cpp/kernels/cutedsl_*/cubins/index.json" },
   { file = "cpp/kernels/cutedsl_*/cubins/packs/*.tar.xz" },
+  # Rebuild when the CUTLASS submodule's headers change, or when the
+  # environment points the build at other CUTLASS headers.
+  { file = "3rdparty/cutlass/include/cutlass/version.h" },
+  { file = "3rdparty/cutlass/include/**/*.h" },
+  { env = "BIOIR_CUTLASS_INCLUDE_DIR" },
+  { env = "CUTLASS_PATH" },
+  { env = "CUTLASS_ROOT" },
+  { env = "BIOIR_BUILD_CLAUDE_KIT_KERNELS" },
   { env = "BIOIR_CUBIN_ARTIFACT_ROOT" },
   { env = "BIOIR_BUILD_CUTEDSL_KERNELS" },
   { env = "BIOIR_VERSION_LOCAL" },

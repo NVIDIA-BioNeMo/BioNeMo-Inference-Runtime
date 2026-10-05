@@ -72,6 +72,30 @@ files distributed by an upstream package remain authoritative for that package.
   - Distribution: adapted code ships in
     `bionemo_ir/dsl_kernels/triton/fused_ln_proj_moveaxis_pad.py`
 
+- **Uplifting Biomolecular Modeling triangle-attention kernel**
+  - Version: commit `f4f62fa6592ae4938d49b1757bea0cfeff9f468e`
+  - Copyright: Anthropic, PBC and contributors
+  - License: Apache-2.0; see [`LICENSE`][bioir-license]
+  - Source: [Uplifting Biomolecular Modeling][uplifting-biomolecular-modeling]
+  - Distribution: adapted SM90 D=32 CUDA/CuTe source ships in
+    `cpp/kernels/claude_kit_triangle_attention_sm90_D32/`
+  - Modifications: replaced the max-free hot pass and its SAFE recompute
+    with a single-pass online softmax, made the kernel persistent, replaced
+    the general key-mask staging contract with BioIR's left-aligned
+    `actual_s_kv` contract, added BioIR output/LSE and launcher integration,
+    and zeroed fully padded rows; the directory's `NOTICE.md` lists them all
+  - The copied `fa3_utils.h` excerpt retains its FlashAttention-3
+    BSD-3-Clause copyright and license notice
+
+- **CUTLASS C++ headers**
+  - Version: 4.5.2, pinned by the `3rdparty/cutlass` submodule
+  - Copyright: NVIDIA Corporation and affiliates
+  - License: BSD-3-Clause
+  - Source: [CUTLASS][cutlass]
+  - Distribution: build-time only. The headers are not vendored and do not
+    ship; `cpp/kernels/claude_kit_triangle_attention_sm90_D32/` compiles
+    against them and the resulting object code ships
+
 - **CUTLASS-derived CuTe DSL source**
   - Version: source excerpts associated with nvidia-cutlass-dsl 4.5.2
   - Copyright: NVIDIA Corporation and affiliates
@@ -325,5 +349,6 @@ resolved operating-system and base-image package closure.
 [setuptools]: https://github.com/pypa/setuptools
 [tensorrt-llm]: https://github.com/NVIDIA/TensorRT-LLM
 [triton]: https://github.com/triton-lang/triton
+[uplifting-biomolecular-modeling]: https://github.com/anthropics/uplifting-biomolecular-modeling/tree/f4f62fa6592ae4938d49b1757bea0cfeff9f468e
 [uvloop]: https://github.com/MagicStack/uvloop
 [vllm]: https://github.com/vllm-project/vllm

@@ -4,3 +4,6 @@
 [submodule "3rdparty/protenix"]
 	path = 3rdparty/protenix
 	url = https://github.com/bytedance/Protenix.git
+[submodule "3rdparty/cutlass"]
+	path = 3rdparty/cutlass
+	url = https://github.com/NVIDIA/cutlass.git

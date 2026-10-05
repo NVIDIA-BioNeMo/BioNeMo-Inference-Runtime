@@ -17,9 +17,18 @@ cmake_minimum_required(VERSION 3.27 FATAL_ERROR)
 
 project(bionemo_ir_cutedsl_kernels LANGUAGES CXX ASM)
 
+option(BIOIR_BUILD_CLAUDE_KIT_KERNELS
+       "Build the source-visible ClaudeKit SM90 D=32 CUDA kernel" ON)
+
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
+if(BIOIR_BUILD_CLAUDE_KIT_KERNELS)
+  enable_language(CUDA)
+  set(CMAKE_CUDA_STANDARD 17)
+  set(CMAKE_CUDA_STANDARD_REQUIRED ON)
+  set(CMAKE_CUDA_EXTENSIONS OFF)
+endif()
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 get_filename_component(BIOIR_REPO_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/.."

@@ -22,7 +22,8 @@ the ``kernel_abi`` and maps ``S=<anchor>`` keys to the K3 variant tuned for that
 A call over ``N`` tokens takes the anchor nearest ``N``, ties going to the smaller. The variant must
 match the K1 that ran before it: :data:`STATS_VARIANTS` read the input-LayerNorm row statistics
 ``trimul_kf_k1``'s statistics-writing variant leaves, the others re-reduce them from ``x``. Each
-variant ships with and without the fused residual.
+variant ships with and without the fused residual. ``K3_0`` / ``K3_1`` are the cooperative kernels,
+``K3_2`` / ``K3_3`` their ping-pong counterparts.
 """
 
 from __future__ import annotations
@@ -35,9 +36,9 @@ from bionemo_ir._torch.utils.kernel import get_config_file_name, load_kernel_con
 
 CONFIGS_DIR = Path(__file__).with_name("configs")
 KERNEL_ABIS = {90: "sm90"}
-KERNEL_VARIANTS = ("K3_0", "K3_1")
+KERNEL_VARIANTS = ("K3_0", "K3_1", "K3_2", "K3_3")
 #: Variants reading the input-LayerNorm row statistics K1 handed off.
-STATS_VARIANTS = frozenset({"K3_1"})
+STATS_VARIANTS = frozenset({"K3_1", "K3_3"})
 _FILE_RE = re.compile(r"^C(?P<C>\d+)_D(?P<D>\d+)_sm(?P<sm>\d+)\.json$")
 _KEY_RE = re.compile(r"^S=(?P<bucket>[1-9]\d*)$")
 

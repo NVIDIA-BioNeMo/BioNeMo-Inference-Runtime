@@ -25,7 +25,7 @@ from bionemo_ir._torch.utils.kernel import (
     CuTeDSLKernelLibraryExecutable,
     CuTeDSLKernelVariantUnavailable,
     current_stream_handle,
-    tensor_s1_d0,
+    tensor_flat,
 )
 
 if TYPE_CHECKING:
@@ -57,13 +57,24 @@ class TrimulKFK2CubinExecutable(CuTeDSLKernelLibraryExecutable):
         self._launcher = launcher
         self._config = config
 
-    def __call__(self, a: torch.Tensor, b: torch.Tensor, prod: torch.Tensor, n: int, l: int) -> None:  # noqa: E741
+    def __call__(
+        self,
+        a: torch.Tensor,
+        b: torch.Tensor,
+        prod: torch.Tensor,
+        n: int,
+        l: int,  # noqa: E741
+        ab_pitch: int | None = None,
+        ab_plane: int | None = None,
+    ) -> None:
         library = self._kernel_library
         params = self._launcher.LaunchParams()
-        params.a = tensor_s1_d0(library, a)
-        params.b = tensor_s1_d0(library, b)
-        params.prod = tensor_s1_d0(library, prod)
+        params.a = tensor_flat(library, a)
+        params.b = tensor_flat(library, b)
+        params.prod = tensor_flat(library, prod)
         params.n = n
         params.l = l
+        params.ab_pitch = n if ab_pitch is None else ab_pitch
+        params.ab_plane = n * n if ab_plane is None else ab_plane
         params.stream = current_stream_handle(a)
         self._launcher.launch(self._config, params)

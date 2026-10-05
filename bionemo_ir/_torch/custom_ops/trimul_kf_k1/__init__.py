@@ -19,15 +19,17 @@ channel-major for ``trimul_kf_k2``. A source-free build carries no private kerne
 everything re-exported here must keep working with it absent.
 """
 
-from ._config import TrimulKFK1Selection, shipped_shapes
+from ._config import AB_LAYOUTS, TrimulKFK1Selection, ab_pitch, shipped_shapes
 from .cutedsl import TrimulKFK1Output
 from .ops import TrimulKFInputFold, TrimulKFK1Op, fold_input_weights, get_trimul_kf_k1_op
 
 __all__ = [
+    "AB_LAYOUTS",
     "TrimulKFInputFold",
     "TrimulKFK1Op",
     "TrimulKFK1Output",
     "TrimulKFK1Selection",
+    "ab_pitch",
     "fold_input_weights",
     "get_trimul_kf_k1_op",
     "shipped_shapes",

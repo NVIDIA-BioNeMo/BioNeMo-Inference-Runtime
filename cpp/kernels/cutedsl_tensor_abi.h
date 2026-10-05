@@ -196,6 +196,23 @@ using Tensor2View = TensorView<2>;
 using Tensor3View = TensorView<3>;
 using Tensor4View = TensorView<4>;
 
+/* Host-side view of one flat, contiguous operand whose element count may pass int32. */
+struct FlatTensorView
+{
+  std::uint64_t data{};
+  std::int64_t extent{};
+  std::int32_t device{kUnknownDevice};
+
+  FlatTensorView() = default;
+
+  FlatTensorView(std::uint64_t data_, std::int64_t extent_, std::int32_t device_ = kUnknownDevice)
+    : data(data_)
+    , extent(extent_)
+    , device(device_)
+  {
+  }
+};
+
 } // namespace bioir::cutedsl
 #endif
 

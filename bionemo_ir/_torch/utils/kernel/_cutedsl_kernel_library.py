@@ -197,6 +197,13 @@ def tensor_s1_d0(library: ModuleType, tensor: torch.Tensor) -> Any:
     return library.Tensor1View(tensor.data_ptr(), (tensor.shape[0],), (), tensor.get_device())
 
 
+def tensor_flat(library: ModuleType, tensor: torch.Tensor) -> Any:
+    """Create a 64-bit-extent view of a contiguous rank-1 tensor."""
+    if tensor.stride() != (1,):
+        raise ValueError("flat tensor must be contiguous and rank 1")
+    return library.FlatTensorView(tensor.data_ptr(), tensor.shape[0], tensor.get_device())
+
+
 def tensor_s2_d1(library: ModuleType, tensor: torch.Tensor, dynamic_stride_dim: int = 0) -> Any:
     """Create a CuTe ``s2_d1``/``s1_d1`` view from a rank-2 tensor.
 

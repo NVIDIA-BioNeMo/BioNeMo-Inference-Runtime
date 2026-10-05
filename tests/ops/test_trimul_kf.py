@@ -42,9 +42,9 @@ _EPS = 1e-5
 # bf16 a, b and product between fp32 stages.
 _ATOL = 8e-2
 
-# (B, N, C=D, outgoing, has_bias, residual, lengths), selecting every K1 variant, every K2 tile and
-# its odd-cluster fallback (N = 392), and both K3 variants. N * N % 128 != 0 at N = 136 and 168,
-# where batches run one launch each.
+# (B, N, C=D, outgoing, has_bias, residual, lengths), selecting every K1 variant and its padded a/b
+# layout (N = 552), K2 tiles of every variant, K2_1's odd-cluster fallback (N = 392 at C = 64), and the
+# K3 variants the configs select. N * N % 128 != 0 at N = 136 and 168, where batches run one launch each.
 _CASES = [
     (1, 128, 64, True, False, False, "full"),
     (1, 128, 32, False, True, True, "tail"),
@@ -60,6 +60,9 @@ _CASES = [
     (1, 384, 256, False, False, True, "tail"),
     (2, 392, 256, True, True, True, "random"),
     (1, 1024, 256, False, True, True, "tail"),
+    (1, 264, 256, True, False, True, "tail"),
+    (2, 552, 128, False, True, True, "random"),
+    (1, 392, 64, False, False, True, "tail"),
 ]
 
 
@@ -131,6 +134,11 @@ def _problem(B: int, N: int, C: int, has_bias: bool, lengths: str, seed: int = 0
 
 
 def _run_chain(problem: dict, outgoing: bool, residual: bool) -> torch.Tensor:
+    return _run_chain_stages(problem, outgoing, residual)[-1]
+
+
+def _run_chain_stages(problem: dict, outgoing: bool, residual: bool) -> tuple[torch.Tensor | None, ...]:
+    """``a``, ``b``, ``stats``, the product and the output of the op chain."""
     x = problem["x"]
     C = x.shape[-1]
     op1 = k1.get_trimul_kf_k1_op(torch.bfloat16, C, C)
@@ -157,7 +165,7 @@ def _run_chain(problem: dict, outgoing: bool, residual: bool) -> torch.Tensor:
     )
     a, b, stats = op1(x, problem["seqlen"], fold_in, _EPS)
     prod = op2(a, b)
-    return op3(
+    out = op3(
         prod,
         x,
         fold_out,
@@ -166,6 +174,7 @@ def _run_chain(problem: dict, outgoing: bool, residual: bool) -> torch.Tensor:
         residual=residual,
         actual_seqlen=problem["out_seqlen"] if residual else None,
     )
+    return a, b, stats, prod, out
 
 
 def _k1_reference(problem: dict) -> tuple[torch.Tensor, torch.Tensor]:
@@ -243,7 +252,20 @@ def test_chain_matches_reference(mode, case, monkeypatch):
     torch.testing.assert_close(out.float(), reference, atol=_ATOL, rtol=0)
 
 
-@pytest.mark.parametrize("case", [_CASES[0], _CASES[4], _CASES[7], _CASES[11]], ids=_case_id)
+# Dense and padded K1 planes at both widths, and each K2 tile list's widths.
+_BITWISE_CASES = [
+    _CASES[0],
+    _CASES[4],
+    _CASES[7],
+    _CASES[11],
+    _CASES[13],
+    _CASES[14],
+    _CASES[15],
+    (1, 520, 256, True, True, True, "random"),
+]
+
+
+@pytest.mark.parametrize("case", _BITWISE_CASES, ids=_case_id)
 def test_cubin_chain_matches_source_chain_bitwise(case, monkeypatch):
     """Both paths run the same machine code, so their outputs agree bit for bit."""
     skip_if_not_sm90()
@@ -260,6 +282,70 @@ def test_cubin_chain_matches_source_chain_bitwise(case, monkeypatch):
     assert torch.equal(outputs[0], outputs[1])
 
 
+def _rows_reference(problem: dict, a: torch.Tensor, b: torch.Tensor, prod: torch.Tensor, outgoing: bool, rows):
+    """fp32 ``a``, ``b``, product and output rows of the last batch, each from its stage's own inputs."""
+    B, N, _, C = problem["x"].shape
+    x = problem["x"][B - 1, rows].float()
+    normed_in = torch.nn.functional.layer_norm(
+        x, (C,), problem["norm_in_weight"].float(), problem["norm_in_bias"].float(), _EPS
+    )
+    proj = torch.nn.functional.linear(normed_in, problem["p_in_weight"].float(), _float(problem["p_in_bias"]))
+    gate = torch.nn.functional.linear(normed_in, problem["g_in_weight"].float(), _float(problem["g_in_bias"]))
+    mask = torch.arange(N, device=x.device) < problem["seqlen"][B - 1, rows, None]
+    ab = (proj * torch.sigmoid(gate) * mask[..., None]).permute(2, 0, 1)
+    D = ab.shape[0] // 2
+    prod_rows = torch.empty((D, len(rows), N), device=x.device)
+    for d in range(0, D, 32):  # b in fp32, 32 planes at a time
+        planes = b[B - 1, d : d + 32].float()
+        if outgoing:
+            prod_rows[d : d + 32] = torch.einsum("drk,djk->drj", a[B - 1, d : d + 32, rows].float(), planes)
+        else:
+            prod_rows[d : d + 32] = torch.einsum("dkr,dkj->drj", a[B - 1, d : d + 32, :, rows].float(), planes)
+    products = torch.nn.functional.layer_norm(
+        prod[B - 1, :, rows].float().permute(1, 2, 0),
+        (D,),
+        problem["norm_out_weight"].float(),
+        problem["norm_out_bias"].float(),
+        _EPS,
+    )
+    update = torch.nn.functional.linear(
+        products, problem["p_out_weight"].float(), _float(problem["p_out_bias"])
+    ) * torch.sigmoid(
+        torch.nn.functional.linear(normed_in, problem["g_out_weight"].float(), _float(problem["g_out_bias"]))
+    )
+    out_mask = torch.arange(N, device=x.device) < problem["out_seqlen"][B - 1, rows, None]
+    return ab[:D], ab[D:], prod_rows, (x + update) * out_mask[..., None]
+
+
+# One launch per op past 2^31 elements: N = 2904 pads a/b to P = 2944; B = 2 at N = 3008 shares a launch; and B = 2 at
+# N = 2912, C = D = 256 puts the batch stride D * N * N past 2^31.
+_LARGE_CASES = [(1, 2904, 256), (2, 3008, 128), (2, 2912, 256)]
+
+
+@pytest.mark.parametrize("mode", _CUTEDSL_MODES)
+@pytest.mark.parametrize("outgoing", [True, False], ids=["out", "in"])
+@pytest.mark.parametrize(("B", "N", "C"), _LARGE_CASES, ids=lambda v: str(v))
+def test_chain_past_int32_offsets_matches_reference_rows(mode, B, N, C, outgoing, monkeypatch):
+    """Every stage's rows of the last batch, the last planes included, match fp32 once offsets pass 2^31."""
+    skip_if_not_sm90()
+    torch.cuda.empty_cache()
+    P = k1.ab_pitch(N, "padded")
+    footprint = 2 * B * (2 * N * N * C + 2 * C * P * P + C * N * N)  # bf16 x and out, a and b, product
+    if torch.cuda.mem_get_info()[0] < max(32 * 2**30, footprint + footprint // 4):
+        pytest.skip(f"needs {max(32 * 2**30, footprint + footprint // 4) >> 30} GiB of free GPU memory")
+    caches = _use_mode(mode, monkeypatch)
+    problem = _problem(B, N, C, True, "random")
+    a, b, stats, prod, out = _run_chain_stages(problem, outgoing, True)
+    _assert_dispatched(caches, mode)
+    assert min(a.numel(), prod.numel(), out.numel()) > 2**31
+    rows = [0, N // 2, N - 1]
+    a_ref, b_ref, prod_ref, out_ref = _rows_reference(problem, a, b, prod, outgoing, rows)
+    torch.testing.assert_close(a[B - 1, :, rows].float(), a_ref, atol=_ATOL, rtol=1e-2)
+    torch.testing.assert_close(b[B - 1, :, rows].float(), b_ref, atol=_ATOL, rtol=1e-2)
+    torch.testing.assert_close(prod[B - 1, :, rows].float(), prod_ref, atol=_ATOL, rtol=1e-2)
+    torch.testing.assert_close(out[B - 1, rows].float(), out_ref, atol=_ATOL, rtol=0)
+
+
 @pytest.mark.parametrize("shape", sorted(k1_config.shipped_shapes(90)))
 def test_k1_hands_row_statistics_exactly_to_the_k3_that_reads_them(shape):
     """For every token count, K1 writes statistics exactly when the K3 it pairs with reads them."""
@@ -272,12 +358,14 @@ def test_k1_hands_row_statistics_exactly_to_the_k3_that_reads_them(shape):
 @pytest.mark.parametrize("D", sorted(k2_config.shipped_widths(90)))
 def test_k2_tiles_fill_their_clusters_and_deferred_stores(D):
     """Every token count runs a tile whose clusters fill and whose deferred stores have enough k-blocks."""
-    for n in range(8, 4097, 8):
-        _, tile = k2_config.select(90, D, n)
-        assert -(-n // tile.tile_n) % tile.cluster_n == 0, (n, tile)
-        assert tile.defer_kmin <= -(-n // k2_config.TILE_K), (n, tile)
-    _, odd = k2_config.select(90, D, 392)
-    assert odd == k2_config.TrimulKFK2Tile("K2_1", 128)
+    for outgoing in (True, False):
+        for n in range(8, 4097, 8):
+            _, tile = k2_config.select(90, D, n, outgoing)
+            assert -(-n // tile.tile_n) % tile.cluster_n == 0, (n, tile)
+            assert tile.defer_kmin <= -(-n // k2_config.TILE_K), (n, tile)
+    paired = k2_config.TrimulKFK2Tile("K2_1", 192)
+    assert k2_config.runtime_tile(paired, 392) == k2_config.TrimulKFK2Tile("K2_1", 128)
+    assert k2_config.runtime_tile(paired, 384) == paired
 
 
 def test_shipped_shapes_cover_dims_up_to_256():
@@ -310,11 +398,25 @@ def test_malformed_k1_configs_are_rejected(config):
         {"kernel_variant": "K2_1", "tile_n": 256},
         {"kernel_variant": "K2_0", "tile_n": 128},
         {"kernel_variant": "K2_0", "tile_n": 128, "cluster_m": 1, "defer_kmin": 0, "split_epi": True},
+        {"kernel_variant": "K2_0", "tile_n": 136, "cluster_m": 2, "defer_kmin": 0, "split_epi": False},
     ],
 )
 def test_malformed_k2_tiles_are_rejected(entry):
     with pytest.raises(ValueError):
         k2_config.parse_tile(entry, "test")
+
+
+def test_k2_anchors_name_one_tile_or_one_per_direction():
+    shared = {"kernel_variant": "K2_1", "tile_n": 192}
+    outgoing = {"kernel_variant": "K2_2", "tile_n": 208, "cluster_m": 2, "defer_kmin": 8, "split_epi": False}
+    incoming = {"kernel_variant": "K2_0", "tile_n": 256, "cluster_m": 2, "defer_kmin": 8, "split_epi": True}
+    configs = {"S=264": shared, "S=832": {"out": outgoing, "in": incoming}}
+    out, inc = k2_config.parse_configs(configs, "o", True), k2_config.parse_configs(configs, "i", False)
+    assert out[264] == inc[264] == (k2_config.TrimulKFK2Tile("K2_1", 192),)
+    assert out[832] == (k2_config.parse_tile(outgoing, "o"),) and inc[832] == (k2_config.parse_tile(incoming, "i"),)
+    for bad in ({"out": outgoing}, {"out": outgoing, "in": incoming, "other": shared}):
+        with pytest.raises(ValueError):
+            k2_config.parse_configs({"S=832": bad})
 
 
 def test_ops_reject_misuse():

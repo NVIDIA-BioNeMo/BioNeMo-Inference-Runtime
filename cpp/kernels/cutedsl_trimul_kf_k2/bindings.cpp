@@ -62,6 +62,8 @@ void bind(nb::module_& parent)
     .def_rw("prod", &LaunchParams::prod)
     .def_rw("n", &LaunchParams::n)
     .def_rw("l", &LaunchParams::l)
+    .def_rw("ab_pitch", &LaunchParams::ab_pitch)
+    .def_rw("ab_plane", &LaunchParams::ab_plane)
     .def_rw("stream", &LaunchParams::stream);
 
   module.def("kernel_specs", &kernel_specs, "Return every registered trimul KF K2 variant.");

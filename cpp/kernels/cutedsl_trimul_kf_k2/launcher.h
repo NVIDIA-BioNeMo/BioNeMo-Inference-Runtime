@@ -154,17 +154,19 @@ inline std::uint32_t dynamic_smem_bytes(KernelConfig const& config)
   return config.cubin.dynamic_smem_bytes;
 }
 
-/* a, b and prod are flat, contiguous, channel-major bf16 [l * n * n] buffers holding l = B * D
- * matrices of n x n: prod[l, i, j] = sum_k a[l, i, k] b[l, j, k] outgoing, a[l, k, i] b[l, k, j]
- * incoming.
+/* a, b and prod are flat, channel-major bf16 buffers holding l = B * D matrices of n x n:
+ * prod[l, i, j] = sum_k a[l, i, k] b[l, j, k] outgoing, a[l, k, i] b[l, k, j] incoming. The rows of
+ * a and b sit ab_pitch elements apart and their matrices ab_plane apart; prod is dense, [l * n * n].
  */
 struct LaunchParams
 {
-  Tensor1View a;
-  Tensor1View b;
-  Tensor1View prod;
+  FlatTensorView a;
+  FlatTensorView b;
+  FlatTensorView prod;
   std::int32_t n{};
   std::int32_t l{};
+  std::int64_t ab_pitch{};
+  std::int64_t ab_plane{};
   std::uint64_t stream{};
 };
 

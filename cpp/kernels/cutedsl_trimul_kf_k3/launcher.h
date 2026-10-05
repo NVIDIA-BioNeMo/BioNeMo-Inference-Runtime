@@ -37,8 +37,8 @@ namespace bioir::cutedsl::trimul_kf_k3::embedded
 struct CubinImage;
 }
 
-/* Hopper device ABI trimul_kf_k3_sm90_v1, read from EIATTR_KPARAM_INFO for variant K3_1 with
- * the fused residual:
+/* Hopper device ABI trimul_kf_k3_sm90_v2, read from EIATTR_KPARAM_INFO for variant K3_1 with
+ * the fused residual (K3_3 lays out the same bank):
  *
  *   ord  0  0x030  0x80  prod_tma    CUtensorMap
  *   ord  1  0x0b0  0x08  prod_coord  CoordTensorS2   (N * N, B)
@@ -58,8 +58,8 @@ struct CubinImage;
  *   ord 15  0x36c  0x04  eps         float
  *   ord 16  0x370  0x04  rows        std::int32_t
  *
- * K3_0 re-reduces the row statistics, so stats is absent; without the fused residual, seqlen is
- * absent; the remaining ordinals shift down. The weights have static shapes, so their coordinate
+ * K3_0 and K3_2 re-reduce the row statistics, so stats is absent; without the fused residual, seqlen
+ * is absent; the remaining ordinals shift down. The weights have static shapes, so their coordinate
  * tensors lower to no parameter. Each 0x80 TMA slot carries CuTe DSL 4.5.2's 0x40-byte
  * non-executable CopyAtom payload followed by zero padding: plain loads of prod, x and the weights,
  * and one store of the output.
@@ -147,7 +147,8 @@ enum class DType : std::uint8_t
 };
 
 /* Launch fields generated with the corresponding CUBIN, which runs the configs' K3_<kernel_variant>.
- * Variant 1 reads K1's row statistics; residual fuses (x + update) * mask into the output.
+ * Variants 1 and 3 read K1's row statistics; residual fuses (x + update) * mask into the output.
+ * Each tile_m-row tile spans tile_ctas CTAs, one per output-column group.
  */
 struct KernelSpec
 {
@@ -158,6 +159,8 @@ struct KernelSpec
   std::int32_t kernel_variant;
   bool residual;
   std::uint32_t num_threads;
+  std::uint32_t tile_m;
+  std::uint32_t tile_ctas;
 };
 
 struct KernelConfig
@@ -178,20 +181,20 @@ inline std::uint32_t dynamic_smem_bytes(KernelConfig const& config)
 /* K3 operands, all flat and contiguous: prod is the bf16 [nb * D * n * n] channel-major product;
  * x and output are [rows * C] with rows = nb * n * n; w_out is the [C * D] output-projection fold,
  * w_gate_out the [C * C] gate fold and vec_out the fp32 [4C] folded bias terms, which carry the
- * LayerNorm shifts and any output biases; stats K1's row statistics, read by K3_1 alone; seqlen
+ * LayerNorm shifts and any output biases; stats K1's row statistics, read by K3_1 and K3_3; seqlen
  * one int32 prefix length per (b, i) output row, read with the fused residual alone. output must
  * not alias x: a CTA streams every column of its x rows again for each output column group.
  */
 struct LaunchParams
 {
-  Tensor1View prod;
-  Tensor1View x;
+  FlatTensorView prod;
+  FlatTensorView x;
   Tensor1View w_out;
   Tensor1View w_gate_out;
   Tensor1View vec_out;
-  Tensor1View stats;
+  FlatTensorView stats;
   Tensor1View seqlen;
-  Tensor1View output;
+  FlatTensorView output;
   std::int32_t rows{};
   std::int32_t n{};
   std::int32_t nb{};

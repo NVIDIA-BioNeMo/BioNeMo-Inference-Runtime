@@ -166,6 +166,13 @@ class _Sm90Spec:
     epi_tile: bool = False
     # Per-operand TMA ranks in ``operands`` order, for families whose operands differ; empty uses ``rank``.
     ranks: tuple[int, ...] = ()
+    # Operands only some images record, each with its TMA rank; an absent one renders as a rank-0 map.
+    optional: tuple[tuple[str, int], ...] = ()
+
+    @property
+    def declared_operands(self) -> tuple[str, ...]:
+        """Every operand the C++ launch record declares, the optional ones last."""
+        return (*self.operands, *(name for name, _ in self.optional))
 
 
 @dataclass(frozen=True)
@@ -400,9 +407,14 @@ _FAMILY_SPECS: dict[str, _FamilySpec] = {
             # N of the configs' K1_<N>.
             _Field("kernel_variant", _INDEX, "std::int32_t kernel_variant;"),
             _Field("num_threads", _POSITIVE, "std::uint32_t num_threads;", suffix="U"),
+            # Every image published before the padded flavour wrote dense a/b planes.
+            _Field("padded", _BOOL, "bool padded;", default=False),
         ),
-        runtime_key=("is_bfloat16", "C", "D", "kernel_variant"),
-        sm90=_Sm90Spec("enabled", ("x", "w_proj", "w_gate", "a", "b"), ranks=(2, 2, 2, 3, 3)),
+        runtime_key=("is_bfloat16", "C", "D", "kernel_variant", "padded"),
+        # A padded image also loads x one row chunk at a time through its x_chunk map.
+        sm90=_Sm90Spec(
+            "enabled", ("x", "w_proj", "w_gate", "a", "b"), ranks=(2, 2, 2, 3, 3), optional=(("x_chunk", 3),)
+        ),
     ),
     "trimul_kf_k2": _FamilySpec(
         fields=(
@@ -429,6 +441,10 @@ _FAMILY_SPECS: dict[str, _FamilySpec] = {
             _Field("kernel_variant", _INDEX, "std::int32_t kernel_variant;"),
             _Field("residual", _BOOL, "bool residual;"),
             _Field("num_threads", _POSITIVE, "std::uint32_t num_threads;", suffix="U"),
+            # Every image published before the ping-pong variants streamed 128-row tiles.
+            _Field("tile_m", _POSITIVE, "std::uint32_t tile_m;", suffix="U", default=128),
+            # Every image published before the ping-pong variants covered a tile's columns in one CTA.
+            _Field("tile_ctas", _POSITIVE, "std::uint32_t tile_ctas;", suffix="U", default=1),
         ),
         runtime_key=("is_bfloat16", "C", "D", "kernel_variant", "residual"),
         sm90=_Sm90Spec("enabled", ("prod", "x", "w_out", "w_gate", "output"), ranks=(3, 2, 2, 2, 2)),
@@ -728,10 +744,12 @@ def _validate_sm90_launch(spec: _Sm90Spec, value: object, where: str, dtype: str
     if spec.epi_tile:
         _integer_array(launch["epi_tile"], f"{where}.epi_tile", length=2, minimum=1)
     descriptors = _as_object(launch["tma_descriptors"], f"{where}.tma_descriptors")
-    _exact_keys(descriptors, set(spec.operands), f"{where}.tma_descriptors")
+    recorded_optional = set(descriptors) & {name for name, _ in spec.optional}
+    _exact_keys(descriptors, set(spec.operands) | recorded_optional, f"{where}.tma_descriptors")
     ranks = spec.ranks or (spec.rank,) * len(spec.operands)
-    for name, rank in zip(spec.operands, ranks, strict=True):
-        _validate_tma_descriptor(descriptors[name], f"{where}.tma_descriptors.{name}", dtype, rank)
+    for name, rank in (*zip(spec.operands, ranks, strict=True), *spec.optional):
+        if name in descriptors:
+            _validate_tma_descriptor(descriptors[name], f"{where}.tma_descriptors.{name}", dtype, rank)
 
 
 def _validate_sm100_launch(spec: _Sm100Spec, value: object, where: str, dtype: str, kernel_sm: int) -> None:
@@ -1800,7 +1818,10 @@ def _render_sm90(value: object, operands: tuple[str, ...], indent: str) -> list[
         f"{indent}  {_CLUSTER_POLICY[cast(str, metadata['cluster_scheduling_policy'])]},",
     ]
     for operand in operands:
-        lines.extend(_render_tma_descriptor(descriptors[operand], indent + "  "))
+        if operand in descriptors:
+            lines.extend(_render_tma_descriptor(descriptors[operand], indent + "  "))
+        else:
+            lines.append(f"{indent}  {{}},")
     lines.append(f"{indent}}},")
     return lines
 
@@ -1833,7 +1854,7 @@ def _sm90_declarations(spec: _FamilySpec) -> list[str]:
         "  std::uint32_t block_dims[3];",
         "  std::uint32_t cluster_dims[3];",
         "  CUclusterSchedulingPolicy cluster_scheduling_policy;",
-        *(f"  TmaDescriptorInfo {operand};" for operand in spec.sm90.operands),
+        *(f"  TmaDescriptorInfo {operand};" for operand in spec.sm90.declared_operands),
         "};",
         "",
     ]
@@ -1959,7 +1980,7 @@ def _family_initializer_lines(family: str, variant: VariantRecord, indent: str) 
     spec = _FAMILY_SPECS[family]
     lines = [f"{indent}{_field_value(field, variant)}," for field in spec.fields]
     if spec.sm90 is not None:
-        lines.extend(_render_sm90(variant.runtime_metadata["sm90_launch"], spec.sm90.operands, indent))
+        lines.extend(_render_sm90(variant.runtime_metadata["sm90_launch"], spec.sm90.declared_operands, indent))
     if spec.sm100 is not None:
         lines.extend(_render_sm100(variant.runtime_metadata["sm100_launch"], spec.sm100, indent))
     if spec.alias is not None:

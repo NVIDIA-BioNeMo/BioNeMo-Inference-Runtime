@@ -421,6 +421,26 @@ inline bool sm90_static_tma_operation_tag(std::int64_t static_elements)
   return static_elements >= (std::int64_t{1} << 16);
 }
 
+/* Elements from a TMA source's first to one past its last addressed element. */
+inline std::uint64_t tma_source_span(TmaTensorSource const& source)
+{
+  std::uint64_t span = 1;
+  for (std::size_t index = 0; index < source.dimensions.size(); ++index)
+  {
+    if (source.dimensions[index] > 0)
+      span += (source.dimensions[index] - 1) * source.strides[index];
+  }
+  return span;
+}
+
+/* The byte-10 rule above applies at launch to dynamic tensors too: the host wrapper tags an atom
+ * once its tensor spans 2^16 elements, a strided view counting its span.
+ */
+inline bool sm90_tma_operation_tag(TmaTensorSource const& source)
+{
+  return sm90_static_tma_operation_tag(static_cast<std::int64_t>(tma_source_span(source)));
+}
+
 inline void finalize_sm90_tma_atom(CUtensorMap& descriptor, bool operation_tag)
 {
   constexpr std::size_t kAtomTagOffset = 8;
@@ -469,6 +489,28 @@ inline std::uint32_t checked_u32(std::uint64_t value, char const* name)
   if (value == 0 || value > std::numeric_limits<std::uint32_t>::max())
     throw std::overflow_error(std::string(name) + " does not fit a positive uint32");
   return static_cast<std::uint32_t>(value);
+}
+
+/* Products and sums of non-negative element counts, rejected instead of wrapping past int64. */
+inline std::int64_t checked_mul(std::int64_t left, std::int64_t right, char const* name)
+{
+  if (left != 0 && right > std::numeric_limits<std::int64_t>::max() / left)
+    throw std::invalid_argument(std::string(name) + " overflows int64");
+  return left * right;
+}
+
+inline std::int64_t checked_add(std::int64_t left, std::int64_t right, char const* name)
+{
+  if (right > std::numeric_limits<std::int64_t>::max() - left)
+    throw std::invalid_argument(std::string(name) + " overflows int64");
+  return left + right;
+}
+
+inline void validate_flat_tensor(FlatTensorView const& view, char const* name, std::uint64_t alignment)
+{
+  validate_pointer(view.data, alignment, name);
+  if (view.extent <= 0)
+    throw std::invalid_argument(std::string(name) + " has a non-positive extent");
 }
 
 } // namespace bioir::cutedsl

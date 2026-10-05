@@ -25,6 +25,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <limits>
 #include <stdexcept>
 #include <string>
 
@@ -33,13 +34,19 @@ namespace bioir::cutedsl::trimul_kf_k3
 namespace
 {
 
-constexpr char kSM90LaunchAbi[] = "trimul_kf_k3_sm90_v1";
-/* Rows per K3 tile, which the persistent CTAs stride over. */
-constexpr std::uint64_t kTileRows = 128;
-/* The variant reading K1's row statistics. */
-constexpr std::int32_t kStatsVariant = 1;
+constexpr char kSM90LaunchAbi[] = "trimul_kf_k3_sm90_v2";
+/* K3_0 .. K3_3. */
+constexpr std::int32_t kVariantCount = 4;
+/* Rows one launch addresses: TMA coordinates are int32. */
+constexpr std::int64_t kMaxLaunchRows = std::numeric_limits<std::int32_t>::max() - 128;
 /* x and output are bf16. */
 constexpr std::uint64_t kElementBytes = 2;
+
+/* K3_1 and K3_3 read K1's row statistics; the others re-reduce them. */
+bool reads_stats(std::int32_t kernel_variant)
+{
+  return kernel_variant == 1 || kernel_variant == 3;
+}
 
 /* Bare device pointers require explicit cross-device validation. */
 void check_device(std::int32_t operand_device, std::int32_t device, char const* name)
@@ -70,6 +77,18 @@ void validate_flat(
   }
 }
 
+void validate_flat(
+  FlatTensorView const& view, std::int64_t elements, std::uint64_t alignment, std::int32_t device, char const* name)
+{
+  validate_flat_tensor(view, name, alignment);
+  check_device(view.device, device, name);
+  if (view.extent != elements)
+  {
+    throw std::invalid_argument(
+      std::string(name) + " must hold " + std::to_string(elements) + " elements, got " + std::to_string(view.extent));
+  }
+}
+
 void validate_image(KernelConfig const& config)
 {
   if (config.cubin.data == nullptr || config.cubin.size == 0)
@@ -90,22 +109,24 @@ void validate_image(KernelConfig const& config)
     throw std::invalid_argument(
       "embedded CUBIN does not support configured device SM" + std::to_string(config.spec.target_sm));
   KernelSpec const& spec = config.spec;
-  if (spec.C <= 0 || spec.D <= 0 || spec.num_threads == 0 || (spec.kernel_variant != 0 && spec.kernel_variant != 1))
+  if (
+    spec.C <= 0 || spec.D <= 0 || spec.num_threads == 0 || spec.tile_m == 0 || spec.tile_ctas == 0
+    || spec.kernel_variant < 0 || spec.kernel_variant >= kVariantCount)
     throw std::invalid_argument("trimul KF K3 CUBIN has invalid launch geometry");
 }
 
 /* A flat row-major [rows, cols] operand as a rank-2 TMA source. */
-TmaTensorSource matrix_source(Tensor1View const& view, std::int64_t rows, std::int64_t cols)
+TmaTensorSource matrix_source(std::uint64_t data, std::int64_t rows, std::int64_t cols)
 {
   return TmaTensorSource{
-    view.data,
+    data,
     {static_cast<std::uint64_t>(rows), static_cast<std::uint64_t>(cols), 0, 0},
     {static_cast<std::uint64_t>(cols), 1, 0, 0},
   };
 }
 
 /* A flat channel-major [nb, D, n * n] buffer as the kernel's (n * n, D, nb) TMA source. */
-TmaTensorSource channel_major_source(Tensor1View const& view, std::int64_t nn, std::int64_t D, std::int64_t nb)
+TmaTensorSource channel_major_source(FlatTensorView const& view, std::int64_t nn, std::int64_t D, std::int64_t nb)
 {
   return TmaTensorSource{
     view.data,
@@ -123,33 +144,47 @@ void launch_sm90(
 {
   std::int32_t const device = cuda_device_for_context(context);
   KernelSpec const& spec = config.spec;
-  bool const reads_stats = spec.kernel_variant == kStatsVariant;
+  bool const stats_variant = reads_stats(spec.kernel_variant);
   std::int64_t const C = spec.C;
   std::int64_t const D = spec.D;
   std::int64_t const n = params.n;
   std::int64_t const nb = params.nb;
-  std::int64_t const nn = n * n;
   std::int64_t const rows = params.rows;
-  if (n <= 0 || nb <= 0 || rows != nb * nn)
-    throw std::invalid_argument("trimul KF K3 needs rows == nb * n * n with positive n and nb");
-  std::uint64_t const num_tiles = ceil_div(static_cast<std::uint64_t>(rows), kTileRows);
+  if (n <= 0 || nb <= 0)
+    throw std::invalid_argument("trimul KF K3 needs positive n and nb");
+  std::int64_t const nn = checked_mul(n, n, "trimul KF K3 plane");
+  if (rows != checked_mul(nb, nn, "trimul KF K3 rows"))
+    throw std::invalid_argument("trimul KF K3 needs rows == nb * n * n");
+  if (rows > kMaxLaunchRows)
+  {
+    throw std::invalid_argument(
+      "trimul KF K3 addresses at most " + std::to_string(kMaxLaunchRows) + " rows a launch; got "
+      + std::to_string(rows));
+  }
+  std::uint64_t const tile_rows = spec.tile_m;
+  std::uint64_t const num_tiles = ceil_div(static_cast<std::uint64_t>(rows), tile_rows);
 
-  validate_flat(params.prod, nb * D * nn, 16, device, "prod");
-  validate_flat(params.x, rows * C, 16, device, "x");
+  std::int64_t const operand_elements = checked_mul(rows, C, "trimul KF K3 x");
+  validate_flat(
+    params.prod, checked_mul(nb, checked_mul(D, nn, "trimul KF K3 prod"), "trimul KF K3 prod"), 16, device, "prod");
+  validate_flat(params.x, operand_elements, 16, device, "x");
   validate_flat(params.w_out, C * D, 16, device, "w_out");
   validate_flat(params.w_gate_out, C * C, 16, device, "w_gate_out");
   validate_flat(params.vec_out, 4 * C, 16, device, "vec_out");
-  validate_flat(params.output, rows * C, 16, device, "output");
+  validate_flat(params.output, operand_elements, 16, device, "output");
   /* K3 reads x while it writes output, so the two must not share any bytes. */
-  std::uint64_t const operand_bytes = static_cast<std::uint64_t>(rows * C) * kElementBytes;
+  std::uint64_t const operand_bytes = static_cast<std::uint64_t>(operand_elements) * kElementBytes;
   if (params.output.data < params.x.data + operand_bytes && params.x.data < params.output.data + operand_bytes)
     throw std::invalid_argument("trimul KF K3 output must not alias x");
-  if (reads_stats)
+  if (stats_variant)
   {
-    validate_tensor(params.stats, "stats", 16);
+    validate_flat_tensor(params.stats, "stats", 16);
     check_device(params.stats.device, device, "stats");
-    if (static_cast<std::uint64_t>(params.stats.shape[0]) < 2 * num_tiles * kTileRows)
-      throw std::invalid_argument("stats needs two values per row, rounded up to whole 128-row tiles");
+    if (static_cast<std::uint64_t>(params.stats.extent) < 2 * num_tiles * tile_rows)
+    {
+      throw std::invalid_argument(
+        "stats needs two values per row, rounded up to whole " + std::to_string(tile_rows) + "-row tiles");
+    }
   }
   if (spec.residual)
   {
@@ -162,26 +197,26 @@ void launch_sm90(
   embedded::SM90LaunchInfo const& metadata = config.embedded_image->sm90;
   CUtensorMapDataType const expected_dtype = tma_data_type(true);
   abi::SM90Params device_params{};
-  encode_tma_descriptor(
-    device_params.prod_tma, metadata.prod, expected_dtype, channel_major_source(params.prod, nn, D, nb), "prod");
-  encode_tma_descriptor(device_params.x_tma, metadata.x, expected_dtype, matrix_source(params.x, rows, C), "x");
-  encode_tma_descriptor(
-    device_params.w_out_tma, metadata.w_out, expected_dtype, matrix_source(params.w_out, C, D), "w_out");
-  encode_tma_descriptor(
-    device_params.w_gate_tma, metadata.w_gate, expected_dtype, matrix_source(params.w_gate_out, C, C), "w_gate_out");
-  encode_tma_descriptor(
-    device_params.output_tma, metadata.output, expected_dtype, matrix_source(params.output, rows, C), "output");
-  /* Only the weight folds are static. */
-  finalize_sm90_tma_atom(device_params.prod_tma, true);
-  finalize_sm90_tma_atom(device_params.x_tma, true);
-  finalize_sm90_tma_atom(device_params.w_out_tma, sm90_static_tma_operation_tag(C * D));
-  finalize_sm90_tma_atom(device_params.w_gate_tma, sm90_static_tma_operation_tag(C * C));
-  finalize_sm90_tma_atom(device_params.output_tma, true);
+  TmaTensorSource const prod_source = channel_major_source(params.prod, nn, D, nb);
+  TmaTensorSource const x_source = matrix_source(params.x.data, rows, C);
+  TmaTensorSource const w_out_source = matrix_source(params.w_out.data, C, D);
+  TmaTensorSource const w_gate_source = matrix_source(params.w_gate_out.data, C, C);
+  TmaTensorSource const output_source = matrix_source(params.output.data, rows, C);
+  encode_tma_descriptor(device_params.prod_tma, metadata.prod, expected_dtype, prod_source, "prod");
+  encode_tma_descriptor(device_params.x_tma, metadata.x, expected_dtype, x_source, "x");
+  encode_tma_descriptor(device_params.w_out_tma, metadata.w_out, expected_dtype, w_out_source, "w_out");
+  encode_tma_descriptor(device_params.w_gate_tma, metadata.w_gate, expected_dtype, w_gate_source, "w_gate_out");
+  encode_tma_descriptor(device_params.output_tma, metadata.output, expected_dtype, output_source, "output");
+  finalize_sm90_tma_atom(device_params.prod_tma, sm90_tma_operation_tag(prod_source));
+  finalize_sm90_tma_atom(device_params.x_tma, sm90_tma_operation_tag(x_source));
+  finalize_sm90_tma_atom(device_params.w_out_tma, sm90_tma_operation_tag(w_out_source));
+  finalize_sm90_tma_atom(device_params.w_gate_tma, sm90_tma_operation_tag(w_gate_source));
+  finalize_sm90_tma_atom(device_params.output_tma, sm90_tma_operation_tag(output_source));
   device_params.prod_coord = CoordTensorS2{{static_cast<std::int32_t>(nn), static_cast<std::int32_t>(nb)}};
   device_params.x_coord = CoordTensorS1{{static_cast<std::int32_t>(rows)}};
   device_params.output_coord = device_params.x_coord;
   device_params.vec.data = static_cast<CUdeviceptr>(params.vec_out.data);
-  if (reads_stats)
+  if (stats_variant)
   {
     device_params.stats.data = static_cast<CUdeviceptr>(params.stats.data);
     device_params.stats.dynamic_shapes[0] = static_cast<std::int32_t>(rows);
@@ -195,8 +230,8 @@ void launch_sm90(
 
   void* kernel_params[abi::kSM90MaxParameterCount]{};
   std::size_t const parameter_count
-    = abi::pack_sm90_kernel_params(&device_params, reads_stats, spec.residual, kernel_params);
-  if (parameter_count != abi::sm90_parameter_count(reads_stats, spec.residual))
+    = abi::pack_sm90_kernel_params(&device_params, stats_variant, spec.residual, kernel_params);
+  if (parameter_count != abi::sm90_parameter_count(stats_variant, spec.residual))
     throw std::logic_error("trimul KF K3 parameter packer produced the wrong ABI count");
 
   for (std::uint32_t dimension : metadata.cluster_dims)
@@ -207,10 +242,16 @@ void launch_sm90(
   std::int32_t const multiprocessor_count = cuda_multiprocessor_count_for_context(context);
   if (multiprocessor_count <= 0)
     throw std::invalid_argument("current CUDA device has no active multiprocessors");
-  /* Persistent CTAs stride over the row tiles; K3 waits on K2 before reading the product. */
+  /* Persistent CTAs stride over the row tiles in whole groups of tile_ctas: a partial group would
+   * drop its column groups. K3 waits on K2 before reading the product.
+   */
+  std::uint64_t const tile_ctas = spec.tile_ctas;
+  std::uint64_t const concurrent_tiles = static_cast<std::uint64_t>(multiprocessor_count) / tile_ctas;
+  if (concurrent_tiles == 0)
+    throw std::invalid_argument("current CUDA device cannot hold one trimul KF K3 row tile's column-group CTAs");
   cubin_launch_config_t launch_config{};
-  launch_config.grid_x = checked_u32(
-    std::min<std::uint64_t>(num_tiles, static_cast<std::uint64_t>(multiprocessor_count)), "trimul KF K3 grid.x");
+  launch_config.grid_x
+    = checked_u32(std::min<std::uint64_t>(num_tiles, concurrent_tiles) * tile_ctas, "trimul KF K3 grid.x");
   launch_config.grid_y = 1;
   launch_config.grid_z = 1;
   launch_config.block_x = metadata.block_dims[0];
@@ -237,6 +278,8 @@ KernelSpec make_kernel_spec(embedded::CubinImage const& image)
     image.kernel_variant,
     image.residual,
     image.num_threads,
+    image.tile_m,
+    image.tile_ctas,
   };
 }
 

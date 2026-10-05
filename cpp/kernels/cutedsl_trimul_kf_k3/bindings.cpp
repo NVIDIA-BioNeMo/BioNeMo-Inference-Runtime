@@ -42,7 +42,9 @@ void bind(nb::module_& parent)
     .def_ro("D", &KernelSpec::D)
     .def_ro("kernel_variant", &KernelSpec::kernel_variant)
     .def_ro("residual", &KernelSpec::residual)
-    .def_ro("num_threads", &KernelSpec::num_threads);
+    .def_ro("num_threads", &KernelSpec::num_threads)
+    .def_ro("tile_m", &KernelSpec::tile_m)
+    .def_ro("tile_ctas", &KernelSpec::tile_ctas);
 
   nb::class_<KernelConfig>(module, "KernelConfig")
     .def_ro("spec", &KernelConfig::spec)

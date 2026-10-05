@@ -608,6 +608,45 @@ def test_sm90_registry_renders_per_operand_tma_ranks(tmp_path: Path, family: str
     assert "CU_TENSOR_MAP_DATA_TYPE_BFLOAT16" in source
 
 
+def test_trimul_kf_records_predating_new_axes_keep_their_meaning(tmp_path: Path) -> None:
+    """K1 and K3 records without the padded flavour or the ping-pong tile fields still materialize: dense planes,
+    no row-chunk map, and one CTA per 128-row tile."""
+    sources, headers = {}, {}
+    for family in ("trimul_kf_k1", "trimul_kf_k3"):
+        index = _write_case(tmp_path / family / "source", family, kernel_sm=90)
+        result = materializer.materialize([(family, index)], tmp_path / family / "build")
+        sources[family] = (result.output_dir / f"{family}_registry.cpp").read_text()
+        headers[family] = (result.output_dir / f"{family}_registry.h").read_text()
+    assert "TmaDescriptorInfo x_chunk;" in headers["trimul_kf_k1"] and "bool padded;" in headers["trimul_kf_k1"]
+    assert "std::uint32_t tile_ctas;" in headers["trimul_kf_k3"]
+    # K1: num_threads, then padded; the absent row-chunk map renders as a rank-0 map.
+    assert "    512U,\n    false,\n" in sources["trimul_kf_k1"]
+    assert "      {},\n    },\n" in sources["trimul_kf_k1"]
+    # K3: num_threads, then tile_m and tile_ctas.
+    assert "    512U,\n    128U,\n    1U,\n" in sources["trimul_kf_k3"]
+
+
+def test_trimul_kf_k1_padded_image_renders_its_row_chunk_map(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A padded K1 image records the rank-3 x_chunk map its launcher encodes for the row-chunk x loads."""
+    family = "trimul_kf_k1"
+    names, ranks, epi_tile, threads = _SM90_LAUNCH_SHAPES[family]
+    monkeypatch.setitem(_SM90_LAUNCH_SHAPES, family, ((*names, "x_chunk"), (*ranks, 3), epi_tile, threads))
+    dense_metadata = _metadata
+    monkeypatch.setattr(sys.modules[__name__], "_metadata", lambda *args: {**dense_metadata(*args), "padded": True})
+    index = _write_case(tmp_path / "source", family, kernel_sm=90)
+    result = materializer.materialize([(family, index)], tmp_path / "build")
+    source = (result.output_dir / f"{family}_registry.cpp").read_text()
+
+    rendered = [int(line.strip().rstrip("U,")) for line in source.splitlines() if line.strip() in {"2U,", "3U,"}]
+    assert rendered == [*ranks, 3]
+    assert "    512U,\n    true,\n" in source
+
+    monkeypatch.setitem(_SM90_LAUNCH_SHAPES, family, ((*names, "x_chunk"), (*ranks, 2), epi_tile, threads))
+    index = _write_case(tmp_path / "wrong_rank", family, kernel_sm=90)
+    with pytest.raises(materializer.MaterializationError, match=r"tma_descriptors\.x_chunk\.rank must be 3"):
+        materializer.verify_packs([(family, index)])
+
+
 def test_sm100_registry_renders_tma_metadata(tmp_path: Path) -> None:
     family = "triangle_attention"
     index = _write_case(tmp_path / "source", family, kernel_sm=100)

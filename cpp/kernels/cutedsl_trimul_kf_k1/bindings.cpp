@@ -41,6 +41,7 @@ void bind(nb::module_& parent)
     .def_ro("C", &KernelSpec::C)
     .def_ro("D", &KernelSpec::D)
     .def_ro("kernel_variant", &KernelSpec::kernel_variant)
+    .def_ro("padded", &KernelSpec::padded)
     .def_ro("num_threads", &KernelSpec::num_threads);
 
   nb::class_<KernelConfig>(module, "KernelConfig")
@@ -68,7 +69,15 @@ void bind(nb::module_& parent)
     .def_rw("stream", &LaunchParams::stream);
 
   module.def("kernel_specs", &kernel_specs, "Return every registered trimul KF K1 variant.");
-  module.def("make_kernel_config", &make_kernel_config, "target_sm"_a, "dtype"_a, "C"_a, "D"_a, "kernel_variant"_a);
+  module.def(
+    "make_kernel_config",
+    &make_kernel_config,
+    "target_sm"_a,
+    "dtype"_a,
+    "C"_a,
+    "D"_a,
+    "kernel_variant"_a,
+    "padded"_a = false);
   module.def(
     "launch",
     [](KernelConfig const& config, LaunchParams const& params)

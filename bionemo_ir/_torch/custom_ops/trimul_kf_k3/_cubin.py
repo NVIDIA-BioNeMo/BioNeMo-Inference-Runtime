@@ -25,8 +25,11 @@ from bionemo_ir._torch.utils.kernel import (
     CuTeDSLKernelLibraryExecutable,
     CuTeDSLKernelVariantUnavailable,
     current_stream_handle,
+    tensor_flat,
     tensor_s1_d0,
 )
+
+from ._config import STATS_VARIANTS
 
 
 class TrimulKFK3CubinExecutable(CuTeDSLKernelLibraryExecutable):
@@ -53,7 +56,7 @@ class TrimulKFK3CubinExecutable(CuTeDSLKernelLibraryExecutable):
         self._kernel_library = kernel_library
         self._launcher = launcher
         self._config = config
-        self._reads_stats = kernel_variant == "K3_1"
+        self._reads_stats = kernel_variant in STATS_VARIANTS
         self._residual = residual
 
     def __call__(
@@ -75,16 +78,16 @@ class TrimulKFK3CubinExecutable(CuTeDSLKernelLibraryExecutable):
             raise CuTeDSLKernelVariantUnavailable("trimul KF K3 CUBIN operands do not match its variant")
         library = self._kernel_library
         params = self._launcher.LaunchParams()
-        params.prod = tensor_s1_d0(library, prod)
-        params.x = tensor_s1_d0(library, x)
+        params.prod = tensor_flat(library, prod)
+        params.x = tensor_flat(library, x)
         params.w_out = tensor_s1_d0(library, w_out)
         params.w_gate_out = tensor_s1_d0(library, w_gate_out)
         params.vec_out = tensor_s1_d0(library, vec_out)
         if stats is not None:
-            params.stats = tensor_s1_d0(library, stats)
+            params.stats = tensor_flat(library, stats)
         if seqlen is not None:
             params.seqlen = tensor_s1_d0(library, seqlen)
-        params.output = tensor_s1_d0(library, output)
+        params.output = tensor_flat(library, output)
         params.rows = rows
         params.n = n
         params.nb = nb

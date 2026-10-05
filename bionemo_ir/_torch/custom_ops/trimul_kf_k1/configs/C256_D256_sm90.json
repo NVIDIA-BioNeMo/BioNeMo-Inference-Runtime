@@ -1,6 +1,6 @@
 {
   "kernel_abi": "sm90",
   "configs": {
-    "S=128": {"kernel_variant": "K1_2"}
+    "S=128": {"kernel_variant": "K1_2", "ab_layout": "pad_n_mod_16_8"}
   }
 }

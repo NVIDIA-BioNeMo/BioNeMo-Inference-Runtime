@@ -20,7 +20,7 @@ from dataclasses import dataclass, field
 
 import torch
 
-from ..trimul_kf_k1.cutedsl import stats_rows
+from ..trimul_kf_k1.cutedsl import MAX_LAUNCH_ROWS, stats_rows
 from ._config import TrimulKFK3Selection
 from .cutedsl import TrimulKFK3CuTe
 
@@ -128,19 +128,18 @@ class TrimulKFK3Op:
 
     def accepts(self, prod: torch.Tensor, x: torch.Tensor) -> bool:
         """Whether a call on ``prod`` ``[B, D, N, N]`` and ``x`` ``[B, N, N, C]`` can run."""
+        if x.dim() != 4 or x.dtype != _SUPPORTED_DTYPE or not x.is_cuda or not x.is_contiguous():
+            return False
+        B, N, N_j, C = x.shape
         return (
-            x.dim() == 4
-            and x.numel() > 0
-            and prod.dim() == 4
-            and x.is_cuda
-            and prod.device == x.device
-            and x.dtype == prod.dtype == _SUPPORTED_DTYPE
-            and x.is_contiguous()
+            B > 0
+            and 0 < N == N_j
+            and C == self.C
+            and N % TOKEN_ALIGN == 0
+            and N * N <= MAX_LAUNCH_ROWS
+            and prod.dtype == _SUPPORTED_DTYPE
             and prod.is_contiguous()
-            and x.shape[1] == x.shape[2]
-            and x.shape[1] % TOKEN_ALIGN == 0
-            and x.shape[3] == self.C
-            and prod.shape == (x.shape[0], self.D, x.shape[1], x.shape[2])
+            and prod.shape == (B, self.D, N, N)
         )
 
     def __call__(
@@ -180,24 +179,19 @@ class TrimulKFK3Op:
                 f"trimul KF K3 {selection.kernel_variant} {'reads' if selection.reads_stats else 'takes no'} "
                 "row statistics; pair it with the K1 variant selected for the same token count"
             )
-        if stats is not None and (
-            stats.shape != (B, stats_rows(N), 2) or stats.dtype != torch.float32 or stats.device != x.device
-        ):
+        if stats is not None and (stats.dtype != torch.float32 or stats.shape != (B, stats_rows(N), 2)):
             raise ValueError("trimul KF K3 needs K1's fp32 row statistics for the same batch and token count")
         if residual != (actual_seqlen is not None):
             raise ValueError("trimul KF K3 masks the fused residual: pass actual_seqlen exactly with residual")
         if actual_seqlen is not None and (
-            actual_seqlen.dtype != torch.int32
-            or actual_seqlen.device != x.device
-            or not actual_seqlen.is_contiguous()
-            or actual_seqlen.numel() != B * N
+            actual_seqlen.dtype != torch.int32 or not actual_seqlen.is_contiguous() or actual_seqlen.numel() != B * N
         ):
-            raise ValueError("trimul KF K3 needs int32 actual_seqlen [B, N] on the input's device")
-        if fold.C != self.C or fold.D != self.D or fold.device != x.device:
-            raise ValueError(f"trimul KF K3 needs the C={self.C}, D={self.D} fold on {x.device}")
+            raise ValueError("trimul KF K3 needs int32 actual_seqlen [B, N]")
+        if fold.C != self.C or fold.D != self.D:
+            raise ValueError(f"trimul KF K3 needs the C={self.C}, D={self.D} fold")
         if out is None:
             out = torch.empty_like(x)
-        elif out.shape != x.shape or out.dtype != x.dtype or out.device != x.device or not out.is_contiguous():
+        elif out.shape != x.shape or out.dtype != x.dtype or not out.is_contiguous():
             raise ValueError("trimul KF K3 output must be a contiguous bf16 tensor shaped like x")
         elif out.data_ptr() < x.data_ptr() + x.nbytes and x.data_ptr() < out.data_ptr() + out.nbytes:
             # K3 reads x while it writes out, so the two must not share any bytes.

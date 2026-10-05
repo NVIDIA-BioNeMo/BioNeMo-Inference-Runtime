@@ -159,6 +159,14 @@ def test_chunked_rows_match_full(n_tokens: int, chunk: int) -> None:
 # ---------------------------------------------------------------------------
 
 
+def _encoder(device: str, **kwargs) -> RelativePositionEncoder:
+    """A ``RelativePositionEncoder`` with seeded weights (``Linear`` leaves them uninitialized)."""
+    enc = RelativePositionEncoder(**kwargs).to(device)
+    with torch.no_grad():
+        enc.linear.weight.normal_(generator=torch.Generator(device=device).manual_seed(0))
+    return enc
+
+
 @requires_cuda
 @pytest.mark.parametrize("fix_sym_check", [False, True], ids=["boltz2", "protenix"])
 @pytest.mark.parametrize("n_tokens", [7, 64])
@@ -166,7 +174,7 @@ def test_relative_position_encoder_fused_matches_pytorch(fix_sym_check: bool, n_
     """RelativePositionEncoder.forward() fused path matches the F.embedding reference."""
     B, C_out = 2, 64
     device = "cuda"
-    enc = RelativePositionEncoder(token_z=C_out, r_max=32, s_max=2, fix_sym_check=fix_sym_check).to(device)
+    enc = _encoder(device, token_z=C_out, r_max=32, s_max=2, fix_sym_check=fix_sym_check)
     batch = _make_batch((B,), n_tokens, 2, device=device)
 
     # Reference: force PyTorch F.embedding path (no fused kernel)
@@ -206,7 +214,7 @@ def test_relative_position_encoder_precomputed_relp_unchanged() -> None:
     """When relp is precomputed, RelativePositionEncoder bypasses the fused kernel."""
     B, N, C_out = 1, 32, 64
     device = "cuda"
-    enc = RelativePositionEncoder(token_z=C_out, r_max=32, s_max=2).to(device)
+    enc = _encoder(device, token_z=C_out, r_max=32, s_max=2)
     batch = _make_batch((B,), N, 2, device=device)
 
     # generate_relp requires int64 for F.one_hot

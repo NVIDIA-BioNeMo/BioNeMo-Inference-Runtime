@@ -17,7 +17,6 @@
 from __future__ import annotations
 
 import contextlib
-import functools
 from typing import Any
 
 import torch
@@ -36,19 +35,6 @@ from ._config import KERNEL_ABIS, TrimulKFK2Tile, anchors, select, shipped_tiles
 from ._cubin import TrimulKFK2CubinExecutable
 
 __all__ = ["TrimulKFK2CuTe"]
-
-_INT32_MAX = 2**31 - 1
-
-
-@functools.lru_cache(maxsize=256)
-def batch_chunks(B: int, per_batch: int) -> tuple[tuple[int, int], ...]:
-    """Balanced batch ranges whose flat extents, ``per_batch`` elements a batch, stay within int32."""
-    if per_batch > _INT32_MAX:
-        raise ValueError(f"trimul KF K2 supports fewer than 2^31 elements per batch, got {per_batch}")
-    max_batch = _INT32_MAX // per_batch
-    chunks = -(-B // max_batch)
-    step = -(-B // chunks)
-    return tuple((b, min(B, b + step)) for b in range(0, B, step))
 
 
 class TrimulKFK2CuTe(CuteKernelCache):
@@ -69,13 +55,14 @@ class TrimulKFK2CuTe(CuteKernelCache):
         self._sm_version = sm_version
         self._num_sms: int | None = None
 
-    def select(self, D: int, n: int) -> tuple[int, TrimulKFK2Tile] | None:
-        """The anchor a call over ``n`` tokens selects and the tile that runs it, or ``None`` if ``D`` does not ship."""
-        return select(self._sm_version, D, n)
+    def select(self, D: int, n: int, outgoing: bool = True) -> tuple[int, TrimulKFK2Tile] | None:
+        """The anchor a call over ``n`` tokens selects and the tile that runs it in that direction, or ``None`` if
+        ``D`` does not ship."""
+        return select(self._sm_version, D, n, outgoing)
 
     def ships(self, D: int, outgoing: bool) -> bool:
         """Whether this build can run width ``D`` in one direction, from source or from packaged CUBINs."""
-        entries = anchors(self._sm_version, D)
+        entries = anchors(self._sm_version, D, outgoing)
         if not entries:
             return False
         if not self.force_cubin():
@@ -152,20 +139,47 @@ class TrimulKFK2CuTe(CuteKernelCache):
         return executable
 
     def run(self, a: torch.Tensor, b: torch.Tensor, outgoing: bool, tile: TrimulKFK2Tile) -> torch.Tensor:
-        """Contract ``a`` and ``b`` ``[B, D, N, N]`` with ``tile``; the caller has validated the operands."""
+        """Contract ``a`` and ``b`` ``[B, D, N, N]`` with ``tile``; the caller has validated the operands.
+
+        ``a`` and ``b`` may be views of K1's padded planes; the product is dense.
+        """
         B, D, N, _ = a.shape
+        pitch, plane = ab_strides(a)
         executable = self._get_or_compile(outgoing, tile)
-        prod = torch.empty_like(a)
+        prod = torch.empty((B, D, N, N), dtype=a.dtype, device=a.device)
+        l = B * D  # noqa: E741
+        span = (l - 1) * plane + (N - 1) * pitch + N
         # A source-backed launch takes its stream from the current device, not the operands'.
         on_device = a.get_device() == torch.cuda.current_device()
         with contextlib.nullcontext() if on_device else torch.cuda.device(a.device):
-            for b0, b1 in batch_chunks(B, D * N * N):
-                launch_compiled_kernel(
-                    executable,
-                    a[b0:b1].view(-1),
-                    b[b0:b1].view(-1),
-                    prod[b0:b1].view(-1),
-                    N,
-                    (b1 - b0) * D,
-                )
+            launch_compiled_kernel(
+                executable,
+                a.as_strided((span,), (1,)),
+                b.as_strided((span,), (1,)),
+                prod.view(-1),
+                N,
+                l,
+                pitch,
+                plane,
+            )
         return prod
+
+
+def ab_strides(t: torch.Tensor) -> tuple[int, int]:
+    """``(row pitch, plane stride)`` in elements of K1's channel-major ``[B, D, N, N]`` operand view."""
+    return t.stride(2), t.stride(1)
+
+
+def ab_layout_ok(t: torch.Tensor) -> bool:
+    """Whether ``t`` ``[B, D, N, N]`` is laid out as K2 reads it; TMA needs 16-byte strides and base."""
+    _, D, N, _ = t.shape
+    pitch, plane = ab_strides(t)
+    return (
+        t.stride(3) == 1
+        and pitch >= N
+        and pitch % 8 == 0
+        and plane >= N * pitch
+        and plane % 8 == 0
+        and (t.shape[0] == 1 or t.stride(0) == D * plane)
+        and t.data_ptr() % 16 == 0
+    )

@@ -21,7 +21,7 @@ from dataclasses import dataclass, field
 import torch
 
 from ._config import TrimulKFK2Tile
-from .cutedsl import TrimulKFK2CuTe
+from .cutedsl import TrimulKFK2CuTe, ab_layout_ok
 
 _SUPPORTED_DTYPE = torch.bfloat16
 #: Token counts must keep every matrix row 16-byte aligned for TMA.
@@ -43,7 +43,7 @@ class TrimulKFK2Op:
         """The tile a call over ``n`` tokens runs."""
         tile = self._tiles.get(n)
         if tile is None:
-            selected = self.backend.select(self.D, n)
+            selected = self.backend.select(self.D, n, self.outgoing)
             if selected is None:
                 raise ValueError(f"trimul KF K2 ships no config for D={self.D}")
             tile = self._tiles[n] = selected[1]
@@ -51,26 +51,30 @@ class TrimulKFK2Op:
 
     def accepts(self, a: torch.Tensor, b: torch.Tensor) -> bool:
         """Whether a call on channel-major ``a`` and ``b`` ``[B, D, N, N]`` can run."""
+        if a.dim() != 4 or a.dtype != _SUPPORTED_DTYPE or not a.is_cuda:
+            return False
+        B, D, N, N_k = a.shape
+        # b shares a's strides, so a's layout check covers both; only b's base address is left to check
         return (
-            a.dim() == 4
-            and a.numel() > 0
-            and a.shape == b.shape
-            and a.shape[1] == self.D
-            and a.shape[2] == a.shape[3]
-            and a.shape[2] % TOKEN_ALIGN == 0
-            and a.is_cuda
-            and b.device == a.device
-            and a.dtype == b.dtype == _SUPPORTED_DTYPE
-            and a.is_contiguous()
-            and b.is_contiguous()
+            B > 0
+            and D == self.D
+            and 0 < N == N_k
+            and N % TOKEN_ALIGN == 0
+            and b.shape == a.shape
+            and b.dtype == _SUPPORTED_DTYPE
+            and b.is_cuda
+            and b.stride() == a.stride()
+            and ab_layout_ok(a)
+            and b.data_ptr() % 16 == 0
         )
 
     def __call__(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
         """The bf16 product ``[B, D, N, N]`` of K1's ``a`` and ``b``, for the tile tuned for ``N``."""
         if not self.accepts(a, b):
             raise ValueError(
-                f"trimul KF K2 needs non-empty contiguous bf16 CUDA a and b [B, {self.D}, N, N] with N a multiple of "
-                f"{TOKEN_ALIGN}"
+                f"trimul KF K2 needs non-empty bf16 CUDA a and b [B, {self.D}, N, N] with N a multiple of "
+                f"{TOKEN_ALIGN}, dense or K1's padded planes (same strides, unit column stride, row pitch and plane "
+                f"stride multiples of 8 elements)"
             )
         return self.backend.run(a, b, self.outgoing, self.select(a.shape[2]))
 

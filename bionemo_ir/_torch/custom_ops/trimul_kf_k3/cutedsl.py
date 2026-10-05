@@ -165,7 +165,7 @@ class TrimulKFK3CuTe(CuteKernelCache):
         # A source-backed launch takes its stream from the current device, not the operands'.
         on_device = x.get_device() == torch.cuda.current_device()
         with contextlib.nullcontext() if on_device else torch.cuda.device(x.device):
-            for b0, b1 in batch_chunks(B, N, max(C, D)):
+            for b0, b1 in batch_chunks(B, N):
                 nb = b1 - b0
                 launch_compiled_kernel(
                     executable,

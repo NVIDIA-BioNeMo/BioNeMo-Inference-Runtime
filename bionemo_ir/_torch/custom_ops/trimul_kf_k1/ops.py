@@ -20,8 +20,8 @@ from dataclasses import dataclass, field
 
 import torch
 
-from ._config import TrimulKFK1Selection
-from .cutedsl import TrimulKFK1CuTe, TrimulKFK1Output
+from ._config import TrimulKFK1Selection, ab_pitch
+from .cutedsl import MAX_LAUNCH_ROWS, TrimulKFK1CuTe, TrimulKFK1Output
 
 _SUPPORTED_DTYPE = torch.bfloat16
 #: Token counts must keep every channel-major row 16-byte aligned for TMA.
@@ -123,30 +123,33 @@ class TrimulKFK1Op:
     _selections: dict[int, TrimulKFK1Selection] = field(default_factory=dict, init=False, repr=False, compare=False)
 
     def select(self, n: int) -> TrimulKFK1Selection:
-        """The anchor and variant a call over ``n`` tokens runs: which fold it reads, whether it writes stats."""
+        """The anchor, variant and a/b layout a call over ``n`` tokens runs: which fold it reads, whether it
+        writes stats. A layout this build cannot write falls back to dense planes."""
         selection = self._selections.get(n)
         if selection is None:
             selection = self.backend.select(self.C, self.D, n)
             if selection is None:
                 raise ValueError(f"trimul KF K1 ships no config for C={self.C}, D={self.D}")
+            if not self.backend.supports(self.C, self.D, selection.kernel_variant, selection.ab_layout):
+                selection = selection._replace(ab_layout="dense")
             self._selections[n] = selection
         return selection
 
     def accepts(self, x: torch.Tensor, actual_seqlen: torch.Tensor) -> bool:
         """Whether a call on ``x`` ``[B, N, N, C]`` can run."""
+        if x.dim() != 4 or x.dtype != _SUPPORTED_DTYPE or not x.is_cuda or not x.is_contiguous():
+            return False
+        B, N, N_j, C = x.shape
         return (
-            x.dim() == 4
-            and x.numel() > 0
-            and x.is_cuda
-            and x.dtype == _SUPPORTED_DTYPE
-            and x.is_contiguous()
-            and x.shape[1] == x.shape[2]
-            and x.shape[3] == self.C
-            and x.shape[1] % TOKEN_ALIGN == 0
-            and actual_seqlen.device == x.device
+            B > 0
+            and 0 < N == N_j
+            and C == self.C
+            and N % TOKEN_ALIGN == 0
+            and N * ab_pitch(N, "padded") <= MAX_LAUNCH_ROWS
             and actual_seqlen.dtype == torch.int32
+            and actual_seqlen.is_cuda
             and actual_seqlen.is_contiguous()
-            and actual_seqlen.numel() == x.shape[0] * x.shape[1]
+            and actual_seqlen.numel() == B * N
         )
 
     def __call__(
@@ -161,16 +164,17 @@ class TrimulKFK1Op:
             eps: The input LayerNorm's epsilon.
 
         Returns:
-            Channel-major bf16 ``a`` and ``b`` ``[B, D, N, N]``, and fp32 row statistics when the
-            variant hands them to K3 (``select(N).writes_stats``), else ``None``.
+            Channel-major bf16 ``a`` and ``b`` ``[B, D, N, N]`` (views of ``[B, D, P, P]`` planes, ``P``
+            the selection's row pitch), and fp32 row statistics when the variant hands them to K3
+            (``select(N).writes_stats``), else ``None``.
         """
         if not self.accepts(x, actual_seqlen):
             raise ValueError(
                 f"trimul KF K1 needs a non-empty contiguous bf16 CUDA x [B, N, N, {self.C}] with N a multiple of "
                 f"{TOKEN_ALIGN} and int32 actual_seqlen [B, N] beside it"
             )
-        if fold.C != self.C or fold.D != self.D or fold.device != x.device:
-            raise ValueError(f"trimul KF K1 needs the C={self.C}, D={self.D} fold on {x.device}")
+        if fold.C != self.C or fold.D != self.D:
+            raise ValueError(f"trimul KF K1 needs the C={self.C}, D={self.D} fold")
         selection = self.select(x.shape[1])
         w_in, w_gate_in = (fold.interleaved, None) if selection.interleaved else (fold.proj, fold.gate)
         return self.backend.run(x, actual_seqlen, w_in, w_gate_in, fold.vec, float(eps), selection)

@@ -39,7 +39,8 @@ __all__ = ["TrimulKFK1CuTe", "TrimulKFK1Output"]
 
 #: Rows per K1 tile; a tile must not straddle two batches.
 TILE_ROWS = 128
-_INT32_MAX = 2**31 - 1
+#: Most rows, and positions per a/b plane, one launch addresses: TMA coordinates are int32.
+MAX_LAUNCH_ROWS = 2**31 - 1 - TILE_ROWS
 
 
 class TrimulKFK1Output(NamedTuple):
@@ -51,19 +52,14 @@ class TrimulKFK1Output(NamedTuple):
 
 
 @functools.lru_cache(maxsize=256)
-def batch_chunks(B: int, N: int, width: int) -> tuple[tuple[int, int], ...]:
-    """Batch ranges one launch covers.
-
-    A launch tiles its ``B * N * N`` rows in 128-row tiles that must not straddle two batches, so
-    batches go one at a time unless ``N * N`` fills whole tiles; and its flat extents, up to
-    ``rows * width``, must stay within int32, so large batches split into balanced chunks.
-    """
-    per_batch = N * N * width
-    if per_batch > _INT32_MAX:
-        raise ValueError(f"trimul KF supports N * N * {width} < 2^31 per batch, got N={N}")
+def batch_chunks(B: int, N: int, pitch: int | None = None) -> tuple[tuple[int, int], ...]:
+    """Batch ranges one launch covers: a 128-row tile must not straddle two batches, and a launch's
+    rows and plane positions stay within :data:`MAX_LAUNCH_ROWS`."""
+    if N * max(N, pitch or N) > MAX_LAUNCH_ROWS:
+        raise ValueError(f"trimul KF supports N * P <= {MAX_LAUNCH_ROWS} plane positions, got N={N}, P={pitch}")
     if B > 1 and (N * N) % TILE_ROWS:
         return tuple((b, b + 1) for b in range(B))
-    max_batch = _INT32_MAX // per_batch
+    max_batch = MAX_LAUNCH_ROWS // (N * N)
     chunks = -(-B // max_batch)
     step = -(-B // chunks)
     return tuple((b, min(B, b + step)) for b in range(0, B, step))
@@ -119,11 +115,36 @@ class TrimulKFK1CuTe(CuteKernelCache):
             return False
         return True
 
-    def _key(self, C: int, D: int, kernel_variant: str) -> tuple:
-        return (self._sm_version, C, D, kernel_variant)
+    def _key(self, C: int, D: int, kernel_variant: str, ab_layout: str = "dense") -> tuple:
+        key = (self._sm_version, C, D, kernel_variant)
+        return key if ab_layout == "dense" else (*key, ab_layout)
+
+    def supports(self, C: int, D: int, kernel_variant: str, ab_layout: str) -> bool:
+        """Whether this build writes ``ab_layout`` with ``kernel_variant``."""
+        if ab_layout == "dense":
+            return True
+        if not self.force_cubin():
+            try:
+                load_source_module(__package__)
+            except ImportError:
+                pass
+            else:
+                return True
+        key = self._key(C, D, kernel_variant, ab_layout)
+        try:
+            self._load_cubin_executable(key, C, D, kernel_variant, ab_layout=ab_layout)
+        except (CuTeDSLKernelLibraryError, RuntimeError):
+            return False
+        return True
 
     def _load_cubin_executable(
-        self, key: tuple, C: int, D: int, kernel_variant: str, source_error: Exception | None = None
+        self,
+        key: tuple,
+        C: int,
+        D: int,
+        kernel_variant: str,
+        source_error: Exception | None = None,
+        ab_layout: str = "dense",
     ) -> Any:
         try:
             executable = populate_compiled_cache_from_library(
@@ -131,42 +152,48 @@ class TrimulKFK1CuTe(CuteKernelCache):
                 key,
                 "trimul_kf_k1",
                 lambda library, launcher: TrimulKFK1CubinExecutable(
-                    library, launcher, self._sm_version, C, D, kernel_variant
+                    library, launcher, self._sm_version, C, D, kernel_variant, ab_layout
                 ),
             )
         except CuTeDSLKernelLibraryError as library_error:
             if self.force_cubin():
                 raise RuntimeError(
                     f"{FORCE_CUBIN_ENV}=1 forces the trimul KF K1 CUBIN path, but no CUBIN is available for "
-                    f"SM{self._sm_version}, C={C}, D={D}, {kernel_variant}"
+                    f"SM{self._sm_version}, C={C}, D={D}, {kernel_variant}, {ab_layout} a/b"
                 ) from library_error
             raise library_error from source_error
         logger.info(
-            f"CuTeDSL trimul KF K1: using CUBIN kernel for SM{self._sm_version}, C={C}, D={D}, {kernel_variant}"
+            f"CuTeDSL trimul KF K1: using CUBIN kernel for SM{self._sm_version}, C={C}, D={D}, {kernel_variant}, "
+            f"{ab_layout} a/b"
         )
         return executable
 
-    def _get_or_compile(self, C: int, D: int, kernel_variant: str) -> Any:
-        key = self._key(C, D, kernel_variant)
+    def _get_or_compile(self, C: int, D: int, kernel_variant: str, ab_layout: str = "dense") -> Any:
+        key = self._key(C, D, kernel_variant, ab_layout)
         executable = TrimulKFK1CuTe._compiled_cache.get(key)
         force_cubin = self.force_cubin()
         if executable is not None and (not force_cubin or isinstance(executable, CuTeDSLKernelLibraryExecutable)):
             return executable
         if force_cubin:
             TrimulKFK1CuTe._compiled_cache.pop(key, None)
-            return self._load_cubin_executable(key, C, D, kernel_variant)
+            return self._load_cubin_executable(key, C, D, kernel_variant, ab_layout=ab_layout)
         try:
             source = load_source_module(__package__)
         except ImportError as source_error:
-            return self._load_cubin_executable(key, C, D, kernel_variant, source_error)
+            return self._load_cubin_executable(key, C, D, kernel_variant, source_error, ab_layout)
 
         if self._num_sms is None:
             self._num_sms = torch.cuda.get_device_properties(torch.cuda.current_device()).multi_processor_count
         disk_key = ("trimul_kf_k1_cute_v1", *key, KERNEL_ABIS[self._sm_version])
         executable = self.load_from_cache(disk_key)
         if executable is None:
-            logger.info(f"CuTeDSL trimul KF K1: compiling {kernel_variant} for SM{self._sm_version}, C={C}, D={D}")
-            executable = source.compile_trimul_kf_k1_source(self.compile, kernel_variant, C, D, self._num_sms)
+            logger.info(
+                f"CuTeDSL trimul KF K1: compiling {kernel_variant} ({ab_layout} a/b) for SM{self._sm_version}, "
+                f"C={C}, D={D}"
+            )
+            executable = source.compile_trimul_kf_k1_source(
+                self.compile, kernel_variant, C, D, self._num_sms, ab_layout
+            )
             self.save_to_cache(disk_key, executable)
         TrimulKFK1CuTe._compiled_cache[key] = executable
         return executable
@@ -184,8 +211,10 @@ class TrimulKFK1CuTe(CuteKernelCache):
         """Run ``selection``'s variant on ``x`` ``[B, N, N, C]``; the caller has validated the operands."""
         B, N, _, C = x.shape
         D = vec_in.shape[0] // 8
-        executable = self._get_or_compile(C, D, selection.kernel_variant)
-        a, b = torch.empty((2, B, D, N, N), dtype=x.dtype, device=x.device).unbind(0)
+        executable = self._get_or_compile(C, D, selection.kernel_variant, selection.ab_layout)
+        P = selection.ab_pitch(N)
+        planes = torch.empty((2, B, D, P, P), dtype=x.dtype, device=x.device)
+        a, b = planes[..., :N, :N].unbind(0)
         stats = (
             torch.empty((B, stats_rows(N), 2), dtype=torch.float32, device=x.device) if selection.writes_stats else None
         )
@@ -195,7 +224,7 @@ class TrimulKFK1CuTe(CuteKernelCache):
         # A source-backed launch takes its stream from the current device, not the operands'.
         on_device = x.get_device() == torch.cuda.current_device()
         with contextlib.nullcontext() if on_device else torch.cuda.device(x.device):
-            for b0, b1 in batch_chunks(B, N, max(C, D)):
+            for b0, b1 in batch_chunks(B, N, P):
                 nb = b1 - b0
                 launch_compiled_kernel(
                     executable,
@@ -204,8 +233,8 @@ class TrimulKFK1CuTe(CuteKernelCache):
                     w_in,
                     w_gate_in,
                     vec_in,
-                    a[b0:b1].view(-1),
-                    b[b0:b1].view(-1),
+                    planes[0, b0:b1].view(-1),
+                    planes[1, b0:b1].view(-1),
                     None if stats is None else stats[b0:b1].view(-1),
                     nb * N * N,
                     N,

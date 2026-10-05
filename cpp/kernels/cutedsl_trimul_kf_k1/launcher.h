@@ -37,23 +37,25 @@ namespace bioir::cutedsl::trimul_kf_k1::embedded
 struct CubinImage;
 }
 
-/* Hopper device ABI trimul_kf_k1_sm90_v1, read from EIATTR_KPARAM_INFO for variant K1_0:
+/* Hopper device ABI trimul_kf_k1_sm90_v3, read from EIATTR_KPARAM_INFO for variant K1_0:
  *
- *   ord  0  0x030  0x80  x_tma       CUtensorMap
- *   ord  1  0x0b0  0x04  x_coord     CoordTensorS1   rows
- *   ord  2  0x0f0  0x80  w_proj_tma  CUtensorMap
- *   ord  3  0x170  0x80  w_gate_tma  CUtensorMap
- *   ord  4  0x1f0  0x80  a_tma       CUtensorMap
- *   ord  5  0x270  0x08  a_coord     CoordTensorS2   (N * N, B)
- *   ord  6  0x2b0  0x80  b_tma       CUtensorMap
- *   ord  7  0x330  0x08  b_coord     CoordTensorS2   (N * N, B)
- *   ord  8  0x338  0x10  seqlen      cute_tensor_s1_d0_t
- *   ord  9  0x348  0x08  vec         cute_tensor_s0_d0_t
- *   ord 10  0x350  0x01  tiled_mma   std::uint8_t
- *   ord 11  0x354  0x04  n           std::int32_t
- *   ord 12  0x358  0x04  num_tiles   std::int32_t
- *   ord 13  0x35c  0x04  eps         float
- *   ord 14  0x360  0x04  rows        std::int32_t
+ *   ord  0  0x030  0x80  x_tma          CUtensorMap
+ *   ord  1  0x0b0  0x04  x_coord        CoordTensorS1   rows
+ *   ord  2  0x0f0  0x80  w_proj_tma     CUtensorMap
+ *   ord  3  0x170  0x80  w_gate_tma     CUtensorMap
+ *   ord  4  0x1f0  0x80  a_tma          CUtensorMap
+ *   ord  5  0x270  0x08  a_coord        CoordTensorS2   (N * P, B)
+ *   ord  6  0x2b0  0x80  b_tma          CUtensorMap
+ *   ord  7  0x330  0x08  b_coord        CoordTensorS2   (N * P, B)
+ *   ord  8  0x338  0x10  seqlen         cute_tensor_s1_d0_t
+ *   ord  9  0x348  0x08  vec            cute_tensor_s0_d0_t
+ *   ord 10  0x350  0x01  tiled_mma      std::uint8_t
+ *   ord 11  0x354  0x04  n              std::int32_t
+ *   ord 12  0x358  0x04  num_tiles      std::int32_t
+ *   ord 13  0x35c  0x04  eps            float
+ *   ord 14  0x360  0x04  rows           std::int32_t
+ *   ord 15  0x370  0x80  x_chunk_tma    CUtensorMap
+ *   ord 16  0x3f0  0x08  x_chunk_coord  CoordTensorS2   (N, rows / N)
  *
  * The ping-pong variants K1_1 and K1_2 read one interleaved [4D, C] weight fold through w_proj_tma,
  * so w_gate_tma is absent, and a second MMA token, mma_out, follows tiled_mma. K1_2 also passes its
@@ -61,8 +63,13 @@ struct CubinImage;
  * their coordinate tensors lower to no parameter; the shared-memory layouts are compile-time objects
  * and occupy no slot either.
  *
+ * a and b are [B, D, P, P] planes stored flat over their first N * P positions: P = N for a dense
+ * image; P = N rounded up to 64 for a padded one, which loads x one 64-position row chunk at a time
+ * through x_chunk_tma. A dense image declares the chunk-load pair too, never reads it, and receives
+ * x_tma and x_coord in it.
+ *
  * Each 0x80 TMA slot carries CuTe DSL 4.5.2's 0x40-byte non-executable CopyAtom payload followed
- * by zero padding: plain loads of x and the weights, and stores of a and b.
+ * by zero padding: plain loads of x, its row chunks and the weights, and stores of a and b.
  */
 namespace bioir::cutedsl::trimul_kf_k1::abi
 {
@@ -86,18 +93,20 @@ struct SM90Params
   std::int32_t num_tiles;
   float eps;
   std::int32_t rows;
+  CUtensorMap x_chunk_tma;
+  CoordTensorS2 x_chunk_coord;
 };
 
 constexpr std::size_t sm90_parameter_count(std::int32_t kernel_variant)
 {
-  return kernel_variant == 2 ? 16U : 15U;
+  return kernel_variant == 2 ? 18U : 17U;
 }
 
-inline constexpr std::size_t kSM90MaxParameterCount = 16;
+inline constexpr std::size_t kSM90MaxParameterCount = 18;
 
 /* params and kernel_params must stay alive until the launch call returns. */
-inline std::size_t
-pack_sm90_kernel_params(SM90Params* params, std::int32_t kernel_variant, void* kernel_params[kSM90MaxParameterCount])
+inline std::size_t pack_sm90_kernel_params(
+  SM90Params* params, std::int32_t kernel_variant, bool padded, void* kernel_params[kSM90MaxParameterCount])
 {
   bool const pingpong = kernel_variant != 0;
   std::size_t count = 0;
@@ -121,6 +130,16 @@ pack_sm90_kernel_params(SM90Params* params, std::int32_t kernel_variant, void* k
   kernel_params[count++] = &params->num_tiles;
   kernel_params[count++] = &params->eps;
   kernel_params[count++] = &params->rows;
+  if (padded)
+  {
+    kernel_params[count++] = &params->x_chunk_tma;
+    kernel_params[count++] = &params->x_chunk_coord;
+  }
+  else
+  {
+    kernel_params[count++] = &params->x_tma;
+    kernel_params[count++] = &params->x_coord;
+  }
   return count;
 }
 
@@ -136,7 +155,8 @@ static_assert(sizeof(SM90Params::vec) == 0x08, "unexpected trimul KF K1 vec widt
 static_assert(sizeof(SM90Params::stats) == 0x10, "unexpected trimul KF K1 stats width");
 static_assert(sizeof(SM90Params::tiled_mma) == 0x01, "unexpected trimul KF K1 MMA token width");
 static_assert(sizeof(SM90Params::eps) == 0x04, "unexpected trimul KF K1 eps width");
-static_assert(sm90_parameter_count(0) == 15U && sm90_parameter_count(1) == 15U && sm90_parameter_count(2) == 16U);
+static_assert(sizeof(SM90Params::x_chunk_coord) == 0x08, "unexpected trimul KF K1 row-chunk coordinate width");
+static_assert(sm90_parameter_count(0) == 17U && sm90_parameter_count(1) == 17U && sm90_parameter_count(2) == 18U);
 
 } // namespace bioir::cutedsl::trimul_kf_k1::abi
 
@@ -150,6 +170,7 @@ enum class DType : std::uint8_t
 
 /* Launch fields generated with the corresponding CUBIN, which runs the configs' K1_<kernel_variant>.
  * Variants 1 and 2 read the interleaved weight fold; variant 2 also writes the row statistics.
+ * padded writes a and b as [N, N] views of [P, P] planes.
  */
 struct KernelSpec
 {
@@ -158,6 +179,7 @@ struct KernelSpec
   std::int32_t C;
   std::int32_t D;
   std::int32_t kernel_variant;
+  bool padded;
   std::uint32_t num_threads;
 };
 
@@ -180,19 +202,19 @@ inline std::uint32_t dynamic_smem_bytes(KernelConfig const& config)
  * int32 prefix length per (b, i) row; w_in is the [2D * C] projection fold, or the [4D * C]
  * interleaved fold; w_gate_in the [2D * C] gate fold, read by K1_0 alone; vec_in the fp32 [8D]
  * folded bias terms, which carry the LayerNorm shift and any projection biases; a and b the bf16
- * [nb * D * n * n] channel-major outputs; stats the fp32 row statistics, written by K1_2 alone and
+ * [nb * D * P * P] channel-major outputs; stats the fp32 row statistics, written by K1_2 alone and
  * sized for rows rounded up to whole 128-row tiles.
  */
 struct LaunchParams
 {
-  Tensor1View x;
+  FlatTensorView x;
   Tensor1View seqlen;
   Tensor1View w_in;
   Tensor1View w_gate_in;
   Tensor1View vec_in;
-  Tensor1View a;
-  Tensor1View b;
-  Tensor1View stats;
+  FlatTensorView a;
+  FlatTensorView b;
+  FlatTensorView stats;
   std::int32_t rows{};
   std::int32_t n{};
   std::int32_t nb{};
@@ -202,8 +224,8 @@ struct LaunchParams
 
 std::vector<KernelSpec> kernel_specs();
 
-KernelConfig
-make_kernel_config(std::int32_t target_sm, DType dtype, std::int32_t C, std::int32_t D, std::int32_t kernel_variant);
+KernelConfig make_kernel_config(
+  std::int32_t target_sm, DType dtype, std::int32_t C, std::int32_t D, std::int32_t kernel_variant, bool padded);
 
 void launch(KernelConfig const& config, LaunchParams const& params);
 

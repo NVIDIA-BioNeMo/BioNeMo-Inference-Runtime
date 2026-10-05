@@ -53,14 +53,42 @@ void check_device(std::int32_t operand_device, std::int32_t device, char const* 
   }
 }
 
-void validate_flat(Tensor1View const& view, std::int64_t elements, std::int32_t device, char const* name)
+void validate_flat(FlatTensorView const& view, std::int64_t elements, std::int32_t device, char const* name)
 {
-  validate_tensor(view, name, 16);
+  validate_flat_tensor(view, name, 16);
   check_device(view.device, device, name);
-  if (view.shape[0] != elements)
+  if (view.extent != elements)
   {
     throw std::invalid_argument(
-      std::string(name) + " must hold " + std::to_string(elements) + " elements, got " + std::to_string(view.shape[0]));
+      std::string(name) + " must hold " + std::to_string(elements) + " elements, got " + std::to_string(view.extent));
+  }
+}
+
+/* A strided operand view: its flat extent must reach the last element the TMA box walk can address. */
+void validate_span(FlatTensorView const& view, std::int64_t span, std::int32_t device, char const* name)
+{
+  validate_flat_tensor(view, name, 16);
+  check_device(view.device, device, name);
+  if (view.extent < span)
+  {
+    throw std::invalid_argument(
+      std::string(name) + " must span at least " + std::to_string(span) + " elements, got "
+      + std::to_string(view.extent));
+  }
+}
+
+/* Row pitch and plane stride of a and b: both whole 16-byte TMA strides. */
+void validate_ab_strides(std::int64_t n, std::int64_t pitch, std::int64_t plane)
+{
+  constexpr std::int64_t kStrideElements = 8;
+  if (
+    pitch < n || pitch % kStrideElements != 0 || plane % kStrideElements != 0
+    || plane < checked_mul(n, pitch, "trimul KF K2 a/b plane extent n * pitch"))
+  {
+    throw std::invalid_argument(
+      "trimul KF K2 needs a/b row pitch >= n and plane stride >= n * pitch, both multiples of "
+      + std::to_string(kStrideElements) + " elements; got n=" + std::to_string(n) + ", pitch=" + std::to_string(pitch)
+      + ", plane=" + std::to_string(plane));
   }
 }
 
@@ -92,17 +120,25 @@ void validate_image(KernelConfig const& config)
   }
 }
 
-/* A flat [l, n, n] buffer as the kernel's (n, n, l) TMA source, rows contiguous or columns
- * contiguous within each matrix.
+/* l matrices of n x n, rows pitch and matrices plane elements apart, as the kernel's (n, n, l) TMA
+ * source: mode 0 contiguous (rows_contiguous) or mode 1 contiguous within each matrix.
  */
-TmaTensorSource matrices_source(Tensor1View const& view, std::int64_t n, std::int64_t l, bool rows_contiguous)
+TmaTensorSource matrices_source(
+  FlatTensorView const& view,
+  std::int64_t n,
+  std::int64_t l,
+  std::int64_t pitch,
+  std::int64_t plane,
+  bool rows_contiguous)
 {
   std::uint64_t const extent = static_cast<std::uint64_t>(n);
+  std::uint64_t const row_stride = static_cast<std::uint64_t>(pitch);
+  std::uint64_t const plane_stride = static_cast<std::uint64_t>(plane);
   return TmaTensorSource{
     view.data,
     {extent, extent, static_cast<std::uint64_t>(l), 0},
-    rows_contiguous ? std::array<std::uint64_t, 4>{1, extent, extent * extent, 0}
-                    : std::array<std::uint64_t, 4>{extent, 1, extent * extent, 0},
+    rows_contiguous ? std::array<std::uint64_t, 4>{1, row_stride, plane_stride, 0}
+                    : std::array<std::uint64_t, 4>{row_stride, 1, plane_stride, 0},
   };
 }
 
@@ -117,11 +153,18 @@ void launch_sm90(
   KernelSpec const& spec = config.spec;
   std::int64_t const n = params.n;
   std::int64_t const l = params.l;
+  std::int64_t const pitch = params.ab_pitch;
+  std::int64_t const plane = params.ab_plane;
   if (n <= 0 || l <= 0)
     throw std::invalid_argument("trimul KF K2 needs positive n and l");
-  validate_flat(params.a, l * n * n, device, "a");
-  validate_flat(params.b, l * n * n, device, "b");
-  validate_flat(params.prod, l * n * n, device, "prod");
+  validate_ab_strides(n, pitch, plane);
+  char const* const span_name = "trimul KF K2 a/b span";
+  std::int64_t const ab_span = checked_add(
+    checked_add(checked_mul(l - 1, plane, span_name), checked_mul(n - 1, pitch, span_name), span_name), n, span_name);
+  validate_span(params.a, ab_span, device, "a");
+  validate_span(params.b, ab_span, device, "b");
+  validate_flat(
+    params.prod, checked_mul(l, checked_mul(n, n, "trimul KF K2 prod"), "trimul KF K2 prod"), device, "prod");
 
   embedded::SM90LaunchInfo const& metadata = config.embedded_image->sm90;
   std::uint32_t const cluster_m = metadata.cluster_dims[0];
@@ -143,20 +186,20 @@ void launch_sm90(
   if (n_tiles % cluster_n != 0)
     throw std::invalid_argument("trimul KF K2 clusters along N need a whole number of column-tile groups");
 
-  /* The operands keep each (b, d) matrix contiguous; outgoing reads a and b row-major (K
-   * contiguous), incoming column-major. The product is always row-major.
+  /* Outgoing reads a and b row-major (K contiguous), incoming column-major. The product is always
+   * dense and row-major.
    */
   CUtensorMapDataType const expected_dtype = tma_data_type(true);
   abi::SM90Params device_params{};
-  encode_tma_descriptor(
-    device_params.a_tma, metadata.a, expected_dtype, matrices_source(params.a, n, l, !spec.outgoing), "a");
-  encode_tma_descriptor(
-    device_params.b_tma, metadata.b, expected_dtype, matrices_source(params.b, n, l, !spec.outgoing), "b");
-  encode_tma_descriptor(
-    device_params.prod_tma, metadata.prod, expected_dtype, matrices_source(params.prod, n, l, false), "prod");
-  finalize_sm90_tma_atom(device_params.a_tma, true);
-  finalize_sm90_tma_atom(device_params.b_tma, true);
-  finalize_sm90_tma_atom(device_params.prod_tma, true);
+  TmaTensorSource const a_source = matrices_source(params.a, n, l, pitch, plane, !spec.outgoing);
+  TmaTensorSource const b_source = matrices_source(params.b, n, l, pitch, plane, !spec.outgoing);
+  TmaTensorSource const prod_source = matrices_source(params.prod, n, l, n, n * n, false);
+  encode_tma_descriptor(device_params.a_tma, metadata.a, expected_dtype, a_source, "a");
+  encode_tma_descriptor(device_params.b_tma, metadata.b, expected_dtype, b_source, "b");
+  encode_tma_descriptor(device_params.prod_tma, metadata.prod, expected_dtype, prod_source, "prod");
+  finalize_sm90_tma_atom(device_params.a_tma, sm90_tma_operation_tag(a_source));
+  finalize_sm90_tma_atom(device_params.b_tma, sm90_tma_operation_tag(b_source));
+  finalize_sm90_tma_atom(device_params.prod_tma, sm90_tma_operation_tag(prod_source));
   CoordTensorS3 const coord{{static_cast<std::int32_t>(n), static_cast<std::int32_t>(n), static_cast<std::int32_t>(l)}};
   device_params.a_coord = coord;
   device_params.b_coord = coord;

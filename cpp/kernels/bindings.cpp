@@ -173,6 +173,11 @@ NB_MODULE(_cutedsl_kernels, module)
   bind_tensor_view<2>(module, "Tensor2View");
   bind_tensor_view<3>(module, "Tensor3View");
   bind_tensor_view<4>(module, "Tensor4View");
+  nb::class_<FlatTensorView>(module, "FlatTensorView")
+    .def(nb::init<std::uint64_t, std::int64_t, std::int32_t>(), "data"_a, "extent"_a, "device"_a = kUnknownDevice)
+    .def_rw("data", &FlatTensorView::data)
+    .def_rw("extent", &FlatTensorView::extent)
+    .def_rw("device", &FlatTensorView::device);
 
   module.def(
     "preload",

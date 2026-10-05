@@ -1,0 +1,31 @@
+{
+  "executables": {
+    "aabd06577c24584e59643d8bd2fd1f2dcfe8ef01d7888fac3634d72d560a61db": {
+      "dtype": "bf16",
+      "dynamic_smem_bytes": 160768,
+      "image_sha256": "bdc9431adc432cb850733d7f118d94a8f3ff1d9b8bdcf94af603ae9d0ffc063f",
+      "image_size": 53968,
+      "kernel_sm": 90,
+      "kernel_symbol": "0fe009db752f31880df7ef10c737e61eba5519803dacf58094b26df6d8a221e9",
+      "launch_abi": "trimul_kf_k3_sm90_v2",
+      "sm90_launch": "9670eea3f29fc92af6c900074ece4f40a1d29474a97b052e09d3685b76e879c5",
+      "target_arch": "sm_90a",
+      "target_sm": 90
+    },
+    "ad6bd102eb315d3d2ebba2f308879ba097516d4e356249864a6672fc0907f8b5": {
+      "dtype": "bf16",
+      "dynamic_smem_bytes": 220160,
+      "image_sha256": "1c4e0fc7acbff46e7248fffd2ed2563f648865fb3652888784c67ec2b6ea14f3",
+      "image_size": 39632,
+      "kernel_sm": 90,
+      "kernel_symbol": "34d05d7017c215c66f1b4d089ce386500e4ca4a3286cc782717bce9891f5a395",
+      "launch_abi": "trimul_kf_k3_sm90_v2",
+      "sm90_launch": "bb3d0bb687387fefe7acff4c1c7ab5139d6e2138f685f5e51d057befb07c30ef",
+      "target_arch": "sm_90a",
+      "target_sm": 90
+    }
+  },
+  "kernel_symbols": {},
+  "sm90_launches": {},
+  "variants": []
+}

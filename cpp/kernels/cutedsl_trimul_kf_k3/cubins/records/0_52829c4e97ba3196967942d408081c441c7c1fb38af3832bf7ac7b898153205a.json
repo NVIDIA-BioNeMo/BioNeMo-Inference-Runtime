@@ -1,0 +1,47 @@
+{
+  "executables": {
+    "011d28421efe0d9fc55c59ece6d79168d3956cf7a0022a9364f6a8c64c0ad7a1": {
+      "dtype": "bf16",
+      "dynamic_smem_bytes": 160768,
+      "image_sha256": "1225c03b9c27bc1687125d22f456ae3b91da7944dc254f7b940d41112ac1902a",
+      "image_size": 44736,
+      "kernel_sm": 90,
+      "kernel_symbol": "0fe009db752f31880df7ef10c737e61eba5519803dacf58094b26df6d8a221e9",
+      "launch_abi": "trimul_kf_k3_sm90_v2",
+      "sm90_launch": "9670eea3f29fc92af6c900074ece4f40a1d29474a97b052e09d3685b76e879c5",
+      "target_arch": "sm_90a",
+      "target_sm": 90
+    },
+    "062bb24f40ff8fc5a1ea42a091b98592b55583cbfbd0779328f93844817f65a0": {
+      "dtype": "bf16",
+      "dynamic_smem_bytes": 228352,
+      "image_sha256": "6adc8cc3ba6dad9511fa1b343c11428331305f7425e2414bce0db1e745326ed3",
+      "image_size": 67296,
+      "kernel_sm": 90,
+      "kernel_symbol": "bad9f1a4a7ef4a5e30bdb81445dddd9b2db6b9ea83d6bd19cb61f0d97f097d6c",
+      "launch_abi": "trimul_kf_k3_sm90_v2",
+      "sm90_launch": "9670eea3f29fc92af6c900074ece4f40a1d29474a97b052e09d3685b76e879c5",
+      "target_arch": "sm_90a",
+      "target_sm": 90
+    }
+  },
+  "kernel_symbols": {
+    "0fe009db752f31880df7ef10c737e61eba5519803dacf58094b26df6d8a221e9": "k67227228d88b77c93522b61d2b307b509d4fad84998a5a1bf7672c57ad393e58____________________________________________________________________________________________________________________________"
+  },
+  "sm90_launches": {},
+  "variants": [
+    {
+      "executable": "ad6bd102eb315d3d2ebba2f308879ba097516d4e356249864a6672fc0907f8b5",
+      "runtime_metadata": {
+        "C": 64,
+        "D": 64,
+        "kernel_variant": 0,
+        "num_threads": 512,
+        "residual": true,
+        "tile_ctas": 1,
+        "tile_m": 128
+      },
+      "variant_id": "0ad2ea171b325e825a87"
+    }
+  ]
+}

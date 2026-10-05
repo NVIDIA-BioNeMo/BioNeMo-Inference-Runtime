@@ -1,0 +1,49 @@
+{
+  "executables": {},
+  "kernel_symbols": {},
+  "sm90_launches": {},
+  "variants": [
+    {
+      "executable": "7d8c583f5ee1405e9057ff02fd8a8be3ce7da97b30baf2dbccc9ccb5750746ef",
+      "runtime_metadata": {
+        "cluster_m": 1,
+        "defer_kmin": 0,
+        "kernel_variant": 0,
+        "num_threads": 384,
+        "outgoing": false,
+        "split_epi": false,
+        "tile_m": 128,
+        "tile_n": 128
+      },
+      "variant_id": "25a220c034da2f657df7"
+    },
+    {
+      "executable": "9fe287db9d97c7c7d057fa41d86ec9dc54870a7abe32a2a2ccb935097b50eff9",
+      "runtime_metadata": {
+        "cluster_m": 1,
+        "defer_kmin": 0,
+        "kernel_variant": 1,
+        "num_threads": 384,
+        "outgoing": true,
+        "split_epi": false,
+        "tile_m": 128,
+        "tile_n": 192
+      },
+      "variant_id": "2b14428bdb59aba2d121"
+    },
+    {
+      "executable": "43d3b7a14f284d92f8bf50907c3a53c0f23eb1974a6f616cae3619a10780bec7",
+      "runtime_metadata": {
+        "cluster_m": 2,
+        "defer_kmin": 4,
+        "kernel_variant": 0,
+        "num_threads": 384,
+        "outgoing": false,
+        "split_epi": true,
+        "tile_m": 128,
+        "tile_n": 192
+      },
+      "variant_id": "2bd14683790b1cba7f4c"
+    }
+  ]
+}

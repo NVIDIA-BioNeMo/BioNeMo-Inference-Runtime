@@ -20,6 +20,7 @@ from collections.abc import Sequence
 import torch
 
 from bionemo_ir._torch.layers.random_augmentation import _quaternion_components_to_matrix
+from bionemo_ir.pipeline.utils._rng import _torch_generator
 from bionemo_ir.pipeline.utils.atom import encode_atom_name_chars as _encode_atom_name_chars
 from bionemo_ir.pipeline.utils.atom import encode_atom_name_chars_one_hot as _encode_atom_name_chars_one_hot
 
@@ -104,7 +105,7 @@ def centre_random_augmentation_blocks(pos: torch.Tensor, block_sizes: Sequence[i
 
     Matches OSS centre_random_augmentation() (AF3 Algorithm 19) applied to
     each block in order, up to float32 rounding: each block draws the same rotation and
-    translation from the global ``torch`` RNG, but the centering and rotation
+    translation from the request-local RNG, but the centering and rotation
     reductions run batched.
 
     Args:
@@ -119,7 +120,7 @@ def centre_random_augmentation_blocks(pos: torch.Tensor, block_sizes: Sequence[i
         return pos.clone()
     # Per block, randn(7) yields the values of randn((1, 4)) then randn(3); one
     # randn((n_blocks, 7)) would take a different vectorized sampling path.
-    noise = torch.stack([torch.randn(7, dtype=pos.dtype) for _ in block_sizes])
+    noise = torch.stack([torch.randn(7, dtype=pos.dtype, generator=_torch_generator()) for _ in block_sizes])
     quaternions = noise[:, :4] / noise[:, :4].norm(dim=-1, keepdim=True)
     rotations = _quaternion_components_to_matrix(*quaternions.unbind(-1), 2.0)
     translations = noise[:, 4:]

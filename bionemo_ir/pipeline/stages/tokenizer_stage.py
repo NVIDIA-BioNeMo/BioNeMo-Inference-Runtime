@@ -20,6 +20,7 @@ from typing import Any
 from bionemo_ir.pipeline.base import ContextGeneratorBase, TransformBase, dict_context_merger, numpy_to_dict
 from bionemo_ir.pipeline.stages.base import StatefulStage, StatefulStageUDF
 from bionemo_ir.pipeline.utils import RANDOM_SEED_COLUMN
+from bionemo_ir.pipeline.utils._rng import _feature_rng
 
 
 class TokenizerUDF(StatefulStageUDF):
@@ -42,6 +43,10 @@ class TokenizerUDF(StatefulStageUDF):
         self.pre_init = pre_init
         self.init_context = init_context
 
+    def prepare(self) -> None:
+        for generator in self.context_generators.values():
+            generator.prepare()
+
     async def udf_for_item(self, row: dict[str, Any]) -> dict[str, Any]:
         # Seed before context generation so RDKit ETKDG (OpenFold3) sees the
         # same RNG state as FeatureFactory.pre_init documents.
@@ -53,19 +58,20 @@ class TokenizerUDF(StatefulStageUDF):
             if initialized_context is not None:
                 context = initialized_context
 
-        context_dict = {}
-        for name, generator in self.context_generators.items():
-            required_kwargs = generator.required_kwargs
-            if required_kwargs:
-                required_kwargs_dict = {k: row[k] for k in required_kwargs}
-                required_kwargs_dict = numpy_to_dict(required_kwargs_dict)
-                context_dict[name] = generator(**required_kwargs_dict)
-            else:
-                context_dict[name] = generator()
-        context_dict = self.context_merger_func(context_dict)
-        for transform_func in self.transform_funcs:
-            if transform_func.is_enabled():
-                context_dict = transform_func(context_dict)
+        with _feature_rng(context.get("_rng")):
+            context_dict = {}
+            for name, generator in self.context_generators.items():
+                required_kwargs = generator.required_kwargs
+                if required_kwargs:
+                    required_kwargs_dict = {k: row[k] for k in required_kwargs}
+                    required_kwargs_dict = numpy_to_dict(required_kwargs_dict)
+                    context_dict[name] = generator(**required_kwargs_dict)
+                else:
+                    context_dict[name] = generator()
+            context_dict = self.context_merger_func(context_dict)
+            for transform_func in self.transform_funcs:
+                if transform_func.is_enabled():
+                    context_dict = transform_func(context_dict)
 
         # Keep the resolved per-request seed with the row so later stages do
         # not have to reconstruct it from worker-local RNG state.

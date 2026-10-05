@@ -24,6 +24,7 @@ import torch
 
 from bionemo_ir.configs.base import BaseConfig
 from bionemo_ir.pipeline.base import FeatureCollatorBase
+from bionemo_ir.pipeline.utils._rng import _torch_generator
 
 from .common import gumbel_argsort_sample_idx, gumbel_max_sample, make_one_hot, shaped_categorical, unsorted_segment_sum
 
@@ -51,7 +52,7 @@ class SampleMsa(FeatureCollatorBase):
         max_seq = self.config.max_msa_clusters
         num_seq = features["msa"].shape[0]
 
-        g = None
+        g = _torch_generator()
         if seed is not None:
             g = torch.Generator(device=features["msa"].device)
             g.manual_seed(seed)
@@ -128,7 +129,7 @@ class MakeMaskedMsa(FeatureCollatorBase):
 
         sh = features["msa"].shape
 
-        g = None
+        g = _torch_generator()
         if seed is not None:
             g = torch.Generator(device=features["msa"].device)
             g.manual_seed(seed)
@@ -227,7 +228,7 @@ class CropExtraMsa(FeatureCollatorBase):
     def __call__(self, features: dict[str, torch.Tensor], context: dict[str, Any]) -> dict[str, torch.Tensor]:
         num_seq = features["extra_msa"].shape[0]
         num_sel = min(self.config.max_extra_msa, num_seq)
-        select_indices = torch.randperm(num_seq)[:num_sel]
+        select_indices = torch.randperm(num_seq, generator=_torch_generator())[:num_sel]
         for k in MSA_FEATURE_NAMES:
             if "extra_" + k in features:
                 features["extra_" + k] = torch.index_select(features["extra_" + k], 0, select_indices)
@@ -331,7 +332,7 @@ class RandomCropToSize(FeatureCollatorBase):
             seed = seed + 1
 
         seq_length = features["seq_length"]
-        g = None
+        g = _torch_generator()
         if seed is not None:
             g = torch.Generator(device=seq_length.device)
             g.manual_seed(seed)
@@ -498,7 +499,7 @@ class MultimerSampleMsa(FeatureCollatorBase):
         max_seq = self.config.max_msa_clusters
         max_extra_msa_seq = self.config.max_extra_msa
 
-        g = None
+        g = _torch_generator()
         if seed is not None:
             g = torch.Generator(device=features["msa"].device)
             g.manual_seed(seed)
@@ -549,12 +550,15 @@ class MultimerMakeMaskedMsa(MakeMaskedMsa):
         categorical_probs = torch.nn.functional.pad(categorical_probs, [0, 1], value=mask_prob)
 
         sh = features["msa"].shape
-        mask_position = torch.rand(sh, device=features["msa"].device) < self.masked_msa_replace_fraction
+        mask_position = (
+            torch.rand(sh, device=features["msa"].device, generator=_torch_generator())
+            < self.masked_msa_replace_fraction
+        )
         mask_position *= features["msa_mask"].to(mask_position.dtype)
 
         logits = torch.log(categorical_probs + eps)
 
-        g = None
+        g = _torch_generator()
         if seed is not None:
             g = torch.Generator(device=features["msa"].device)
             g.manual_seed(seed)

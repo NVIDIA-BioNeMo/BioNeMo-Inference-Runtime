@@ -20,6 +20,7 @@ import torch
 import bionemo_ir.pipeline.models.openfold2.const as rc
 from bionemo_ir.configs.base import BaseConfig
 from bionemo_ir.pipeline.base import TransformBase
+from bionemo_ir.pipeline.utils._rng import _torch_generator
 
 
 class CastTo64BitInts(TransformBase):
@@ -98,12 +99,12 @@ class RandomlyReplaceMsaWithUnknown(TransformBase):
 
     def __call__(self, batch: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
         """Replace a portion of the MSA with 'X'."""
-        msa_mask = torch.rand(batch["msa"].shape) < self.replace_proportion
+        msa_mask = torch.rand(batch["msa"].shape, generator=_torch_generator()) < self.replace_proportion
         x_idx = 20
         gap_idx = 21
         msa_mask = torch.logical_and(msa_mask, batch["msa"] != gap_idx)
         batch["msa"] = torch.where(msa_mask, torch.ones_like(batch["msa"]) * x_idx, batch["msa"])
-        aatype_mask = torch.rand(batch["aatype"].shape) < self.replace_proportion
+        aatype_mask = torch.rand(batch["aatype"].shape, generator=_torch_generator()) < self.replace_proportion
 
         batch["aatype"] = torch.where(
             aatype_mask,

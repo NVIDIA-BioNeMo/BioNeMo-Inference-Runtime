@@ -130,6 +130,10 @@ class ContextGeneratorBase(ABC):
     def required_kwargs(self, required_kwargs: list[str]):
         self._required_kwargs = required_kwargs
 
+    def prepare(self) -> None:
+        """Load lazily initialised resources before the first request."""
+        return None
+
 
 class ContextGeneratorSpec(BaseModel):
     """Context generator spec is a specification for a context generator.

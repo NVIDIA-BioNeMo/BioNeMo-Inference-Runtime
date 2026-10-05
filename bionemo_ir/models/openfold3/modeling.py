@@ -239,7 +239,7 @@ class OpenFold3(nn.Module, OptimizedModuleSetterMixin):
         return z
 
     def feature_extraction(
-        self, batch: dict, num_cycles: int, attn_metadata: dict = None
+        self, batch: dict, num_cycles: int, attn_metadata: dict = None, sampling_seed: int | None = None
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Implements Algorithm 1 lines 1-14.
 
@@ -248,6 +248,8 @@ class OpenFold3(nn.Module, OptimizedModuleSetterMixin):
                 Input feature dictionary
             num_cycles:
                 Number of cycles to run
+            sampling_seed:
+                Request seed for MSA subsampling across recycles.
 
         Returns:
             s_input:
@@ -302,13 +304,18 @@ class OpenFold3(nn.Module, OptimizedModuleSetterMixin):
         token_mask = batch["token_mask"]
         pair_mask = token_mask[..., None] * token_mask[..., None, :]
 
+        msa_generator = None
+        if sampling_seed is not None:
+            msa_generator = torch.Generator(device=s_input.device).manual_seed(sampling_seed)
+
+        msa_kwargs = {} if msa_generator is None else {"generator": msa_generator}
         for cycle_index in range(num_cycles):
             # [*, N_token, N_token, C_z]
             z = self._update_recycle_pair(z_init, z)
 
             z = z + self.template_embedder(batch=batch, z=z, pair_mask=pair_mask).to(dtype=z.dtype)
 
-            m, msa_mask = self.msa_module_embedder(batch=batch, s_input=s_input)
+            m, msa_mask = self.msa_module_embedder(batch=batch, s_input=s_input, **msa_kwargs)
 
             # Run MSA + pair embeddings through the MsaModule
             # m: [*, N_seq, N_token, C_m]
@@ -458,7 +465,7 @@ class OpenFold3(nn.Module, OptimizedModuleSetterMixin):
         attn_metadata = self.generate_attn_metadata(batch)
 
         si_input, si_trunk, zij_trunk = self.feature_extraction(
-            batch=batch, num_cycles=num_cycles, attn_metadata=attn_metadata
+            batch=batch, num_cycles=num_cycles, attn_metadata=attn_metadata, sampling_seed=sampling_seed
         )
 
         # Expand sampling dimension for rollout and diffusion

@@ -14,12 +14,8 @@
 # limitations under the License.
 """OpenFold3 feature factory: generators and collators for the feature stage."""
 
-import random
 from collections.abc import Callable
 from typing import Any
-
-import numpy as np
-import torch
 
 from bionemo_ir.pipeline.base import (
     FeatureCollatorSpec,
@@ -27,6 +23,8 @@ from bionemo_ir.pipeline.base import (
     FeatureGeneratorSpec,
     default_context_and_feature_merger,
 )
+from bionemo_ir.pipeline.utils import RANDOM_SEED_COLUMN, SAMPLING_SEED_ARG
+from bionemo_ir.pipeline.utils._rng import _RequestRNG
 
 from .feature_collators import OpenFold3FinalFeatureCollator
 from .feature_generators import (
@@ -38,7 +36,7 @@ from .feature_generators import (
 
 
 def pre_init(context: dict[str, Any]) -> dict[str, Any]:
-    """Seed Python, NumPy, and Torch RNGs from context['random_seed'].
+    """Create request-local RNGs from context['random_seed'].
 
     Must run *before* OpenFold3ContextGenerator / RDKit ETKDGv3 (tokenizer
     stage). The processor wires this hook into both the tokenizer stage and
@@ -48,9 +46,9 @@ def pre_init(context: dict[str, Any]) -> dict[str, Any]:
     if seed is None:
         seed = 0
     seed = int(seed)
-    random.seed(seed)
-    np.random.seed(seed)
-    torch.manual_seed(seed)
+    context[RANDOM_SEED_COLUMN] = seed
+    context[SAMPLING_SEED_ARG] = seed
+    context["_rng"] = _RequestRNG(seed)
     return context
 
 

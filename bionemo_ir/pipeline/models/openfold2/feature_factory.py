@@ -17,7 +17,6 @@ import random
 from collections.abc import Callable
 from typing import Any
 
-import numpy as np
 import torch
 
 from bionemo_ir.configs.base import BaseConfig
@@ -28,6 +27,7 @@ from bionemo_ir.pipeline.base import (
     FeatureGeneratorSpec,
     default_context_and_feature_merger,
 )
+from bionemo_ir.pipeline.utils._rng import _RequestRNG
 
 from .feature_collators import (
     CropExtraMsa,
@@ -208,8 +208,8 @@ def pre_init(context: dict[str, Any]) -> dict[str, Any]:
     random_seed = context.get("random_seed", 0)
     if random_seed is None:
         random_seed = random.SystemRandom().randrange(2**32)
-    np.random.seed(random_seed)
-    torch.manual_seed(random_seed + 1)
+    context["random_seed"] = random_seed
+    context["_rng"] = _RequestRNG(random_seed, torch_seed=random_seed + 1)
     rng = random.Random(random_seed)
     context["ensemble_seed"] = rng.randint(0, torch.iinfo(torch.int32).max)
     return context

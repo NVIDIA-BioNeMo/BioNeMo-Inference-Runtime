@@ -96,6 +96,10 @@ class Boltz2ContextGenerator(ContextGeneratorBase):
     def required_kwargs(self, value: list[str]) -> None:
         self._required_kwargs = value
 
+    def prepare(self) -> None:
+        if self._ccd_path is not None:
+            self._get_ccd()
+
     def _get_ccd(self) -> dict[str, Any]:
         if self._ccd is None:
             self._ccd = _load_ccd(self._ccd_path)

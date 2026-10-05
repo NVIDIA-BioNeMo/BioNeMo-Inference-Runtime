@@ -29,8 +29,8 @@ def test_pre_init_is_independent_of_python_worker_rng_state():
         np.random.seed(2)
         torch.manual_seed(3)
         first = pre_init({"random_seed": 20260720})
-        first_numpy = np.random.random()
-        first_torch = torch.rand(1)
+        first_numpy = first["_rng"].numpy.random()
+        first_torch = torch.rand(1, generator=first["_rng"].torch)
 
         assert random.getstate() == first_python_state
 
@@ -39,8 +39,8 @@ def test_pre_init_is_independent_of_python_worker_rng_state():
         np.random.seed(98)
         torch.manual_seed(97)
         second = pre_init({"random_seed": 20260720})
-        second_numpy = np.random.random()
-        second_torch = torch.rand(1)
+        second_numpy = second["_rng"].numpy.random()
+        second_torch = torch.rand(1, generator=second["_rng"].torch)
 
         assert random.getstate() == second_python_state
         assert first["ensemble_seed"] == second["ensemble_seed"]

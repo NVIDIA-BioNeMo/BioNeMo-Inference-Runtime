@@ -19,6 +19,7 @@ import torch
 import bionemo_ir.pipeline.models.openfold2.const as rc
 from bionemo_ir._torch.modules.openfold2.utils.rigid_utils import Rigid
 from bionemo_ir._torch.utils import batched_gather
+from bionemo_ir.pipeline.utils._rng import _torch_generator
 
 
 def make_one_hot(x: torch.Tensor, num_classes: int) -> torch.Tensor:
@@ -31,7 +32,7 @@ def shaped_categorical(probs: torch.Tensor, epsilon: float = 1e-10) -> torch.Ten
     ds = probs.shape
     num_classes = ds[-1]
     distribution = torch.distributions.categorical.Categorical(torch.reshape(probs + epsilon, [-1, num_classes]))
-    counts = distribution.sample()
+    counts = torch.multinomial(distribution.probs, 1, replacement=True, generator=_torch_generator()).squeeze(-1)
     return torch.reshape(counts, ds[:-1])
 
 
@@ -264,6 +265,7 @@ def gumbel_noise(
     Returns:
         Gumbel noise of given shape.
     """
+    generator = _torch_generator() if generator is None else generator
     uniform_noise = torch.rand(shape, dtype=torch.float32, device=device, generator=generator)
     gumbel = -torch.log(-torch.log(uniform_noise + eps) + eps)
     return gumbel

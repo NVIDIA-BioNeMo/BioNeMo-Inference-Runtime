@@ -81,8 +81,7 @@ class ProcessorConfig(BaseModel):
     )
     executor_backend: Literal["ray"] | None = Field(
         default=None,
-        description="Execution backend. None = serial (no Ray, stages run "
-        "sequentially in-process — useful for debugging and testing). "
+        description="Execution backend. None = in-process serial inference with threaded CPU stage overlap. "
         "'ray' = distributed execution via Ray Data.",
     )
 
@@ -205,6 +204,19 @@ class Processor(_ProcessorBase):
         return dataset
 
 
+def build_stage_udf(stage: StatefulStage) -> StatefulStageUDF:
+    """Instantiate a stage UDF for in-process execution."""
+    ctor_kwargs = stage.fn_constructor_kwargs.copy()
+    ctor_kwargs["compute_by_rows"] = stage.compute_by_rows
+    ctor_kwargs["drop_keys"] = stage.drop_keys
+    ctor_kwargs["expected_input_keys"] = list(stage.get_required_input_keys().keys())
+    ctor_kwargs["update_row"] = stage.update_row
+    udf = stage.fn(**ctor_kwargs)
+    # Rows stay in this process, so the next stage takes ownership without a pickle copy.
+    udf.pickle_packed_rows = False
+    return udf
+
+
 class SerialProcessor(_ProcessorBase):
     """In-process serial processor — no Ray dependency.
 
@@ -216,17 +228,9 @@ class SerialProcessor(_ProcessorBase):
         super().__init__(config, stages)
         self._udf_instances: OrderedDict[str, Any] = OrderedDict()
 
-    def _get_or_create_udf(self, name: str, stage: StatefulStage):
+    def _get_or_create_udf(self, name: str, stage: StatefulStage) -> StatefulStageUDF:
         if name not in self._udf_instances:
-            ctor_kwargs = stage.fn_constructor_kwargs.copy()
-            ctor_kwargs["compute_by_rows"] = stage.compute_by_rows
-            ctor_kwargs["drop_keys"] = stage.drop_keys
-            ctor_kwargs["expected_input_keys"] = list(stage.get_required_input_keys().keys())
-            ctor_kwargs["update_row"] = stage.update_row
-            udf = stage.fn(**ctor_kwargs)
-            # Rows stay in this process, so the next stage takes ownership without a pickle copy.
-            udf.pickle_packed_rows = False
-            self._udf_instances[name] = udf
+            self._udf_instances[name] = build_stage_udf(stage)
         return self._udf_instances[name]
 
     def __call__(self, records: list[dict[str, Any]]) -> list[dict[str, Any]]:

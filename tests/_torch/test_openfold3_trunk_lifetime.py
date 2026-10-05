@@ -115,7 +115,7 @@ class _TrunkLifetimeProbe:
         return None
 
     def feature_extraction(
-        self, batch: dict[str, torch.Tensor], num_cycles: int, attn_metadata: None
+        self, batch: dict[str, torch.Tensor], num_cycles: int, attn_metadata: None, sampling_seed: int | None = None
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         values = tuple(
             torch.randn(shape, dtype=torch.bfloat16, device=self.device)
@@ -352,6 +352,32 @@ def test_row_built_input_reclaims_cache_between_recycles(
         )
 
     assert cache_calls == expected_calls
+
+
+@pytest.mark.parametrize("device", ["cpu", "cuda"])
+def test_request_msa_stream(device: str) -> None:
+    if device == "cuda" and not torch.cuda.is_available():
+        pytest.skip("CUDA is required")
+    probe = _FeatureExtractionCacheProbe(torch.device(device), min_size=8)
+    original = probe.msa_module_embedder
+    draws: list[torch.Tensor] = []
+
+    def record_msa(
+        *, batch: dict[str, torch.Tensor], s_input: torch.Tensor, generator: torch.Generator
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        draws.append(torch.rand(2, device=device, generator=generator))
+        return original(batch=batch, s_input=s_input)
+
+    probe.msa_module_embedder = record_msa
+    state = torch.cuda.get_rng_state() if device == "cuda" else torch.get_rng_state()
+    with torch.inference_mode():
+        probe.feature_extraction(batch={"token_mask": torch.ones(1, 4, device=device)}, num_cycles=4, sampling_seed=17)
+    generator = torch.Generator(device=device).manual_seed(17)
+    expected = [torch.rand(2, device=device, generator=generator) for _ in range(4)]
+    assert len(draws) == len(expected)
+    assert all(torch.equal(actual, reference) for actual, reference in zip(draws, expected, strict=True))
+    after = torch.cuda.get_rng_state() if device == "cuda" else torch.get_rng_state()
+    assert torch.equal(state, after)
 
 
 class _PairCacheConditioning:

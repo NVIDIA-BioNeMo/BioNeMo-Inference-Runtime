@@ -19,7 +19,8 @@ from typing import Any
 from pydantic import Field
 
 from bionemo_ir.data.utils import get_all_atom_types, get_all_residue_types
-from bionemo_ir.pipeline.processor.base import Processor, ProcessorConfig, SerialProcessor, _ProcessorBase
+from bionemo_ir.pipeline.processor.base import Processor, ProcessorConfig, _ProcessorBase
+from bionemo_ir.pipeline.processor.pipelined import PipelinedSerialProcessor
 from bionemo_ir.pipeline.processor.utils import build_cpu_stage_map_kwargs, get_available_gpu_count
 from bionemo_ir.pipeline.stages import (
     FeatureGeneratorStage,
@@ -382,8 +383,10 @@ def build_processor(config: EngineProcessorConfig) -> _ProcessorBase:
     """Build a processor from the given config.
 
     Returns a :class:`Processor` (Ray-backed) when
-    ``config.executor_backend == "ray"``, or a :class:`SerialProcessor`
-    (in-process, no Ray) when ``config.executor_backend is None``.
+    ``config.executor_backend == "ray"``, or a
+    :class:`PipelinedSerialProcessor` when the backend is None. CPU stages
+    run on threads alongside serial inference. Writer work starts after
+    all device batches succeed.
     """
     _resolve_metadata(config)
     _resolve_runtime_args(config)
@@ -404,4 +407,4 @@ def build_processor(config: EngineProcessorConfig) -> _ProcessorBase:
         return Processor(config, stages)
 
     stages = _build_stages(config, processor_defaults)
-    return SerialProcessor(config, stages)
+    return PipelinedSerialProcessor(config, stages, prefetch=2)

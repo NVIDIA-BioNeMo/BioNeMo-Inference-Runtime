@@ -549,7 +549,9 @@ class MSAModuleEmbedder(nn.Module):
         if not_loaded_weights:
             raise ValueError(f"The following weights are not loaded: {not_loaded_weights}")
 
-    def forward(self, batch: dict, s_input: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    def forward(
+        self, batch: dict, s_input: torch.Tensor, generator: torch.Generator | None = None
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         """
         Args:
             batch:
@@ -562,6 +564,8 @@ class MSAModuleEmbedder(nn.Module):
                     - "asym_id": [*, N_token]
             s_input:
                 [*, N_token, C_s_input] single embedding
+            generator:
+                Request-owned MSA subsampling RNG, if supplied.
 
         Returns:
             m:
@@ -582,14 +586,11 @@ class MSAModuleEmbedder(nn.Module):
         )
         msa_mask = batch["msa_mask"]
 
-        # Draw MSA-subsampling randomness from a private generator so these
-        # eager torch.randint / torch.randperm calls stay off the default CUDA
-        # generator, which torch.cuda.graph capture of the diffusion module can
-        # leave in a graph-registered state (raising "Offset increment outside
-        # graph capture"). See make_graph_safe_generator; the default generator
-        # is advanced to match afterward so numerics are unchanged.
+        # Keep unseeded calls graph-safe and stateful.
         subsample = self.subsample_main_msa or self.subsample_all_msa
-        generator = make_graph_safe_generator(msa_feat.device) if subsample else None
+        shared_rng = generator is None
+        if subsample and shared_rng:
+            generator = make_graph_safe_generator(msa_feat.device)
 
         if self.subsample_main_msa:
             if math.prod(batch_dims) > 1:
@@ -636,9 +637,8 @@ class MSAModuleEmbedder(nn.Module):
                     generator=generator,
                 )
 
-        if subsample:
-            # Mirror the draws above onto the default generator (numerics
-            # unchanged for any downstream RNG consumer).
+        if subsample and shared_rng:
+            # Match legacy default-generator progression.
             commit_graph_safe_generator(generator, msa_feat.device)
 
         # [*, N_seq, N_token, C_m]

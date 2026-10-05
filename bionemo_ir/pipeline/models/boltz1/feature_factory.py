@@ -16,7 +16,6 @@
 """Boltz1 feature factory: generators and collators for the feature stage."""
 
 from collections.abc import Callable
-from typing import Any
 
 from bionemo_ir.pipeline.base import (
     FeatureCollatorSpec,
@@ -24,6 +23,7 @@ from bionemo_ir.pipeline.base import (
     FeatureGeneratorSpec,
     default_context_and_feature_merger,
 )
+from bionemo_ir.pipeline.models.boltz2.feature_factory import pre_init
 
 from .feature_collators import Boltz1FinalFeatureCollator
 from .feature_generators import (
@@ -33,10 +33,6 @@ from .feature_generators import (
     Boltz1ResidueConstraintFeatureGenerator,
     Boltz1TokenFeatureGenerator,
 )
-
-
-def pre_init(context: dict[str, Any]) -> dict[str, Any]:
-    return context
 
 
 class FeatureFactory(FeatureFactoryBase):

@@ -361,11 +361,14 @@ Each input row:
 
 ### Ray (Multi-GPU Replicas)
 
-Ray is the recommended executor for **large inference on a GPU cluster**.
-Staged `map_batches` overlaps parser / tokenizer / featurizer / writer with
-GPU forwards, so pre- and post-processing latency is hidden behind the
-engine. Serial (`executor_backend=None`) is for debugging or single-process
-measurements; it does not overlap those stages.
+Ray is the recommended executor for **large inference on a GPU cluster**. Staged
+`map_batches` overlaps parser / tokenizer / featurizer / writer with GPU
+forwards, so pre- and post-processing latency is hidden behind the engine.
+Serial (`executor_backend=None`) automatically overlaps CPU preparation on a
+worker thread with inference on the calling thread, without Ray. Device
+outputs buffer for the entire call; writer work starts after all device
+batches succeed. `stage_timing_s` holds each stage's own wall time; those
+values no longer add up to the request's wall time.
 
 ```python
 import ray
@@ -422,21 +425,21 @@ That sets `executor_backend="ray"` and sizes CPU stages from
 
 Inherits `ProcessorConfig`. Pass only documented fields.
 
-| Field                                                                                            | Default  | Role                                                                 |
-| ------------------------------------------------------------------------------------------------ | -------- | -------------------------------------------------------------------- |
-| `model_source`                                                                                   | required | FoldingSupportMatrix key                                             |
-| `executor_backend`                                                                               | `None`   | `None` = serial; `"ray"` = Ray Data                                  |
-| `engine_kwargs`                                                                                  | `{}`     | Passed into the folding engine (refer to the following)              |
-| `runtime_args`                                                                                   | `{}`     | Merged on top of factory defaults, then forwarded to `model.forward` |
-| `metadata`                                                                                       | `None`   | `{ccd_path, mol_dir, …}`. Auto-loaded when omitted                   |
-| `metadata_loader`                                                                                | `None`   | Callable used when `metadata` is omitted                             |
-| `parser_stage` / `tokenizer_stage` / `feature_generator_stage` / `engine_stage` / `writer_stage` | `True`   | `bool`, `dict`, or the matching `*StageConfig`                       |
-| `batch_size`                                                                                     | `1`      | Rows per `map_batches` call                                          |
-| `concurrency`                                                                                    | `1`      | Default actor pool size for CPU stages                               |
-| `should_continue_on_error`                                                                       | `False`  | If `True`, failed rows get `__inference_error__` instead of raising  |
-| `max_concurrent_batches`                                                                         | `8`      | Ray engine-stage overlap                                             |
-| `runtime_env`                                                                                    | `None`   | Ray runtime env                                                      |
-| `accelerator_type`                                                                               | `None`   | Optional Ray accelerator label                                       |
+| Field                                                                                            | Default  | Role                                                                     |
+| ------------------------------------------------------------------------------------------------ | -------- | ------------------------------------------------------------------------ |
+| `model_source`                                                                                   | required | FoldingSupportMatrix key                                                 |
+| `executor_backend`                                                                               | `None`   | `None` = serial; `"ray"` = Ray Data                                      |
+| `engine_kwargs`                                                                                  | `{}`     | Passed into the folding engine (refer to the following)                  |
+| `runtime_args`                                                                                   | `{}`     | Merged on top of factory defaults, then forwarded to `model.forward`     |
+| `metadata`                                                                                       | `None`   | `{ccd_path, mol_dir, …}`. Auto-loaded when omitted                       |
+| `metadata_loader`                                                                                | `None`   | Callable used when `metadata` is omitted                                 |
+| `parser_stage` / `tokenizer_stage` / `feature_generator_stage` / `engine_stage` / `writer_stage` | `True`   | `bool`, `dict`, or the matching `*StageConfig`                           |
+| `batch_size`                                                                                     | `1`      | Rows per `map_batches` call                                              |
+| `concurrency`                                                                                    | `1`      | Default actor pool size for CPU stages                                   |
+| `should_continue_on_error`                                                                       | `False`  | If `True`, failed rows get `__inference_error__` instead of raising      |
+| `max_concurrent_batches`                                                                         | `8`      | Ray engine-stage overlap                                                 |
+| `runtime_env`                                                                                    | `None`   | Ray runtime env                                                          |
+| `accelerator_type`                                                                               | `None`   | Optional Ray accelerator label                                           |
 
 `engine_kwargs` keys consumed by the folding engine:
 
@@ -461,6 +464,8 @@ share `compute`, `num_cpus`, `memory`, `batch_size`, `drop_keys`. Extra fields:
   provide a default seed for every row. A row-level `random_seed` overrides
   this default. The tokenizer falls back to the feature-stage context, and its
   resolved seed is carried into feature generation so both stages stay aligned.
+  Built-in feature pipelines use request-owned RNGs and leave global RNG
+  state untouched.
 - **Writer:** `output_path`, `format` (`"pdb"`, `"cif"`, or `["pdb", "cif"]`).
 - **Engine:** `parallelism_mode=ParallelismMode.REPLICA`, `num_gpus` (default
   `1.0`).
@@ -481,9 +486,9 @@ model(feed_dict, recycling_steps=3, num_sampling_steps=200,
       sampling_seed=None)
 ```
 
-When a preprocessing hook resolves a model sampling seed, the pipeline supplies
-it as `sampling_seed`. A non-`None` `runtime_args["sampling_seed"]` overrides
-the request seed for model sampling only.
+Boltz1, Boltz2, and OpenFold3 pass the resolved request seed to model sampling.
+A non-`None` `runtime_args["sampling_seed"]` overrides that seed for inference
+only. OpenFold3 also uses it for MSA subsampling across recycles.
 
 #### OpenFold3
 
@@ -542,6 +547,12 @@ engine_kwargs = {
         ),
     }
 }
+```
+
+Use module defaults to enable graphs without overriding capture settings:
+
+```python
+engine_kwargs = {"accelerated_configs": {"diffusion_module": AcceleratedConfig(backend="torch")}}
 ```
 
 The string form of the mode is `"cuda_graph_via_torch"`. The first few calls

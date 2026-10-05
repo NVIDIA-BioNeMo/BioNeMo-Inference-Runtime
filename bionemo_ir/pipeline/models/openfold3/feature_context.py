@@ -39,6 +39,7 @@ from rdkit.Geometry import Point3D
 
 from bionemo_ir.data.schemas.basic import InputParsed
 from bionemo_ir.pipeline.base import ContextGeneratorBase
+from bionemo_ir.pipeline.utils._rng import _python_rng
 
 from .const import (
     _PROTEIN_1TO3,
@@ -205,7 +206,7 @@ def _embed_conformer_inplace(
         return mol_h.AddConformer(conf, assignId=True)
 
     params = AllChem.ETKDGv3()
-    params.randomSeed = random.randint(0, 10**9) if random_seed is None else random_seed
+    params.randomSeed = _python_rng().randint(0, 10**9) if random_seed is None else random_seed
     params.clearConfs = False
     conf_id = AllChem.EmbedMolecule(mol_h, params)
     if conf_id == -1:
@@ -214,7 +215,7 @@ def _embed_conformer_inplace(
             params.randomSeed = retry_seed()
         else:
             params.randomSeed = (
-                random.randint(0, 10**9) if random_seed is None else random.Random(random_seed).randint(0, 10**9)
+                _python_rng().randint(0, 10**9) if random_seed is None else random.Random(random_seed).randint(0, 10**9)
             )
         conf_id = AllChem.EmbedMolecule(mol_h, params)
     return conf_id
@@ -279,7 +280,7 @@ def _residue_rdkit_topology(ccd_code: str) -> tuple[Chem.Mol, np.ndarray]:
 
 
 def _draw_conformer_seed() -> int:
-    return random.randint(0, 10**9)
+    return _python_rng().randint(0, 10**9)
 
 
 def _defer_conformer_retry() -> int:
@@ -328,7 +329,7 @@ def _prefetch_protein_mols(ccd_codes: list[str]) -> list[tuple[Chem.Mol | None, 
             if mol.GetNumAtoms() < 2:
                 return None
         predictor = random.Random()
-        predictor.setstate(random.getstate())
+        predictor.setstate(_python_rng().getstate())
         seeds = [predictor.randint(0, 10**9) for _ in ccd_codes]
         build = partial(_build_residue_rdkit_mol, retry_seed=_defer_conformer_retry)
         with ThreadPoolExecutor(max_workers=_CONFORMER_WORKERS) as executor:
@@ -640,7 +641,7 @@ def _build_structure_from_polymers(
                 except Exception as e:
                     _logger.debug("Nucleotide topology prefetch failed: %s", e)
                 else:
-                    seeds = [random.randint(0, 10**9) for _ in sequence]
+                    seeds = [_python_rng().randint(0, 10**9) for _ in sequence]
                     with ThreadPoolExecutor(max_workers=_CONFORMER_WORKERS) as executor:
                         prebuilt_mols = list(executor.map(_build_nucleotide_rdkit_mol, ccd_codes, seeds))
             for res_idx, res_char in enumerate(sequence):

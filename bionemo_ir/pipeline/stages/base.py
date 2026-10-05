@@ -302,6 +302,9 @@ class StatefulStageUDF:
     def on_row_error(self, row: dict[str, Any], error: Exception) -> dict[str, Any]:
         return {}
 
+    def prepare(self) -> None:
+        """Load lazily initialised resources before the first row arrives."""
+
     async def udf_for_item(self, row: dict[str, Any]) -> dict[str, Any]:
         raise NotImplementedError(
             f"{self.__class__.__name__} inherits from StatefulStageUDF must implement the udf_for_item method"

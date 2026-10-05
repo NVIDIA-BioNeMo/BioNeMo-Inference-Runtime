@@ -224,9 +224,8 @@ class ConformerFeatureGenerator(FeatureGeneratorBase):
     Uses Biotite CCD for atom identity and RDKit ETKDGv3 for conformer
     coordinates, matching the OSS pipeline. Coordinates are centered
     per-residue with random augmentation (rotation + translation) via
-    ``centre_random_augmentation`` (OSS AF3 Algorithm 19). Seed the global
-    ``torch`` and ``random`` RNGs before inference if reproducibility is
-    required.
+    ``centre_random_augmentation`` (OSS AF3 Algorithm 19). The feature stage
+    supplies request-local randomness for reproducibility.
     """
 
     def __call__(

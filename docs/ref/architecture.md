@@ -124,13 +124,16 @@ JSON-encoded **strings**, so PyArrow sees one column type across rows.
 ### Ray and Serial Processors
 
 `build_processor` in `engine_proc.py` takes an
-`EngineProcessorConfig` and returns one of two executors, both defined in
-`pipeline/processor/base.py`:
+`EngineProcessorConfig` and selects the executor:
 
 - `executor_backend="ray"` → `Processor`, the stages as a distributed Ray Data
   pipeline. This is the throughput path.
-- `executor_backend=None` (default) → `SerialProcessor`, the same stage UDFs
-  run in-process and sequentially. Useful for debugging and per-request timing.
+- `executor_backend=None` (default) → `PipelinedSerialProcessor`
+  (`pipeline/processor/pipelined.py`). Inference stays on the calling thread;
+  CPU preparation runs on a worker thread alongside inference. Device outputs
+  buffer for the entire call; writer work starts after all device batches
+  succeed, so an engine exception leaves no partial writer output. Output
+  order and per-row errors match the serial processor.
 
 The staged Ray layout exists to hide latency and scale the bottleneck: the
 CPU-bound stages (parse, tokenize, featurize, write) overlap with GPU

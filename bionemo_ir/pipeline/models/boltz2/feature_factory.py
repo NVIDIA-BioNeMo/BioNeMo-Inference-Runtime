@@ -18,13 +18,9 @@ Metadata (e.g. ccd_path, mol_dir) is not used here; it is only used by the
 Tokenizer stage (see Boltz2ContextGenerator in feature_context.py).
 """
 
-import random
 import secrets
 from collections.abc import Callable
 from typing import Any
-
-import numpy as np
-import torch
 
 # isort: off
 from bionemo_ir.pipeline.base import (
@@ -34,6 +30,7 @@ from bionemo_ir.pipeline.base import (
     default_context_and_feature_merger,
 )
 from bionemo_ir.pipeline.utils import RANDOM_SEED_COLUMN, SAMPLING_SEED_ARG
+from bionemo_ir.pipeline.utils._rng import _RequestRNG
 
 from .feature_collators import Boltz2FinalFeatureCollator
 from .feature_generators import (
@@ -49,18 +46,17 @@ from .feature_generators import (
 # isort: on
 
 
-# The narrowest of the three: np.random.seed rejects anything outside it, while
-# random.seed takes any object and torch.manual_seed any 64-bit value.
+# NumPy seeds require unsigned 32-bit values.
 _MAX_SEED = 2**32 - 1
 
 
 def pre_init(context: dict[str, Any]) -> dict[str, Any]:
-    """Seed Python, NumPy, and Torch RNGs from ``context['random_seed']``.
+    """Create request-local RNGs from ``context['random_seed']``.
 
     Generate a seed from system entropy when the context omits one or provides
     ``None``. Runs in the worker ahead of the tokenizer and feature stages, and
-    records the seed for the diffusion trajectory. Uses the same tri-seeding as
-    the OpenFold2 and OpenFold3 factories.
+    records the seed for the diffusion trajectory. Keeps feature RNGs separate
+    from inference.
 
     Raises:
         ValueError: if ``random_seed`` is outside ``[0, 2**32 - 1]``.
@@ -73,9 +69,7 @@ def pre_init(context: dict[str, Any]) -> dict[str, Any]:
         raise ValueError(f"random_seed must be in [0, {_MAX_SEED}], got {seed}")
     context[RANDOM_SEED_COLUMN] = seed
     context[SAMPLING_SEED_ARG] = seed
-    random.seed(seed)
-    np.random.seed(seed)
-    torch.manual_seed(seed)
+    context["_rng"] = _RequestRNG(seed)
     return context
 
 

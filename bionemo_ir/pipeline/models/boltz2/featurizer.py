@@ -17,7 +17,6 @@
 
 from __future__ import annotations
 
-import random
 from typing import Any
 
 import numpy as np
@@ -26,6 +25,7 @@ from torch.nn.functional import one_hot
 
 from bionemo_ir._torch.layers.random_augmentation import random_rotations
 from bionemo_ir._torch.utils import pad_dim
+from bionemo_ir.pipeline.utils._rng import _python_rng, _torch_generator
 from bionemo_ir.pipeline.utils.atom import encode_atom_name_chars
 from bionemo_ir.pipeline.utils.msa import a3m_columns, map_code_points
 
@@ -64,9 +64,18 @@ def _center_random_augmentation(
             atom_coords.shape[0],
             dtype=atom_coords.dtype,
             device=atom_coords.device,
+            generator=_torch_generator(),
         )
         atom_coords = torch.einsum("bmd,bds->bms", atom_coords, R)
-        random_trans = torch.randn_like(atom_coords[:, 0:1, :]) * s_trans
+        random_trans = (
+            torch.randn(
+                atom_coords[:, 0:1, :].shape,
+                dtype=atom_coords.dtype,
+                device=atom_coords.device,
+                generator=_torch_generator(),
+            )
+            * s_trans
+        )
         atom_coords = atom_coords + random_trans
     return atom_coords
 
@@ -348,7 +357,7 @@ def process_atom_features(
         atom_name_to_ref = {a.GetProp("name"): a for a in mol.GetAtoms()}
         conf_ids = [int(c.GetId()) for c in mol.GetConformers()]
         if (chain_idx, res_id) not in res_index_to_conf_id:
-            res_index_to_conf_id[(chain_idx, res_id)] = int(random.choice(conf_ids)) if conf_ids else 0
+            res_index_to_conf_id[(chain_idx, res_id)] = int(_python_rng().choice(conf_ids)) if conf_ids else 0
         conf_id = res_index_to_conf_id[(chain_idx, res_id)]
         conformer = mol.GetConformer(conf_id)
 

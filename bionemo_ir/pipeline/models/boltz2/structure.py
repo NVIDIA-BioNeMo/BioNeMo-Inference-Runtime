@@ -33,9 +33,12 @@ from positional embeddings, matching the OSS pipeline.
 from __future__ import annotations
 
 import logging
+import random
 from typing import Any
 
 import numpy as np
+
+from bionemo_ir.pipeline.utils._rng import _python_rng
 
 from .const import (
     Atom,
@@ -533,6 +536,9 @@ def _build_smiles_mol(smiles: str, name: str):
     # _get_conformer / _select_conformer picks it deterministically.
     options = AllChem.ETKDGv3()
     options.clearConfs = False
+    rng = _python_rng()
+    if isinstance(rng, random.Random):
+        options.randomSeed = rng.randint(0, 10**9)
     conf_id = AllChem.EmbedMolecule(mol, options)
     if conf_id == -1:
         options.useRandomCoords = True

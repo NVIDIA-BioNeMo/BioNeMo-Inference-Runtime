@@ -610,10 +610,8 @@ class FusedLNProjMoveaxisPad(TritonKernelCache):
         # The driver's scalar slots are i32 (compiled from small dummy values); the JIT launch
         # re-types scalars from their runtime values.
         if kernel.driver is not None and all(isinstance(value, torch.Tensor) or value < 2**31 for value in args):
-            drv = kernel.driver
-            for index, value in enumerate(args):
-                drv.params[index].value = value.data_ptr() if isinstance(value, torch.Tensor) else value
-            drv.launch(grid, 1, 1)
+            values = tuple(value.data_ptr() if isinstance(value, torch.Tensor) else value for value in args)
+            kernel.driver.launch_with(values, grid)
             return
         _fused_ln_proj_moveaxis_pad_streaming_kernel[(grid,)](
             *args,
@@ -700,21 +698,22 @@ class FusedLNProjMoveaxisPad(TritonKernelCache):
         if streaming is not None:
             self._launch_streaming(streaming, tile_j, num_warps, z3, w_ln, b_ln_ptr_src, w_proj, out, J, J_padded)
         elif kernel is not None and kernel.driver is not None:
-            drv = kernel.driver
-            drv.params[0].value = z3.data_ptr()
-            drv.params[1].value = w_ln.data_ptr()
-            drv.params[2].value = b_ln_ptr_src.data_ptr()
-            drv.params[3].value = w_proj.data_ptr()
-            drv.params[4].value = out.data_ptr()
-            drv.params[5].value = J
-            drv.params[6].value = J_padded
-            drv.params[7].value = z3.stride(0)
-            drv.params[8].value = z3.stride(1)
-            drv.params[9].value = z3.stride(2)
-            drv.params[10].value = out.stride(0)
-            drv.params[11].value = out.stride(1)
-            drv.params[12].value = out.stride(2)
-            drv.launch(grid_j, I, num_head_blks * B)
+            values = (
+                z3.data_ptr(),
+                w_ln.data_ptr(),
+                b_ln_ptr_src.data_ptr(),
+                w_proj.data_ptr(),
+                out.data_ptr(),
+                J,
+                J_padded,
+                z3.stride(0),
+                z3.stride(1),
+                z3.stride(2),
+                out.stride(0),
+                out.stride(1),
+                out.stride(2),
+            )
+            kernel.driver.launch_with(values, grid_j, I, num_head_blks * B)
         else:
             _fused_ln_proj_moveaxis_pad_kernel[(grid_j, I, num_head_blks * B)](
                 z3,

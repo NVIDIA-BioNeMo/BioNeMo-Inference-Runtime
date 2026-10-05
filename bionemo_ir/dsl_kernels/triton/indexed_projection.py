@@ -152,10 +152,7 @@ def indexed_projection(features: torch.Tensor, weights: torch.Tensor, rows: Inde
         kernel = _cached_projection(features.device.index, channels, bins)
         driver = kernel.driver
         if driver is not None:
-            values = (*(tensor.data_ptr() for tensor in tensors), n_rows)
-            for param, value in zip(driver.params, values, strict=False):
-                param.value = value
-            driver.launch(*grid)
+            driver.launch_with((*(tensor.data_ptr() for tensor in tensors), n_rows), *grid)
         else:
             kernel.launch(grid, *tensors, n_rows, *constants)
     return output

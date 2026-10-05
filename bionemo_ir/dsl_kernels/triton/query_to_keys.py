@@ -174,11 +174,7 @@ def query_to_keys_triton(query: torch.Tensor, W: int | None = None, H: int | Non
         kernel = compiled.kernels[flat.dtype]
         driver = kernel.driver
         if driver is not None:
-            driver.params[0].value = flat.data_ptr()
-            driver.params[1].value = out_flat.data_ptr()
-            for index, value in enumerate(scalars, start=2):
-                driver.params[index].value = value
-            driver.launch(*grid)
+            driver.launch_with((flat.data_ptr(), out_flat.data_ptr(), *scalars), *grid)
         else:
             kernel.launch(grid, flat, out_flat, *scalars, *compiled.constexprs)
     return out

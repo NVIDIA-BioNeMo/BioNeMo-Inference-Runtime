@@ -81,14 +81,16 @@ def churn_update(
             grid = triton.cdiv(x.numel(), 256)
             driver = kernel.driver
             if driver is not None:
-                driver.params[0].value = x.data_ptr()
-                driver.params[1].value = noise.data_ptr()
-                driver.params[2].value = sigma_last.data_ptr()
-                driver.params[3].value = sigma_hat.data_ptr()
-                driver.params[4].value = output.data_ptr()
-                driver.params[5].value = x.numel()
-                driver.params[6].value = scale
-                driver.launch(grid)
+                values = (
+                    x.data_ptr(),
+                    noise.data_ptr(),
+                    sigma_last.data_ptr(),
+                    sigma_hat.data_ptr(),
+                    output.data_ptr(),
+                    x.numel(),
+                    scale,
+                )
+                driver.launch_with(values, grid)
             else:
                 kernel.launch((grid,), x, noise, sigma_last, sigma_hat, output, x.numel(), scale, 256)
     return output

@@ -75,7 +75,9 @@ def test_churn_stream_capture(monkeypatch: pytest.MonkeyPatch, fallback: bool) -
         args = (state, levels[1], levels[2], noise, 1.003)
         with (
             patch.object(type(kernel), "launch", autospec=True, side_effect=type(kernel).launch) as launch,
-            patch.object(DriverLauncher, "launch", autospec=True, side_effect=DriverLauncher.launch) as driver_launch,
+            patch.object(
+                DriverLauncher, "launch_with", autospec=True, side_effect=DriverLauncher.launch_with
+            ) as driver_launch,
         ):
             actual = edm_churn(*args)
             if fallback:

@@ -80,10 +80,7 @@ def quaternion_matrix(quaternions: torch.Tensor) -> torch.Tensor:
             grid = triton.cdiv(rows, 128)
             driver = kernel.driver
             if driver is not None:
-                driver.params[0].value = quaternions.data_ptr()
-                driver.params[1].value = output.data_ptr()
-                driver.params[2].value = rows
-                driver.launch(grid)
+                driver.launch_with((quaternions.data_ptr(), output.data_ptr(), rows), grid)
             else:
                 kernel.launch((grid,), quaternions, output, rows, 128)
     return output

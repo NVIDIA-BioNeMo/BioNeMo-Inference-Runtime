@@ -15,7 +15,12 @@
 
 import json
 import subprocess
+import sys
+import threading
 import tomllib
+from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
+from functools import partial
 from pathlib import Path
 
 import pytest
@@ -27,6 +32,7 @@ from packaging.specifiers import SpecifierSet
 from packaging.version import Version
 
 from bionemo_ir._torch.custom_ops.fused_ln_proj_moveaxis_pad import LNProjMoveaxisPad
+from bionemo_ir._torch.layers.random_augmentation import _quaternion_components_to_matrix
 from bionemo_ir.dsl_kernels.cache_base import make_driver_launcher
 from bionemo_ir.dsl_kernels.triton.atom_gather_kernel import (
     _AtomReduction,
@@ -34,7 +40,7 @@ from bionemo_ir.dsl_kernels.triton.atom_gather_kernel import (
     _reduce_atom_slots,
     reduce_atom_slots,
 )
-from bionemo_ir.dsl_kernels.triton.edm import _churn
+from bionemo_ir.dsl_kernels.triton.edm import _churn, _churn_kernel, churn_update
 from bionemo_ir.dsl_kernels.triton.fused_ln_proj_moveaxis_pad import (
     _STREAMING_DEFAULT_TUNING,
     _STREAMING_TUNING,
@@ -47,9 +53,11 @@ from bionemo_ir.dsl_kernels.triton.fused_ln_proj_moveaxis_pad import (
 )
 from bionemo_ir.dsl_kernels.triton.fused_swiglu import FusedSwiGLU, _fused_swiglu_kernel
 from bionemo_ir.dsl_kernels.triton.moveaxis_pad import MoveaxisPad, _moveaxis_pad_kernel
+from bionemo_ir.dsl_kernels.triton.quaternion_rotation import _quaternion_rotation_kernel, quaternion_matrix
 from bionemo_ir.dsl_kernels.triton_cache import (
     _DRIVER_TRITON_OK,
     _SUPPORTED_TRITON_VERSIONS,
+    CachedKernel,
     TritonKernelCache,
     _compile_in_subprocess,
     _looks_like_compiled_kernel,
@@ -449,9 +457,7 @@ def test_cached_cubin_is_correct_for_shapes_it_was_not_compiled_with(num_tokens:
         *out.stride()[:3],
     ]
     # Triton appends scratch pointers after the declared arguments; they stay NULL.
-    for param, value in zip(launcher.params, values, strict=False):
-        param.value = value
-    launcher.launch(triton.cdiv(j_padded, tile_j), num_tokens, triton.cdiv(heads, heads_per_blk))
+    launcher.launch_with(values, triton.cdiv(j_padded, tile_j), num_tokens, triton.cdiv(heads, heads_per_blk))
     torch.cuda.synchronize()
 
     expected = _ln_proj_moveaxis_pad_reference(z, ln_weight, ln_bias, proj_weight, j_padded)
@@ -612,3 +618,118 @@ def test_atom_empty_features(shape: tuple[int, ...]) -> None:
     actual = reduce_atom_slots(features, indices, valid, valid.sum(-1), 2, 1e-9)
     assert actual.shape == (*shape[:2], 2, shape[-1])
     assert actual.numel() == 0
+
+
+def _run_in_threads(*workers: Callable[[], None]) -> None:
+    """Run each worker on a fresh thread and re-raise its exception."""
+    with ThreadPoolExecutor(len(workers)) as pool:
+        for future in [pool.submit(worker) for worker in workers]:
+            future.result()
+
+
+def _quaternion_reference(quaternions: torch.Tensor) -> torch.Tensor:
+    r, i, j, k = torch.unbind(quaternions, -1)
+    return _quaternion_components_to_matrix(r, i, j, k, 2.0 / (quaternions * quaternions).sum(-1))
+
+
+# Each case returns the shared kernel, a launch closure and its expected output.
+# Shapes match across seeds so a racing launch stays in bounds.
+_ThreadCase = tuple[CachedKernel, Callable[[], torch.Tensor], torch.Tensor]
+
+
+def _churn_thread_case(seed: int) -> _ThreadCase:
+    generator = torch.Generator(device="cuda").manual_seed(seed)
+    x, noise = (torch.randn(4096, device="cuda", generator=generator) for _ in range(2))
+    levels = torch.tensor([1.0 + seed, 2.0 + 2 * seed], device="cuda")
+    scale = 1.0 + 0.1 * seed
+    expected = x + (scale * torch.sqrt(levels[1] * levels[1] - levels[0] * levels[0])) * noise
+    kernel = _churn_kernel(torch.cuda.current_device()).kernel
+    return kernel, lambda: churn_update(x, noise, levels[0], levels[1], scale), expected
+
+
+def _quaternion_thread_case(seed: int) -> _ThreadCase:
+    generator = torch.Generator(device="cuda").manual_seed(seed)
+    quaternions = torch.randn(1000, 4, device="cuda", generator=generator)
+    kernel = _quaternion_rotation_kernel(torch.cuda.current_device()).kernel
+    return kernel, lambda: quaternion_matrix(quaternions), _quaternion_reference(quaternions)
+
+
+def _moveaxis_pad_thread_case(seed: int) -> _ThreadCase:
+    generator = torch.Generator(device="cuda").manual_seed(seed)
+    x = torch.randn(2, 8, 30, 4, device="cuda", dtype=torch.bfloat16, generator=generator)
+    expected = F.pad(x.movedim(-1, -3), (0, 2))
+    op = MoveaxisPad(H=4, dtype=torch.bfloat16)
+    return op._kernels[torch.bfloat16], lambda: op(x, multiple=8), expected
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
+@requires_driver_path
+@pytest.mark.parametrize(
+    "make_case",
+    [_churn_thread_case, _quaternion_thread_case, _moveaxis_pad_thread_case],
+    ids=["churn", "quaternion", "moveaxis_pad"],
+)
+def test_shared_launcher_keeps_thread_arguments(make_case: Callable[[int], _ThreadCase]) -> None:
+    """Threads sharing one ``DriverLauncher`` must launch with their own arguments."""
+    threads, iterations = 4, 200
+    cases = [make_case(seed) for seed in range(threads)]
+    if any(kernel.driver is None for kernel, _, _ in cases):
+        pytest.skip("CUDA driver launcher unavailable")
+    assert len({id(kernel.driver) for kernel, _, _ in cases}) == 1, "cases must share one launcher"
+    main = torch.cuda.current_stream()
+    torch.cuda.synchronize()
+    results: list[list[torch.Tensor]] = [[] for _ in range(threads)]
+    barrier = threading.Barrier(threads, timeout=30)
+
+    def worker(index: int) -> None:
+        _, run, _ = cases[index]
+        stream = torch.cuda.Stream()
+        stream.wait_stream(main)
+        with torch.cuda.stream(stream):
+            barrier.wait()
+            for _ in range(iterations):
+                results[index].append(run())
+        stream.synchronize()
+
+    interval = sys.getswitchinterval()
+    # Frequent GIL hand-offs land inside the write-then-launch window.
+    sys.setswitchinterval(1e-6)
+    try:
+        _run_in_threads(*(partial(worker, index) for index in range(threads)))
+    finally:
+        sys.setswitchinterval(interval)
+    for (_, _, expected), outputs in zip(cases, results, strict=True):
+        assert len(outputs) == iterations
+        for actual in outputs:
+            torch.testing.assert_close(actual, expected, atol=0, rtol=0)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
+@requires_driver_path
+def test_driver_launch_binds_context_on_fresh_thread() -> None:
+    """A thread whose only CUDA work is reading pointers can still launch."""
+    kernel = _quaternion_rotation_kernel(torch.cuda.current_device()).kernel
+    if kernel.driver is None:
+        pytest.skip("CUDA driver launcher unavailable")
+    quaternions = torch.randn(129, 4, device="cuda")
+    output = torch.empty(129, 3, 3, device="cuda")
+    expected = _quaternion_reference(quaternions)
+    torch.cuda.synchronize()
+
+    def worker() -> None:
+        kernel.driver.launch_with((quaternions.data_ptr(), output.data_ptr(), 129), triton.cdiv(129, 128))
+
+    _run_in_threads(worker)
+    torch.cuda.synchronize()
+    torch.testing.assert_close(output, expected, atol=0, rtol=0)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
+@requires_driver_path
+def test_driver_launch_rejects_extra_values() -> None:
+    """Values beyond the kernel's parameters are an error, not silently dropped."""
+    kernel = _quaternion_rotation_kernel(torch.cuda.current_device()).kernel
+    if kernel.driver is None:
+        pytest.skip("CUDA driver launcher unavailable")
+    with pytest.raises(ValueError, match="params"):
+        kernel.driver.launch_with((0,) * (len(kernel.driver.params) + 1), 1)

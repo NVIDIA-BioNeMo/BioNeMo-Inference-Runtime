@@ -15,6 +15,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from collections.abc import Callable
+from functools import partial
+
 import torch
 import torch.nn as nn
 
@@ -29,6 +32,7 @@ from bionemo_ir._torch.modules.openfold3.utils.atomize_utils import (
     broadcast_token_feat_to_atoms,
 )
 from bionemo_ir.configs import BaseConfig
+from bionemo_ir.dsl_kernels.triton.sparse_pair_projection import project_pair_windows
 
 TensorDict = dict[str, torch.Tensor]
 
@@ -79,6 +83,7 @@ def convert_pair_atom_to_blocks(
     n_query: int,
     n_key: int,
     attn_metadata: AttentionMetadata,
+    project: Callable[[torch.Tensor, torch.Tensor, torch.Tensor], torch.Tensor] | None = None,
 ) -> torch.Tensor:
     """Graph-capturable equivalent of the OSS
     ``convert_trunk_pair_rep_to_blocks``.
@@ -171,6 +176,9 @@ def convert_pair_atom_to_blocks(
             flat index ``K*n_query`` so that the K-side window zero-pads
             outside ``[0, N_atom)``, matching the OSS reference.
 
+        project: Optional sparse projection of flattened pair addresses and
+            their mask, zero for addresses outside the pair.
+
     Returns:
         plm: [B, K, n_query, n_key, C]      (no sample dim)
           or [B, S, K, n_query, n_key, C]   (with sample dim)
@@ -190,6 +198,13 @@ def convert_pair_atom_to_blocks(
 
     BS, N_atom = atom_mask.shape
     device = zij_trunk.device
+    n_tokens = zij_trunk.shape[-2]
+
+    if project is not None:
+        # Wrap negative tokens as indexing does. Out-of-range tokens become
+        # negative pair addresses, which ``project`` maps to zero.
+        valid = (atom_to_token >= -n_tokens) & (atom_to_token < n_tokens)
+        atom_to_token = torch.where(valid, atom_to_token.remainder(n_tokens), -BS * n_tokens * n_tokens)
 
     # ── Q-side: pad right and reshape to blocks (matches OSS reference) ───────
     q_token_blocked, _ = pad_to_multiple_and_divide(atom_to_token.float(), multiple=n_query, dim=1)  # [BS, K, n_query]
@@ -217,17 +232,16 @@ def convert_pair_atom_to_blocks(
 
     q_token_idx = q_token_blocked.long()  # [BS, K, n_query]
 
+    atom_pair_mask = atom_mask_blocked.unsqueeze(-1) * atom_mask_k.unsqueeze(-2)
+
     # ── 2D gather from zij_trunk [BS, N_tok, N_tok, C] ────────────────────────
     batch_idx = torch.arange(BS, device=device).view(BS, 1, 1, 1)
-    plm = zij_trunk[
-        batch_idx,
-        q_token_idx.unsqueeze(-1),  # [BS, K, n_query, 1]
-        k_token_idx.unsqueeze(-2),  # [BS, K, 1, n_key]
-    ]  # [BS, K, n_query, n_key, C]
-
-    # ── apply atom pair mask (OOB padding -> 0) ───────────────────────────────
-    atom_pair_mask = atom_mask_blocked.unsqueeze(-1) * atom_mask_k.unsqueeze(-2)
-    plm = plm * atom_pair_mask.unsqueeze(-1).to(dtype=plm.dtype)
+    if project is not None:
+        indices = (batch_idx * n_tokens + q_token_idx.unsqueeze(-1)) * n_tokens + k_token_idx.unsqueeze(-2)
+        plm = project(zij_trunk, indices, atom_pair_mask)
+    else:
+        plm = zij_trunk[batch_idx, q_token_idx.unsqueeze(-1), k_token_idx.unsqueeze(-2)]
+        plm = plm * atom_pair_mask.unsqueeze(-1).to(dtype=plm.dtype)
 
     if has_sample_dim:
         C = plm.shape[-1]
@@ -401,6 +415,19 @@ class NoisyPositionEmbedder(nn.Module):
         self.linear_z = Linear(c_z, c_atom_pair, bias=False, dtype=dtype, skip_create_weights=skip_create_weights)
         self.linear_r = Linear(3, c_atom, bias=False, dtype=dtype, skip_create_weights=skip_create_weights)
 
+    def _can_project_sparse(self, pair: torch.Tensor) -> bool:
+        weight = self.linear_z.weight
+        norm_weight = self.layer_norm_z.weight
+        return (
+            not torch.is_autocast_enabled("cuda")
+            and pair.is_cuda
+            and all(t.dtype == torch.float32 and t.is_contiguous() for t in (pair, weight, norm_weight))
+            and pair.shape[-1] == 128
+            and pair.shape[-3] == pair.shape[-2]
+            and weight.shape == (16, 128)
+            and torch.cuda.get_device_capability(pair.device)[0] in (8, 9, 10)
+        )
+
     def forward(
         self,
         batch: TensorDict,
@@ -461,9 +488,23 @@ class NoisyPositionEmbedder(nn.Module):
 
         # Broadcast trunk pair representation into atom pair conditioning
 
-        zij_trunk = self.linear_z(self.layer_norm_z(zij_trunk))
+        project = None
+        if self._can_project_sparse(zij_trunk):
+            project = partial(
+                project_pair_windows,
+                norm_weight=self.layer_norm_z.weight,
+                weight=self.linear_z.weight,
+                eps=self.layer_norm_z.eps,
+            )
+        else:
+            zij_trunk = self.linear_z(self.layer_norm_z(zij_trunk))
         zij_trunk = convert_pair_atom_to_blocks(
-            batch=batch, zij_trunk=zij_trunk, n_query=n_query, n_key=n_key, attn_metadata=attn_metadata
+            batch=batch,
+            zij_trunk=zij_trunk,
+            n_query=n_query,
+            n_key=n_key,
+            attn_metadata=attn_metadata,
+            project=project,
         )
         plm = plm + zij_trunk
 

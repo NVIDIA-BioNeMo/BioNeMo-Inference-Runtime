@@ -27,7 +27,6 @@ parameterize proper rotations, so reflections never need a determinant fix.
 See https://doi.org/10.1364/JOSAA.4.000629 (Horn 1987).
 """
 
-import threading
 from functools import cache
 
 import torch
@@ -46,9 +45,6 @@ _WEIGHT_EPS = tl.constexpr(WEIGHT_EPS)
 _COV_EPS = tl.constexpr(COV_EPS)
 _SWEEPS = 8
 _SOLVE_BLOCK = 128
-# The per-device DriverLauncher shares one params list across threads;
-# !530's ``DriverLauncher.launch_with`` supersedes this lock.
-_LAUNCH_LOCK = threading.Lock()
 
 
 @triton.jit
@@ -277,15 +273,16 @@ def rigid_align_transform(
             kernel = _rigid_align_kernel(true_coords.device.index).kernel
             driver = kernel.driver
             if driver is not None:
-                with _LAUNCH_LOCK:
-                    driver.params[0].value = true_coords.data_ptr()
-                    driver.params[1].value = pred_coords.data_ptr()
-                    driver.params[2].value = weights.data_ptr()
-                    driver.params[3].value = mask.data_ptr()
-                    driver.params[4].value = rotation.data_ptr()
-                    driver.params[5].value = shift.data_ptr()
-                    driver.params[6].value = n_atoms
-                    driver.launch(clouds)
+                values = (
+                    true_coords.data_ptr(),
+                    pred_coords.data_ptr(),
+                    weights.data_ptr(),
+                    mask.data_ptr(),
+                    rotation.data_ptr(),
+                    shift.data_ptr(),
+                    n_atoms,
+                )
+                driver.launch_with(values, clouds)
             else:
                 kernel.launch(
                     (clouds,),

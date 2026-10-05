@@ -176,13 +176,9 @@ class FusedSwiGLU(TritonKernelCache):
             out_flat = torch.empty((num_rows, d), dtype=z.dtype, device=z.device)
 
         kernel = self._kernels[z.dtype]
-        drv = kernel.driver
-        if drv is not None:
-            drv.params[0].value = out_flat.data_ptr()
-            drv.params[1].value = out_flat.stride(0)
-            drv.params[2].value = z_flat.data_ptr()
-            drv.params[3].value = z_flat.stride(0)
-            drv.launch(num_rows, self._tiles)
+        if kernel.driver is not None:
+            values = (out_flat.data_ptr(), out_flat.stride(0), z_flat.data_ptr(), z_flat.stride(0))
+            kernel.driver.launch_with(values, num_rows, self._tiles)
         else:
             kernel.launch(
                 (num_rows, self._tiles),

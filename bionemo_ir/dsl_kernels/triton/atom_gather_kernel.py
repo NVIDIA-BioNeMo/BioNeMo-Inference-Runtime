@@ -238,11 +238,7 @@ def reduce_atom_slots(
         kernel = _cached_reduction(features.device.index, dtypes, max_slots, vector, relu)
         driver = kernel.driver
         if driver is not None:
-            values = (*(tensor.data_ptr() for tensor in tensors), *scalars)
-            # Triton's trailing scratch pointers stay null.
-            for param, value in zip(driver.params, values, strict=False):
-                param.value = value
-            driver.launch(*grid)
+            driver.launch_with((*(tensor.data_ptr() for tensor in tensors), *scalars), *grid)
         else:
             kernel.launch(grid, *tensors, *scalars, max_slots, vector, _BLOCK_CHANNELS, relu)
     return output

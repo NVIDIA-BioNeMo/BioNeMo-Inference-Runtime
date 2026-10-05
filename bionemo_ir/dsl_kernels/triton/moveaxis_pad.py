@@ -205,20 +205,21 @@ class MoveaxisPad(TritonKernelCache):
         grid_z = triton.cdiv(J_padded, self._block_j)
 
         kernel = self._kernels[x.dtype]
-        drv = kernel.driver
-        if drv is not None:
-            drv.params[0].value = x3.data_ptr()
-            drv.params[1].value = out.data_ptr()
-            drv.params[2].value = J
-            drv.params[3].value = J_padded
-            drv.params[4].value = H
-            drv.params[5].value = x3.stride(0)
-            drv.params[6].value = x3.stride(1)
-            drv.params[7].value = x3.stride(2)
-            drv.params[8].value = out.stride(0)
-            drv.params[9].value = out.stride(1)
-            drv.params[10].value = out.stride(2)
-            drv.launch(B, I, grid_z)
+        if kernel.driver is not None:
+            values = (
+                x3.data_ptr(),
+                out.data_ptr(),
+                J,
+                J_padded,
+                H,
+                x3.stride(0),
+                x3.stride(1),
+                x3.stride(2),
+                out.stride(0),
+                out.stride(1),
+                out.stride(2),
+            )
+            kernel.driver.launch_with(values, B, I, grid_z)
         else:
             kernel.launch(
                 (B, I, grid_z),

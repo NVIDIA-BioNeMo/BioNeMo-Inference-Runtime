@@ -35,8 +35,7 @@ Usage::
 
     kernel = MyKernel().kernels[torch.bfloat16]
     if kernel.driver is not None:
-        kernel.driver.params[0].value = tensor.data_ptr()
-        kernel.driver.launch(1)
+        kernel.driver.launch_with((tensor.data_ptr(),), 1)
     else:
         kernel.launch((1,), tensor, 128)
 """

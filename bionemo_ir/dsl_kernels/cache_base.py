@@ -42,7 +42,9 @@ import logging
 import os
 import re
 import tempfile
+import threading
 import time
+from collections.abc import Sequence
 from getpass import getuser
 from pathlib import Path
 from typing import Any
@@ -276,16 +278,15 @@ class DriverLauncher:
     """Low-overhead kernel launcher using ``cuda.bindings`` ``cuLaunchKernel``.
 
     Pre-allocates ``ctypes`` parameter storage at construction time. On each
-    :meth:`launch`, only the parameter *values* are updated before calling
+    :meth:`launch_with`, only the parameter *values* are updated before calling
     ``cuLaunchKernel``, which dispatches with less overhead than Triton's C-level
     ``.run()`` path.
 
-    Parameters are exposed via the :attr:`params` list for direct value
-    assignment on the hot path::
+    The hot path is :meth:`launch_with`, which writes the leading
+    :attr:`params` and enqueues under one lock, so callers sharing the
+    launcher (one per kernel and device) cannot exchange arguments::
 
-        launcher.params[0].value = tensor.data_ptr()   # pointer
-        launcher.params[1].value = tensor.stride(0)     # stride (u32)
-        launcher.launch(grid_x, grid_y)
+        launcher.launch_with((tensor.data_ptr(), tensor.stride(0)), grid_x, grid_y)
 
     Requires ``pip install cuda-python`` (the ``cuda.bindings`` package).
     """
@@ -301,6 +302,8 @@ class DriverLauncher:
         "_kp",
         "_n_params",
         "_name",
+        "_lock",
+        "_context",
     )
 
     def __init__(
@@ -337,7 +340,7 @@ class DriverLauncher:
 
             cu_stream = _drv.CUstream(torch.cuda.current_stream().cuda_stream)
         self._stream = cu_stream
-        # Raw handle backing self._stream. launch() refreshes self._stream whenever
+        # Raw handle backing self._stream. _enqueue refreshes self._stream whenever
         # the current stream's handle differs, so kernels follow the active stream
         # instead of one cached here. None forces the first launch to read it.
         self._stream_handle = None
@@ -351,14 +354,56 @@ class DriverLauncher:
 
         self._n_params = len(self.params)
         self._kp = (ctypes.c_void_p * self._n_params)(*(ctypes.addressof(p) for p in self.params))
+        self._lock = threading.Lock()
+        # cuModuleLoadData bound cu_function to this context.
+        err, context = _drv.cuCtxGetCurrent()
+        self._context = context if err == _drv.CUresult.CUDA_SUCCESS and int(context) else None
 
-    def launch(self, grid_x: int, grid_y: int = 1, grid_z: int = 1) -> None:
-        """Launch the kernel.  Caller must set ``params[i].value`` first."""
+    def launch_with(self, values: Sequence[int | float], grid_x: int, grid_y: int = 1, grid_z: int = 1) -> None:
+        """Set leading ``params`` from ``values`` and launch atomically.
+
+        The lock spans every write through ``cuLaunchKernel``, which copies the
+        values at enqueue, so concurrent callers cannot launch with each
+        other's arguments or streams.
+
+        Args:
+            values: Values for ``params`` in declaration order. Trailing
+                parameters, such as Triton scratch pointers, keep their values.
+            grid_x, grid_y, grid_z: Launch grid.
+
+        Raises:
+            ValueError: ``values`` is longer than ``params``.
+        """
+        if len(values) > self._n_params:
+            raise ValueError(f"{self._name} takes {self._n_params} params, got {len(values)} values")
+        with self._lock:
+            for param, value in zip(self.params, values, strict=False):
+                param.value = value
+            self._enqueue(grid_x, grid_y, grid_z)
+
+    def _bind_context(self) -> None:
+        """Make the kernel's context current on a thread that has none.
+
+        Runtime calls bind a thread's primary context implicitly, but a thread
+        whose only prior CUDA work was served from the caching allocator has no
+        current context, so ``cuLaunchKernel`` would fail with
+        ``CUDA_ERROR_INVALID_CONTEXT``. Triton's launcher applies the same check.
+        """
+        if self._context is None:
+            return
+        err, current = _drv.cuCtxGetCurrent()
+        if err == _drv.CUresult.CUDA_SUCCESS and not int(current):
+            (err,) = _drv.cuCtxSetCurrent(self._context)
+            if err != _drv.CUresult.CUDA_SUCCESS:
+                raise RuntimeError(f"cuCtxSetCurrent failed: {err}")
+
+    def _enqueue(self, grid_x: int, grid_y: int, grid_z: int) -> None:
         # Rebuild the CUstream wrapper only when the active stream changes: the
         # single-stream case stays cheap, and CUDA-graph warmup/capture streams are
         # still honored.
         import torch
 
+        self._bind_context()
         cur = torch.cuda.current_stream().cuda_stream
         if cur != self._stream_handle:
             self._stream = _drv.CUstream(cur)

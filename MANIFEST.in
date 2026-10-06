@@ -17,6 +17,16 @@ include cpp/cmake/deps/*.cmake
 include cpp/kernels/CMakeLists.txt
 include cpp/kernels/*.cpp
 include cpp/kernels/*.h
+# The hand-written kernel directories the extension also compiles: the heuristic
+# policy and the Claude Kit triangle attention. CMake names their sources
+# explicitly, so a wheel built from the sdist fails at configure without them.
+include cpp/kernels/heuristic/*.cpp
+include cpp/kernels/heuristic/*.h
+include cpp/kernels/claude_kit_*/*.cpp
+include cpp/kernels/claude_kit_*/*.cu
+include cpp/kernels/claude_kit_*/*.cuh
+include cpp/kernels/claude_kit_*/*.h
+include cpp/kernels/claude_kit_*/NOTICE.md
 include cpp/kernels/cutedsl_*/*.cpp
 include cpp/kernels/cutedsl_*/*.h
 include cpp/kernels/cutedsl_*/cubins/index.json

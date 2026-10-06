@@ -160,6 +160,16 @@ wheel. Their package-provided license and notice files remain authoritative.
   - License: Apache-2.0; see [`LICENSE`][bioir-license]
   - Source and license: [Ray][ray]
 
+- **urllib3**
+  - Copyright: Andrey Petrov and contributors
+  - License: MIT; see [`LICENSES/MIT.txt`][mit]
+  - Source and license: [urllib3][urllib3]
+
+- **virtualenv**
+  - Copyright: The virtualenv developers
+  - License: MIT; see [`LICENSES/MIT.txt`][mit]
+  - Source and license: [virtualenv][virtualenv]
+
 - **uvloop**
   - Copyright: MagicStack Inc. and uvloop contributors
   - License: MIT OR Apache-2.0; BioIR records the MIT option
@@ -357,5 +367,7 @@ resolved operating-system and base-image package closure.
 [tensorrt-llm]: https://github.com/NVIDIA/TensorRT-LLM
 [triton]: https://github.com/triton-lang/triton
 [uplifting-biomolecular-modeling]: https://github.com/anthropics/uplifting-biomolecular-modeling/tree/f4f62fa6592ae4938d49b1757bea0cfeff9f468e
+[urllib3]: https://github.com/urllib3/urllib3
 [uvloop]: https://github.com/MagicStack/uvloop
+[virtualenv]: https://github.com/pypa/virtualenv
 [vllm]: https://github.com/vllm-project/vllm

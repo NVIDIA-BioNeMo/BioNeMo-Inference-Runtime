@@ -41,6 +41,9 @@ dependencies = [
   "triton>=3.6.0,<3.7.1",
   "biopython>=1.87",
   "ray[serve,data]==2.56.1",  # Installs pandas and pyarrow.
+  # Security floors for transitive dependencies of Ray and requests.
+  "urllib3>=2.8.0",
+  "virtualenv>=21.14.5",
   # uvloop 0.22 breaks Ray Serve: https://github.com/ray-project/ray/issues/57992
   "uvloop==0.21.0",
   "modelcif==1.6",  # Needed for CIFWriter.

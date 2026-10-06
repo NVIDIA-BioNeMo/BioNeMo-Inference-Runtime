@@ -18,3 +18,12 @@ jira = "BNMTRT-425"
 exception_status = "approved"
 exception_expiration = 2027-08-05
 comment = "Fixed in 1.87 (biopython#5148)"
+
+# Upstream Protenix checkout used only to compare against OSS. The wheel does
+# not install it. Its requirements pin torch==2.7.1, which is not BioIR's
+# dependency (requirements declare torch>=2.11).
+[oss.excluded]
+
+[[oss.excluded.directories]]
+paths = ["3rdparty/protenix/"]
+comment = "OSS comparison submodule, not a shipped dependency"

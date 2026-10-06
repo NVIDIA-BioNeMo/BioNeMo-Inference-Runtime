@@ -13,7 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from pydantic import model_validator
+from pydantic import Field, model_validator
 
 from bionemo_ir.configs import BaseConfig, EvoformerStackConfig, FeatureDictPadSpec, TrunkPadSpec
 from bionemo_ir.hubs import FoldingSupportMatrix as SupMat
@@ -263,6 +263,9 @@ class TmConfig(BaseConfig):
 
 
 class ConfidenceModuleConfig(BaseConfig):
+    compact_output: bool = Field(
+        default=False, description="Reduce confidence without retaining unused inference heads."
+    )
     per_residue_lddt: PerResidueLddtConfig = PerResidueLddtConfig()
     distogram: ConfidenceDistogramConfig = ConfidenceDistogramConfig()
     masked_msa: MaskedMsaConfig = MaskedMsaConfig()

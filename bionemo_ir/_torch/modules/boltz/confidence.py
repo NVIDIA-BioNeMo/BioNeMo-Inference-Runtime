@@ -13,6 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from functools import partial
 from typing import Any
 
 import torch
@@ -29,6 +30,7 @@ from bionemo_ir._torch.layers.token_padding import (
     unpad_trunk_tokens,
 )
 from bionemo_ir._torch.utils import recursive_calling_load_weights
+from bionemo_ir._torch.utils.confidence import compact_inference, pair_expectations
 from bionemo_ir.configs import BaseConfig
 from bionemo_ir.pipeline.models.boltz2.const import (
     bond_types,
@@ -40,7 +42,9 @@ from bionemo_ir.pipeline.models.boltz2.const import (
 
 from .confidence_utils import (
     ChainTable,
+    chain_pair_logits,
     chain_table,
+    compact_pae,
     compute_aggregated_metric,
     compute_distogram,
     compute_ptms,
@@ -63,6 +67,9 @@ class Boltz2ConfidenceHeads(nn.Module):
         self.max_num_atoms_per_token: int = 23
         self.token_level_confidence = config.token_level_confidence
         self.use_separate_heads = config.use_separate_heads
+        self.compact_output = config.compact_output
+        self.num_pae_bins = config.num_pae_bins
+        self.num_pde_bins = config.num_pde_bins
         self.register_buffer(
             "arange_max_num_atoms", torch.arange(self.max_num_atoms_per_token).reshape(1, 1, -1), persistent=False
         )
@@ -140,6 +147,15 @@ class Boltz2ConfidenceHeads(nn.Module):
         self, z, x_pred, feats, multiplicity, is_same_chain=None, is_different_chain=None, chains=None
     ):
         """Compute the pae-derived outputs (``pae`` + ptm/iptm/...) in a helper."""
+        if compact_inference(self.compact_output, z):
+            project = partial(
+                chain_pair_logits,
+                head=self.to_pae_intra_logits if self.use_separate_heads else self.to_pae_logits,
+                inter_head=self.to_pae_inter_logits if self.use_separate_heads else None,
+                same=is_same_chain,
+                different=is_different_chain,
+            )
+            return compact_pae(z, project, self.num_pae_bins, x_pred, feats, chains)
         if self.use_separate_heads:
             pae_intra_logits = self.to_pae_intra_logits(z)
             pae_intra_logits = pae_intra_logits * is_same_chain.float().unsqueeze(-1)
@@ -169,6 +185,17 @@ class Boltz2ConfidenceHeads(nn.Module):
 
     def _compute_pde(self, z, is_same_chain=None, is_different_chain=None):
         """Compute the aggregated ``pde`` metric in a helper."""
+        if compact_inference(self.compact_output, z):
+            project = partial(
+                chain_pair_logits,
+                head=self.to_pde_intra_logits if self.use_separate_heads else self.to_pde_logits,
+                inter_head=self.to_pde_inter_logits if self.use_separate_heads else None,
+                same=is_same_chain,
+                different=is_different_chain,
+            )
+            width = 32.0 / self.num_pde_bins
+            centers = torch.arange(0.5 * width, 32.0, width, device=z.device)
+            return pair_expectations(z, project, (centers,), symmetric=True)[0]
         z_sym = z + z.transpose(2, 3)
         if self.use_separate_heads:
             pde_intra_logits = self.to_pde_intra_logits(z_sym)
@@ -648,6 +675,12 @@ class Boltz1ConfidenceHeads(nn.Module):
         aggregation temporaries) free on return -- only the small ``[..., N, N]`` pde survives into
         the complex-metric section.
         """
+        if compact_inference(self.config.compact_output, z):
+            width = 32.0 / self.num_pde_bins
+            centers = torch.arange(0.5 * width, 32.0, width, device=z.device)
+            return pair_expectations(
+                z, lambda block, start, stop: self.to_pde_logits(block), (centers,), symmetric=True
+            )[0]
         pde_logits = self.to_pde_logits(z + z.transpose(-3, -2))
         return compute_aggregated_metric(pde_logits, end=32)
 
@@ -655,6 +688,10 @@ class Boltz1ConfidenceHeads(nn.Module):
         """Compute the pae + ptm outputs in a helper so the ``[N, N, num_pae_bins]`` ``pae_logits``
         and its softmax-aggregation temporaries free on return.
         """
+        if compact_inference(self.config.compact_output, z):
+            return compact_pae(
+                z, lambda block, start, stop: self.to_pae_logits(block), self.num_pae_bins, x_pred, feature_dict
+            )
         pae_logits = self.to_pae_logits(z)
         out = {"pae": compute_aggregated_metric(pae_logits, end=32)}
         ptm, iptm, ligand_iptm, protein_iptm, pair_chains_iptm = compute_ptms(pae_logits, x_pred, feature_dict)

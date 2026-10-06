@@ -222,8 +222,7 @@ class AuxiliaryHeadsConfig(BaseConfig):
         description=(
             "Reduce every sample's PAE logits to PAE, pTM and ipTM inside the confidence head during uncaptured "
             "inference, and skip the PDE, distogram and resolved heads. Requires memory_efficient_mode. "
-            "Reduces logits at head precision without the raw path's cast to coordinate dtype; "
-            "confidence values can differ when those dtypes differ."
+            "Preserves the raw path's coordinate-dtype quantization before FP32 reduction."
         ),
     )
     offload_pairformer_outputs: bool = Field(

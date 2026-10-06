@@ -967,6 +967,7 @@ class AuxiliaryHeadsAllAtom(nn.Module):
         x_pred: torch.Tensor,
         single_mask: torch.Tensor,
         pair_mask: torch.Tensor,
+        output_dtype: torch.dtype | None = None,
     ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
         """Reduce each completed Pairformer sample to FP32 PAE, pTM and ipTM on its device.
 
@@ -975,9 +976,8 @@ class AuxiliaryHeadsAllAtom(nn.Module):
         is released before the next sample's is built. Every sample's reduction
         is retained so the caller can select the winning sample once.
 
-        Logits retain the head's precision before FP32 reduction. Unlike raw
-        outputs, they are not cast to the coordinate dtype first, so compact
-        confidence values can differ when those dtypes differ.
+        The optional output dtype preserves raw-output quantization before
+        FP32 reduction without retaining a full pair-logit archive.
         """
         no_samples = x_pred.shape[-3]
         if no_samples < 1:
@@ -1019,7 +1019,7 @@ class AuxiliaryHeadsAllAtom(nn.Module):
                         frames_flat[batch_idx, sample_idx],
                         rows=rows,
                         pae_out=pae_flat[batch_idx, sample_idx, :n_tokens, :n_tokens],
-                        project=self._project_pae_rows,
+                        project=lambda block: self._project_pae_rows(block).to(dtype=output_dtype),
                     )
                     for destination, score in zip(scores_flat, reduced.scores, strict=True):
                         destination[batch_idx, sample_idx] = score
@@ -1177,6 +1177,7 @@ class AuxiliaryHeadsAllAtom(nn.Module):
                 x_pred=repr_x_pred,
                 single_mask=repr_x_mask,
                 pair_mask=pair_mask,
+                output_dtype=out_dtype,
             )
             del zij
         elif stream_pair_heads_on_device or stream_pair_heads_to_cpu:

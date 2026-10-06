@@ -13,6 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
@@ -20,6 +21,7 @@ import torch
 from torch import nn
 
 from bionemo_ir._torch.utils import CHUNK_REGISTRY, CONTACT_PROB, ChunkPolicy, chunk_apply
+from bionemo_ir._torch.utils.confidence import pair_expectations
 from bionemo_ir.pipeline.models.boltz2.const import chain_type_ids
 
 
@@ -191,7 +193,69 @@ def compute_ptms(
             Per chain pair, keyed asym_id -> asym_id. Each entry has shape [B, mult].
 
     """
-    B, multiplicity, _, _ = x_preds.shape
+    multiplicity = x_preds.shape[1]
+    _, tm_weights = pae_bin_weights(feats, multiplicity, logits.shape[-1], logits.device)
+    probabilities = nn.functional.softmax(logits, dim=-1)
+    expected_tm = (probabilities * tm_weights).sum(dim=-1)
+    return ptms_from_expected(expected_tm, x_preds, feats, chains)
+
+
+def pae_bin_weights(
+    feats: dict[str, torch.Tensor], multiplicity: int, n_bins: int, device: torch.device
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Return Boltz PAE centers and length-dependent TM bin weights."""
+    mask_pad = repeat_with_multiplicity(feats["token_pad_mask"], multiplicity)
+    n_res = mask_pad.sum(dim=-1, keepdim=True)
+    width = 32.0 / n_bins
+    centers = torch.arange(start=0.5 * width, end=32.0, step=width, device=device)
+    tm_weights = tm_function(centers[None, None, :], n_res).unsqueeze(-2).unsqueeze(-2)
+    return centers, tm_weights
+
+
+def compact_pae(
+    pair: torch.Tensor,
+    project: Callable[[torch.Tensor, int, int], torch.Tensor],
+    n_bins: int,
+    x_preds: torch.Tensor,
+    feats: dict[str, torch.Tensor],
+    chains: ChainTable | None = None,
+) -> dict[str, torch.Tensor | dict[int, dict[int, torch.Tensor]]]:
+    """Stream PAE projection and retain every Boltz confidence metric."""
+    weights = pae_bin_weights(feats, x_preds.shape[1], n_bins, pair.device)
+    pae, expected_tm = pair_expectations(pair, project, weights)
+    scores = ptms_from_expected(expected_tm, x_preds, feats, chains)
+    names = ("ptm", "iptm", "ligand_iptm", "protein_iptm", "pair_chains_iptm")
+    return {"pae": pae, **dict(zip(names, scores, strict=True))}
+
+
+def chain_pair_logits(
+    block: torch.Tensor,
+    start: int,
+    stop: int,
+    *,
+    head: nn.Module,
+    inter_head: nn.Module | None = None,
+    same: torch.Tensor | None = None,
+    different: torch.Tensor | None = None,
+) -> torch.Tensor:
+    """Project one Boltz row block with its original chain-specific heads."""
+    if inter_head is None:
+        return head(block)
+    if same is None or different is None:
+        raise ValueError("Separate confidence heads require chain masks")
+    intra_logits = head(block) * same[..., start:stop, :].float().unsqueeze(-1)
+    inter_logits = inter_head(block) * different[..., start:stop, :].float().unsqueeze(-1)
+    return inter_logits + intra_logits
+
+
+def ptms_from_expected(
+    tm_expected_value: torch.Tensor,
+    x_preds: torch.Tensor,
+    feats: dict[str, torch.Tensor],
+    chains: ChainTable | None = None,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, dict[int, dict[int, torch.Tensor]]]:
+    """Apply Boltz frame, padding, molecule, and chain masks to expected TM terms."""
+    multiplicity = x_preds.shape[1]
     if chains is None:
         chains = chain_table(feats)
     # Compute mask for collinear and overlapping tokens
@@ -199,7 +263,6 @@ def compute_ptms(
     _, mask_collinear_pred = compute_frame_pred(x_preds, feats["frames_idx"], feats, chains=chains)
     maski = mask_collinear_pred.unsqueeze(-1)
     mask_pad = repeat_with_multiplicity(feats["token_pad_mask"], multiplicity)
-    N_res = mask_pad.sum(dim=-1, keepdim=True)
 
     mask_pad_l = mask_pad.unsqueeze(-2)
     mask_pad_r = mask_pad.unsqueeze(-1)
@@ -213,22 +276,6 @@ def compute_ptms(
     # [B, mult, N_tokens, N_tokens]
     pair_mask_iptm = pair_mask_ptm * (asym_id_l != asym_id_r)
 
-    # Extract pae values
-    num_bins = logits.shape[-1]
-    bin_width = 32.0 / num_bins
-    end = 32.0
-    # [1, 1, num_dist_bins]
-    pae_value = torch.arange(start=0.5 * bin_width, end=end, step=bin_width, device=logits.device)[None, None, :]
-
-    # compute pTM and ipTM
-    tm_value = tm_function(pae_value, N_res).unsqueeze(-2).unsqueeze(-2)
-    probs = nn.functional.softmax(logits, dim=-1)
-
-    # shape (B, mult, N, N)
-    tm_expected_value = torch.sum(
-        probs * tm_value,
-        dim=-1,
-    )
     ptm = torch.max(
         torch.sum(tm_expected_value * pair_mask_ptm, dim=-1) / (torch.sum(pair_mask_ptm, dim=-1) + 1e-5),
         dim=-1,

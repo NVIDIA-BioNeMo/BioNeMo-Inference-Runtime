@@ -14,6 +14,8 @@
 # limitations under the License.
 
 
+from pydantic import Field
+
 from bionemo_ir.configs import (
     BaseConfig,
     DiffusionTransformerConfig,
@@ -231,6 +233,7 @@ class StructureModuleConfig(BaseConfig):
 
 
 class ConfidenceHeadsConfig(BaseConfig):
+    compact_output: bool = Field(default=False, description="Stream pair confidence projections during inference.")
     token_s: int = _Default.token_s
     token_z: int = _Default.token_z
     num_plddt_bins: int = 50

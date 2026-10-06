@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING, Any, ClassVar
 
 import torch.nn as nn
 
+from bionemo_ir.configs import BaseConfig
 from bionemo_ir.hubs import FoldingSupportMatrix as SupMat
 from bionemo_ir.logger import logger
 
@@ -27,6 +28,20 @@ if TYPE_CHECKING:
 
 
 class ModelComponentsFactory(ABC):
+    confidence_config_path: ClassVar[tuple[str, ...] | None] = None
+
+    @classmethod
+    def compact_confidence_config(cls, config: BaseConfig) -> BaseConfig:
+        """Copy a model config and enable its reduced confidence contract."""
+        if cls.confidence_config_path is None:
+            return config
+        result = config.model_copy(deep=True)
+        heads = result
+        for name in cls.confidence_config_path:
+            heads = getattr(heads, name)
+        heads.compact_output = True
+        return result
+
     @classmethod
     @abstractmethod
     def get_model_class(cls) -> type[nn.Module]:
@@ -112,6 +127,8 @@ class ModelRegistry:
 
 
 class OpenFold2Factory(ModelComponentsFactory):
+    confidence_config_path = ("confidence_module",)
+
     @classmethod
     def get_model_class(cls) -> type[nn.Module]:
         from bionemo_ir.models.openfold2 import OpenFold2
@@ -156,7 +173,7 @@ class OpenFold2Factory(ModelComponentsFactory):
         ]
 
 
-class OpenFold2MultimerFactory(ModelComponentsFactory):
+class OpenFold2MultimerFactory(OpenFold2Factory):
     @classmethod
     def get_model_class(cls) -> type[nn.Module]:
         from bionemo_ir.models.openfold2 import OpenFold2
@@ -193,6 +210,8 @@ class OpenFold2MultimerFactory(ModelComponentsFactory):
 
 
 class Boltz1Factory(ModelComponentsFactory):
+    confidence_config_path = ("confidence_module", "heads")
+
     @classmethod
     def get_default_runtime_args(cls) -> dict[str, Any]:
         return {
@@ -231,6 +250,8 @@ class Boltz1Factory(ModelComponentsFactory):
 
 
 class Boltz2Factory(ModelComponentsFactory):
+    confidence_config_path = ("confidence_module", "confidence_heads")
+
     @classmethod
     def get_default_runtime_args(cls) -> dict[str, Any]:
         return {
@@ -269,6 +290,8 @@ class Boltz2Factory(ModelComponentsFactory):
 
 
 class Boltz2AffinityFactory(ModelComponentsFactory):
+    confidence_config_path = Boltz2Factory.confidence_config_path
+
     @classmethod
     def get_default_runtime_args(cls) -> dict[str, Any]:
         return {
@@ -301,6 +324,15 @@ class Boltz2AffinityFactory(ModelComponentsFactory):
 
 
 class OpenFold3Factory(ModelComponentsFactory):
+    confidence_config_path = ("auxiliary_heads_config",)
+
+    @classmethod
+    def compact_confidence_config(cls, config: BaseConfig) -> BaseConfig:
+        """Retain batched confidence when the caller disables per-sample execution."""
+        if not config.auxiliary_heads_config.memory_efficient_mode:
+            return config
+        return super().compact_confidence_config(config)
+
     @classmethod
     def get_default_runtime_args(cls) -> dict[str, Any]:
         # Boltz-style kwarg names so the generic ``FoldingEngine`` can forward
@@ -345,6 +377,8 @@ class OpenFold3Factory(ModelComponentsFactory):
 
 
 class ProtenixFactory(ModelComponentsFactory):
+    confidence_config_path = ()
+
     @classmethod
     def get_model_class(cls) -> type[nn.Module]:
         from bionemo_ir.models.protenix import Protenix

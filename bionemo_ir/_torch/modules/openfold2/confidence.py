@@ -18,11 +18,13 @@ import torch.nn as nn
 
 from bionemo_ir._torch.layers.linear import Linear
 from bionemo_ir._torch.modules.openfold2.confidence_utils import (
+    compact_tm_scores,
     compute_plddt,
     compute_predicted_aligned_error,
     compute_tm,
 )
 from bionemo_ir._torch.utils import recursive_calling_load_weights
+from bionemo_ir._torch.utils.confidence import compact_inference
 from bionemo_ir.configs import BaseConfig
 
 
@@ -92,6 +94,19 @@ class AuxiliaryHeads(nn.Module):
 
         # Required for relaxation later on
         aux_out["plddt"] = compute_plddt(lddt_logits)
+
+        if compact_inference(self.config.compact_output, outputs["pair"]):
+            del aux_out["lddt_logits"]
+            if self.config.tm.enabled:
+                aux_out.update(
+                    compact_tm_scores(outputs["pair"], self.tm, outputs.get("asym_id"), self.config.tm.no_bins)
+                )
+                if "iptm_score" in aux_out:
+                    aux_out["weighted_ptm_score"] = (
+                        self.config.tm.iptm_weight * aux_out["iptm_score"]
+                        + self.config.tm.ptm_weight * aux_out["ptm_score"]
+                    )
+            return aux_out
 
         distogram_logits = self.distogram(outputs["pair"])
         aux_out["distogram_logits"] = distogram_logits

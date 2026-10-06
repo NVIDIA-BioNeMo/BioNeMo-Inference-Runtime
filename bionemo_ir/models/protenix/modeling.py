@@ -400,7 +400,7 @@ class Protenix(nn.Module, OptimizedModuleSetterMixin):
         recycling_steps: int = 3,
         num_sampling_steps: int | None = 200,
         diffusion_samples: int = 1,
-        compact_output: bool = False,
+        compact_output: bool | None = None,
         return_full_data: bool = True,
         consume_input_features: bool = False,
         sampling_seed: int | None = None,
@@ -441,6 +441,8 @@ class Protenix(nn.Module, OptimizedModuleSetterMixin):
             Confidence-only (no summary masks): also ``plddt_logits`` /
             ``pae_logits`` / ``pde_logits`` / ``resolved_logits``.
         """
+        if compact_output is None:
+            compact_output = self.config.compact_output
         num_cycles = recycling_steps + 1
 
         # Precompute relp once (shared by trunk RPE and diffusion conditioning).

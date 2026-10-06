@@ -12,16 +12,17 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""The pipeline's opt-in compact confidence setting reaches the OpenFold3 model config and nothing else."""
+"""Pipeline confidence policy preserves caller configs and model-specific contracts."""
 
 import pytest
 
 from bionemo_ir.models.openfold3.config import OpenFold3Config
 from bionemo_ir.pipeline.processor.engine_proc import EngineProcessorConfig
+from bionemo_ir.registry import ModelRegistry
 
 
-def test_default_leaves_the_raw_contract_and_engine_kwargs_alone() -> None:
-    config = EngineProcessorConfig(model_source="openfold3", executor_backend=None)
+def test_opt_out_preserves_engine_kwargs() -> None:
+    config = EngineProcessorConfig(model_source="openfold3", executor_backend=None, compact_confidence=False)
     assert config.compact_confidence is False
     assert config.get_model_pretrained_config().auxiliary_heads_config.compact_output is False
     assert "config" not in config.folding_engine_kwargs()
@@ -48,7 +49,26 @@ def test_opt_in_works_from_the_pretrained_config() -> None:
     assert config.folding_engine_kwargs()["config"].auxiliary_heads_config.compact_output is True
 
 
-def test_opt_in_rejects_models_without_compact_outputs() -> None:
-    config = EngineProcessorConfig(model_source="boltz-2", executor_backend=None, compact_confidence=True)
-    with pytest.raises(ValueError, match="compact confidence"):
-        config.folding_engine_kwargs()
+@pytest.mark.parametrize("model_source", ModelRegistry.get_models())
+def test_default_supports_every_model(model_source: str) -> None:
+    factory = ModelRegistry.get_factory(model_source)
+    original = factory.get_model_class().get_pretrained_config(model_source)
+    config = EngineProcessorConfig(model_source=model_source, engine_kwargs={"config": original})
+    actual = config.folding_engine_kwargs()["config"]
+    assert actual is not original
+    expected_head = original
+    actual_head = actual
+    for name in factory.confidence_config_path:
+        expected_head = getattr(expected_head, name)
+        actual_head = getattr(actual_head, name)
+    assert expected_head.compact_output is False
+    assert actual_head.compact_output is True
+    assert config.engine_kwargs["config"] is original
+
+
+def test_batched_of3_preserves_raw_config() -> None:
+    original = OpenFold3Config()
+    original.auxiliary_heads_config.memory_efficient_mode = False
+    config = EngineProcessorConfig(model_source="openfold3", engine_kwargs={"config": original})
+    assert config.folding_engine_kwargs()["config"] is original
+    assert original.auxiliary_heads_config.compact_output is False

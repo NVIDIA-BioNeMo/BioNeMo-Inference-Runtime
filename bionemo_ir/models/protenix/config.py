@@ -18,6 +18,8 @@ Defaults track the ``protenix-v2`` checkpoint (ByteDance OSS
 ``configs_base.py`` + ``configs_model_type.py`` overrides).
 """
 
+from pydantic import Field
+
 from bionemo_ir.configs import (
     BaseConfig,
     DiffusionTransformerConfig,
@@ -388,6 +390,7 @@ class ConfidenceSummaryConfig(BaseConfig):
 class ProtenixConfig(BaseConfig):
     """Top-level protenix-v2 model config."""
 
+    compact_output: bool = Field(default=False, description="Return confidence summaries without trunk archives.")
     c_s: int = _Default.c_s
     c_z: int = _Default.c_z
     c_s_inputs: int = _Default.c_s_inputs

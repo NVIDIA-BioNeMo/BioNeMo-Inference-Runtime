@@ -40,6 +40,7 @@ from bionemo_ir.pipeline.stages.configs import (
     resolve_stage_config,
 )
 from bionemo_ir.registry import (
+    ModelRegistry,
     get_default_runtime_args,
     get_feature_factory,
     get_model_class,
@@ -102,12 +103,10 @@ class EngineProcessorConfig(ProcessorConfig):
     )
 
     compact_confidence: bool = Field(
-        default=False,
-        description="Enable the model's compact confidence outputs (OpenFold3 "
-        "`auxiliary_heads_config.compact_output`): the confidence head reduces every "
-        "sample's PAE logits to PAE, pTM and ipTM on the device and skips the heads "
-        "the pipeline does not read. Reduces logits at head precision without casting to coordinate dtype, "
-        "so confidence values can differ from raw outputs. Raises for models without that option.",
+        default=True,
+        description="Use model-specific compact confidence during inference. Preserve pipeline scores and maps, "
+        "reduce pair logits in row blocks where supported, and skip unused heads. "
+        "False preserves the supplied model config. Unsupported execution modes retain raw outputs.",
     )
     max_pending_requests: int | None = Field(
         default=None,
@@ -183,12 +182,7 @@ class EngineProcessorConfig(ProcessorConfig):
         """
         if not self.compact_confidence:
             return model_config
-        heads = getattr(model_config, "auxiliary_heads_config", None)
-        if heads is None or not hasattr(heads, "compact_output"):
-            raise ValueError(f"{self.model_source} has no compact confidence outputs")
-        model_config = model_config.model_copy(deep=True)
-        model_config.auxiliary_heads_config.compact_output = True
-        return model_config
+        return ModelRegistry.get_factory(self.model_source).compact_confidence_config(model_config)
 
     def folding_engine_kwargs(self) -> dict[str, Any]:
         """``engine_kwargs`` for the folding engine, carrying the compact-confidence config when enabled."""

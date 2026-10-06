@@ -119,7 +119,7 @@ def test_protenix_forward_signature_stable():
     assert defaults["recycling_steps"] == 3
     assert defaults["num_sampling_steps"] == 200
     assert defaults["diffusion_samples"] == 1
-    assert defaults["compact_output"] is False
+    assert defaults["compact_output"] is None
     assert defaults["return_full_data"] is True
     assert defaults["consume_input_features"] is False
 
@@ -345,9 +345,10 @@ def _tiny_batch(n_token: int = 4, n_atom: int = 4) -> dict[str, torch.Tensor]:
     }
 
 
-def test_protenix_forward_output_modes_and_feature_ownership(monkeypatch):
+@pytest.mark.parametrize("configured", [False, True])
+def test_protenix_forward_output_modes_and_feature_ownership(monkeypatch, configured):
     # Keep this API-only test on CPU.
-    model = Protenix(ProtenixConfig(), include_load_weights=False).cpu()
+    model = Protenix(ProtenixConfig(compact_output=configured), include_load_weights=False).cpu()
     model.input_embedder = _StubEmbedder()
     model.relative_position_encoding = _StubRPE()
     model.constraint_embedder = _StubConstraint()
@@ -377,7 +378,7 @@ def test_protenix_forward_output_modes_and_feature_ownership(monkeypatch):
         recycling_steps=0,
         num_sampling_steps=1,
         diffusion_samples=1,
-        compact_output=True,
+        compact_output=None if configured else True,
         consume_input_features=True,
     )
     assert set(compact) == {"coordinate"}

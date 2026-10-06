@@ -12,7 +12,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from pydantic import model_validator
+from pydantic import Field, model_validator
 
 from bionemo_ir.configs import (
     BaseConfig,
@@ -167,6 +167,7 @@ class StructureModuleConfig(BaseConfig):
 
 
 class ConfidenceHeadsConfig(BaseConfig):
+    compact_output: bool = Field(default=False, description="Stream pair confidence projections during inference.")
     token_s: int = _Default.token_s
     token_z: int = _Default.token_z
     num_plddt_bins: int = 50

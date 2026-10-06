@@ -136,20 +136,15 @@ def test_compact_forward_contract(samples, pae_enabled, output_dtype, monkeypatc
         assert actual["pae"].shape == (2, samples, TOKENS, TOKENS)
         assert actual["pae"].dtype == actual["ptm"].dtype == actual["iptm"].dtype == torch.float32
         assert actual["ptm"].shape == actual["iptm"].shape == (2, samples)
-        # The raw path hands out logits in the coordinate dtype, so a bf16
-        # coordinate dtype rounds its reference; compact mode reduces the
-        # head's own precision and is only held to the rounded contract there.
-        exact = output_dtype == torch.float32
         for b in range(2):
             for s in range(samples):
                 pae, ptm, iptm = _raw_reference(expected, batch, b, s, TOKENS)
-                np.testing.assert_allclose(np.round(actual["pae"][b, s].numpy(), 3), pae, atol=1e-3 if exact else 0.1)
-                if exact:
-                    torch.testing.assert_close(
-                        actual["pae"][b, s], _reduce_pae_unrounded(expected, b, s), atol=1e-6, rtol=0
-                    )
-                assert float(actual["ptm"][b, s]) == pytest.approx(ptm, abs=1e-6 if exact else 1e-2)
-                assert float(actual["iptm"][b, s]) == pytest.approx(iptm, abs=1e-6 if exact else 1e-2)
+                np.testing.assert_allclose(np.round(actual["pae"][b, s].numpy(), 3), pae, atol=1e-3)
+                torch.testing.assert_close(
+                    actual["pae"][b, s], _reduce_pae_unrounded(expected, b, s), atol=1e-6, rtol=0
+                )
+                assert float(actual["ptm"][b, s]) == pytest.approx(ptm, abs=1e-6)
+                assert float(actual["iptm"][b, s]) == pytest.approx(iptm, abs=1e-6)
         assert _select_best_sample(_plddt_per_atom(actual)) == _select_best_sample(_plddt_per_atom(expected))
     for name, original in originals.items():
         assert torch.equal(output[name], original)

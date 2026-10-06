@@ -16,6 +16,8 @@
 
 import torch
 
+from bionemo_ir._torch.utils.confidence import pair_expectations
+
 
 def compute_plddt(logits: torch.Tensor) -> torch.Tensor:
     num_bins = logits.shape[-1]
@@ -61,6 +63,18 @@ def compute_tm(
     tm_per_bin = 1.0 / (1 + (bin_centers**2) / (d0**2))
     predicted_tm_term = torch.sum(probs * tm_per_bin, dim=-1)
 
+    return tm_from_expected(predicted_tm_term, residue_weights, asym_id, interface, eps)
+
+
+def tm_from_expected(
+    predicted_tm_term: torch.Tensor,
+    residue_weights: torch.Tensor,
+    asym_id: torch.Tensor | None = None,
+    interface: bool = False,
+    eps: float = 1e-8,
+) -> torch.Tensor:
+    """Reduce expected TM terms using OF2 residue weights and alignment selection."""
+
     n = residue_weights.shape[-1]
     pair_mask = residue_weights.new_ones((n, n), dtype=torch.int32)
     if interface and (asym_id is not None):
@@ -70,7 +84,7 @@ def compute_tm(
             pair_mask = residue_weights.new_ones((batch_size, n, n), dtype=torch.int32)
         pair_mask *= (asym_id[..., None] != asym_id[..., None, :]).to(dtype=pair_mask.dtype)
 
-    predicted_tm_term *= pair_mask
+    predicted_tm_term = predicted_tm_term * pair_mask
 
     pair_residue_weights = pair_mask * (residue_weights[..., None, :] * residue_weights[..., :, None])
     denom = eps + torch.sum(pair_residue_weights, dim=-1, keepdims=True)
@@ -88,6 +102,27 @@ def compute_tm(
 
     argmax = (weighted == torch.max(weighted)).nonzero()[0]
     return per_alignment[tuple(argmax)]
+
+
+def compact_tm_scores(
+    pair: torch.Tensor, head: torch.nn.Module, asym_id: torch.Tensor | None, no_bins: int
+) -> dict[str, torch.Tensor]:
+    """Stream OF2 PAE and TM expectations without retaining logits or probabilities."""
+    residue_weights = pair.new_ones(pair.shape[-2])
+    boundaries = torch.linspace(0, 31, steps=no_bins - 1, device=pair.device)
+    centers = _calculate_bin_centers(boundaries)
+    clipped_n = max(torch.sum(residue_weights), 19)
+    d0 = 1.24 * (clipped_n - 15) ** (1.0 / 3) - 1.8
+    tm_weights = 1.0 / (1 + (centers**2) / (d0**2))
+    pae, expected_tm = pair_expectations(pair, lambda block, start, stop: head(block), (centers, tm_weights))
+    result = {
+        "predicted_aligned_error": pae,
+        "max_predicted_aligned_error": centers[-1],
+        "ptm_score": tm_from_expected(expected_tm, residue_weights),
+    }
+    if asym_id is not None:
+        result["iptm_score"] = tm_from_expected(expected_tm, residue_weights, asym_id, interface=True)
+    return result
 
 
 def _calculate_expected_aligned_error(

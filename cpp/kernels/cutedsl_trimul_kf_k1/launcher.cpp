@@ -281,7 +281,7 @@ void launch_k1(
   launch_config.cluster_scheduling_policy = metadata.cluster_scheduling_policy;
   launch_config.dynamic_smem_bytes = smem_bytes;
   launch_config.stream = reinterpret_cast<CUstream>(static_cast<std::uintptr_t>(params.stream));
-  launch_config.programmatic_stream_serialization = 1;
+  launch_config.programmatic_stream_serialization = allows_programmatic_launch(launch_config.stream) ? 1 : 0;
   check_cuda_driver(
     launch_cubin_kernel(loaded, &launch_config, kernel_params, nullptr), "launch_cubin_kernel(trimul_kf_k1_sm90)");
 }

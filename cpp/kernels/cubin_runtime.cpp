@@ -255,6 +255,13 @@ std::int32_t current_cuda_sm()
   return cuda_sm_for_context(context);
 }
 
+bool allows_programmatic_launch(CUstream stream)
+{
+  CUstreamCaptureStatus status = CU_STREAM_CAPTURE_STATUS_NONE;
+  check_cuda_driver(cuStreamIsCapturing(stream, &status), "cuStreamIsCapturing");
+  return status == CU_STREAM_CAPTURE_STATUS_NONE;
+}
+
 cubin_kernel_t
 load_embedded_kernel(CUcontext context, EmbeddedCubinImage const& image, bool configure_function_attributes_on_load)
 {

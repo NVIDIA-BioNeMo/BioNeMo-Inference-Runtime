@@ -80,6 +80,12 @@ std::int32_t cuda_multiprocessor_count_for_context(CUcontext context);
 
 std::int32_t current_cuda_sm();
 
+/* Whether a launch on `stream` may use programmatic dependent launch. A
+ * stream capturing a CUDA graph keeps full stream serialization, so graph
+ * replays never overlap a kernel with its predecessor.
+ */
+bool allows_programmatic_launch(CUstream stream);
+
 cubin_kernel_t
 load_embedded_kernel(CUcontext context, EmbeddedCubinImage const& image, bool configure_function_attributes = true);
 

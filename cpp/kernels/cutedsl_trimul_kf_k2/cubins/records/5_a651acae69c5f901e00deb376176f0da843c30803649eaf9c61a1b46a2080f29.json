@@ -1,10 +1,21 @@
 {
-  "executables": {},
-  "kernel_symbols": {
-    "fa6457e2abaec55cd18be954f27e1234e96c8697b7206d0d835b2f855b5bedfc": "k2d8cb9542b38478158294527a4ba558e6882a6a097d85f6199c59f32be48f3f4____________________________________________________________________________________________________________________________"
+  "executables": {
+    "5d685faf6171d33bb24fc6bbc3e6e46193e2b62998fb2e35863bb43f4c865d94": {
+      "dtype": "bf16",
+      "dynamic_smem_bytes": 230400,
+      "image_sha256": "80a17352da0743f2738eb3dc998179b58586f5e628839268de5de0e29cbb1bd9",
+      "image_size": 26040,
+      "kernel_sm": 90,
+      "kernel_symbol": "db22f3c4c5f4080c473b58bfb0cffe78fde1a4856b2ae76144ea39795946ad6e",
+      "launch_abi": "trimul_kf_k2_sm90_v1",
+      "sm90_launch": "d20db644396f9a3d81f40e932cd054ec327737c294fe5c16ada876829110c450",
+      "target_arch": "sm_90a",
+      "target_sm": 90
+    }
   },
+  "kernel_symbols": {},
   "sm90_launches": {
-    "f83b8d6eb45f944c043c6acd420fc958b0d476268b1e08e6270fb14298b75a24": {
+    "5eaf97c006959a185e4be4f7d6734c97d4ded42791d73fe66b1146d267268ea1": {
       "block_dims": [
         384,
         1,
@@ -43,7 +54,7 @@
         "b": {
           "box_dims": [
             64,
-            96,
+            112,
             1
           ],
           "data_type": "bfloat16",
@@ -91,46 +102,18 @@
   },
   "variants": [
     {
-      "executable": "6e53b628293e51d54ec07a948f97bcfe1dfbd6c19fdb4f7b36d783f76fbd2486",
-      "runtime_metadata": {
-        "cluster_m": 1,
-        "defer_kmin": 0,
-        "kernel_variant": 1,
-        "num_threads": 384,
-        "outgoing": false,
-        "split_epi": false,
-        "tile_m": 128,
-        "tile_n": 128
-      },
-      "variant_id": "f1a3ddfc5d57c8831ad4"
-    },
-    {
-      "executable": "1fc2140b0d1c283b6909130b9a08f594e3a5c8683047190c43531503cf4552ef",
-      "runtime_metadata": {
-        "cluster_m": 1,
-        "defer_kmin": 0,
-        "kernel_variant": 0,
-        "num_threads": 384,
-        "outgoing": true,
-        "split_epi": false,
-        "tile_m": 128,
-        "tile_n": 128
-      },
-      "variant_id": "f5e92eef41434d46ad14"
-    },
-    {
-      "executable": "6ed64148bfe68ea2bdcace67db7b6ff7dade45754183f364ae6c7359ba94fa7f",
+      "executable": "b1e237c485a9233a5ed2c1991ff64ee6ae0772c3c71947d9e547e4b1df3fcc63",
       "runtime_metadata": {
         "cluster_m": 2,
-        "defer_kmin": 8,
+        "defer_kmin": 4,
         "kernel_variant": 0,
         "num_threads": 384,
-        "outgoing": true,
-        "split_epi": false,
+        "outgoing": false,
+        "split_epi": true,
         "tile_m": 128,
         "tile_n": 256
       },
-      "variant_id": "fdc8ca912058f6d21616"
+      "variant_id": "5e954dff89d1220cd842"
     }
   ]
 }

@@ -1,21 +1,11 @@
 {
-  "executables": {
-    "2582be36e1947e2189b2d8941760f6274dfdea468de4d300e509c7f6768fe2dd": {
-      "dtype": "bf16",
-      "dynamic_smem_bytes": 221184,
-      "image_sha256": "283e358750333f314e359b9913052afe1ff49078202494c27445497aa374d420",
-      "image_size": 42848,
-      "kernel_sm": 90,
-      "kernel_symbol": "495447571185cb51987e038f6b22480eeb6b30c5bfb324d180a197f1ba89bc86",
-      "launch_abi": "trimul_kf_k1_sm90_v3",
-      "sm90_launch": "ad524e82fb83e2eb40f3f428a35cc4e936c1e7d545841c6cb37558253af09162",
-      "target_arch": "sm_90a",
-      "target_sm": 90
-    }
+  "executables": {},
+  "kernel_symbols": {
+    "461a237511c38df5f99f43149c581970d79d5093f71b20fc4ade99c90c40f3f6": "k9b06278d940de0ca77442da001baad9bc0d6244f281eb8550e0bd2f65f3fe49f____________________________________________________________________________________________________________________________",
+    "495447571185cb51987e038f6b22480eeb6b30c5bfb324d180a197f1ba89bc86": "kafa3c6353dfc466ad2a2f1876656b575795859bfd23cdf96748b69f76b6c6af8____________________________________________________________________________________________________________________________"
   },
-  "kernel_symbols": {},
   "sm90_launches": {
-    "257ebd43806a7e61f9df14cc803611756c9e0c6e1292f243db1631a73b3d4653": {
+    "4f9e1cc0d768ff0244605ad996cf7d569b234228ffbf2ea55af9f117e7dccdb6": {
       "block_dims": [
         512,
         1,
@@ -31,7 +21,7 @@
         "a": {
           "box_dims": [
             64,
-            64,
+            32,
             1
           ],
           "data_type": "bfloat16",
@@ -54,7 +44,7 @@
         "b": {
           "box_dims": [
             64,
-            64,
+            32,
             1
           ],
           "data_type": "bfloat16",
@@ -76,8 +66,8 @@
         },
         "w_gate": {
           "box_dims": [
-            64,
-            128
+            32,
+            32
           ],
           "data_type": "bfloat16",
           "element_strides": [
@@ -92,12 +82,12 @@
           "l2_promotion": "128b",
           "oob_fill": "none",
           "rank": 2,
-          "swizzle": "128b"
+          "swizzle": "64b"
         },
         "w_proj": {
           "box_dims": [
-            64,
-            128
+            32,
+            32
           ],
           "data_type": "bfloat16",
           "element_strides": [
@@ -112,11 +102,11 @@
           "l2_promotion": "128b",
           "oob_fill": "none",
           "rank": 2,
-          "swizzle": "128b"
+          "swizzle": "64b"
         },
         "x": {
           "box_dims": [
-            64,
+            32,
             128
           ],
           "data_type": "bfloat16",
@@ -132,22 +122,22 @@
           "l2_promotion": "128b",
           "oob_fill": "none",
           "rank": 2,
-          "swizzle": "128b"
+          "swizzle": "64b"
         }
       }
     }
   },
   "variants": [
     {
-      "executable": "561965e7af57e1f04e428bd08d9163a2649679bdfea6ea7cd23f80b76d2b54c4",
+      "executable": "303e19f12338ab9f75094383edb96fe678621e1cac4241e7fbf324b28c81b4e5",
       "runtime_metadata": {
         "C": 64,
         "D": 64,
-        "kernel_variant": 0,
+        "kernel_variant": 1,
         "num_threads": 512,
         "padded": false
       },
-      "variant_id": "2df27e48652640f09230"
+      "variant_id": "44d1db63b74863e61d06"
     }
   ]
 }

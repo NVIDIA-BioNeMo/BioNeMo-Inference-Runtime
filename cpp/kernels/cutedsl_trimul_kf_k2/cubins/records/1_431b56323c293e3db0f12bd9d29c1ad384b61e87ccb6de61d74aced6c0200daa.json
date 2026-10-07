@@ -17,5 +17,20 @@
     "1266261e8339f7bd81bb8b723b4c69c6ca591babc76fa4ce8be92d58fb60eaa8": "k3be8d499ea9d11c56386d00c8485a70d48c71e61ec38d3902b117ea1e2187a28____________________________________________________________________________________________________________________________"
   },
   "sm90_launches": {},
-  "variants": []
+  "variants": [
+    {
+      "executable": "24e27d9fe35069264d2078832474d7deec8523dc0649e51b349eec5b8e2812f6",
+      "runtime_metadata": {
+        "cluster_m": 2,
+        "defer_kmin": 0,
+        "kernel_variant": 2,
+        "num_threads": 384,
+        "outgoing": false,
+        "split_epi": false,
+        "tile_m": 128,
+        "tile_n": 192
+      },
+      "variant_id": "1cdcb81f4bf2ea5ca075"
+    }
+  ]
 }

@@ -17,6 +17,19 @@
   "sm90_launches": {},
   "variants": [
     {
+      "executable": "eecdd4b7ba394b3ac41fb12708005b7e6bbef27472317e05e46e9a2998d723f3",
+      "runtime_metadata": {
+        "C": 384,
+        "D": 256,
+        "kernel_variant": 1,
+        "num_threads": 512,
+        "residual": true,
+        "tile_ctas": 1,
+        "tile_m": 128
+      },
+      "variant_id": "2a353af39be2effeb768"
+    },
+    {
       "executable": "486ec26be85e58549ac857d8365be55287daaa52398dd73537d0d67672aba95f",
       "runtime_metadata": {
         "C": 256,

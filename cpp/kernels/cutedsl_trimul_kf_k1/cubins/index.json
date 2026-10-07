@@ -1,11 +1,11 @@
 {
-  "compile_fingerprint": "2dc8bd94ce36b4b72b593f5e609a242378d32c7c4d2f531419d9c47ae3c91662",
+  "compile_fingerprint": "bb1e664e8bcf403e44491d89f89a7682adbbacc366904112838224a1b95b8389",
   "family": "trimul_kf_k1",
   "format": "bioir-cubin-pack-v2",
   "packs": {
     "sm_90a": {
-      "sha256": "409b12454920bfc86e4f24420f7c30019bb8e21de8ab149e299a9f5b3010f9fb",
-      "size": 53660
+      "sha256": "ac46d1b9f14a78a736a6fc7f8204aa41c6cc2c8543e8fb1caeb5a67c55dfe995",
+      "size": 72628
     }
   },
   "registry_version": 2,
@@ -19,16 +19,16 @@
       "size": 356
     },
     "2": {
-      "sha256": "cf9f33169b947cde118c29facbfeba19888826b8f138dcc23d6f772c845e3f0e",
-      "size": 3447
+      "sha256": "9d6c390b11469c15b064ea2f751f2c1b71f1ffe729d72f794d7919e3434655ea",
+      "size": 4004
     },
     "3": {
       "sha256": "9bf5250d715e746d2ede4b93eaa33e2734735bccb1095228c433c7c6352bf0d9",
       "size": 1505
     },
     "4": {
-      "sha256": "cbe70f7ad45ef3f1e028b308549dc5fad91ba862a87f9789e70404baf4aee2ed",
-      "size": 3150
+      "sha256": "121f64272cc6270e36bc62d9813020213e2b140bf80cdf55d001f5b4c4e5e440",
+      "size": 3415
     },
     "5": {
       "sha256": "a7f7fd35ee650f5c44d3d697d262a04b303867b30026593896569d6c2781dcc1",
@@ -55,16 +55,16 @@
       "size": 3714
     },
     "b": {
-      "sha256": "8d18c21b183205b73b9a1b1639981b40797237fc019b6819f91dff4d8a8b41de",
-      "size": 3859
+      "sha256": "b094ffc1353794918566fe1d45643f9c226802d89c6f1ece3822a93c99ecb441",
+      "size": 4159
     },
     "c": {
-      "sha256": "e58627c3effe463f7191f0b8e944244716d2a1e85e2347ee07afedf220507b34",
-      "size": 89
+      "sha256": "dd24670a5e4deb8fb104c82cca01c6369452ce9512ba5a97e1bdbe1c5015019d",
+      "size": 648
     },
     "d": {
-      "sha256": "bd975469f09ed5d04847eb3c67912b0083e7b34577ba2c30e9d0fe07cc13d890",
-      "size": 648
+      "sha256": "bc1640d6da27ab558fb880d2621d8d5de96809055e59946e1529050a0dfc8bc8",
+      "size": 947
     },
     "e": {
       "sha256": "cf9f015eb7aa71a317bcb4d0ee8773e31e96bc8104ff813b1237b51d90ab35e4",

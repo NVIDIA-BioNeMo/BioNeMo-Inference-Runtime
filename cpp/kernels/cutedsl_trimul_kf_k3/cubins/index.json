@@ -1,11 +1,11 @@
 {
-  "compile_fingerprint": "aea2f4932d7e75a2ef8ae6eb7993675c1e63e4f7b0679608b8e20c2799c71e31",
+  "compile_fingerprint": "597888ba39be2101258d2f0113132bf92f1716ba699c3533e8a5b3567168928d",
   "family": "trimul_kf_k3",
   "format": "bioir-cubin-pack-v2",
   "packs": {
     "sm_90a": {
-      "sha256": "a7773e61ae446bc313f0502871b7fcfc5b3f5e4ad84b5355966d88dd43b722b5",
-      "size": 56788
+      "sha256": "bef29dd9281e8ef1998bc1bfa24e7f2f18b2bb1ef56adfea2b18d9bb7019b155",
+      "size": 81224
     }
   },
   "registry_version": 2,
@@ -19,8 +19,8 @@
       "size": 436
     },
     "2": {
-      "sha256": "3b6cbef342535466db9b833845ca49fa24d05072e5ae77396325ca09b752b601",
-      "size": 995
+      "sha256": "415de98b07abbbd93dceee3cc9bc0a9c6c54b0defca4ba5e489661946c13689c",
+      "size": 1341
     },
     "3": {
       "sha256": "044a7be0515ea38e18972eefcb13c14ba50f24965c4a5b64b496f7f86c106510",
@@ -51,24 +51,24 @@
       "size": 2896
     },
     "a": {
-      "sha256": "7f30b16e2ae6ec727b16d1372bc64244713e333c6ef25cf0929fe235095c4f28",
-      "size": 1205
+      "sha256": "df9b88279e2a330c224b6c6f6bac6cd4beefc080fac3d8de85477de787b55c6c",
+      "size": 1762
     },
     "b": {
       "sha256": "88cfa45bfd8d07b8790b4f3dc93bd7eb144fc56202e784e3c55e440c7f44812e",
       "size": 3510
     },
     "c": {
-      "sha256": "113a575c059ec66e65aa18c04bbcbf3358956e946dec50d29c159fdfd5496cd6",
-      "size": 2547
+      "sha256": "2d1aadd72ee27f9906ee162ec2ab984a6f26e58ff3835e0629b304b26a8bc689",
+      "size": 5354
     },
     "d": {
       "sha256": "e58627c3effe463f7191f0b8e944244716d2a1e85e2347ee07afedf220507b34",
       "size": 89
     },
     "e": {
-      "sha256": "e58627c3effe463f7191f0b8e944244716d2a1e85e2347ee07afedf220507b34",
-      "size": 89
+      "sha256": "5229a751c1dc9894b3d8185a8257f2cdc73e814e398ec1c556d77efbb5cd7c5b",
+      "size": 916
     },
     "f": {
       "sha256": "38c9da09bc79aca3de33572aec043caecb9741b75deac17dadbb5e399e658626",

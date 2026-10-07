@@ -27,6 +27,7 @@ from bionemo_ir._torch.layers.normalization import AdaLN
 from bionemo_ir._torch.utils import ChunkPolicy, chunk_apply, iter_chunks, permute_final_dims
 from bionemo_ir.dsl_kernels.triton.moveaxis_pad import MoveaxisPad
 from bionemo_ir.runtime.buffers import PreallocatedBuffers, ensure_buffer
+from bionemo_ir.utils import get_sm_version
 
 from ..attention_backend import AttentionMetadata, AttentionType
 from ..attention_backend.utils import backend_uses_left_mask, create_attention, triangle_bias_pad_multiple
@@ -41,15 +42,24 @@ def _make_norm(norm_type: str, dim: int, eps: float = 1e-5, dtype: torch.dtype =
     raise ValueError(f"Unsupported norm_type={norm_type!r}; expected 'layer_norm' or 'rms_norm'")
 
 
-# Pad the pair-bias heads to a multiple of 32 so the fused projection width
-# stays one too: cuBLAS runs that GEMM up to 2.8x slower at other widths, and
-# the CuTeDSL triangle kernel needs q/k/v row strides divisible by 8 elements.
-_PAIR_BIAS_ROW_ALIGN = 32
+# Pad the pair-bias heads so the fused projection width stays a cuBLAS-friendly
+# multiple: unaligned widths fall back to an SM80 kernel up to 3x slower, and on
+# SM90 a width of 1024 + 32 picks a poor tile that 1024 + 64 avoids. The CuTeDSL
+# triangle kernel also needs q/k/v row strides divisible by 8 elements.
+_PAIR_BIAS_ROW_ALIGN_SM8X = 32
+_PAIR_BIAS_ROW_ALIGN_SM90 = 64
+
+
+def _pair_bias_row_align() -> int:
+    if torch.cuda.is_available() and get_sm_version() >= 90:
+        return _PAIR_BIAS_ROW_ALIGN_SM90
+    return _PAIR_BIAS_ROW_ALIGN_SM8X
 
 
 def pair_bias_rows(num_heads: int) -> int:
-    """Rows ``TriangleAttention.in_proj`` reserves for pair bias: ``num_heads`` rounded up to a multiple of 32."""
-    return -(-num_heads // _PAIR_BIAS_ROW_ALIGN) * _PAIR_BIAS_ROW_ALIGN
+    """Rows ``TriangleAttention.in_proj`` reserves for pair bias: ``num_heads`` rounded up to the SM's alignment."""
+    align = _pair_bias_row_align()
+    return -(-num_heads // align) * align
 
 
 def _narrow_rows(tensor: torch.Tensor | None, rows: int, start: int, length: int) -> torch.Tensor | None:

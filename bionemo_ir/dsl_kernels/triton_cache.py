@@ -239,8 +239,7 @@ import importlib, torch
 mod = importlib.import_module(spec["module"])
 jit_fn = getattr(mod, spec["fn_name"])
 grid = tuple(spec["grid"])
-ckw = {k: (v if isinstance(v, bool) else int(v))
-       for k, v in spec["constexpr_kwargs"].items()}
+ckw = spec["constexpr_kwargs"]
 
 for variant in spec["variants"]:
     args = []
@@ -282,8 +281,8 @@ def _compile_in_subprocess(
         variants.append(variant)
 
     ckw_ser = {}
-    for k, v in constexpr_kwargs.items():
-        ckw_ser[k] = v if isinstance(v, bool) else int(v)
+    for name, value in constexpr_kwargs.items():
+        ckw_ser[name] = value if isinstance(value, (bool, float)) else int(value)
 
     spec = {
         "triton_cache_dir": TRITON_CACHE_DIR,

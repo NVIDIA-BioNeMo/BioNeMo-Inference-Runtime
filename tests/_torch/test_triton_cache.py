@@ -598,6 +598,51 @@ def test_subprocess_warmup_keeps_float_scalars(monkeypatch: pytest.MonkeyPatch) 
     assert isinstance(variant[1]["value"], float)
 
 
+@pytest.mark.parametrize("epsilon", [1e-5, -0.5, 1.0])
+def test_subprocess_warmup_keeps_constexpr_types(epsilon: float, monkeypatch: pytest.MonkeyPatch) -> None:
+    specs = []
+
+    def capture(command: list[str], **kwargs: object) -> subprocess.CompletedProcess:
+        specs.append(json.loads(Path(command[-1]).read_text()))
+        return subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr(subprocess, "run", capture)
+    constexprs = {"EPS": epsilon, "BLOCK": 16, "ENABLED": True}
+    _compile_in_subprocess(_add_n_kernel, {torch.float32: (torch.empty(1), 0)}, (1,), constexprs)
+
+    actual = specs[0]["constexpr_kwargs"]
+    assert actual == constexprs
+    assert {name: type(value) for name, value in actual.items()} == {
+        name: type(value) for name, value in constexprs.items()
+    }
+
+
+@triton.jit
+def _constexpr_float_kernel(dst_ptr, EPS: tl.constexpr, BLOCK: tl.constexpr, ENABLED: tl.constexpr):
+    offsets = tl.arange(0, BLOCK)
+    if ENABLED:
+        tl.store(dst_ptr + offsets, offsets.to(tl.float32) + EPS)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+def test_subprocess_float_constexpr_reuses_disk_cache(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from bionemo_ir.dsl_kernels import triton_cache
+
+    monkeypatch.setenv("TRITON_CACHE_DIR", str(tmp_path))
+    monkeypatch.setattr(triton_cache, "TRITON_CACHE_DIR", str(tmp_path))
+    output = torch.empty(16, device="cuda")
+    constexprs = {"EPS": 1e-5, "BLOCK": 16, "ENABLED": True}
+    _compile_in_subprocess(_constexpr_float_kernel, {torch.float32: (output,)}, (1,), constexprs)
+    warmed = sorted(tmp_path.rglob("*.cubin"))
+    assert len(warmed) == 1
+
+    _constexpr_float_kernel[(1,)](output, **constexprs)
+    torch.cuda.synchronize()
+
+    assert sorted(tmp_path.rglob("*.cubin")) == warmed
+    torch.testing.assert_close(output, torch.arange(16, device="cuda", dtype=torch.float32) + 1e-5)
+
+
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
 def test_atom_offset_views() -> None:
     features = torch.randn(1, 2, 6, 129, device="cuda")[..., 1:]

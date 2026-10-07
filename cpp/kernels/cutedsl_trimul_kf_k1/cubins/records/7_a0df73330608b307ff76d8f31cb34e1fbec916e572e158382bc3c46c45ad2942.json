@@ -1,0 +1,18 @@
+{
+  "executables": {},
+  "kernel_symbols": {},
+  "sm90_launches": {},
+  "variants": [
+    {
+      "executable": "dc9b0b4fbe49b2ddd139e3ff224eab470c4ab9702066475b0a3ad714b1c9aff8",
+      "runtime_metadata": {
+        "C": 256,
+        "D": 256,
+        "kernel_variant": 2,
+        "num_threads": 512,
+        "padded": true
+      },
+      "variant_id": "7053e0841fd3ed48c33c"
+    }
+  ]
+}

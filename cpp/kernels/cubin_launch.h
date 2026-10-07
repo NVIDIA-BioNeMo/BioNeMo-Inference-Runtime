@@ -69,7 +69,25 @@ extern "C"
       return CUDA_ERROR_INVALID_VALUE;
 
     int const uses_clusters = config->cluster_x != 0 || config->cluster_y != 0 || config->cluster_z != 0;
-    int const uses_pdl = config->programmatic_stream_serialization != 0;
+    /* A capturing stream records nodes rather than launching them, and the
+     * stream-serialization attribute does not survive into the graph: a graph
+     * expresses programmatic dependent launch as edge data between nodes
+     * instead. Keeping the attribute would leave griddepcontrol.wait with no
+     * trigger behind it, so replays read a predecessor's output while it is
+     * still being written. Fall back to full serialization while capturing;
+     * the in-kernel griddepcontrol calls are no-ops without it.
+     */
+    int uses_pdl = config->programmatic_stream_serialization != 0;
+    if (uses_pdl)
+    {
+      CUstreamCaptureStatus capture_status = CU_STREAM_CAPTURE_STATUS_NONE;
+      if (
+        cuStreamIsCapturing(config->stream, &capture_status) == CUDA_SUCCESS
+        && capture_status != CU_STREAM_CAPTURE_STATUS_NONE)
+      {
+        uses_pdl = 0;
+      }
+    }
     if (!uses_clusters && !uses_pdl)
     {
       return cuLaunchKernel(

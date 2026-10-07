@@ -74,7 +74,7 @@ class TrimulKFInputFold:
 
 def fold_input_weights(
     norm_in_weight: torch.Tensor,
-    norm_in_bias: torch.Tensor,
+    norm_in_bias: torch.Tensor | None,
     p_in_weight: torch.Tensor,
     g_in_weight: torch.Tensor,
     p_in_bias: torch.Tensor | None = None,
@@ -84,18 +84,18 @@ def fold_input_weights(
 
     ``LayerNorm(x) @ W.T + bias == rstd * (x @ (W * gamma).T - mean * rowsum(W * gamma)) + W @ beta + bias``,
     so K1 applies the LayerNorm from per-row statistics on raw ``x``. The fold is fixed for fixed
-    weights.
+    weights. A missing LayerNorm bias is a zero beta.
 
     Args:
         norm_in_weight: ``[C]`` LayerNorm weight ``gamma``.
-        norm_in_bias: ``[C]`` LayerNorm bias ``beta``.
+        norm_in_bias: ``[C]`` LayerNorm bias ``beta``, or ``None`` when the norm learns none.
         p_in_weight: ``[2D, C]`` projection weight; rows ``[0, D)`` make ``a``, ``[D, 2D)`` make ``b``.
         g_in_weight: ``[2D, C]`` gate weight, rows matching ``p_in_weight``.
         p_in_bias: Optional ``[2D]`` projection bias.
         g_in_bias: Optional ``[2D]`` gate bias.
     """
     gamma = norm_in_weight.float()
-    beta = norm_in_bias.float()
+    beta = torch.zeros_like(gamma) if norm_in_bias is None else norm_in_bias.float()
 
     def fold(weight: torch.Tensor, bias: torch.Tensor | None) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         weight = weight.float()

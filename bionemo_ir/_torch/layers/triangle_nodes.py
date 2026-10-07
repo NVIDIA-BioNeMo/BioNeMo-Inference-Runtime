@@ -41,8 +41,6 @@ def _round_up(value: int, multiple: int) -> int:
 
 #: Token multiple that keeps the contraction on cuBLAS's SM90 bf16 kernels.
 _GEMM_TOKEN_ALIGN = 8
-#: Widest ``dim == hidden_dim`` the SM90 TriMul KF chain ships.
-_KF_MAX_DIM = 256
 
 
 class TriangleAttentionNodeType(IntEnum):
@@ -267,6 +265,7 @@ class TriangleMultiplicationNode(nn.Module):
         pair_mask_left_aligned: bool = True,
         align_contraction_tokens: bool = True,
         pad_tokens: bool = False,
+        norm_bias: bool = True,
     ):
         """Triangle multiplication node.
 
@@ -281,8 +280,11 @@ class TriangleMultiplicationNode(nn.Module):
                 fast SM90 GEMMs. Requires CuTe and ``actual_seqlen``.
             pad_tokens: Whether the owning model pads token axes to multiples
                 of 8 before this node runs (its ``enable_token_pad``). Enables
-                the SM90 TriMul KF chain for ``dim == hidden_dim <= 256``; see
-                :meth:`set_token_padding`.
+                the SM90 TriMul KF chain for the ``(dim, hidden_dim)`` pairs it
+                ships; see :meth:`set_token_padding`.
+            norm_bias: Whether the input and output LayerNorms learn a bias.
+                False for checkpoints trained without one, which would
+                otherwise load a bias the weights do not carry.
         """
         super().__init__()
         if hidden_dim is None:
@@ -299,7 +301,7 @@ class TriangleMultiplicationNode(nn.Module):
         self.dim = dim
         self.hidden_dim = hidden_dim
         self.multiplication_type = multiplication_type
-        self.norm_in = nn.LayerNorm(self.dim, dtype=dtype, eps=eps)
+        self.norm_in = nn.LayerNorm(self.dim, dtype=dtype, eps=eps, bias=norm_bias)
         self.p_in = Linear(
             self.dim,
             2 * self.hidden_dim,
@@ -321,7 +323,7 @@ class TriangleMultiplicationNode(nn.Module):
             self.high_precision_dtype = torch.float32
         else:
             self.high_precision_dtype = dtype
-        self.norm_out = nn.LayerNorm(self.hidden_dim, dtype=self.high_precision_dtype, eps=eps)
+        self.norm_out = nn.LayerNorm(self.hidden_dim, dtype=self.high_precision_dtype, eps=eps, bias=norm_bias)
         self.p_out = Linear(
             self.hidden_dim,
             self.dim,
@@ -373,6 +375,11 @@ class TriangleMultiplicationNode(nn.Module):
         self._kf_folds: tuple[TrimulKFInputFold, TrimulKFOutputFold] | None = None
         self.set_token_padding(pad_tokens)
 
+    @property
+    def kf_available(self) -> bool:
+        """Whether this node runs the fused SM90 TriMul KF chain."""
+        return self._kf_ops is not None
+
     def set_token_padding(self, enabled: bool) -> None:
         """Set whether the owning model pads token axes to multiples of 8.
 
@@ -387,18 +394,12 @@ class TriangleMultiplicationNode(nn.Module):
     def _get_kf_ops(self) -> tuple[TrimulKFK1Op, TrimulKFK2Op, TrimulKFK3Op] | None:
         """The KF K1, K2 and K3 ops for this node, or ``None`` when any does not ship.
 
-        The chain covers ``dim == hidden_dim <= 256`` (N = K0 = K1) with bf16
-        output projections, plain sums and prefix-shaped masks, so
+        The chain covers the ``(dim, hidden_dim)`` pairs its configs ship with
+        bf16 output projections, plain sums and prefix-shaped masks, so
         ``high_precision``, ``mean_normalization`` and non-left-aligned masks
         keep the regular path.
         """
-        if (
-            self.dim != self.hidden_dim
-            or self.dim > _KF_MAX_DIM
-            or self.high_precision
-            or self.mean_normalization
-            or not self.pair_mask_left_aligned
-        ):
+        if self.high_precision or self.mean_normalization or not self.pair_mask_left_aligned:
             return None
         outgoing = self.multiplication_type == TriangleMultiplicationNodeType.OUTGOING
         ops = (

@@ -405,16 +405,19 @@ def test_trimul_kf_chain_needs_token_padding_and_a_supported_node() -> None:
 @pytest.mark.parametrize("residual", [False, True], ids=["update", "residual"])
 @pytest.mark.parametrize("multiplication_type", _DIRECTIONS, ids=lambda direction: direction.name.lower())
 @pytest.mark.parametrize(
-    ("dim", "tokens", "bias"),
+    ("dim", "hidden_dim", "tokens", "bias"),
     [
-        pytest.param(128, 128, True, id="C128-N128-streaming"),
-        pytest.param(128, 256, False, id="C128-N256-pingpong-nobias"),
-        pytest.param(256, 256, True, id="C256-N256-row-stats"),
-        pytest.param(256, 256, False, id="C256-N256-row-stats-nobias"),
+        pytest.param(128, 128, 128, True, id="C128-N128-streaming"),
+        pytest.param(128, 128, 256, False, id="C128-N256-pingpong-nobias"),
+        pytest.param(256, 256, 256, True, id="C256-N256-row-stats"),
+        pytest.param(256, 256, 256, False, id="C256-N256-row-stats-nobias"),
+        pytest.param(384, 256, 264, False, id="C384-D256-N264-row-stats-nobias"),
+        pytest.param(384, 256, 520, True, id="C384-D256-N520-padded-ab"),
     ],
 )
 def test_trimul_kf_chain_matches_dual_gemm_path(
     dim: int,
+    hidden_dim: int,
     tokens: int,
     bias: bool,
     multiplication_type: TriangleMultiplicationNodeType,
@@ -423,6 +426,7 @@ def test_trimul_kf_chain_matches_dual_gemm_path(
     torch.manual_seed(31)
     node = _kf_trimul_node(
         dim=dim,
+        hidden_dim=hidden_dim,
         multiplication_type=multiplication_type,
         bias_flags=dict.fromkeys(("p_in", "g_in", "p_out", "g_out"), bias),
     )
@@ -484,3 +488,55 @@ def test_trimul_kf_chain_refolds_after_load_weights() -> None:
         expected = node._forward_impl(x, pair_mask, metadata)
     assert _relative_l2(actual, expected) < 1e-2
     assert _relative_l2(before, expected) > 0.1
+
+
+def test_bias_free_trimul_has_no_bias_parameters_and_runs() -> None:
+    """A node whose GEMMs and LayerNorms learn no bias still matches the regular path."""
+    if not torch.cuda.is_available():
+        pytest.skip("CUDA is required")
+    torch.manual_seed(3)
+    node = TriangleMultiplicationNode(
+        dim=384,
+        hidden_dim=256,
+        bias_flags={"p_in": False, "g_in": False, "p_out": False, "g_out": False},
+        norm_bias=False,
+        dtype=torch.bfloat16,
+        high_precision=False,
+    ).cuda()
+    with torch.no_grad():
+        for parameter in node.parameters():
+            parameter.normal_()
+    assert node.norm_in.bias is None and node.norm_out.bias is None
+    assert node.p_in.bias is None and node.g_in.bias is None
+    assert node.p_out.bias is None and node.g_out.bias is None
+
+    tokens = 16
+    x = torch.randn(1, tokens, tokens, 384, device="cuda", dtype=torch.bfloat16)
+    pair_mask = torch.ones(1, tokens, tokens, device="cuda", dtype=torch.bool)
+    lengths = torch.full((1, tokens), tokens, device="cuda", dtype=torch.int32)
+    metadata = precompute_trimul_metadata(x, lengths, lengths)
+
+    from bionemo_ir._torch.custom_ops.dual_gemm_x_x.ops import (
+        _invoke_cute_dual_gemm_x_x,
+        _invoke_vanilla_dual_gemm_x_x,
+    )
+
+    with torch.inference_mode():
+        actual = node(x, pair_mask, metadata)
+    assert actual.shape == x.shape
+    assert torch.isfinite(actual.float()).all()
+
+    # The fused dual GEMM is selected only where a config ships for this shape
+    # and architecture. Comparing it against the vanilla kernel elsewhere would
+    # run the same op twice and assert nothing.
+    if node._dual_gemm_x_x_op_transpose is _invoke_cute_dual_gemm_x_x:
+        with torch.inference_mode():
+            node._dual_gemm_x_x_op_transpose = _invoke_vanilla_dual_gemm_x_x
+            expected = node(x, pair_mask, metadata)
+        assert _relative_l2(actual, expected) < 1e-2
+    node.set_token_padding(True)
+    if node._kf_ops is not None:
+        with torch.inference_mode():
+            kf = node(x, pair_mask, metadata)
+            regular = node._forward_impl(x, pair_mask, metadata)
+        assert _relative_l2(kf, regular) < 1e-2

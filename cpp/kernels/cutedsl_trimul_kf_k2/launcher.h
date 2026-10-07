@@ -51,10 +51,11 @@ struct CubinImage;
  *   ord  9  0x244  0x04  n_tiles        std::int32_t
  *   ord 10  0x248  0x04  work_units     std::int32_t
  *
- * K2_1 has a single MMA token and ends with its row-tile count and total tile count
- * (m_tiles, num_tiles) instead of the cluster schedule. Each 0x80 TMA slot carries CuTe DSL
- * 4.5.2's 0x40-byte non-executable CopyAtom payload followed by zero padding: loads of a and b,
- * one of them multicast across a 2-CTA cluster when the image clusters, and the store of prod.
+ * K2_2 lowers the same bank. K2_1 has a single MMA token and ends with its row-tile count and
+ * total tile count (m_tiles, num_tiles) instead of the cluster schedule. Each 0x80 TMA slot
+ * carries CuTe DSL 4.5.2's 0x40-byte non-executable CopyAtom payload followed by zero padding:
+ * loads of a and b, one of them multicast across a 2-CTA cluster when the image clusters, and
+ * the store of prod.
  */
 namespace bioir::cutedsl::trimul_kf_k2::abi
 {
@@ -69,13 +70,15 @@ struct SM90Params
   CoordTensorS3 prod_coord;
   std::uint8_t tiled_mma;
   std::uint8_t tiled_mma_out;
-  /* K2_0: m_clusters, n_tiles, work_units. K2_1: m_tiles, num_tiles, and the third unused. */
+  /* K2_0 and K2_2: m_clusters, column clusters, work_units. K2_1: m_tiles, num_tiles, and the
+   * third unused.
+   */
   std::int32_t schedule[3];
 };
 
 constexpr std::size_t sm90_parameter_count(std::int32_t kernel_variant)
 {
-  return kernel_variant == 0 ? 11U : 9U;
+  return kernel_variant == 1 ? 9U : 11U;
 }
 
 inline constexpr std::size_t kSM90MaxParameterCount = 11;
@@ -92,9 +95,9 @@ pack_sm90_kernel_params(SM90Params* params, std::int32_t kernel_variant, void* k
   kernel_params[count++] = &params->prod_tma;
   kernel_params[count++] = &params->prod_coord;
   kernel_params[count++] = &params->tiled_mma;
-  if (kernel_variant == 0)
+  if (kernel_variant != 1)
     kernel_params[count++] = &params->tiled_mma_out;
-  std::size_t const schedule_count = kernel_variant == 0 ? 3U : 2U;
+  std::size_t const schedule_count = kernel_variant == 1 ? 2U : 3U;
   for (std::size_t index = 0; index < schedule_count; ++index)
     kernel_params[count++] = &params->schedule[index];
   return count;
@@ -108,7 +111,7 @@ static_assert(sizeof(CUtensorMap) == 0x80 && alignof(CUtensorMap) >= 64);
 static_assert(sizeof(SM90Params::a_coord) == 0x0c, "unexpected trimul KF K2 coordinate width");
 static_assert(sizeof(SM90Params::tiled_mma) == 0x01, "unexpected trimul KF K2 MMA token width");
 static_assert(sizeof(SM90Params::schedule[0]) == 0x04, "unexpected trimul KF K2 schedule width");
-static_assert(sm90_parameter_count(0) == 11U && sm90_parameter_count(1) == 9U);
+static_assert(sm90_parameter_count(0) == 11U && sm90_parameter_count(1) == 9U && sm90_parameter_count(2) == 11U);
 
 } // namespace bioir::cutedsl::trimul_kf_k2::abi
 
@@ -121,9 +124,9 @@ enum class DType : std::uint8_t
 };
 
 /* Launch fields generated with the corresponding CUBIN, which runs the configs' K2_<kernel_variant>
- * on 128 x tile_n output tiles. K2_0 clusters cluster_m CTAs along M, overlaps each tile's stores
- * with the next tile's first defer_kmin k-blocks, and splits its epilogue per warpgroup under
- * split_epi; K2_1 clusters along N at tile_n 192.
+ * on 128 x tile_n output tiles. K2_0 clusters cluster_m CTAs along M and K2_2 along N; both overlap
+ * each tile's stores with the next tile's first defer_kmin k-blocks and split their epilogue per
+ * warpgroup under split_epi. K2_1 clusters along N at tile_n 192.
  */
 struct KernelSpec
 {

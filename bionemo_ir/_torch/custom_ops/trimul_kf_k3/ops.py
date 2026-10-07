@@ -67,9 +67,9 @@ class TrimulKFOutputFold:
 
 def fold_output_weights(
     norm_out_weight: torch.Tensor,
-    norm_out_bias: torch.Tensor,
+    norm_out_bias: torch.Tensor | None,
     norm_in_weight: torch.Tensor,
-    norm_in_bias: torch.Tensor,
+    norm_in_bias: torch.Tensor | None,
     p_out_weight: torch.Tensor,
     g_out_weight: torch.Tensor,
     p_out_bias: torch.Tensor | None = None,
@@ -78,13 +78,14 @@ def fold_output_weights(
     """Fold the output LayerNorm into the output projection and the input LayerNorm into the gate.
 
     The gate reads ``LayerNorm_in(x)``, so it takes the input LayerNorm's parameters. Any output
-    biases fold into the bias terms. The fold is fixed for fixed weights.
+    biases fold into the bias terms. The fold is fixed for fixed weights. A missing LayerNorm
+    bias is a zero beta.
 
     Args:
         norm_out_weight: ``[D]`` output LayerNorm weight.
-        norm_out_bias: ``[D]`` output LayerNorm bias.
+        norm_out_bias: ``[D]`` output LayerNorm bias, or ``None`` when the norm learns none.
         norm_in_weight: ``[C]`` input LayerNorm weight.
-        norm_in_bias: ``[C]`` input LayerNorm bias.
+        norm_in_bias: ``[C]`` input LayerNorm bias, or ``None`` when the norm learns none.
         p_out_weight: ``[C, D]`` output projection weight.
         g_out_weight: ``[C, C]`` gate weight.
         p_out_bias: Optional ``[C]`` output projection bias.
@@ -92,11 +93,13 @@ def fold_output_weights(
     """
 
     def fold(
-        weight: torch.Tensor, gamma: torch.Tensor, beta: torch.Tensor, bias: torch.Tensor | None
+        weight: torch.Tensor, gamma: torch.Tensor, beta: torch.Tensor | None, bias: torch.Tensor | None
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         weight = weight.float()
-        folded = (weight * gamma.float()).to(torch.bfloat16)
-        shift = weight @ beta.float()
+        gamma = gamma.float()
+        beta = torch.zeros_like(gamma) if beta is None else beta.float()
+        folded = (weight * gamma).to(torch.bfloat16)
+        shift = weight @ beta
         if bias is not None:
             shift = shift + bias.float()
         return folded.contiguous(), folded.float().sum(-1), shift

@@ -27,7 +27,7 @@ from bionemo_ir._torch.custom_ops.trimul_kf_k2 import _config as k2_config
 from bionemo_ir._torch.custom_ops.trimul_kf_k3 import _config as k3_config
 from tests._torch import skip_if_not_sm90, source_module_available
 
-from .test_trimul_kf import _ATOL, _EPS, _k2_reference, _problem, _reference
+from .test_trimul_kf import _ATOL, _EPS, _k2_reference, _problem, _reference, _widths
 
 _K2 = k2_config.TrimulKFK2Tile
 _requires_source = pytest.mark.skipif(
@@ -61,8 +61,7 @@ def _folds(problem: dict) -> tuple[k1.TrimulKFInputFold, k3.TrimulKFOutputFold]:
 def _k1(problem: dict, layout: str | None = None) -> k1.TrimulKFK1Output:
     """K1's own selection for the problem, or that variant forced onto ``layout``."""
     x = problem["x"]
-    C = x.shape[-1]
-    op1 = k1.get_trimul_kf_k1_op(torch.bfloat16, C, C)
+    op1 = k1.get_trimul_kf_k1_op(torch.bfloat16, *_widths(problem))
     fold_in, _ = _folds(problem)
     if layout is None:
         return op1(x, problem["seqlen"], fold_in, _EPS)
@@ -74,11 +73,11 @@ def _k1(problem: dict, layout: str | None = None) -> k1.TrimulKFK1Output:
 def _chain(problem: dict, outgoing: bool, layout: str | None = None, tile=None, k3_variant: str | None = None):
     """The chain as the node runs it, with K1's layout, K2's tile or K3's variant optionally forced."""
     x = problem["x"]
-    C, N = x.shape[-1], x.shape[1]
+    (C, D), N = _widths(problem), x.shape[1]
     a, b, stats = _k1(problem, layout)
-    op2 = k2.get_trimul_kf_k2_op(torch.bfloat16, C, outgoing)
+    op2 = k2.get_trimul_kf_k2_op(torch.bfloat16, D, outgoing)
     prod = op2(a, b) if tile is None else op2.backend.run(a, b, outgoing, tile)
-    op3 = k3.get_trimul_kf_k3_op(torch.bfloat16, C, C, True)
+    op3 = k3.get_trimul_kf_k3_op(torch.bfloat16, C, D, True)
     _, fold_out = _folds(problem)
     if k3_variant is None:
         return op3(prod, x, fold_out, stats, _EPS, residual=True, actual_seqlen=problem["out_seqlen"])
@@ -201,40 +200,49 @@ def test_padded_pitch_rounds_rows_to_128_bytes():
 
 
 @pytest.mark.parametrize(
-    ("B", "N", "C", "outgoing", "lengths"),
+    ("B", "N", "C", "D", "outgoing", "lengths"),
     [
-        (1, 8, 64, True, "full"),
-        (2, 16, 128, False, "random"),
-        (3, 24, 256, True, "tail"),
-        (1, 40, 32, False, "random"),
-        (2, 264, 128, True, "random"),
-        (2, 264, 256, False, "tail"),
-        (1, 520, 256, True, "random"),
-        (1, 776, 128, False, "random"),
+        (1, 8, 64, 64, True, "full"),
+        (2, 16, 128, 128, False, "random"),
+        (3, 24, 256, 256, True, "tail"),
+        (3, 24, 384, 256, False, "tail"),
+        (1, 40, 32, 32, False, "random"),
+        (2, 264, 128, 128, True, "random"),
+        (2, 264, 256, 256, False, "tail"),
+        (2, 264, 384, 256, True, "random"),
+        (1, 520, 256, 256, True, "random"),
+        (1, 776, 128, 128, False, "random"),
     ],
     ids=lambda v: str(v),
 )
-def test_chain_matches_reference_at_small_n_and_batches(B, N, C, outgoing, lengths):
+def test_chain_matches_reference_at_small_n_and_batches(B, N, C, D, outgoing, lengths):
     """Every op on its own selection, small N and B > 1 included."""
     skip_if_not_sm90()
-    problem = _problem(B, N, C, True, lengths)
+    problem = _problem(B, N, C, True, lengths, D=D)
     out = _chain(problem, outgoing)
     torch.testing.assert_close(out.float(), _reference(problem, outgoing, True), atol=_ATOL, rtol=0)
 
 
 @pytest.mark.parametrize(
-    ("B", "N", "C", "outgoing"),
-    [(1, 264, 256, True), (2, 136, 128, False), (1, 520, 128, True), (2, 200, 64, False), (1, 824, 256, False)],
+    ("B", "N", "C", "D", "outgoing"),
+    [
+        (1, 264, 256, 256, True),
+        (2, 136, 128, 128, False),
+        (1, 520, 128, 128, True),
+        (2, 200, 64, 64, False),
+        (1, 824, 256, 256, False),
+        (2, 392, 384, 256, False),
+    ],
     ids=lambda v: str(v),
 )
 @_requires_source
-def test_padded_layout_is_bitwise_the_dense_one(B, N, C, outgoing):
+def test_padded_layout_is_bitwise_the_dense_one(B, N, C, D, outgoing):
     """K1's padded planes hold the dense values (a, b, stats) and the chain output does not change, bit for bit."""
     skip_if_not_sm90()
-    problem = _problem(B, N, C, True, "random")
+    problem = _problem(B, N, C, True, "random", D=D)
     dense, padded = _k1(problem, "dense"), _k1(problem, "padded")
     P = k1.ab_pitch(N, "padded")
-    assert dense.a.is_contiguous() and padded.a.stride() == (C * P * P, P * P, P, 1)
+    assert dense.a.is_contiguous() and padded.a.stride() == (D * P * P, P * P, P, 1)
     assert padded.b.stride() == padded.a.stride()
     assert torch.equal(dense.a, padded.a) and torch.equal(dense.b, padded.b)
     assert (dense.stats is None) == (padded.stats is None)
@@ -294,14 +302,14 @@ def test_k2_tiles_off_128_columns_keep_their_store_ring_at_small_n(tile, outgoin
         assert torch.equal(op2.backend.run(a, b, outgoing, tile), expected)
 
 
-@pytest.mark.parametrize(("N", "C"), [(264, 256), (520, 128)])
+@pytest.mark.parametrize(("N", "C", "D"), [(264, 256, 256), (520, 128, 128), (392, 384, 256)])
 @_requires_source
-def test_k3_variants_stay_in_the_error_class(N, C):
+def test_k3_variants_stay_in_the_error_class(N, C, D):
     """Every K3 variant pairing with K1's selection matches the reference as well as the shipped one."""
     skip_if_not_sm90()
-    problem = _problem(1, N, C, True, "random")
+    problem = _problem(1, N, C, True, "random", D=D)
     reference = _reference(problem, True, True)
-    writes_stats = k1_config.select(90, C, C, N).writes_stats
+    writes_stats = k1_config.select(90, C, D, N).writes_stats
     errors = {}
     for variant in k3_config.KERNEL_VARIANTS:
         if (variant in k3_config.STATS_VARIANTS) != writes_stats:
@@ -309,5 +317,5 @@ def test_k3_variants_stay_in_the_error_class(N, C):
         out = _chain(problem, True, k3_variant=variant).float()
         torch.testing.assert_close(out, reference, atol=_ATOL, rtol=0)
         errors[variant] = ((out - reference).norm() / reference.norm()).item()
-    shipped = k3_config.select(90, C, C, N).kernel_variant
+    shipped = k3_config.select(90, C, D, N).kernel_variant
     assert len(errors) >= 2 and all(error <= 1.25 * errors[shipped] for error in errors.values()), errors

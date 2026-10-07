@@ -34,7 +34,7 @@ namespace
 {
 
 constexpr char kSM90LaunchAbi[] = "trimul_kf_k2_sm90_v1";
-/* Contraction k-block of both variants. */
+/* Contraction k-block of every variant. */
 constexpr std::uint64_t kTileK = 64;
 
 /* Bare device pointers require explicit cross-device validation. */
@@ -113,8 +113,8 @@ void validate_image(KernelConfig const& config)
       "embedded CUBIN does not support configured device SM" + std::to_string(config.spec.target_sm));
   KernelSpec const& spec = config.spec;
   if (
-    (spec.kernel_variant != 0 && spec.kernel_variant != 1) || spec.tile_m == 0 || spec.tile_n == 0
-    || spec.cluster_m == 0 || spec.num_threads == 0)
+    spec.kernel_variant < 0 || spec.kernel_variant > 2 || spec.tile_m == 0 || spec.tile_n == 0 || spec.cluster_m == 0
+    || spec.num_threads == 0)
   {
     throw std::invalid_argument("trimul KF K2 CUBIN has invalid launch geometry");
   }
@@ -169,10 +169,12 @@ void launch_sm90(
   embedded::SM90LaunchInfo const& metadata = config.embedded_image->sm90;
   std::uint32_t const cluster_m = metadata.cluster_dims[0];
   std::uint32_t const cluster_n = metadata.cluster_dims[1];
-  /* K2_0 clusters along M only, K2_1 along N only. */
+  /* K2_0 and K2_2 launch their cluster along x, K2_1 along y. K2_2's x-cluster is a pair of
+   * horizontally adjacent tiles.
+   */
   if (
     metadata.cluster_dims[2] != 1 || cluster_m != spec.cluster_m
-    || (spec.kernel_variant == 0 ? cluster_n != 1 : cluster_m != 1))
+    || (spec.kernel_variant == 1 ? cluster_m != 1 : cluster_n != 1) || (spec.kernel_variant == 2 && cluster_m != 2))
     throw std::invalid_argument("trimul KF K2 CUBIN has inconsistent cluster metadata");
   std::uint64_t const k_blocks = ceil_div(static_cast<std::uint64_t>(n), kTileK);
   if (spec.defer_kmin > k_blocks)
@@ -211,19 +213,22 @@ void launch_sm90(
   std::uint64_t const sms = static_cast<std::uint64_t>(multiprocessor_count);
 
   cubin_launch_config_t launch_config{};
-  if (spec.kernel_variant == 0)
+  if (spec.kernel_variant != 1)
   {
-    /* Persistent clusters of cluster_m vertically adjacent tiles, walked (m, n, l) with m fastest.
-     * The grid is the smallest one with the same number of passes as the hardware-wide grid.
+    /* Persistent clusters of cluster_m tiles, vertically adjacent for K2_0 and horizontally for
+     * K2_2, walked (m, n, l) with m fastest. The grid is the smallest one with the same number of
+     * passes as the hardware-wide grid.
      */
-    std::uint64_t const m_clusters = ceil_div(m_tiles, cluster_m);
-    std::uint64_t const work_units = m_clusters * n_tiles * static_cast<std::uint64_t>(l);
+    bool const pairs_columns = spec.kernel_variant == 2;
+    std::uint64_t const m_clusters = ceil_div(m_tiles, pairs_columns ? 1 : cluster_m);
+    std::uint64_t const n_clusters = ceil_div(n_tiles, pairs_columns ? cluster_m : 1);
+    std::uint64_t const work_units = m_clusters * n_clusters * static_cast<std::uint64_t>(l);
     std::uint64_t const max_active_clusters = sms / cluster_m;
     if (max_active_clusters == 0)
       throw std::invalid_argument("current CUDA device cannot hold one trimul KF K2 cluster");
     std::uint64_t const passes = ceil_div(work_units, max_active_clusters);
     device_params.schedule[0] = static_cast<std::int32_t>(checked_u32(m_clusters, "trimul KF K2 row clusters"));
-    device_params.schedule[1] = static_cast<std::int32_t>(checked_u32(n_tiles, "trimul KF K2 column tiles"));
+    device_params.schedule[1] = static_cast<std::int32_t>(checked_u32(n_clusters, "trimul KF K2 column clusters"));
     device_params.schedule[2] = static_cast<std::int32_t>(checked_u32(work_units, "trimul KF K2 work units"));
     launch_config.grid_x = cluster_m;
     launch_config.grid_y = 1;

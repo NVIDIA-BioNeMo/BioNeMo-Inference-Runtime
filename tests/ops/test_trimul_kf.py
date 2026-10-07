@@ -16,9 +16,12 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 import torch
 
+from bionemo_ir import dsl_kernels
 from bionemo_ir._torch.custom_ops import trimul_kf_k1 as k1
 from bionemo_ir._torch.custom_ops import trimul_kf_k2 as k2
 from bionemo_ir._torch.custom_ops import trimul_kf_k3 as k3
@@ -42,33 +45,47 @@ _EPS = 1e-5
 # bf16 a, b and product between fp32 stages.
 _ATOL = 8e-2
 
-# (B, N, C=D, outgoing, has_bias, residual, lengths), selecting every K1 variant and its padded a/b
-# layout (N = 552), K2 tiles of every variant, K2_1's odd-cluster fallback (N = 392 at C = 64), and the
-# K3 variants the configs select. N * N % 128 != 0 at N = 136 and 168, where batches run one launch each.
+# (B, N, C, D, outgoing, has_bias, residual, lengths), selecting every K1 variant and its padded a/b
+# layout (N = 520, 552, 1016), every K2 tile the D = 128 and 256 bundles run, K2_1's odd-cluster fallback
+# (N = 392 at C = 64), and the K3 variants the configs select, with and without the residual.
+# N * N % 128 != 0 at N = 136, 168, 200 and 376, where batches run one launch each.
 _CASES = [
-    (1, 128, 64, True, False, False, "full"),
-    (1, 128, 32, False, True, True, "tail"),
-    (1, 256, 32, True, True, True, "random"),
-    (1, 256, 128, False, False, True, "random"),
-    (1, 384, 128, False, True, True, "tail"),
-    (1, 392, 128, True, False, True, "random"),
-    (1, 512, 64, True, True, True, "random"),
-    (2, 136, 128, False, True, True, "random"),
-    (3, 168, 64, True, True, False, "random"),
-    (1, 128, 256, False, True, True, "full"),
-    (1, 256, 256, True, True, True, "random"),
-    (1, 384, 256, False, False, True, "tail"),
-    (2, 392, 256, True, True, True, "random"),
-    (1, 1024, 256, False, True, True, "tail"),
-    (1, 264, 256, True, False, True, "tail"),
-    (2, 552, 128, False, True, True, "random"),
-    (1, 392, 64, False, False, True, "tail"),
+    (1, 128, 64, 64, True, False, False, "full"),
+    (1, 128, 32, 32, False, True, True, "tail"),
+    (1, 256, 32, 32, True, True, True, "random"),
+    (1, 256, 128, 128, False, False, True, "random"),
+    (1, 384, 128, 128, False, True, True, "tail"),
+    (1, 392, 128, 128, True, False, True, "random"),
+    (1, 512, 64, 64, True, True, True, "random"),
+    (2, 136, 128, 128, False, True, True, "random"),
+    (3, 168, 64, 64, True, True, False, "random"),
+    (1, 128, 256, 256, False, True, True, "full"),
+    (1, 256, 256, 256, True, True, True, "random"),
+    (1, 384, 256, 256, False, False, True, "tail"),
+    (2, 392, 256, 256, True, True, True, "random"),
+    (1, 1024, 256, 256, False, True, True, "tail"),
+    (1, 264, 256, 256, True, False, True, "tail"),
+    (2, 552, 128, 128, False, True, True, "random"),
+    (1, 392, 64, 64, False, False, True, "tail"),
+    (1, 128, 384, 256, True, False, True, "full"),
+    (1, 136, 384, 256, True, True, True, "tail"),
+    (1, 168, 384, 256, False, True, False, "random"),
+    (2, 200, 384, 256, False, False, True, "random"),
+    (1, 256, 384, 256, True, True, False, "random"),
+    (1, 264, 384, 256, True, False, True, "tail"),
+    (2, 376, 384, 256, False, True, True, "random"),
+    (1, 400, 384, 256, False, True, True, "tail"),
+    (1, 520, 384, 256, False, True, True, "random"),
+    (1, 1016, 384, 256, True, True, True, "tail"),
+    (1, 264, 128, 128, True, True, True, "random"),
+    (1, 520, 128, 128, True, False, True, "tail"),
 ]
 
 
 def _case_id(case) -> str:
-    B, N, C, outgoing, has_bias, residual, lengths = case
-    return f"B{B}-N{N}-C{C}-{'out' if outgoing else 'in'}-bias{int(has_bias)}-res{int(residual)}-{lengths}"
+    B, N, C, D, outgoing, has_bias, residual, lengths = case
+    widths = f"C{C}" if C == D else f"C{C}-D{D}"
+    return f"B{B}-N{N}-{widths}-{'out' if outgoing else 'in'}-bias{int(has_bias)}-res{int(residual)}-{lengths}"
 
 
 def _reject_cubin(*_args, **_kwargs):
@@ -97,13 +114,16 @@ def _assert_dispatched(caches: list[dict], mode: str) -> None:
         assert all(isinstance(value, CuTeDSLKernelLibraryExecutable) == (mode == "cubin") for value in cache.values())
 
 
-def _problem(B: int, N: int, C: int, has_bias: bool, lengths: str, seed: int = 0) -> dict[str, torch.Tensor | None]:
+def _problem(
+    B: int, N: int, C: int, has_bias: bool, lengths: str, seed: int = 0, D: int | None = None
+) -> dict[str, torch.Tensor | None]:
+    """A chain problem of width ``C`` and hidden width ``D`` (``C`` unless given)."""
     generator = torch.Generator(device="cuda").manual_seed(seed)
 
     def rnd(*shape: int, scale: float = 1.0) -> torch.Tensor:
         return (torch.randn(*shape, device="cuda", generator=generator) * scale).to(torch.bfloat16)
 
-    D = C
+    D = C if D is None else D
     seqlen = torch.full((B, N), N, device="cuda", dtype=torch.int32)
     out_seqlen = seqlen.clone()
     if lengths == "tail":
@@ -133,6 +153,11 @@ def _problem(B: int, N: int, C: int, has_bias: bool, lengths: str, seed: int = 0
     return problem
 
 
+def _widths(problem: dict) -> tuple[int, int]:
+    """The problem's ``(C, D)``."""
+    return problem["x"].shape[-1], problem["p_in_weight"].shape[0] // 2
+
+
 def _run_chain(problem: dict, outgoing: bool, residual: bool) -> torch.Tensor:
     return _run_chain_stages(problem, outgoing, residual)[-1]
 
@@ -140,10 +165,10 @@ def _run_chain(problem: dict, outgoing: bool, residual: bool) -> torch.Tensor:
 def _run_chain_stages(problem: dict, outgoing: bool, residual: bool) -> tuple[torch.Tensor | None, ...]:
     """``a``, ``b``, ``stats``, the product and the output of the op chain."""
     x = problem["x"]
-    C = x.shape[-1]
-    op1 = k1.get_trimul_kf_k1_op(torch.bfloat16, C, C)
-    op2 = k2.get_trimul_kf_k2_op(torch.bfloat16, C, outgoing)
-    op3 = k3.get_trimul_kf_k3_op(torch.bfloat16, C, C, residual)
+    C, D = _widths(problem)
+    op1 = k1.get_trimul_kf_k1_op(torch.bfloat16, C, D)
+    op2 = k2.get_trimul_kf_k2_op(torch.bfloat16, D, outgoing)
+    op3 = k3.get_trimul_kf_k3_op(torch.bfloat16, C, D, residual)
     assert op1 is not None and op2 is not None and op3 is not None
     fold_in = k1.fold_input_weights(
         problem["norm_in_weight"],
@@ -238,13 +263,34 @@ def _reference(problem: dict, outgoing: bool, residual: bool) -> torch.Tensor:
     return _k3_reference(_k2_reference(a, b, outgoing), problem, residual)
 
 
+def _skip_without_room(B: int, N: int, C: int, D: int) -> None:
+    """Skip a case the free GPU memory cannot hold.
+
+    The fp32 reference is the largest term, and the widest cases need several
+    GiB. Tests sharing one device run out before the kernels are at fault, so
+    size the requirement from the case rather than failing on allocation.
+    """
+    torch.cuda.empty_cache()
+    P = k1_config.ab_pitch(N, k1_config.ab_layout("pad_n_mod_16_8", N))
+    footprint = B * (
+        4 * N * N * C  # bf16 x and out
+        + 4 * D * P * P  # bf16 a and b
+        + 2 * D * N * N  # bf16 product
+        + 8 * N * N * C  # fp32 reference and one intermediate
+    )
+    needed = footprint + footprint // 4
+    if torch.cuda.mem_get_info()[0] < needed:
+        pytest.skip(f"needs {needed / 2**30:.1f} GiB of free GPU memory")
+
+
 @pytest.mark.parametrize("mode", _CUTEDSL_MODES)
 @pytest.mark.parametrize("case", _CASES, ids=_case_id)
 def test_chain_matches_reference(mode, case, monkeypatch):
     skip_if_not_sm90()
-    B, N, C, outgoing, has_bias, residual, lengths = case
+    B, N, C, D, outgoing, has_bias, residual, lengths = case
+    _skip_without_room(B, N, C, D)
     caches = _use_mode(mode, monkeypatch)
-    problem = _problem(B, N, C, has_bias, lengths)
+    problem = _problem(B, N, C, has_bias, lengths, D=D)
     out = _run_chain(problem, outgoing, residual)
     _assert_dispatched(caches, mode)
     reference = _reference(problem, outgoing, residual)
@@ -252,16 +298,24 @@ def test_chain_matches_reference(mode, case, monkeypatch):
     torch.testing.assert_close(out.float(), reference, atol=_ATOL, rtol=0)
 
 
-# Dense and padded K1 planes at both widths, and each K2 tile list's widths.
+# Dense and padded K1 planes at C = 128, 256 and 384, K3 with and without the residual, and each K2 tile
+# list's widths.
 _BITWISE_CASES = [
     _CASES[0],
     _CASES[4],
     _CASES[7],
+    _CASES[9],
     _CASES[11],
     _CASES[13],
     _CASES[14],
     _CASES[15],
-    (1, 520, 256, True, True, True, "random"),
+    _CASES[17],
+    _CASES[19],
+    _CASES[21],
+    _CASES[25],
+    _CASES[27],
+    _CASES[28],
+    (1, 520, 256, 256, True, True, True, "random"),
 ]
 
 
@@ -271,8 +325,8 @@ def test_cubin_chain_matches_source_chain_bitwise(case, monkeypatch):
     skip_if_not_sm90()
     if set(_CUTEDSL_MODES) != {"source", "cubin"}:
         pytest.skip("needs BIOIR_TEST_CUTEDSL_MODES=source,cubin")
-    B, N, C, outgoing, has_bias, residual, lengths = case
-    problem = _problem(B, N, C, has_bias, lengths)
+    B, N, C, D, outgoing, has_bias, residual, lengths = case
+    problem = _problem(B, N, C, has_bias, lengths, D=D)
     outputs = []
     for mode in ("source", "cubin"):
         with monkeypatch.context() as patch:
@@ -428,8 +482,8 @@ def test_k2_tiles_fill_their_clusters_and_deferred_stores(D):
     assert k2_config.runtime_tile(paired, 384) == paired
 
 
-def test_shipped_shapes_cover_dims_up_to_256():
-    shapes = {(32, 32), (64, 64), (128, 128), (256, 256)}
+def test_shipped_shapes():
+    shapes = {(32, 32), (64, 64), (128, 128), (256, 256), (384, 256)}
     assert k1_config.shipped_shapes(90) == shapes == k3_config.shipped_shapes(90)
     assert k2_config.shipped_widths(90) == {32, 64, 128, 256}
     assert k1_config.shipped_shapes(80) == frozenset()
@@ -543,3 +597,28 @@ def test_ops_reject_empty_problems(B, N):
     assert not op3.accepts(channel_major, x)
     with pytest.raises(ValueError, match="non-empty"):
         op2(channel_major, channel_major)
+
+
+def test_source_kernels_never_request_programmatic_dependent_launch():
+    """The traced launches must not ask for PDL, which is unsafe under graph capture.
+
+    PDL is correct under plain stream ordering, but a capturing stream records
+    nodes rather than launching them and the attribute does not survive into
+    the graph: ``griddepcontrol.wait`` is then left with no trigger behind it,
+    so a replay can read a predecessor's output while it is still being
+    written. The resulting mismatch is a race -- it surfaced on a 14-layer
+    trunk yet not on an 8-layer one -- so no output comparison detects it
+    reliably and this guards the invariant directly instead.
+
+    ``use_pdl`` is a trace-time constant here, so this path cannot tell a
+    capture from a plain launch. The CUBIN launcher decides per launch and
+    keeps PDL everywhere except capture.
+    """
+    sources = Path(dsl_kernels.__file__).parent / "cute"
+    checked = 0
+    for name in ("sm90_trimul_kf_k1", "sm90_trimul_kf_k2", "sm90_trimul_kf_k3"):
+        text = (sources / f"{name}.py").read_text()
+        assert "use_pdl=False," in text, f"{name} should launch without PDL"
+        assert "use_pdl=True" not in text, f"{name} requests PDL, which breaks CUDA graph replay"
+        checked += text.count("use_pdl=")
+    assert checked == 8, f"expected the chain's 8 launch sites, found {checked}"

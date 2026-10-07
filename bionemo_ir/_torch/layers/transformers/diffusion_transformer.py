@@ -278,7 +278,7 @@ class DiffusionTransformerLayer(nn.Module):
             buffers=buffers,
             residual=a,
         )
-        a = a + self.transition(a, s, buffers=buffers, buffer_key="dit_bsd_scratch")
+        a = self.transition(a, s, buffers=buffers, buffer_key="dit_bsd_scratch", residual=a)
         if self.post_lnorm is not None:
             a = self.post_lnorm(a)
         return a

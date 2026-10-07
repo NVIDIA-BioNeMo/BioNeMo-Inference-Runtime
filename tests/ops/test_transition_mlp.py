@@ -202,11 +202,34 @@ def test_residual_specific_entries_win_over_entries_for_both_states():
         "S=1024|act=relu|bias=1|mask=1|res=1": {"weight_stages": 12},
     }
     plain = TransitionMlpVariant("relu", True, True, False, 64, 256)
-    resolved = bundle_variants(configs, plain.width, plain.hidden)
+    resolved = bundle_variants(configs, plain.width, plain.hidden, "sm90")
     assert set(resolved) == {plain, plain._replace(has_residual=True)}
-    assert {bucket: tile for bucket, (_, tile) in resolved[plain].items()} == {ANY_SIZE: {"weight_stages": 4}}
+    assert {bucket: entry.tile_params for bucket, entry in resolved[plain].items()} == {ANY_SIZE: {"weight_stages": 4}}
     residual = resolved[plain._replace(has_residual=True)]
-    assert {bucket: tile["weight_stages"] for bucket, (_, tile) in residual.items()} == {256: 8, 1024: 12}
+    assert {bucket: entry.tile_params["weight_stages"] for bucket, entry in residual.items()} == {256: 8, 1024: 12}
+
+
+def test_an_entry_naming_a_kernel_abi_runs_that_kernel():
+    """The bundle's ABI runs every entry that names none, so few rows can take the SM80 kernel on SM90."""
+    configs = {
+        "S=16|act=silu_gate|bias=0|mask=1|res=0": {"kernel_abi": "sm80", "tile_m": 32, "num_warps": 2, "stages": 4},
+        "S=128|act=silu_gate|bias=0|mask=1|res=0": {"weight_stages": 5, "x_stages": 2},
+    }
+    ((variant, entries),) = bundle_variants(configs, 256, 512, "sm90").items()
+    assert variant == TransitionMlpVariant("silu_gate", False, True, False, 256, 512)
+    assert {bucket: (entry.kernel_abi, entry.tile_params) for bucket, entry in entries.items()} == {
+        16: ("sm80", {"tile_m": 32, "num_warps": 2, "stages": 4}),
+        128: ("sm90", {"weight_stages": 5, "x_stages": 2}),
+    }
+
+
+def test_an_entry_naming_a_kernel_abi_its_sm_cannot_run_is_rejected(tmp_path, monkeypatch):
+    monkeypatch.delenv("BIOIR_TUNED_CONFIG_FOLDER", raising=False)
+    monkeypatch.setattr(transition_config, "CONFIGS_DIR", tmp_path)
+    configs = {"S=16|act=relu|bias=1|mask=1": {"kernel_abi": "sm90", "weight_stages": 4}}
+    (tmp_path / "W64_H256_sm86.json").write_text(json.dumps({"kernel_abi": "sm80", "configs": configs}))
+    with pytest.raises(ValueError, match="which SM86 cannot run"):
+        get_tile_params(86, TransitionMlpVariant("relu", True, True, True, 64, 256))
 
 
 @pytest.mark.parametrize(
@@ -311,6 +334,29 @@ def test_three_way_kernels_take_every_operand(kernel_abi, tmp_path, monkeypatch)
             _check_guarded_output(_launch_into_guarded_output(op, operands), operands, variant)
 
 
+@pytest.mark.parametrize(
+    ("variant", "tile", "message"),
+    [
+        # The epilogue waits for both warpgroups' residual tiles, two column tiles each, before it frees one.
+        (TransitionMlpVariant("relu", True, True, True, 384, 768), {"weight_stages": 3}, "at least 4 weight stages"),
+        (TransitionMlpVariant("silu_gate", False, True, False, 384, 768), {"weight_stages": 5}, "ReLU only"),
+    ],
+    ids=["residual-on-three-stages", "silu-gate"],
+)
+def test_sm90_kernel_rejects_c384_configs_it_cannot_run(variant, tile, message):
+    skip_if_not_sm90()
+    try:
+        source = transition_cutedsl.load_source_module(transition_cutedsl.__package__)
+    except ImportError:
+        pytest.skip("kernel sources are stripped from this build")
+    import cutlass
+
+    with pytest.raises(ValueError, match=message):
+        source.compile_transition_mlp_source(
+            TransitionMlpCuTe(sm_version=90).compile, cutlass.BFloat16, variant, tile, "sm90"
+        )
+
+
 @pytest.mark.parametrize("sm", _SM8X)
 def test_sm8x_configs_fit_their_shared_memory(sm):
     """Every SM8x config fits its SM's shared memory per block, and names only the SM80 kernel's tile knobs."""
@@ -404,7 +450,8 @@ def test_three_way_op_declines_a_two_way_projection():
 @pytest.mark.parametrize(
     "variant",
     [
-        TransitionMlpVariant("relu", True, True, True, 384, 768),
+        # SM90 ships 384x768 for the pair transition, which adds the residual in the kernel.
+        TransitionMlpVariant("relu", True, True, False, 384, 768),
         TransitionMlpVariant("relu", True, True, False, 256, 768),
         TransitionMlpVariant("relu", False, True, True, 256, 512),
         TransitionMlpVariant("silu_gate", False, False, False, 256, 512),
@@ -481,11 +528,15 @@ def test_cubin_launch_matches_source_launch_bitwise(variant, bucket, monkeypatch
     assert isinstance(cubin, transition_cutedsl.CuTeDSLKernelLibraryExecutable)
     # Tiles that differ only in pipeline depth compute the same bits, so check the image is this bucket's.
     tile = get_tile_params(90, variant, bucket)
-    kernel = sources.make_kernel(variant, tile, kernel_abi="sm90")
+    kernel_abi = transition_config.kernel_abi(90, variant, bucket)
+    kernel = sources.make_kernel(variant, tile, kernel_abi=kernel_abi)
+    shape = (variant.width, variant.hidden, variant.activation, variant.has_bias)
+    if kernel_abi == "sm90":
+        smem_bytes = kernel.dynamic_smem_bytes(*shape, tile["weight_stages"], tile["x_stages"])
+    else:
+        smem_bytes = kernel.dynamic_smem_bytes(*shape, tile_m=tile["tile_m"], stages=tile["stages"])
     assert cubin._config.spec.bucket == bucket
-    assert cubin._config.dynamic_smem_bytes == kernel.dynamic_smem_bytes(
-        variant.width, variant.hidden, variant.activation, variant.has_bias, tile["weight_stages"], tile["x_stages"]
-    )
+    assert cubin._config.dynamic_smem_bytes == smem_bytes
 
     for batch, tokens in ((1, 11), (3, 131)):
         x, w1, b1, w2, b2, residual, mask = _operands(variant, batch, tokens, seed=batch)
@@ -617,51 +668,36 @@ def test_sm8x_gated_cubin_preserves_bf16_rounding_boundaries(three_way, monkeypa
     assert torch.equal(output, expected)
 
 
-@pytest.mark.parametrize("sm", [80, 86, 89, 90])
-@pytest.mark.parametrize("activation", ["relu", "silu_gate", "silu_gate_3way"])
-@pytest.mark.parametrize("rows", [121, 4095, 4096, 16384, 896 * 896, 896 * 896 + 1])
-def test_fused_layer_policy_preserves_small_sm8x_gated_calls(sm, activation, rows):
-    variant = TransitionMlpVariant(activation, False, False, False, 128, 256)
-    op = TransitionMlpOp(TransitionMlpCuTe(sm_version=sm), variant)
-    like = torch.empty((1, rows, 128), device="meta", dtype=torch.bfloat16)
-    expected = sm == 90 or activation == "relu" or rows >= 4096
-    if sm == 86 and activation == "silu_gate" and rows > 896 * 896:
-        expected = False
-    assert op.prefers_fused(like) == expected
-
-
 @pytest.mark.parametrize("residual", [False, True])
-def test_small_sm8x_transition_keeps_unfused_output(residual):
+def test_small_sm8x_transition_uses_fused_output(residual):
     if not torch.cuda.is_available() or torch.cuda.get_device_capability() not in ((8, 0), (8, 6), (8, 9)):
         pytest.skip("requires an SM8x GPU")
     layer = _init(Transition(128, 512, dtype=torch.bfloat16).cuda())
     assert layer._fused_mlp_ops[(False, residual)] is not None
     x = torch.randn((1, 42, 42, 128), device="cuda", dtype=torch.bfloat16)
     with torch.inference_mode():
-        assert layer._forward_fused(x, None, residual=residual, inplace=False) is None
-        update = layer._forward_impl(x, None)
-        expected = x + update if residual else update
+        expected = layer._forward_fused(x, None, residual=residual, inplace=False)
+        assert expected is not None
         output = layer(x, residual=residual)
     assert torch.equal(output, expected)
 
 
 @pytest.mark.parametrize("using_silu", [False, True])
-def test_small_sm8x_conditioned_transition_keeps_projection_fallback(using_silu):
+def test_small_sm8x_conditioned_transition_uses_fused_output(using_silu):
     if not torch.cuda.is_available() or torch.cuda.get_device_capability() not in ((8, 0), (8, 6), (8, 9)):
         pytest.skip("requires an SM8x GPU")
     layer = _init(ConditionedTransitionBlock(128, 128, dtype=torch.bfloat16, using_silu=using_silu).cuda())
     assert layer._fused_mlp_op is not None
     a = torch.randn((1, 121, 128), device="cuda", dtype=torch.bfloat16)
-    assert not layer._fused_mlp_op.prefers_fused(a)
     with torch.inference_mode():
         output = layer._swiglu_mlp(a)
-        layer._fused_mlp_op = None
-        expected = layer._swiglu_mlp(a)
+        expected = layer._fused_mlp_op(a, layer.fused_swl_a_to_b.weight, None, layer.b_to_a.weight, None, None, None)
+        assert expected is not None
     assert torch.equal(output, expected)
 
 
-def test_large_sm8x_conditioned_transition_preserves_fp32_projection():
-    """Conditioned blocks keep the dual GEMM's unrounded gate even above the fusion cutoff."""
+def test_large_sm8x_conditioned_transition_uses_fused_bf16_projection():
+    """An available full MLP takes precedence over the dual GEMM's FP32 gate."""
     if not torch.cuda.is_available() or torch.cuda.get_device_capability() not in ((8, 0), (8, 6), (8, 9)):
         pytest.skip("requires an SM8x GPU")
     layer = ConditionedTransitionBlock(128, 128, dtype=torch.bfloat16, using_silu=True).cuda()
@@ -675,29 +711,26 @@ def test_large_sm8x_conditioned_transition_preserves_fp32_projection():
         weight[:, 1] = 3.0 / 1024.0
         layer.b_to_a.weight.zero_()
         layer.b_to_a.weight[:, 0] = 1.0
-    assert op.prefers_fused(a)
-    assert not op.prefers_fused(a, fp32_projection=True)
     with torch.inference_mode():
         projection = layer._dual_gemm_silu_op(a, weight[layer.dim_inner :], weight[: layer.dim_inner], gate="silu")
         expected = layer.b_to_a(projection)
         rounded = op(a, weight, None, layer.b_to_a.weight, None, None, None)
         output = layer._swiglu_mlp(a)
     assert rounded is not None and not torch.equal(rounded, expected)
-    assert torch.equal(output, expected)
+    assert torch.equal(output, rounded)
 
 
-def test_large_sm86_transition_keeps_unfused_output():
-    """Pair transitions beyond the validated SM86 fusion range preserve the original arithmetic."""
+def test_large_sm86_transition_uses_fused_output():
+    """An available SM86 variant runs above the former row cutoff."""
     if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (8, 6):
         pytest.skip("requires SM86")
     layer = _init(Transition(128, 512, dtype=torch.bfloat16).cuda())
     op = layer._fused_mlp_ops[(False, True)]
     assert op is not None
     x = torch.randn((1, 897, 897, 128), device="cuda", dtype=torch.bfloat16)
-    assert not op.prefers_fused(x)
     with torch.inference_mode():
-        assert layer._forward_fused(x, None, residual=True, inplace=False) is None
-        expected = x + layer._forward_impl(x, None)
+        expected = layer._forward_fused(x, None, residual=True, inplace=False)
+        assert expected is not None
         output = layer(x, residual=True)
     assert torch.equal(output, expected)
 

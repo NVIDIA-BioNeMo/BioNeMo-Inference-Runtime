@@ -26,6 +26,7 @@ from test_utils.boltz.ref_layers import RefConditionedTransitionBlock
 from bionemo_ir._torch.layers.transition import ConditionedTransitionBlock, MSATransition, PairTransition, Transition
 from bionemo_ir._torch.utils import ChunkPolicy
 from bionemo_ir.utils import str_dtype_to_torch
+from tests._torch import init_module_weights, skip_if_not_sm90
 
 
 @dataclass(kw_only=True, frozen=True)
@@ -298,12 +299,92 @@ class _CountingKernel:
     def accepts(self, *args):
         return self.op.accepts(*args)
 
-    def prefers_fused(self, like, **kwargs):
-        return self.op.prefers_fused(like, **kwargs)
-
     def __call__(self, *args, **kwargs):
         self.calls += 1
         return self.op(*args, **kwargs)
+
+
+@pytest.mark.parametrize("batch", [1, 2])
+@pytest.mark.parametrize("normalize", [False, True])
+@pytest.mark.parametrize("masked", [False, True])
+@pytest.mark.parametrize("residual,inplace", [(False, False), (True, False), (True, True)])
+def test_transition_fuses_each_chunk(batch: int, normalize: bool, masked: bool, residual: bool, inplace: bool) -> None:
+    """A partial final chunk fuses its own residual, including non-contiguous batch slices."""
+    skip_if_not_sm90()
+    torch.manual_seed(29)
+    layer = init_module_weights(
+        Transition(
+            64,
+            128,
+            normalize=normalize,
+            dtype=torch.bfloat16,
+            auto_chunk_policy=ChunkPolicy(chunk_size=5, min_size=1),
+        ).cuda()
+    )
+    counter = _CountingKernel(layer._fused_mlp_ops[(masked, residual)])
+    layer._fused_mlp_ops[(masked, residual)] = counter
+    x = torch.randn(batch, 13, 17, 64, device="cuda", dtype=torch.bfloat16)
+    mask = (torch.rand(batch, 13, 17, device="cuda") > 0.3).to(x.dtype) if masked else None
+    original = x.clone()
+    with torch.inference_mode():
+        update = layer._forward_impl(x, mask)
+        expected = x + update if residual else update
+        output = layer(x, mask, residual=residual, inplace=inplace)
+    torch.testing.assert_close(output, expected, atol=0.05, rtol=0.02)
+    assert counter.calls == 3
+    assert (output.data_ptr() == x.data_ptr()) == inplace
+    if not inplace:
+        assert torch.equal(x, original)
+    if masked and residual:
+        assert torch.equal(output[mask == 0], original[mask == 0])
+
+
+@pytest.mark.parametrize("layout", ["transposed", "misaligned"])
+def test_transition_chunk_layout_and_graph_replay(layout: str) -> None:
+    """Chunk fusion preserves aliasing and fallback for unsupported residual alignment."""
+    skip_if_not_sm90()
+    layer = init_module_weights(
+        Transition(64, 128, dtype=torch.bfloat16, auto_chunk_policy=ChunkPolicy(chunk_size=5, min_size=1)).cuda()
+    )
+    counter = _CountingKernel(layer._fused_mlp_ops[(False, True)])
+    layer._fused_mlp_ops[(False, True)] = counter
+    storage = torch.randn(2, 17, 13, 64 if layout == "transposed" else 65, device="cuda", dtype=torch.bfloat16)
+    x = storage.transpose(1, 2) if layout == "transposed" else storage[0:1, :, :, 1:]
+    with torch.inference_mode():
+        original = x.clone()
+        expected = x + layer._forward_impl(x)
+        output = layer(x, residual=True, inplace=True)
+        assert output is x
+        torch.testing.assert_close(output, expected, atol=0.05, rtol=0.02)
+        if layout == "misaligned":
+            assert counter.calls == 0
+        graph = torch.cuda.CUDAGraph()
+        with torch.cuda.graph(graph):
+            layer(x, residual=True, inplace=True)
+        x.copy_(-original)
+        expected = x + layer._forward_impl(x)
+        graph.replay()
+        torch.testing.assert_close(x, expected, atol=0.05, rtol=0.02)
+
+
+@pytest.mark.parametrize("residual", [False, True])
+def test_pair_transition_fuses_each_chunk(residual: bool) -> None:
+    """PairTransition tries the ReLU kernel per slice instead of bypassing it under chunking."""
+    skip_if_not_sm90()
+    layer = init_module_weights(
+        PairTransition(128, 4, dtype=torch.bfloat16, auto_chunk_policy=ChunkPolicy(chunk_size=5, min_size=1)).cuda()
+    )
+    counter = _CountingKernel(layer._fused_mlp_ops[residual])
+    layer._fused_mlp_ops[residual] = counter
+    x = torch.randn(2, 13, 17, 128, device="cuda", dtype=torch.bfloat16)
+    mask = (torch.rand(2, 13, 17, device="cuda") > 0.3).to(x.dtype)
+    with torch.inference_mode():
+        expected = layer._forward_impl(x, mask, residual=residual)
+        output = layer(x, mask, residual=residual)
+    assert counter.calls == 3
+    torch.testing.assert_close(output, expected, atol=0.05, rtol=0.02)
+    if residual:
+        assert torch.equal(output[mask == 0], x[mask == 0])
 
 
 @pytest.mark.parametrize(
@@ -344,11 +425,6 @@ def test_conditioned_transition_kernel_path_matches_split_projection(
 
     a = torch.randn(*leading_shape, dim_single, device="cuda", dtype=torch.bfloat16)
     s = torch.randn(*leading_shape, 128, device="cuda", dtype=torch.bfloat16)
-    expected_calls = (
-        int(module._fused_mlp_op.prefers_fused(a, fp32_projection=module._dual_gemm_silu_op is not None))
-        if kernel_attr == "_fused_mlp_op"
-        else 1
-    )
     kernel = _CountingKernel(getattr(module, kernel_attr))
     setattr(module, kernel_attr, kernel)
     with torch.inference_mode():
@@ -356,5 +432,5 @@ def test_conditioned_transition_kernel_path_matches_split_projection(
         setattr(module, kernel_attr, None)
         split = module(a, s)
 
-    assert kernel.calls == expected_calls
+    assert kernel.calls == 1
     torch.testing.assert_close(fused, split, atol=2e-2, rtol=2e-2)

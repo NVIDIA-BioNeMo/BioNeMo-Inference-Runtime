@@ -34,27 +34,44 @@ namespace bioir::cutedsl::gated_sigmoid::embedded
 struct CubinImage;
 }
 
-/* Direct CUDA Driver launch ABI for the Ampere-style gated-sigmoid GEMM.
+/* Direct CUDA Driver launch ABIs for the gated-sigmoid kernels.
  *
- * This is the device-kernel ABI, not the high-level CuTeDSL __call__ ABI, and
- * was read back from the compiled CUBINs' EIATTR_KPARAM_INFO. Two details are
- * not visible from the Python signature:
+ * These are the device-kernel ABIs, not the high-level CuTeDSL __call__ ABIs,
+ * read back from the compiled CUBINs' EIATTR_KPARAM_INFO. Details not visible
+ * from the Python signatures:
  *
- *  - `rasterization_factor` is ordinal 5, computed on the host. The Python
- *    __call__ takes 7 arguments; the device kernel takes 8 parameters.
- *  - `has_bias=false` REMOVES the bias slot rather than passing null, so the
- *    parameter bank is 108 bytes instead of 124 and the ordinals after it
- *    shift down by one. The bias flag is therefore an ABI axis.
+ *  - An absent bias, residual or mask REMOVES its slot rather than passing
+ *    null, and the ordinals after it shift down. Each flag is an ABI axis.
+ *  - SM80: `rasterization_factor` follows `output` and is computed on the host.
+ *  - SM90: the WGMMA tiled MMA keeps a runtime `accumulate` flag, a 1-byte
+ *    slot after `output` that starts false. The grid decomposition (`n_it`,
+ *    `n_nt`, `n_chunks`), `N` and the K-block count follow `chunk` and are
+ *    computed on the host.
  *
- * The layout/tiled-copy/tiled-mma arguments in the @cute.kernel signature are
+ * The layout/tiled-copy/tiled-mma arguments in the @cute.kernel signatures are
  * compile-time objects and are traced away; they occupy no parameter slot.
  */
 namespace bioir::cutedsl::gated_sigmoid::abi
 {
 
-inline constexpr std::size_t kSM80ParameterCountWithBias = 8;
-inline constexpr std::size_t kSM80ParameterCountNoBias = 7;
-inline constexpr std::size_t kSM80MaxParameterCount = kSM80ParameterCountWithBias;
+inline constexpr std::size_t kSM80MaxParameterCount = 10;
+inline constexpr std::size_t kSM90MaxParameterCount = 16;
+
+inline constexpr std::size_t optional_operand_count(bool has_bias, bool has_residual, bool has_mask)
+{
+  return static_cast<std::size_t>(has_bias) + static_cast<std::size_t>(has_residual)
+    + static_cast<std::size_t>(has_mask);
+}
+
+inline constexpr std::size_t sm80_parameter_count(bool has_bias, bool has_residual, bool has_mask)
+{
+  return 7 + optional_operand_count(has_bias, has_residual, has_mask);
+}
+
+inline constexpr std::size_t sm90_parameter_count(bool has_bias, bool has_residual, bool has_mask)
+{
+  return 13 + optional_operand_count(has_bias, has_residual, has_mask);
+}
 
 struct SM80Params
 {
@@ -62,17 +79,39 @@ struct SM80Params
   cute_tensor_s2_d1_t weight;
   cute_tensor_s1_d0_t bias;
   cute_tensor_s2_d1_t mha_out;
+  cute_tensor_s2_d1_t residual;
+  cute_tensor_s1_d0_t mask;
   cute_tensor_s2_d1_t output;
   std::int32_t rasterization_factor;
   std::int32_t mult;
   std::int32_t inner;
 };
 
+struct SM90Params
+{
+  cute_tensor_s2_d1_t s;
+  cute_tensor_s2_d1_t weight;
+  cute_tensor_s1_d0_t bias;
+  cute_tensor_s2_d1_t mha_out;
+  cute_tensor_s2_d1_t residual;
+  cute_tensor_s1_d0_t mask;
+  cute_tensor_s2_d1_t output;
+  std::uint8_t mma_accumulate;
+  std::int32_t mult;
+  std::int32_t inner;
+  std::int32_t chunk;
+  std::int32_t n_it;
+  std::int32_t n_nt;
+  std::int32_t n_chunks;
+  std::int32_t N;
+  std::int32_t k_blocks;
+};
+
 /* Both params and kernel_params must remain alive until the CUDA launch call
- * returns. Returns the number of populated entries, which depends on has_bias.
+ * returns. Each returns the number of populated entries.
  */
-inline std::size_t
-pack_sm80_kernel_params(SM80Params* params, void* kernel_params[kSM80MaxParameterCount], bool has_bias)
+template <typename Params>
+inline std::size_t pack_operands(Params* params, void** kernel_params, bool has_bias, bool has_residual, bool has_mask)
 {
   std::size_t index = 0;
   kernel_params[index++] = &params->s;
@@ -80,35 +119,44 @@ pack_sm80_kernel_params(SM80Params* params, void* kernel_params[kSM80MaxParamete
   if (has_bias)
     kernel_params[index++] = &params->bias;
   kernel_params[index++] = &params->mha_out;
+  if (has_residual)
+    kernel_params[index++] = &params->residual;
+  if (has_mask)
+    kernel_params[index++] = &params->mask;
   kernel_params[index++] = &params->output;
+  return index;
+}
+
+inline std::size_t pack_sm80_kernel_params(
+  SM80Params* params, void* kernel_params[kSM80MaxParameterCount], bool has_bias, bool has_residual, bool has_mask)
+{
+  std::size_t index = pack_operands(params, kernel_params, has_bias, has_residual, has_mask);
   kernel_params[index++] = &params->rasterization_factor;
   kernel_params[index++] = &params->mult;
   kernel_params[index++] = &params->inner;
   return index;
 }
 
-/* Offsets of the lowered parameter bank, with bias present. */
-static_assert(sizeof(cute_tensor_s2_d1_t) == 24, "gated-sigmoid s2_d1 operand size changed");
-static_assert(sizeof(cute_tensor_s1_d0_t) == 16, "gated-sigmoid s1_d0 bias size changed");
-static_assert(offsetof(SM80Params, s) == 0, "unexpected gated-sigmoid s offset");
-static_assert(offsetof(SM80Params, weight) == 24, "unexpected gated-sigmoid weight offset");
-static_assert(offsetof(SM80Params, bias) == 48, "unexpected gated-sigmoid bias offset");
-static_assert(offsetof(SM80Params, mha_out) == 64, "unexpected gated-sigmoid mha_out offset");
-static_assert(offsetof(SM80Params, output) == 88, "unexpected gated-sigmoid output offset");
-static_assert(offsetof(SM80Params, rasterization_factor) == 112, "unexpected gated-sigmoid raster offset");
-static_assert(offsetof(SM80Params, mult) == 116, "unexpected gated-sigmoid mult offset");
-static_assert(offsetof(SM80Params, inner) == 120, "unexpected gated-sigmoid inner offset");
+inline std::size_t pack_sm90_kernel_params(
+  SM90Params* params, void* kernel_params[kSM90MaxParameterCount], bool has_bias, bool has_residual, bool has_mask)
+{
+  std::size_t index = pack_operands(params, kernel_params, has_bias, has_residual, has_mask);
+  kernel_params[index++] = &params->mma_accumulate;
+  kernel_params[index++] = &params->mult;
+  kernel_params[index++] = &params->inner;
+  kernel_params[index++] = &params->chunk;
+  kernel_params[index++] = &params->n_it;
+  kernel_params[index++] = &params->n_nt;
+  kernel_params[index++] = &params->n_chunks;
+  kernel_params[index++] = &params->N;
+  kernel_params[index++] = &params->k_blocks;
+  return index;
+}
 
-/* The lowered parameter bank ends at 124 bytes, which is what
- * EIATTR_KPARAM_INFO reports. This backing struct is 128: its int64 strides
- * force 8-byte alignment, so four tail padding bytes follow `inner`. That is
- * harmless because every parameter is handed to the driver through its own
- * pointer in kernel_params[], never as one blob -- but assert both numbers so a
- * layout change cannot hide behind the padding.
- */
-static_assert(offsetof(SM80Params, inner) + sizeof(SM80Params::inner) == 124, "gated-sigmoid parameter bank changed");
-static_assert(sizeof(SM80Params) == 128, "gated-sigmoid SM80 backing struct size changed");
-static_assert(alignof(SM80Params) == 8, "gated-sigmoid SM80 backing struct alignment changed");
+static_assert(sizeof(cute_tensor_s2_d1_t) == 24, "gated-sigmoid s2_d1 operand size changed");
+static_assert(sizeof(cute_tensor_s1_d0_t) == 16, "gated-sigmoid s1_d0 operand size changed");
+static_assert(sizeof(SM80Params) == 168, "gated-sigmoid SM80 backing struct size changed");
+static_assert(sizeof(SM90Params) == 192, "gated-sigmoid SM90 backing struct size changed");
 
 } // namespace bioir::cutedsl::gated_sigmoid::abi
 
@@ -129,9 +177,16 @@ enum class DType : std::uint8_t
  * in the generated registry, which the builder emits from the same JSON the
  * Python interface reads. There is no second copy of the geometry to drift.
  */
+enum class LaunchAbi : std::uint8_t
+{
+  kSM80,
+  kSM90,
+};
+
 struct KernelSpec
 {
   std::int32_t target_sm;
+  LaunchAbi launch_abi;
   std::int32_t m_block_size;
   std::int32_t n_block_size;
   std::int32_t k_block_size;
@@ -139,6 +194,7 @@ struct KernelSpec
   std::int32_t raster_factor;
   std::int32_t atom_layout_mnk[3];
   std::int32_t num_threads;
+  std::int32_t unroll;
 };
 
 struct KernelConfig
@@ -146,6 +202,8 @@ struct KernelConfig
   KernelSpec spec;
   DType dtype;
   bool has_bias;
+  bool has_residual;
+  bool has_mask;
   EmbeddedCubinImage cubin;
   embedded::CubinImage const* embedded_image;
 };
@@ -163,11 +221,15 @@ struct LaunchParams
   Tensor2View weight;
   Tensor1View bias;
   Tensor2View mha_out;
+  Tensor2View residual;
+  Tensor1View mask;
   Tensor2View output;
   /* Broadcast multiplicity: mha_out has `mult` times as many rows as s. */
   std::int32_t mult{1};
   /* Rows per sample; equals s.shape[0] when mult == 1. */
   std::int32_t inner{1};
+  /* SM90 only: samples per CTA; 0 runs every sample in one CTA. */
+  std::int32_t chunk{0};
   std::uint64_t stream{};
 };
 
@@ -175,6 +237,8 @@ KernelConfig make_kernel_config(
   std::int32_t target_sm,
   DType dtype,
   bool has_bias,
+  bool has_residual,
+  bool has_mask,
   std::int32_t m_block_size,
   std::int32_t n_block_size,
   std::int32_t k_block_size,
@@ -182,7 +246,8 @@ KernelConfig make_kernel_config(
   std::int32_t raster_factor,
   std::int32_t atom_layout_m,
   std::int32_t atom_layout_n,
-  std::int32_t atom_layout_k);
+  std::int32_t atom_layout_k,
+  std::int32_t unroll);
 
 void launch(KernelConfig const& config, LaunchParams const& params);
 

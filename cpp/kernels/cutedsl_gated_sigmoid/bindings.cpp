@@ -46,6 +46,7 @@ std::vector<KernelSpec> all_kernel_specs()
     {
       return KernelSpec{
         image.cubin.target_sm,
+        image.cubin.kernel_sm == 90 ? LaunchAbi::kSM90 : LaunchAbi::kSM80,
         image.m_block_size,
         image.n_block_size,
         image.k_block_size,
@@ -53,6 +54,7 @@ std::vector<KernelSpec> all_kernel_specs()
         image.raster_factor,
         {image.atom_layout_mnk[0], image.atom_layout_mnk[1], image.atom_layout_mnk[2]},
         image.num_threads,
+        image.unroll,
       };
     });
 }
@@ -74,6 +76,8 @@ void bind(nb::module_& parent)
     .def_ro("num_stages", &KernelSpec::num_stages)
     .def_ro("raster_factor", &KernelSpec::raster_factor)
     .def_ro("num_threads", &KernelSpec::num_threads)
+    .def_ro("unroll", &KernelSpec::unroll)
+    .def_prop_ro("is_sm90", [](KernelSpec const& spec) { return spec.launch_abi == LaunchAbi::kSM90; })
     .def_prop_ro(
       "atom_layout_mnk",
       [](KernelSpec const& spec)
@@ -86,6 +90,8 @@ void bind(nb::module_& parent)
     .def_ro("spec", &KernelConfig::spec)
     .def_ro("dtype", &KernelConfig::dtype)
     .def_ro("has_bias", &KernelConfig::has_bias)
+    .def_ro("has_residual", &KernelConfig::has_residual)
+    .def_ro("has_mask", &KernelConfig::has_mask)
     .def_ro("cubin", &KernelConfig::cubin)
     .def_prop_ro("dynamic_smem_bytes", &dynamic_smem_bytes)
     .def_prop_ro("cubin_size", [](KernelConfig const& config) { return config.cubin.size; })
@@ -98,9 +104,12 @@ void bind(nb::module_& parent)
     .def_rw("weight", &LaunchParams::weight)
     .def_rw("bias", &LaunchParams::bias)
     .def_rw("mha_out", &LaunchParams::mha_out)
+    .def_rw("residual", &LaunchParams::residual)
+    .def_rw("mask", &LaunchParams::mask)
     .def_rw("output", &LaunchParams::output)
     .def_rw("mult", &LaunchParams::mult)
     .def_rw("inner", &LaunchParams::inner)
+    .def_rw("chunk", &LaunchParams::chunk)
     .def_rw("stream", &LaunchParams::stream);
 
   module.def("kernel_specs", &all_kernel_specs, "Return every shipped tile configuration.");
@@ -111,6 +120,8 @@ void bind(nb::module_& parent)
     "target_sm"_a,
     "dtype"_a,
     "has_bias"_a,
+    "has_residual"_a,
+    "has_mask"_a,
     "m_block_size"_a,
     "n_block_size"_a,
     "k_block_size"_a,
@@ -118,7 +129,8 @@ void bind(nb::module_& parent)
     "raster_factor"_a,
     "atom_layout_m"_a,
     "atom_layout_n"_a,
-    "atom_layout_k"_a);
+    "atom_layout_k"_a,
+    "unroll"_a);
 
   module.def("current_cuda_sm", &current_cuda_sm);
 

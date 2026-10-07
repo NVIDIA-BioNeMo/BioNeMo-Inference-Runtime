@@ -15,8 +15,8 @@
 """Shipped transition MLP variants and their tuning.
 
 One ``configs/W{C}_H{H}_sm{sm}.json`` bundle per shape and SM declares the ``kernel_abi`` that runs it
-and maps keys to tile parameters, which the ABI's kernel takes as keyword arguments. A key reads
-``[S=<bucket>|]act=<activation>|bias=<0|1>|mask=<0|1>[|res=<0|1>]``:
+and maps keys to tile parameters, which the ABI's kernel takes as keyword arguments. An entry may
+name its own ``kernel_abi``. A key reads ``[S=<bucket>|]act=<activation>|bias=<0|1>|mask=<0|1>[|res=<0|1>]``:
 
 - Without ``res``, an entry serves both residual states; an entry naming the call's state wins.
 - With ``S``, an entry is tuned for that pseudo sequence length, and a call takes the nearest
@@ -25,8 +25,10 @@ and maps keys to tile parameters, which the ABI's kernel takes as keyword argume
 
 A call's pseudo sequence length is ``round(sqrt(rows))`` over its flattened rows, the measure the
 dual GEMM buckets on: ``sqrt(I * J)`` for a pair representation ``[I, J, C]``. The CUBIN builder
-enumerates the SM90 bundles through :func:`bundle_variants`, so each image is the tile a call of
-its bucket selects; the SM80 kernel runs from source on SM80, SM86 and SM89.
+enumerates every bundle through :func:`bundle_variants`, so each image is the tile a call of its
+bucket selects. SM80, SM86 and SM89 run the SM80 kernel. SM90 runs the SM90 kernel, or the SM80
+kernel where a bundle or an entry declares it: the SM90 kernel's CTA multiplies 128 rows by every
+weight, so a call of few rows reaches few SMs.
 """
 
 from __future__ import annotations
@@ -36,13 +38,15 @@ import re
 from pathlib import Path
 from typing import Any, NamedTuple
 
-from bionemo_ir._torch.utils.kernel import get_config_file_name, load_kernel_configs
+from bionemo_ir._torch.utils.kernel import KernelConfigBundle, get_config_file_name, load_kernel_configs
 
 CONFIGS_DIR = Path(__file__).with_name("configs")
 # W1 row blocks per activation, as the kernels count them: the ReLU input; the SwiGLU value and gate; the
 # 3-way SwiGLU value, gate and second value.
 ACTIVATIONS = {"relu": 1, "silu_gate": 2, "silu_gate_3way": 3}
+# Each SM's own kernel ABI, and every ABI its bundles may declare.
 KERNEL_ABIS = {80: "sm80", 86: "sm80", 89: "sm80", 90: "sm90"}
+_RUNNABLE_ABIS = {80: {"sm80"}, 86: {"sm80"}, 89: {"sm80"}, 90: {"sm90", "sm80"}}
 # The bucket of a size-independent entry.
 ANY_SIZE = 0
 _FILE_RE = re.compile(r"^W(?P<width>\d+)_H(?P<hidden>\d+)_sm(?P<sm>\d+)\.json$")
@@ -71,6 +75,14 @@ class ConfigKey(NamedTuple):
     has_bias: bool
     has_mask: bool
     has_residual: bool | None
+
+
+class TileEntry(NamedTuple):
+    """One resolved ``configs`` entry: its key, the kernel ABI that runs it and that kernel's keyword arguments."""
+
+    key: str
+    kernel_abi: str
+    tile_params: dict[str, Any]
 
 
 def w1_rows(variant: TransitionMlpVariant) -> int:
@@ -122,10 +134,13 @@ def pseudo_seqlen(rows: int) -> int:
     return round(math.sqrt(max(rows, 1)))
 
 
-def _variant_entries(configs: dict[str, Any], variant: TransitionMlpVariant) -> dict[int, tuple[str, dict[str, Any]]]:
-    """``bucket -> (key, tile)`` for ``variant``, empty when the bundle doesn't declare it."""
-    exact: dict[int, tuple[str, dict[str, Any]]] = {}
-    shared: dict[int, tuple[str, dict[str, Any]]] = {}
+def _variant_entries(configs: dict[str, Any], variant: TransitionMlpVariant, kernel_abi: str) -> dict[int, TileEntry]:
+    """``bucket -> entry`` for ``variant``, empty when the bundle doesn't declare it.
+
+    ``kernel_abi`` is the bundle's, which runs every entry that names none of its own.
+    """
+    exact: dict[int, TileEntry] = {}
+    shared: dict[int, TileEntry] = {}
     for key, tile in configs.items():
         parsed = parse_config_key(key)
         if (parsed.activation, parsed.has_bias, parsed.has_mask) != variant[:3]:
@@ -136,18 +151,23 @@ def _variant_entries(configs: dict[str, Any], variant: TransitionMlpVariant) -> 
             group = exact
         else:
             continue
-        group[ANY_SIZE if parsed.bucket is None else parsed.bucket] = (key, dict(tile))
+        tile_params = dict(tile)
+        entry_abi = tile_params.pop("kernel_abi", kernel_abi)
+        group[ANY_SIZE if parsed.bucket is None else parsed.bucket] = TileEntry(key, entry_abi, tile_params)
     entries = exact or shared
     if ANY_SIZE in entries and len(entries) > 1:
-        keys = sorted(key for key, _ in entries.values())
+        keys = sorted(entry.key for entry in entries.values())
         raise ValueError(f"transition MLP {variant} resolves to bucketed and size-independent entries: {keys}")
     return entries
 
 
 def bundle_variants(
-    configs: dict[str, Any], width: int, hidden: int
-) -> dict[TransitionMlpVariant, dict[int, tuple[str, dict[str, Any]]]]:
-    """Every variant a bundle's ``configs`` declare, each with its ``bucket -> (key, tile)`` entries."""
+    configs: dict[str, Any], width: int, hidden: int, kernel_abi: str
+) -> dict[TransitionMlpVariant, dict[int, TileEntry]]:
+    """Every variant a bundle's ``configs`` declare, each with its ``bucket -> entry`` map.
+
+    ``kernel_abi`` is the bundle's, which runs every entry that names none of its own.
+    """
     variants = set()
     for key in configs:
         parsed = parse_config_key(key)
@@ -155,28 +175,49 @@ def bundle_variants(
             variants.add(
                 TransitionMlpVariant(parsed.activation, parsed.has_bias, parsed.has_mask, has_residual, width, hidden)
             )
-    return {variant: _variant_entries(configs, variant) for variant in variants}
+    return {variant: _variant_entries(configs, variant, kernel_abi) for variant in variants}
 
 
-def _bundle_configs(sm: int, file_name: str) -> dict[str, Any] | None:
-    """A bundle's configs if it runs ``sm``'s kernel ABI and names no kernel variant, else ``None``."""
-    kernel_abi = KERNEL_ABIS.get(sm)
-    if kernel_abi is None:
+def _bundle(sm: int, file_name: str) -> KernelConfigBundle | None:
+    """A bundle if ``sm`` runs its kernel ABI and it names no kernel variant, else ``None``.
+
+    Raises:
+        ValueError: An entry of the bundle names a kernel ABI ``sm`` can't run.
+    """
+    runnable = _RUNNABLE_ABIS.get(sm)
+    if runnable is None:
         return None
     bundle = load_kernel_configs(str(CONFIGS_DIR), file_name)
-    if bundle is None or bundle.kernel_abi != kernel_abi or bundle.kernel_variant is not None:
+    if bundle is None or bundle.kernel_variant is not None or bundle.kernel_abi not in runnable:
         return None
-    return bundle.configs
+    for key, tile in bundle.configs.items():
+        if tile.get("kernel_abi", bundle.kernel_abi) not in runnable:
+            raise ValueError(f"{file_name}: {key} names kernel_abi {tile['kernel_abi']!r}, which SM{sm} cannot run")
+    return bundle
 
 
-def _configs(sm: int, variant: TransitionMlpVariant) -> dict[str, Any] | None:
-    return _bundle_configs(sm, get_config_file_name(sm, W=variant.width, H=variant.hidden))
+def _entries(sm: int, variant: TransitionMlpVariant) -> dict[int, TileEntry]:
+    """``bucket -> entry`` for ``variant`` on ``sm``, empty when no bundle declares it."""
+    bundle = _bundle(sm, get_config_file_name(sm, W=variant.width, H=variant.hidden))
+    return {} if bundle is None else _variant_entries(bundle.configs, variant, bundle.kernel_abi)
+
+
+def _entry(sm: int, variant: TransitionMlpVariant, bucket: int | None) -> TileEntry | None:
+    entries = _entries(sm, variant)
+    if not entries:
+        return None
+    return entries.get(min(entries) if bucket is None else bucket)
+
+
+def kernel_abi(sm: int, variant: TransitionMlpVariant, bucket: int) -> str | None:
+    """The kernel ABI that runs ``variant`` at ``bucket`` on ``sm``, or ``None`` when that entry does not ship."""
+    entry = _entry(sm, variant, bucket)
+    return None if entry is None else entry.kernel_abi
 
 
 def buckets(sm: int, variant: TransitionMlpVariant) -> tuple[int, ...]:
     """The buckets ``variant`` ships on ``sm`` in ascending order; ``(ANY_SIZE,)`` for a size-independent entry."""
-    configs = _configs(sm, variant)
-    return () if configs is None else tuple(sorted(_variant_entries(configs, variant)))
+    return tuple(sorted(_entries(sm, variant)))
 
 
 def nearest_bucket(anchors: tuple[int, ...], seqlen: int) -> int:
@@ -189,14 +230,8 @@ def get_tile_params(sm: int, variant: TransitionMlpVariant, bucket: int | None =
 
     ``bucket=None`` takes the smallest shipped bucket, so it answers whether the variant ships at all.
     """
-    configs = _configs(sm, variant)
-    if configs is None:
-        return None
-    entries = _variant_entries(configs, variant)
-    if not entries:
-        return None
-    entry = entries.get(min(entries) if bucket is None else bucket)
-    return None if entry is None else dict(entry[1])
+    entry = _entry(sm, variant, bucket)
+    return None if entry is None else dict(entry.tile_params)
 
 
 def select_config(sm: int, variant: TransitionMlpVariant, seqlen: int) -> tuple[int, dict[str, Any]] | None:
@@ -217,9 +252,9 @@ def shipped_variants(sm: int) -> frozenset[TransitionMlpVariant]:
         match = _FILE_RE.fullmatch(path.name)
         if match is None:
             continue
-        configs = _bundle_configs(sm, path.name)
-        if configs is None:
+        bundle = _bundle(sm, path.name)
+        if bundle is None:
             continue
-        declared = bundle_variants(configs, int(match["width"]), int(match["hidden"]))
+        declared = bundle_variants(bundle.configs, int(match["width"]), int(match["hidden"]), bundle.kernel_abi)
         variants.update(variant for variant, entries in declared.items() if entries)
     return frozenset(variants)

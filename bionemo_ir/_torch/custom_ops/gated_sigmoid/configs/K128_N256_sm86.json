@@ -15,7 +15,7 @@
     },
     "1025": {
       "m_block_size": 64,
-      "n_block_size": 128,
+      "n_block_size": 64,
       "k_block_size": 32,
       "num_stages": 3,
       "atom_layout_mnk": [
@@ -23,7 +23,7 @@
         2,
         1
       ],
-      "raster_factor": 1
+      "raster_factor": 4
     },
     "2049": {
       "m_block_size": 128,

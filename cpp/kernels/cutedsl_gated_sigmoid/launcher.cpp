@@ -33,6 +33,16 @@ namespace
 {
 
 constexpr char kSM80LaunchAbi[] = "gated_sigmoid_sm80";
+constexpr char kSM90LaunchAbi[] = "gated_sigmoid_sm90";
+
+LaunchAbi launch_abi_of(EmbeddedCubinImage const& cubin)
+{
+  if (cubin.launch_abi != nullptr && cubin.kernel_sm == 80 && std::strcmp(cubin.launch_abi, kSM80LaunchAbi) == 0)
+    return LaunchAbi::kSM80;
+  if (cubin.launch_abi != nullptr && cubin.kernel_sm == 90 && std::strcmp(cubin.launch_abi, kSM90LaunchAbi) == 0)
+    return LaunchAbi::kSM90;
+  throw std::invalid_argument("gated-sigmoid CUBIN has an incompatible launch ABI");
+}
 
 void validate_launch(KernelConfig const& config, LaunchParams const& params)
 {
@@ -42,12 +52,8 @@ void validate_launch(KernelConfig const& config, LaunchParams const& params)
     throw std::invalid_argument("embedded CUBIN variant_id must not be empty");
   if (config.cubin.kernel_symbol == nullptr || config.cubin.kernel_symbol[0] == '\0')
     throw std::invalid_argument("kernel_symbol must not be empty");
-  if (
-    config.cubin.kernel_sm != 80 || config.cubin.launch_abi == nullptr
-    || std::strcmp(config.cubin.launch_abi, kSM80LaunchAbi) != 0)
-  {
-    throw std::invalid_argument("gated-sigmoid CUBIN has an incompatible launch ABI");
-  }
+  if (launch_abi_of(config.cubin) != config.spec.launch_abi)
+    throw std::invalid_argument("gated-sigmoid spec and CUBIN disagree on the launch ABI");
   if (!cubin_supports_sm(config.cubin, config.spec.target_sm))
     throw std::invalid_argument("gated-sigmoid CUBIN does not support its configured target SM");
   if (config.spec.num_threads <= 0)
@@ -63,6 +69,10 @@ void validate_launch(KernelConfig const& config, LaunchParams const& params)
   validate_tensor(params.output, "output", 16);
   if (config.has_bias)
     validate_tensor(params.bias, "bias", 16);
+  if (config.has_residual)
+    validate_tensor(params.residual, "residual", 16);
+  if (config.has_mask)
+    validate_tensor(params.mask, "mask", 2);
 
   std::int32_t const K = params.s.shape[1];
   std::int32_t const N = params.weight.shape[0];
@@ -74,6 +84,21 @@ void validate_launch(KernelConfig const& config, LaunchParams const& params)
     throw std::invalid_argument("output and mha_out must have the same row count");
   if (config.has_bias && params.bias.shape[0] != N)
     throw std::invalid_argument("bias extent must equal N");
+  if (config.has_residual && (params.residual.shape[0] != params.output.shape[0] || params.residual.shape[1] != N))
+  {
+    throw std::invalid_argument("residual must have output's shape");
+  }
+  if (config.has_mask && params.mask.shape[0] != params.output.shape[0])
+    throw std::invalid_argument("mask needs one entry per output row");
+  if (config.spec.launch_abi == LaunchAbi::kSM90)
+  {
+    if (K % config.spec.k_block_size != 0)
+      throw std::invalid_argument("SM90 gated sigmoid needs K to be a multiple of k_block_size");
+    if (N % 8 != 0)
+      throw std::invalid_argument("SM90 gated sigmoid needs N to be a multiple of 8");
+    if (params.chunk < 0)
+      throw std::invalid_argument("chunk must not be negative");
+  }
 
   if (params.mult <= 0)
     throw std::invalid_argument("mult must be positive");
@@ -111,6 +136,10 @@ void validate_operand_devices(KernelConfig const& config, LaunchParams const& pa
   check(params.output.device, "output");
   if (config.has_bias)
     check(params.bias.device, "bias");
+  if (config.has_residual)
+    check(params.residual.device, "residual");
+  if (config.has_mask)
+    check(params.mask.device, "mask");
 }
 
 /* Reproduces the CuTeDSL host launcher's grid arithmetic exactly:
@@ -161,15 +190,19 @@ void launch_sm80(
   if (config.has_bias)
     device_params.bias = make_tensor1_descriptor(params.bias);
   device_params.mha_out = make_tensor2_s2_d1_descriptor(params.mha_out);
+  if (config.has_residual)
+    device_params.residual = make_tensor2_s2_d1_descriptor(params.residual);
+  if (config.has_mask)
+    device_params.mask = make_tensor1_descriptor(params.mask);
   device_params.output = make_tensor2_s2_d1_descriptor(params.output);
   device_params.rasterization_factor = config.spec.raster_factor;
   device_params.mult = params.mult;
   device_params.inner = params.inner;
 
   void* kernel_params[abi::kSM80MaxParameterCount];
-  std::size_t const count = abi::pack_sm80_kernel_params(&device_params, kernel_params, config.has_bias);
-  std::size_t const expected = config.has_bias ? abi::kSM80ParameterCountWithBias : abi::kSM80ParameterCountNoBias;
-  if (count != expected)
+  std::size_t const count = abi::pack_sm80_kernel_params(
+    &device_params, kernel_params, config.has_bias, config.has_residual, config.has_mask);
+  if (count != abi::sm80_parameter_count(config.has_bias, config.has_residual, config.has_mask))
     throw std::invalid_argument("gated-sigmoid packed an unexpected number of kernel parameters");
 
   cubin_launch_config_t const launch_config = make_launch_config(
@@ -179,10 +212,72 @@ void launch_sm80(
     launch_cubin_kernel(loaded, &launch_config, kernel_params, nullptr), "launch_cubin_kernel(gated_sigmoid_sm80)");
 }
 
+/* Reproduces the CuTeDSL host launcher's grid arithmetic exactly:
+ *
+ *   grid = ceil_div(N, bN) * ceil_div(inner, 64) * ceil_div(mult, chunk) * (s.rows / inner)
+ */
+void launch_sm90(
+  cubin_kernel_t loaded,
+  KernelConfig const& config,
+  LaunchParams const& params,
+  CUcontext context,
+  std::uint32_t smem_bytes)
+{
+  validate_operand_devices(config, params, cuda_device_for_context(context));
+  KernelSpec const& spec = config.spec;
+  std::int32_t const N = params.weight.shape[0];
+  std::int32_t const chunk = params.chunk == 0 ? params.mult : params.chunk;
+
+  abi::SM90Params device_params{};
+  device_params.s = make_tensor2_s2_d1_descriptor(params.s);
+  device_params.weight = make_tensor2_s2_d1_descriptor(params.weight);
+  if (config.has_bias)
+    device_params.bias = make_tensor1_descriptor(params.bias);
+  device_params.mha_out = make_tensor2_s2_d1_descriptor(params.mha_out);
+  if (config.has_residual)
+    device_params.residual = make_tensor2_s2_d1_descriptor(params.residual);
+  if (config.has_mask)
+    device_params.mask = make_tensor1_descriptor(params.mask);
+  device_params.output = make_tensor2_s2_d1_descriptor(params.output);
+  device_params.mult = params.mult;
+  device_params.inner = params.inner;
+  device_params.chunk = chunk;
+  device_params.n_it = static_cast<std::int32_t>(ceil_div(params.inner, spec.m_block_size));
+  device_params.n_nt = static_cast<std::int32_t>(ceil_div(N, spec.n_block_size));
+  device_params.n_chunks = static_cast<std::int32_t>(ceil_div(params.mult, chunk));
+  device_params.N = N;
+  device_params.k_blocks = params.s.shape[1] / spec.k_block_size;
+
+  void* kernel_params[abi::kSM90MaxParameterCount];
+  std::size_t const count = abi::pack_sm90_kernel_params(
+    &device_params, kernel_params, config.has_bias, config.has_residual, config.has_mask);
+  if (count != abi::sm90_parameter_count(config.has_bias, config.has_residual, config.has_mask))
+    throw std::invalid_argument("gated-sigmoid packed an unexpected number of kernel parameters");
+
+  std::uint64_t const outer = static_cast<std::uint64_t>(params.s.shape[0]) / static_cast<std::uint64_t>(params.inner);
+  std::uint64_t const grid = static_cast<std::uint64_t>(device_params.n_nt)
+    * static_cast<std::uint64_t>(device_params.n_it) * static_cast<std::uint64_t>(device_params.n_chunks) * outer;
+
+  cubin_launch_config_t launch_config = {0};
+  launch_config.grid_x = checked_u32(grid, "gated-sigmoid grid.x");
+  launch_config.grid_y = 1;
+  launch_config.grid_z = 1;
+  launch_config.block_x = static_cast<std::uint32_t>(spec.num_threads);
+  launch_config.block_y = 1;
+  launch_config.block_z = 1;
+  launch_config.dynamic_smem_bytes = smem_bytes;
+  launch_config.stream = reinterpret_cast<CUstream>(static_cast<std::uintptr_t>(params.stream));
+
+  check_cuda_driver(
+    launch_cubin_kernel(loaded, &launch_config, kernel_params, nullptr), "launch_cubin_kernel(gated_sigmoid_sm90)");
+}
+
 embedded::CubinImage const& find_embedded_cubin(
   std::int32_t target_sm,
   DType dtype,
   bool has_bias,
+  bool has_residual,
+  bool has_mask,
   std::int32_t m_block_size,
   std::int32_t n_block_size,
   std::int32_t k_block_size,
@@ -190,7 +285,8 @@ embedded::CubinImage const& find_embedded_cubin(
   std::int32_t raster_factor,
   std::int32_t atom_layout_m,
   std::int32_t atom_layout_n,
-  std::int32_t atom_layout_k)
+  std::int32_t atom_layout_k,
+  std::int32_t unroll)
 {
   bool const is_bfloat16 = dtype == DType::kBFloat16;
   embedded::RegistryView const registry = embedded::registry();
@@ -199,6 +295,7 @@ embedded::CubinImage const& find_embedded_cubin(
     embedded::CubinImage const& image = registry.images[index];
     if (
       cubin_supports_sm(image.cubin, target_sm) && image.is_bfloat16 == is_bfloat16 && image.has_bias == has_bias
+      && image.has_residual == has_residual && image.has_mask == has_mask && image.unroll == unroll
       && image.m_block_size == m_block_size && image.n_block_size == n_block_size && image.k_block_size == k_block_size
       && image.num_stages == num_stages && image.raster_factor == raster_factor
       && image.atom_layout_mnk[0] == atom_layout_m && image.atom_layout_mnk[1] == atom_layout_n
@@ -210,7 +307,8 @@ embedded::CubinImage const& find_embedded_cubin(
 
   throw std::invalid_argument(
     "No embedded gated-sigmoid CUBIN for SM" + std::to_string(target_sm) + ", bf16=" + std::to_string(is_bfloat16)
-    + ", bias=" + std::to_string(has_bias) + ", tile=" + std::to_string(m_block_size) + "x"
+    + ", bias=" + std::to_string(has_bias) + ", residual=" + std::to_string(has_residual) + ", mask="
+    + std::to_string(has_mask) + ", unroll=" + std::to_string(unroll) + ", tile=" + std::to_string(m_block_size) + "x"
     + std::to_string(n_block_size) + "x" + std::to_string(k_block_size) + ", stages=" + std::to_string(num_stages)
     + ", raster=" + std::to_string(raster_factor) + ", atom_layout=" + std::to_string(atom_layout_m) + "x"
     + std::to_string(atom_layout_n) + "x" + std::to_string(atom_layout_k));
@@ -232,6 +330,8 @@ KernelConfig make_kernel_config(
   std::int32_t target_sm,
   DType dtype,
   bool has_bias,
+  bool has_residual,
+  bool has_mask,
   std::int32_t m_block_size,
   std::int32_t n_block_size,
   std::int32_t k_block_size,
@@ -239,12 +339,15 @@ KernelConfig make_kernel_config(
   std::int32_t raster_factor,
   std::int32_t atom_layout_m,
   std::int32_t atom_layout_n,
-  std::int32_t atom_layout_k)
+  std::int32_t atom_layout_k,
+  std::int32_t unroll)
 {
   embedded::CubinImage const& image = find_embedded_cubin(
     target_sm,
     dtype,
     has_bias,
+    has_residual,
+    has_mask,
     m_block_size,
     n_block_size,
     k_block_size,
@@ -252,9 +355,11 @@ KernelConfig make_kernel_config(
     raster_factor,
     atom_layout_m,
     atom_layout_n,
-    atom_layout_k);
+    atom_layout_k,
+    unroll);
   KernelSpec const spec{
     target_sm,
+    launch_abi_of(image.cubin),
     image.m_block_size,
     image.n_block_size,
     image.k_block_size,
@@ -262,11 +367,14 @@ KernelConfig make_kernel_config(
     image.raster_factor,
     {image.atom_layout_mnk[0], image.atom_layout_mnk[1], image.atom_layout_mnk[2]},
     image.num_threads,
+    image.unroll,
   };
   return KernelConfig{
     spec,
     dtype,
     has_bias,
+    has_residual,
+    has_mask,
     image.cubin,
     &image,
   };
@@ -285,7 +393,10 @@ void launch(KernelConfig const& config, LaunchParams const& params)
   }
 
   cubin_kernel_t const loaded = load_embedded_kernel(context, config.cubin);
-  launch_sm80(loaded, config, params, context, dynamic_smem_bytes(config));
+  if (config.spec.launch_abi == LaunchAbi::kSM90)
+    launch_sm90(loaded, config, params, context, dynamic_smem_bytes(config));
+  else
+    launch_sm80(loaded, config, params, context, dynamic_smem_bytes(config));
 }
 
 } // namespace bioir::cutedsl::gated_sigmoid

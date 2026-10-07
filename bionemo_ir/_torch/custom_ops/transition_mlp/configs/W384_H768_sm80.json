@@ -1,0 +1,15 @@
+{
+  "kernel_abi": "sm80",
+  "configs": {
+    "S=64|act=relu|bias=1|mask=1|res=1": {"tile_m": 64, "num_warps": 4, "stages": 4},
+    "S=96|act=relu|bias=1|mask=1|res=1": {"tile_m": 128, "num_warps": 8, "stages": 6},
+    "S=128|act=relu|bias=1|mask=1|res=1": {"tile_m": 64, "num_warps": 4, "stages": 3},
+    "S=256|act=relu|bias=1|mask=1|res=1": {"tile_m": 128, "num_warps": 8, "stages": 6},
+    "S=384|act=relu|bias=1|mask=1|res=1": {"tile_m": 128, "num_warps": 8, "stages": 6},
+    "S=512|act=relu|bias=1|mask=1|res=1": {"tile_m": 128, "num_warps": 8, "stages": 6},
+    "S=768|act=relu|bias=1|mask=1|res=1": {"tile_m": 128, "num_warps": 8, "stages": 6},
+    "S=1024|act=relu|bias=1|mask=1|res=1": {"tile_m": 128, "num_warps": 8, "stages": 6},
+    "S=1536|act=relu|bias=1|mask=1|res=1": {"tile_m": 128, "num_warps": 8, "stages": 6},
+    "S=2048|act=relu|bias=1|mask=1|res=1": {"tile_m": 128, "num_warps": 8, "stages": 6}
+  }
+}

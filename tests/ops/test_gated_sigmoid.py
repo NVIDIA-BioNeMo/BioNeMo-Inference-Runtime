@@ -129,12 +129,100 @@ def test_gated_sigmoid_source_and_cubin(mode, dtype, has_bias, M, monkeypatch):
 
 def test_gated_sigmoid_force_cubin_ignores_warmed_source(monkeypatch):
     backend = GatedSigmoidCuTe()
-    key = (backend._sm_version, torch.bfloat16, True, 128, 256, "short")
+    key = (backend._sm_version, torch.bfloat16, True, False, False, 128, 256, "short")
     cached_source, cubin = object(), object()
     monkeypatch.setattr(GatedSigmoidCuTe, "_compiled_cache", {key: cached_source})
     monkeypatch.setattr(backend, "force_cubin", lambda: True)
     monkeypatch.setattr(backend, "_load_cubin_executable", lambda *_args, **_kwargs: cubin)
-    assert backend._get_or_compile(key, object, torch.bfloat16, True, 128, 256, 65) is cubin
+    executable = backend._get_or_compile(
+        object, torch.bfloat16, has_bias=True, has_residual=False, has_mask=False, K=128, N=256, M=65, key=key
+    )
+    assert executable is cubin
+
+
+@pytest.mark.parametrize("mode", _CUTEDSL_MODES)
+@pytest.mark.parametrize("has_mask", [False, True], ids=["nomask", "mask"])
+@pytest.mark.parametrize("has_residual", [False, True], ids=["nores", "res"])
+@pytest.mark.parametrize(
+    "K,N",
+    # (384, 768) and (768, 768) run the SM90 kernel on Hopper; (128, 128) the SM80 one everywhere.
+    [(384, 768), (768, 768), (128, 128)],
+    ids=["K384_N768", "K768_N768", "K128_N128"],
+)
+@pytest.mark.parametrize(
+    "outer,mult,inner",
+    [(1, 5, 65), (2, 1, 1100), (1, 3, 2100)],
+    ids=["short_mult5", "medium_mult1", "long_mult3"],
+)
+def test_gated_sigmoid_residual_mask(mode, has_mask, has_residual, K, N, outer, mult, inner, monkeypatch):
+    if SM_VERSION not in (80, 86, 89, 90):
+        pytest.skip(f"gated-sigmoid CUBINs do not target SM{SM_VERSION}")
+    torch.manual_seed(7)
+    dtype = torch.bfloat16
+    s = torch.randn(outer, 1, inner, K, device="cuda", dtype=dtype)
+    weight = (torch.randn(N, K, device="cuda") / K**0.5).to(dtype)
+    bias = torch.randn(N, device="cuda", dtype=dtype)
+    mha_out = torch.randn(outer, mult, inner, N, device="cuda", dtype=dtype)
+    residual = torch.randn_like(mha_out) if has_residual else None
+    mask = (torch.rand(outer, mult, inner, device="cuda") > 0.3).to(dtype) if has_mask else None
+
+    def reject_fallback(*_args, **_kwargs):
+        raise AssertionError("unexpected vanilla fallback")
+
+    monkeypatch.setattr(gated_cutedsl, "_invoke_vanilla_gated_sigmoid", reject_fallback)
+    result = run_cutedsl_test_mode(
+        mode,
+        monkeypatch,
+        GatedSigmoidCuTe,
+        gated_cutedsl,
+        lambda: GatedSigmoidCuTe()(s, weight, mha_out, bias, residual=residual, mask=mask),
+    )
+    reference = _invoke_vanilla_gated_sigmoid(
+        s.float(),
+        weight.float(),
+        mha_out.float(),
+        bias.float(),
+        residual=None if residual is None else residual.float(),
+        mask=mask,
+    )
+    torch.testing.assert_close(result.float(), reference, atol=0.05, rtol=0.02)
+
+
+@pytest.mark.parametrize("mode", _CUTEDSL_MODES)
+@pytest.mark.parametrize("K,N", [(384, 768), (128, 128)], ids=["K384_N768", "K128_N128"])
+def test_gated_sigmoid_residual_inplace(mode, K, N, monkeypatch):
+    """Writing the sum over the residual matches the out-of-place result exactly."""
+    if SM_VERSION not in (80, 86, 89, 90):
+        pytest.skip(f"gated-sigmoid CUBINs do not target SM{SM_VERSION}")
+    torch.manual_seed(11)
+    dtype = torch.bfloat16
+    s = torch.randn(2, 1, 333, K, device="cuda", dtype=dtype)
+    weight = (torch.randn(N, K, device="cuda") / K**0.5).to(dtype)
+    mha_out = torch.randn(2, 5, 333, N, device="cuda", dtype=dtype)
+    residual = torch.randn_like(mha_out)
+    mask = (torch.rand(2, 5, 333, device="cuda") > 0.3).to(dtype)
+
+    def operation() -> torch.Tensor:
+        expected = GatedSigmoidCuTe()(s, weight, mha_out, None, residual=residual, mask=mask)
+        inplace = residual.clone()
+        out = GatedSigmoidCuTe()(s, weight, mha_out, None, output=inplace, residual=inplace, mask=mask)
+        assert out.data_ptr() == inplace.data_ptr()
+        torch.testing.assert_close(out, expected, atol=0, rtol=0)
+        return out
+
+    run_cutedsl_test_mode(mode, monkeypatch, GatedSigmoidCuTe, gated_cutedsl, operation)
+
+
+def test_gated_sigmoid_sm90_config_selects_sm90_kernel(monkeypatch):
+    def reject_source(_implementation):
+        raise AssertionError("configuration selection imported a private kernel")
+
+    monkeypatch.setattr(gated_config, "resolve_implementation", reject_source)
+    for K in (384, 768):
+        config = gated_config.get_kernel_config(90, K, 768, 65)
+        assert config.kernel_abi == "sm90"
+        assert config.tile_params == gated_config.get_tile_params(90, K, 768, 65)
+    assert gated_config.get_kernel_config(80, 384, 768, 65).kernel_abi == "sm80"
 
 
 def test_gated_sigmoid_config_selection_is_source_free(monkeypatch):
@@ -144,7 +232,7 @@ def test_gated_sigmoid_config_selection_is_source_free(monkeypatch):
     monkeypatch.setattr(gated_config, "resolve_implementation", reject_source)
     config = gated_config.get_kernel_config(90, 128, 256, 65)
     expected = gated_config.get_tile_params(90, 128, 256, 65)
-    assert {**config.tile_params, "atom_layout_mnk": tuple(config.tile_params["atom_layout_mnk"])} == expected
+    assert gated_config._params_from_json(config.tile_params) == expected
 
 
 @pytest.mark.parametrize(
@@ -433,6 +521,9 @@ def test_sm80_cubin_adapter_selects_atom_layout():
         m_bucket=0,
         dtype=torch.bfloat16,
         has_bias=True,
+        has_residual=False,
+        has_mask=False,
+        kernel_abi="sm80",
         tile_params=tile_params,
     )
 

@@ -79,7 +79,7 @@
     "S=1024|act=relu|bias=1|mask=1|res=1": {
       "tile_m": 256,
       "num_warps": 8,
-      "stages": 3
+      "stages": 2
     },
     "S=1536|act=relu|bias=1|mask=1|res=1": {
       "tile_m": 256,
@@ -107,9 +107,9 @@
       "tile_m": 64
     },
     "S=384|act=silu_gate|bias=0|mask=0|res=0": {
-      "num_warps": 4,
-      "stages": 2,
-      "tile_m": 64
+      "num_warps": 8,
+      "stages": 3,
+      "tile_m": 128
     },
     "S=512|act=silu_gate|bias=0|mask=0|res=0": {
       "num_warps": 8,
@@ -177,9 +177,9 @@
       "tile_m": 128
     },
     "S=2048|act=silu_gate|bias=0|mask=0|res=1": {
-      "num_warps": 4,
-      "stages": 4,
-      "tile_m": 64
+      "num_warps": 8,
+      "stages": 2,
+      "tile_m": 128
     },
     "S=64|act=silu_gate|bias=0|mask=1|res=1": {
       "num_warps": 4,
@@ -222,9 +222,9 @@
       "tile_m": 128
     },
     "S=2048|act=silu_gate|bias=0|mask=1|res=1": {
-      "num_warps": 4,
-      "stages": 4,
-      "tile_m": 64
+      "num_warps": 8,
+      "stages": 2,
+      "tile_m": 128
     }
   }
 }

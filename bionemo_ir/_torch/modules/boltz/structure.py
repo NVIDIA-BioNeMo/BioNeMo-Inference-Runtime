@@ -537,7 +537,7 @@ class OutTokenFeatUpdate(nn.Module):
         normed_fourier = self.norm_fourier(fourier_embed).unsqueeze(2).expand(-1, -1, next_a.shape[2], -1)
         cond_a = torch.cat((acc_a, normed_fourier), dim=-1)
 
-        acc_a = acc_a + self.transition_block(next_a, cond_a)
+        acc_a = self.transition_block(next_a, cond_a, residual=acc_a)
 
         return acc_a
 

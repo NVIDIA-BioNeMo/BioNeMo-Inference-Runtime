@@ -34,7 +34,7 @@ from bionemo_ir._torch.graph_optimization.cudnn_graph import (
 )
 from bionemo_ir._torch.layers.linear import Linear, WeightMode, WeightsLoadingConfig
 from bionemo_ir._torch.layers.normalization import AdaLN, AdaLNNormType, FusedLayerNorm
-from bionemo_ir._torch.utils import ChunkPolicy, chunk_apply
+from bionemo_ir._torch.utils import ChunkPolicy, chunk_apply, iter_chunks
 from bionemo_ir.dsl_kernels.triton.fused_swiglu import FusedSwiGLU
 from bionemo_ir.runtime.buffers import PreallocatedBuffers
 
@@ -137,14 +137,33 @@ class Transition(nn.Module):
         Args:
             inplace: With ``residual``, write the sum into ``x`` as ``x += update`` would.
         """
+        policy = self.auto_chunk_policy
+        if policy is not None and policy.should_chunk(x):
+            op = self._fused_mlp_ops.get((mask is not None, residual))
+            if not (residual and inplace) and op is None:
+                # Keep one full residual add when every slice stays unfused.
+                update = chunk_apply(self._forward_impl, x, mask, policy=policy)
+                return x + update if residual else update
+            if residual and inplace:
+                # Write each slice back directly; chunk_apply would allocate another full output.
+                for start, length in iter_chunks(x.shape[policy.dim], policy.chunk_size):
+                    part = x.narrow(policy.dim, start, length)
+                    part_mask = mask
+                    if mask is not None and mask.ndim > policy.dim and mask.shape[policy.dim] == x.shape[policy.dim]:
+                        part_mask = mask.narrow(policy.dim, start, length)
+                    self._forward_slice(part, part_mask, residual=True, inplace=True)
+                return x
+            return chunk_apply(self._forward_slice, x, mask, policy=policy, residual=residual, inplace=inplace)
+        return self._forward_slice(x, mask, residual=residual, inplace=inplace)
+
+    def _forward_slice(
+        self, x: torch.Tensor, mask: torch.Tensor | None, *, residual: bool, inplace: bool
+    ) -> torch.Tensor:
+        """Run one dense slice, including its residual, without rechecking the chunk policy."""
         output = self._forward_fused(x, mask, residual=residual, inplace=inplace)
         if output is not None:
             return output
-        # Chunk position-wise FFNs when configured; small inputs stay dense.
-        if self.auto_chunk_policy is not None:
-            update = chunk_apply(self._forward_impl, x, mask, policy=self.auto_chunk_policy)
-        else:
-            update = self._forward_impl(x, mask)
+        update = self._forward_impl(x, mask)
         if not residual:
             return update
         return x.add_(update) if inplace else x + update
@@ -154,19 +173,22 @@ class Transition(nn.Module):
     ) -> torch.Tensor | None:
         """Normalize, then one kernel for the SwiGLU, ``fc3``, the mask and any residual.
 
-        The hidden activation stays on chip. Returns ``None`` when the call needs the unfused path,
-        including when the chunk policy asks for row chunks.
+        The hidden activation stays on chip. Returns ``None`` when the call needs the unfused path.
         """
         op = self._fused_mlp_ops.get((mask is not None, residual))
-        if op is None or (self.auto_chunk_policy is not None and self.auto_chunk_policy.should_chunk(x)):
+        if op is None:
             return None
         weights = (self.fused_fc2_fc1.weight, None, self.fc3.weight, None)
-        if not op.prefers_fused(x) or not op.accepts(x, mask, *weights):
+        if not op.accepts(x, mask, *weights):
             return None
         normed = x if self.norm is None else self.norm(x)
         if not residual:
             return op(normed, *weights, None, mask)
-        return op(normed, *weights, x, mask, out=x if inplace else None)
+        output = op(normed, *weights, x, mask, out=x if inplace and x.is_contiguous() else None)
+        if output is not None and inplace and output is not x:
+            x.copy_(output)
+            return x
+        return output
 
     def _forward_impl(
         self,
@@ -270,6 +292,7 @@ class ConditionedTransitionBlock(nn.Module):
         buffers: PreallocatedBuffers | None = None,
         buffer_key: str = "cond_trans_adaln",
         mask: torch.Tensor | None = None,
+        residual: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """
         Args:
@@ -279,6 +302,7 @@ class ConditionedTransitionBlock(nn.Module):
             buffer_key: key into ``buffers`` for the AdaLN output tensor.
             mask: optional binary mask ``[B, I]`` applied after AdaLN and
                 after the output gate.
+            residual: optional tensor shaped like ``a``, added to the output.
 
         Returns:
             a: [B, I, d]
@@ -287,33 +311,27 @@ class ConditionedTransitionBlock(nn.Module):
         a = self._swiglu_mlp(a)
 
         # The gated-sigmoid op broadcasts `s` (gate) across the multiplicity
-        # dim of `a` when their leading shapes differ, falling back to torch
-        # internally for unsupported patterns. Reuse the AdaLN output buffer —
-        # the MLP consumed it above, same shape as the gated_sigmoid output.
-        a = self._gated_sigmoid_op(
+        # dim of `a` when their leading shapes differ, and applies the mask and
+        # residual in the same pass. Without a residual, reuse the AdaLN output
+        # buffer: the MLP consumed it above. A residual sum outlives the next
+        # block's AdaLN, so it gets its own tensor.
+        output = buffers.get(buffer_key) if buffers is not None and residual is None else None
+        return self._gated_sigmoid_op(
             s,
             self.output_projection.weight,
             a,
             self.output_projection.bias,
-            output=buffers.get(buffer_key) if buffers is not None else None,
+            output=output,
+            residual=residual,
+            mask=mask,
         )
-
-        if mask is not None:
-            if mask.ndim == a.ndim - 1:
-                mask = mask.unsqueeze(-1)
-            a = a * mask.to(dtype=a.dtype)
-        return a
 
     def _swiglu_mlp(self, a: torch.Tensor) -> torch.Tensor:
         """``b_to_a(swiglu(fused_swl_a_to_b(a)))`` on the chosen kernel path, else unfused."""
         weight = self.fused_swl_a_to_b.weight
         if self._fused_mlp_op is not None:
             weights = (weight, None, self.b_to_a.weight, None)
-            # The dual GEMM gates FP32 accumulators, while SM8x full fusion rounds
-            # its first projections to BF16. Preserve the caller's arithmetic.
-            if self._fused_mlp_op.prefers_fused(
-                a, fp32_projection=self._dual_gemm_silu_op is not None
-            ) and self._fused_mlp_op.accepts(a, None, *weights):
+            if self._fused_mlp_op.accepts(a, None, *weights):
                 output = self._fused_mlp_op(a, *weights, None, None)
                 if output is not None:
                     return output
@@ -386,7 +404,11 @@ class PairTransition(CudnnGraphModule):
 
     def forward(self, z: torch.Tensor, mask: torch.Tensor | None = None, *, residual: bool = False):
         if self.auto_chunk_policy is not None and self.auto_chunk_policy.should_chunk(z):
-            return chunk_apply(self._forward_impl, z, mask, policy=self.auto_chunk_policy, residual=residual)
+            return chunk_apply(self._forward_slice, z, mask, policy=self.auto_chunk_policy, residual=residual)
+        return self._forward_slice(z, mask, residual=residual)
+
+    def _forward_slice(self, z: torch.Tensor, mask: torch.Tensor | None, *, residual: bool) -> torch.Tensor:
+        """Run a dense slice through fused, cuDNN, or ordinary linears."""
         output = self._forward_fused(z, mask, residual=residual)
         if output is not None:
             return output

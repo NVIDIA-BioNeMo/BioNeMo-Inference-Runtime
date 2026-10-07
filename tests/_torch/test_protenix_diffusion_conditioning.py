@@ -26,6 +26,8 @@ from bionemo_ir._torch.utils import CHUNK_REGISTRY, DIFFUSION_PAIR_TRANSITION, C
 from bionemo_ir.models.protenix.config import DiffusionConditioningConfig, RelativePositionEncodingConfig
 from bionemo_ir.models.protenix.convert import convert_diffusion_conditioning_torch
 from bionemo_ir.utils import str_dtype_to_torch
+from tests._torch import init_module_weights, skip_if_not_sm90
+from tests._torch.test_transition import _CountingKernel
 from tests.common.test_utils.protenix.ref_layers_from_oss import RefProtenixDiffusionConditioningFromOSS
 
 
@@ -45,6 +47,42 @@ class Scenario:
 def _rmse_ratio(a: torch.Tensor, b: torch.Tensor) -> float:
     a, b = a.float(), b.float()
     return (torch.sqrt(torch.mean((a - b) ** 2)) / (torch.sqrt(torch.mean(b**2)) + 1e-8)).item()
+
+
+@pytest.mark.parametrize("batch", [1, 2])
+@pytest.mark.parametrize("chunked", [False, True])
+def test_protenix_pair_conditioning_256_uses_fused_residual(batch: int, chunked: bool) -> None:
+    """The real pair-conditioning call site selects the new 256x512 BF16 residual variant."""
+    skip_if_not_sm90()
+    torch.manual_seed(71)
+    config = DiffusionConditioningConfig(
+        c_z=256,
+        c_s=32,
+        c_s_inputs=16,
+        c_noise_embedding=32,
+        relpe_config=RelativePositionEncodingConfig(c_z=256),
+        z_pair_dtype="bfloat16",
+        dtype="float32",
+    )
+    model = init_module_weights(ProtenixDiffusionConditioning(config).cuda()).eval()
+    counters = []
+    for layer in model.transition_z:
+        layer.auto_chunk_policy = ChunkPolicy(chunk_size=512, min_size=1) if chunked else None
+        assert layer._fused_mlp_ops[(False, True)] is not None
+        counter = _CountingKernel(layer._fused_mlp_ops[(False, True)])
+        layer._fused_mlp_ops[(False, True)] = counter
+        counters.append(counter)
+    n = 513 if chunked else 129
+    z = torch.randn(batch, n, n, 256, device="cuda")
+    relp = torch.randn(batch, n, n, model.relpe.linear.in_features, device="cuda")
+    with torch.inference_mode():
+        actual = model.prepare_pair(relp, z)
+        assert all(counter.calls == (2 if chunked else 1) for counter in counters)
+        for layer in model.transition_z:
+            layer._fused_mlp_ops[(False, True)] = None
+        expected = model.prepare_pair(relp, z)
+    torch.testing.assert_close(actual, expected, atol=0.05, rtol=0.02)
+    assert _rmse_ratio(actual, expected) < 0.01
 
 
 @pytest.mark.parametrize(

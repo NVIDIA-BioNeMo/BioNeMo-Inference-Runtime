@@ -30,6 +30,35 @@ from bionemo_ir._torch.utils.kernel import (
 )
 
 
+def _registry_tile(kernel_abi: str, tile_params: dict[str, Any]) -> tuple[int, ...]:
+    """Return the registry key ``(m, n, k, stages, raster, atom_m, atom_n, atom_k, unroll)`` of a tile."""
+    if kernel_abi == "sm90":
+        # One 64-row gate tile per CTA; no rasterization or MMA atom layout.
+        return (
+            64,
+            int(tile_params["n_block_size"]),
+            int(tile_params["k_block_size"]),
+            int(tile_params["num_stages"]),
+            1,
+            1,
+            1,
+            1,
+            int(tile_params["unroll"]),
+        )
+    atom_layout_m, atom_layout_n, atom_layout_k = tile_params["atom_layout_mnk"]
+    return (
+        int(tile_params["m_block_size"]),
+        int(tile_params["n_block_size"]),
+        int(tile_params["k_block_size"]),
+        int(tile_params["num_stages"]),
+        int(tile_params["raster_factor"]),
+        int(atom_layout_m),
+        int(atom_layout_n),
+        int(atom_layout_k),
+        1,
+    )
+
+
 class GatedSigmoidCubinExecutable(CuTeDSLKernelLibraryExecutable):
     """Match the CuTeDSL compiled-function call ABI using the C++ launcher."""
 
@@ -41,6 +70,9 @@ class GatedSigmoidCubinExecutable(CuTeDSLKernelLibraryExecutable):
         m_bucket: int,
         dtype: torch.dtype,
         has_bias: bool,
+        has_residual: bool,
+        has_mask: bool,
+        kernel_abi: str,
         tile_params: dict[str, Any],
     ):
         dtype_map = {
@@ -53,30 +85,27 @@ class GatedSigmoidCubinExecutable(CuTeDSLKernelLibraryExecutable):
             raise CuTeDSLKernelVariantUnavailable(f"gated sigmoid CUBINs do not support {dtype}") from error
 
         try:
-            atom_layout_m, atom_layout_n, atom_layout_k = tile_params["atom_layout_mnk"]
             config = launcher.make_kernel_config(
                 target_sm,
                 library_dtype,
                 has_bias,
-                int(tile_params["m_block_size"]),
-                int(tile_params["n_block_size"]),
-                int(tile_params["k_block_size"]),
-                int(tile_params["num_stages"]),
-                int(tile_params["raster_factor"]),
-                int(atom_layout_m),
-                int(atom_layout_n),
-                int(atom_layout_k),
+                has_residual,
+                has_mask,
+                *_registry_tile(kernel_abi, tile_params),
             )
         except (KeyError, RuntimeError, TypeError, ValueError) as error:
             raise CuTeDSLKernelVariantUnavailable(
-                f"No gated sigmoid CUBIN for SM{target_sm}, dtype={dtype}, "
-                f"has_bias={has_bias}, m_bucket={m_bucket}, tile={tile_params}"
+                f"No gated sigmoid CUBIN for SM{target_sm}, dtype={dtype}, has_bias={has_bias}, "
+                f"has_residual={has_residual}, has_mask={has_mask}, m_bucket={m_bucket}, "
+                f"kernel_abi={kernel_abi}, tile={tile_params}"
             ) from error
 
         self._kernel_library = kernel_library
         self._launcher = launcher
         self._config = config
         self._has_bias = has_bias
+        self._has_residual = has_residual
+        self._has_mask = has_mask
 
     def __call__(
         self,
@@ -84,23 +113,36 @@ class GatedSigmoidCubinExecutable(CuTeDSLKernelLibraryExecutable):
         weight: torch.Tensor,
         bias: torch.Tensor | None,
         mha_out: torch.Tensor,
+        residual: torch.Tensor | None,
+        mask: torch.Tensor | None,
         output: torch.Tensor,
         mult: int,
         inner: int,
+        chunk: int = 0,
     ) -> None:
-        if (bias is not None) != self._has_bias:
-            raise CuTeDSLKernelVariantUnavailable(
-                f"gated sigmoid CUBIN was selected for has_bias={self._has_bias} "
-                f"but received bias={'a tensor' if bias is not None else 'None'}"
-            )
+        for name, tensor, expected in (
+            ("bias", bias, self._has_bias),
+            ("residual", residual, self._has_residual),
+            ("mask", mask, self._has_mask),
+        ):
+            if (tensor is not None) != expected:
+                raise CuTeDSLKernelVariantUnavailable(
+                    f"gated sigmoid CUBIN was selected for has_{name}={expected} "
+                    f"but received {name}={'a tensor' if tensor is not None else 'None'}"
+                )
         params = self._launcher.LaunchParams()
         params.s = tensor_s2_d1(self._kernel_library, s)
         params.weight = tensor_s2_d1(self._kernel_library, weight)
         if bias is not None:
             params.bias = tensor_s1_d0(self._kernel_library, bias)
         params.mha_out = tensor_s2_d1(self._kernel_library, mha_out)
+        if residual is not None:
+            params.residual = tensor_s2_d1(self._kernel_library, residual)
+        if mask is not None:
+            params.mask = tensor_s1_d0(self._kernel_library, mask)
         params.output = tensor_s2_d1(self._kernel_library, output)
         params.mult = int(mult)
         params.inner = int(inner)
+        params.chunk = int(chunk)
         params.stream = current_stream_handle(s)
         self._launcher.launch(self._config, params)

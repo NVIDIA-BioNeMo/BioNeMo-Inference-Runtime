@@ -40,9 +40,11 @@ from ._config import (
     _classify_m_range,
     _make_sm80_config,
     _params_from_json,
+    get_kernel_abi,
     get_kernel_config,
     get_m_bucket,
     get_tile_params,
+    kernel_smem_bytes,
 )
 from ._cubin import GatedSigmoidCubinExecutable
 from .ops import _invoke_vanilla_gated_sigmoid
@@ -75,7 +77,7 @@ def _cutlass_dtype(t: torch.Tensor) -> type:
 
 
 class GatedSigmoidCuTe(CuteKernelCache):
-    """Cached backend for ``sigmoid(s @ W.T + bias) * mha_out``."""
+    """Cached backend for ``[residual +] [mask *] sigmoid(s @ W.T + bias) * mha_out``."""
 
     _compiled_cache: dict[tuple, Any] = {}
 
@@ -84,22 +86,26 @@ class GatedSigmoidCuTe(CuteKernelCache):
         self._sm_version = major * 10 + minor
         self._last_exe = None
         self._last_key: tuple = ()
+        self._last_abi = ""
 
     def _disk_cache_key(self, key: tuple) -> tuple:
-        # Bias changes the compiled signature; bump the tag for ABI changes.
-        return ("gated_sigmoid_cute_v2",) + key
+        # Bias, residual and mask change the compiled signature; bump the tag for ABI changes.
+        return ("gated_sigmoid_cute_v3",) + key
 
     def _load_cubin_executable(
         self,
         key: tuple,
         dtype: torch.dtype,
         has_bias: bool,
+        has_residual: bool,
+        has_mask: bool,
         K: int,
         N: int,
         M: int,
         source_error: Exception | None = None,
     ):
         tile_params = get_tile_params(self._sm_version, K, N, M)
+        kernel_abi = get_kernel_abi(self._sm_version, K, N)
         m_bucket = get_m_bucket(M)
         try:
             executable = populate_compiled_cache_from_library(
@@ -113,6 +119,9 @@ class GatedSigmoidCuTe(CuteKernelCache):
                     m_bucket,
                     dtype,
                     has_bias,
+                    has_residual,
+                    has_mask,
+                    kernel_abi,
                     tile_params,
                 ),
             )
@@ -121,43 +130,42 @@ class GatedSigmoidCuTe(CuteKernelCache):
                 raise RuntimeError(
                     f"{FORCE_CUBIN_ENV}=1 forces the gated sigmoid CUBIN path, "
                     f"but no CUBIN is available for SM{self._sm_version}, "
-                    f"dtype={dtype}, has_bias={has_bias}, K={K}, N={N}, "
-                    f"m_bucket={m_bucket}"
+                    f"dtype={dtype}, has_bias={has_bias}, has_residual={has_residual}, "
+                    f"has_mask={has_mask}, K={K}, N={N}, m_bucket={m_bucket}"
                 ) from library_error
             raise library_error from source_error
         logger.info(
             f"CuTeDSL gated sigmoid: using CUBIN kernel for SM{self._sm_version}, "
-            f"dtype={dtype}, has_bias={has_bias}, K={K}, N={N}, m_bucket={m_bucket}"
+            f"dtype={dtype}, has_bias={has_bias}, has_residual={has_residual}, has_mask={has_mask}, "
+            f"K={K}, N={N}, m_bucket={m_bucket}"
         )
         return executable
 
-    def _resolve_source_kernel(self, ct_dtype: type, has_bias: bool, K: int, N: int, M: int):
+    def _resolve_source_kernel(
+        self, ct_dtype: type, has_bias: bool, has_residual: bool, has_mask: bool, K: int, N: int, M: int
+    ):
         source = load_source_module(__package__)
         config = get_kernel_config(self._sm_version, K, N, M)
         if not config.can_implement(ct_dtype):
             raise RuntimeError(f"Gated sigmoid kernel cannot implement dtype={ct_dtype}")
 
-        kernel = config.kernel_factory(ct_dtype, has_bias)
-        needed = kernel.dynamic_smem_bytes(
-            ct_dtype,
-            kernel.bM,
-            kernel.bN,
-            kernel.bK,
-            kernel.num_stages,
-            kernel.n_mhaout_stages,
-        )
+        kernel = config.kernel_factory(ct_dtype, has_bias, has_residual, has_mask)
+        needed = kernel_smem_bytes(kernel, ct_dtype)
         limit = torch.cuda.get_device_properties(torch.cuda.current_device()).shared_memory_per_block_optin
         if needed > limit:
             raise RuntimeError(f"gated sigmoid needs {needed} B dynamic shared memory, but the device allows {limit} B")
-        return kernel, source.compile_gated_sigmoid_source
+        return kernel, source.compile_gated_sigmoid_source, config.kernel_abi
 
     def _load_or_compile_source(
         self,
         key: tuple,
         kernel: Any,
         compile_source: Any,
+        kernel_abi: str,
         ct_dtype: type,
         has_bias: bool,
+        has_residual: bool,
+        has_mask: bool,
         K: int,
         N: int,
         M: int,
@@ -171,29 +179,46 @@ class GatedSigmoidCuTe(CuteKernelCache):
 
         logger.info(
             f"CuTeDSL gated sigmoid: compiling kernel for SM{self._sm_version}, "
-            f"K={K}, N={N}, m_range={_classify_m_range(M)!r}, has_bias={has_bias}"
+            f"K={K}, N={N}, m_range={_classify_m_range(M)!r}, has_bias={has_bias}, "
+            f"has_residual={has_residual}, has_mask={has_mask}, kernel_abi={kernel_abi}"
         )
-        executable = compile_source(self.compile, kernel, ct_dtype, has_bias)
+        executable = compile_source(self.compile, kernel, ct_dtype, has_bias, has_residual, has_mask, kernel_abi)
         GatedSigmoidCuTe._compiled_cache[key] = executable
         self.save_to_cache(disk_key, executable)
         logger.info("CuTeDSL gated sigmoid: compilation done")
         return executable
 
-    def _get_or_compile(self, ct_dtype: type, dtype: torch.dtype, has_bias: bool, K: int, N: int, M: int, key: tuple):
+    def _get_or_compile(
+        self,
+        ct_dtype: type,
+        dtype: torch.dtype,
+        has_bias: bool,
+        has_residual: bool,
+        has_mask: bool,
+        K: int,
+        N: int,
+        M: int,
+        key: tuple,
+    ):
         executable = GatedSigmoidCuTe._compiled_cache.get(key)
         force_cubin = self.force_cubin()
         if executable is not None and (not force_cubin or isinstance(executable, CuTeDSLKernelLibraryExecutable)):
             return executable
 
+        flags = (dtype, has_bias, has_residual, has_mask, K, N, M)
         if force_cubin:
             GatedSigmoidCuTe._compiled_cache.pop(key, None)
-            return self._load_cubin_executable(key, dtype, has_bias, K, N, M)
+            return self._load_cubin_executable(key, *flags)
 
         try:
-            kernel, compile_source = self._resolve_source_kernel(ct_dtype, has_bias, K, N, M)
+            kernel, compile_source, kernel_abi = self._resolve_source_kernel(
+                ct_dtype, has_bias, has_residual, has_mask, K, N, M
+            )
         except ImportError as source_error:
-            return self._load_cubin_executable(key, dtype, has_bias, K, N, M, source_error)
-        return self._load_or_compile_source(key, kernel, compile_source, ct_dtype, has_bias, K, N, M)
+            return self._load_cubin_executable(key, *flags, source_error)
+        return self._load_or_compile_source(
+            key, kernel, compile_source, kernel_abi, ct_dtype, has_bias, has_residual, has_mask, K, N, M
+        )
 
     def __call__(
         self,
@@ -202,6 +227,8 @@ class GatedSigmoidCuTe(CuteKernelCache):
         mha_out: torch.Tensor,
         bias: torch.Tensor | None = None,
         output: torch.Tensor | None = None,
+        residual: torch.Tensor | None = None,
+        mask: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """Run the fused gated sigmoid GEMM.
 
@@ -213,13 +240,20 @@ class GatedSigmoidCuTe(CuteKernelCache):
                 ``s`` has size 1, or may have a different shape with the same
                 flattened row count.
             bias: Optional projection bias with shape ``[N]``.
-            output: Optional output tensor matching ``mha_out``.
+            output: Optional output tensor matching ``mha_out``; it may alias
+                ``mha_out`` or ``residual``.
+            residual: Optional tensor matching ``mha_out``, added to the result.
+            mask: Optional row mask with one element per ``mha_out`` row,
+                multiplied into the gated product.
 
         Returns:
             Tensor with the same shape as ``mha_out``.
         """
         K = s.shape[-1]
         N_out = weight.shape[0]
+
+        def vanilla() -> torch.Tensor:
+            return _invoke_vanilla_gated_sigmoid(s, weight, mha_out, bias, output, residual, mask)
 
         if (
             weight.ndim != 2
@@ -228,7 +262,7 @@ class GatedSigmoidCuTe(CuteKernelCache):
             or mha_out.shape[-1] != N_out
             or (bias is not None and (bias.ndim != 1 or bias.shape[0] != N_out))
         ):
-            return _invoke_vanilla_gated_sigmoid(s, weight, mha_out, bias, output)
+            return vanilla()
 
         s_2d = s.reshape(-1, K)
         M_s = s_2d.shape[0]
@@ -238,19 +272,34 @@ class GatedSigmoidCuTe(CuteKernelCache):
         def supports_row_major_2d(tensor: torch.Tensor) -> bool:
             return tensor.ndim == 2 and tensor.layout == torch.strided and tensor.stride(1) == 1
 
+        def view_like_mha(tensor: torch.Tensor) -> torch.Tensor | None:
+            if (
+                tensor.shape != mha_out.shape
+                or tensor.dtype != mha_out.dtype
+                or tensor.device != mha_out.device
+                or tensor.layout != torch.strided
+            ):
+                return None
+            try:
+                return tensor.view(M_out, N_out)
+            except RuntimeError:
+                return None
+
         output_2d: torch.Tensor | None = None
         if output is not None:
-            if (
-                output.shape != mha_out.shape
-                or output.dtype != mha_out.dtype
-                or output.device != mha_out.device
-                or output.layout != torch.strided
-            ):
-                return _invoke_vanilla_gated_sigmoid(s, weight, mha_out, bias, output)
-            try:
-                output_2d = output.view(M_out, N_out)
-            except RuntimeError:
-                return _invoke_vanilla_gated_sigmoid(s, weight, mha_out, bias, output)
+            output_2d = view_like_mha(output)
+            if output_2d is None:
+                return vanilla()
+        residual_2d: torch.Tensor | None = None
+        if residual is not None:
+            residual_2d = view_like_mha(residual)
+            if residual_2d is None:
+                return vanilla()
+        mask_rows: torch.Tensor | None = None
+        if mask is not None:
+            if mask.numel() != M_out or mask.device != s.device:
+                return vanilla()
+            mask_rows = mask.reshape(M_out).to(dtype=s.dtype).contiguous()
 
         operands = (s_2d, weight, mha_2d)
         if (
@@ -261,8 +310,9 @@ class GatedSigmoidCuTe(CuteKernelCache):
                 and (bias.ndim != 1 or bias.stride(0) != 1 or bias.dtype != s.dtype or bias.device != s.device)
             )
             or (output_2d is not None and not supports_row_major_2d(output_2d))
+            or (residual_2d is not None and not supports_row_major_2d(residual_2d))
         ):
-            return _invoke_vanilla_gated_sigmoid(s, weight, mha_out, bias, output)
+            return vanilla()
 
         # Allow one broadcast leading dimension.
         s_lead = s.shape[:-1]
@@ -277,7 +327,7 @@ class GatedSigmoidCuTe(CuteKernelCache):
         elif s_lead != mha_lead:
             mismatched = [i for i in range(len(mha_lead)) if i >= len(s_lead) or s_lead[i] != mha_lead[i]]
             if len(s_lead) != len(mha_lead) or len(mismatched) != 1 or s_lead[mismatched[0]] != 1:
-                return _invoke_vanilla_gated_sigmoid(s, weight, mha_out, bias, output)
+                return vanilla()
             bcast_dim = mismatched[0]
             mult = int(mha_lead[bcast_dim])
             inner = 1
@@ -288,8 +338,10 @@ class GatedSigmoidCuTe(CuteKernelCache):
             inner = M_s
 
         has_bias = bias is not None
+        has_residual = residual is not None
+        has_mask = mask is not None
         m_range = _classify_m_range(M_s)
-        compile_key = (self._sm_version, s.dtype, has_bias, K, N_out, m_range)
+        compile_key = (self._sm_version, s.dtype, has_bias, has_residual, has_mask, K, N_out, m_range)
 
         force_cubin = self.force_cubin()
         if compile_key == self._last_key and (
@@ -298,14 +350,18 @@ class GatedSigmoidCuTe(CuteKernelCache):
             exe = self._last_exe
         else:
             ct_dtype = _cutlass_dtype(s_2d)
-            exe = self._get_or_compile(ct_dtype, s.dtype, has_bias, K, N_out, M_s, compile_key)
+            exe = self._get_or_compile(ct_dtype, s.dtype, has_bias, has_residual, has_mask, K, N_out, M_s, compile_key)
             self._last_key = compile_key
             self._last_exe = exe
+            self._last_abi = get_kernel_abi(self._sm_version, K, N_out)
 
-        # No-bias kernels omit the bias argument from their ABI.
+        # Absent operands are omitted from the kernel ABI.
         out_2d = output_2d if output_2d is not None else torch.empty_like(mha_2d)
-
-        launch_compiled_kernel(exe, s_2d, weight, bias, mha_2d, out_2d, mult, inner)
+        args = (s_2d, weight, bias, mha_2d, residual_2d, mask_rows, out_2d, mult, inner)
+        if self._last_abi == "sm90":
+            # Every sample of a gate tile runs in one CTA.
+            args += (mult,)
+        launch_compiled_kernel(exe, *args)
 
         if output is not None:
             return output

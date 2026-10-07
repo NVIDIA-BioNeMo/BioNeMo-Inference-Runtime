@@ -43,11 +43,16 @@ _M_BUCKET_KEY = {
 
 @dataclass(frozen=True)
 class GatedSigmoidKernelConfig:
-    """Resolved source-kernel configuration."""
+    """Resolved source-kernel configuration.
 
-    kernel_factory: Callable[[type, bool], Any]
+    ``kernel_factory(ct_dtype, has_bias, has_residual=False, has_mask=False)``
+    builds the kernel.
+    """
+
+    kernel_factory: Callable[..., Any]
     can_implement: Callable[[type], bool]
     tile_params: dict[str, Any]
+    kernel_abi: str = "sm80"
 
 
 def _build_kernel_config(
@@ -62,7 +67,7 @@ def _build_kernel_config(
     """Wrap a gated sigmoid kernel class + tile params into a config entry."""
     atom_layout_mnk = tuple(atom_layout_mnk)
 
-    def factory(ct_dtype: type, has_bias: bool):
+    def factory(ct_dtype: type, has_bias: bool, has_residual: bool = False, has_mask: bool = False):
         return kernel_cls(
             ab_dtype=ct_dtype,
             m_block_size=m_block_size,
@@ -72,6 +77,8 @@ def _build_kernel_config(
             atom_layout_mnk=atom_layout_mnk,
             raster_factor=raster_factor,
             has_bias=has_bias,
+            has_residual=has_residual,
+            has_mask=has_mask,
         )
 
     def can_impl(ct_dtype: type) -> bool:
@@ -91,6 +98,55 @@ def _build_kernel_config(
     )
 
 
+def _build_sm90_kernel_config(
+    kernel_cls: type,
+    n_block_size: int = 64,
+    k_block_size: int = 64,
+    num_stages: int = 3,
+    unroll: int = 2,
+) -> GatedSigmoidKernelConfig:
+    """Wrap the SM90 streaming kernel class + tile params into a config entry."""
+
+    def factory(ct_dtype: type, has_bias: bool, has_residual: bool = False, has_mask: bool = False):
+        return kernel_cls(
+            ab_dtype=ct_dtype,
+            n_block_size=n_block_size,
+            k_block_size=k_block_size,
+            num_stages=num_stages,
+            unroll=unroll,
+            has_bias=has_bias,
+            has_residual=has_residual,
+            has_mask=has_mask,
+        )
+
+    return GatedSigmoidKernelConfig(
+        kernel_factory=factory,
+        can_implement=lambda ct_dtype: kernel_cls.can_implement(ct_dtype),
+        tile_params={
+            "n_block_size": n_block_size,
+            "k_block_size": k_block_size,
+            "num_stages": num_stages,
+            "unroll": unroll,
+        },
+        kernel_abi="sm90",
+    )
+
+
+_CONFIG_BUILDERS: dict[str, Callable[..., GatedSigmoidKernelConfig]] = {
+    "sm80": _build_kernel_config,
+    "sm90": _build_sm90_kernel_config,
+}
+
+
+def build_kernel_config_for_abi(kernel_abi: str, kernel_cls: type, **tile_params) -> GatedSigmoidKernelConfig:
+    """Wrap ``kernel_cls`` with the tile params of its ``kernel_abi``."""
+    try:
+        builder = _CONFIG_BUILDERS[kernel_abi]
+    except KeyError:
+        raise ValueError(f"Unsupported gated sigmoid kernel ABI {kernel_abi!r}") from None
+    return builder(kernel_cls, **tile_params)
+
+
 def _make_sm80_config(**tile_params) -> GatedSigmoidKernelConfig:
     """Build a config entry using the default SM80 kernel class."""
     return _build_lazy_kernel_config(_DEFAULT_KERNEL_ABI, **tile_params)
@@ -103,13 +159,14 @@ def _build_lazy_kernel_config(kernel_abi: str, **tile_params) -> GatedSigmoidKer
         source = load_source_module(__package__)
         return resolve_implementation(source.source_implementation(kernel_abi))
 
-    config = _build_kernel_config(object, **tile_params)
+    config = build_kernel_config_for_abi(kernel_abi, object, **tile_params)
     return GatedSigmoidKernelConfig(
-        kernel_factory=lambda ct_dtype, has_bias: _build_kernel_config(kernel_cls(), **tile_params).kernel_factory(
-            ct_dtype, has_bias
-        ),
+        kernel_factory=lambda *args, **kwargs: build_kernel_config_for_abi(
+            kernel_abi, kernel_cls(), **tile_params
+        ).kernel_factory(*args, **kwargs),
         can_implement=lambda ct_dtype: kernel_cls().can_implement(ct_dtype),
         tile_params=config.tile_params,
+        kernel_abi=kernel_abi,
     )
 
 
@@ -119,6 +176,23 @@ def _classify_m_range(M: int) -> str:
     elif M <= M_MEDIUM_THRESHOLD:
         return "medium"
     return "long"
+
+
+def kernel_smem_bytes(kernel: Any, ct_dtype: type) -> int:
+    """Dynamic shared memory ``kernel`` launches with, in bytes."""
+    if hasattr(kernel, "n_mhaout_stages"):
+        return int(
+            kernel.dynamic_smem_bytes(
+                ct_dtype,
+                kernel.bM,
+                kernel.bN,
+                kernel.bK,
+                kernel.num_stages,
+                kernel.n_mhaout_stages,
+                kernel.has_residual,
+            )
+        )
+    return int(kernel.dynamic_smem_bytes(ct_dtype, kernel.bN, kernel.bK, kernel.num_stages))
 
 
 def _params_from_json(raw: dict) -> dict:

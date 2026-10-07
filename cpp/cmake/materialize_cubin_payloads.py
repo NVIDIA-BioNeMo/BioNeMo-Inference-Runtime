@@ -251,6 +251,9 @@ _FAMILY_SPECS: dict[str, _FamilySpec] = {
         fields=(
             _Field("is_bfloat16", _BOOL, "bool is_bfloat16;"),
             _Field("has_bias", _BOOL, "bool has_bias;"),
+            # Images published before the residual, mask and unroll axes carry none of them.
+            _Field("has_residual", _BOOL, "bool has_residual;", default=False),
+            _Field("has_mask", _BOOL, "bool has_mask;", default=False),
             _Field("m_block_size", _POSITIVE, "std::int32_t m_block_size;"),
             _Field("n_block_size", _POSITIVE, "std::int32_t n_block_size;"),
             _Field("k_block_size", _POSITIVE, "std::int32_t k_block_size;"),
@@ -258,16 +261,20 @@ _FAMILY_SPECS: dict[str, _FamilySpec] = {
             _Field("raster_factor", _COUNT, "std::int32_t raster_factor;"),
             _Field("num_threads", _POSITIVE, "std::int32_t num_threads;"),
             _Field("atom_layout_mnk", _TRIPLE, "std::int32_t atom_layout_mnk[3];"),
+            _Field("unroll", _POSITIVE, "std::int32_t unroll;", default=1),
         ),
         runtime_key=(
             "is_bfloat16",
             "has_bias",
+            "has_residual",
+            "has_mask",
             "m_block_size",
             "n_block_size",
             "k_block_size",
             "num_stages",
             "raster_factor",
             "atom_layout_mnk",
+            "unroll",
         ),
     ),
     "outer_product_mean": _FamilySpec(

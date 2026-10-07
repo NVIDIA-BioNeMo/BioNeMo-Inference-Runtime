@@ -42,14 +42,24 @@ def _invoke_vanilla_gated_sigmoid(
     mha_out: torch.Tensor,
     bias: torch.Tensor | None = None,
     output: torch.Tensor | None = None,
+    residual: torch.Tensor | None = None,
+    mask: torch.Tensor | None = None,
 ) -> torch.Tensor:
-    """Compute ``sigmoid(s @ W.T [+ bias]) * mha_out`` in PyTorch."""
+    """Compute ``[residual +] [mask *] sigmoid(s @ W.T [+ bias]) * mha_out`` in PyTorch."""
     N_out = weight.shape[0]
     gate = torch.nn.functional.linear(s, weight, bias).sigmoid()
     if gate.numel() == mha_out.numel():
         result = (gate.reshape(-1, N_out) * mha_out.reshape(-1, N_out)).view_as(mha_out)
     else:
         result = gate * mha_out
+    if mask is not None:
+        if mask.numel() * N_out == result.numel():
+            mask = mask.reshape(result.shape[:-1])
+        if mask.ndim == result.ndim - 1:
+            mask = mask.unsqueeze(-1)
+        result = result * mask.to(dtype=result.dtype)
+    if residual is not None:
+        result = residual + result
     if output is not None:
         output.copy_(result.view_as(output))
         return output

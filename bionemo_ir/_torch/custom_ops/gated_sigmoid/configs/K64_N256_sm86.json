@@ -2,10 +2,10 @@
   "kernel_abi": "sm80",
   "configs": {
     "0": {
-      "m_block_size": 64,
-      "n_block_size": 64,
+      "m_block_size": 32,
+      "n_block_size": 32,
       "k_block_size": 32,
-      "num_stages": 3,
+      "num_stages": 2,
       "atom_layout_mnk": [
         2,
         2,
@@ -15,9 +15,9 @@
     },
     "1025": {
       "m_block_size": 64,
-      "n_block_size": 128,
+      "n_block_size": 32,
       "k_block_size": 32,
-      "num_stages": 3,
+      "num_stages": 2,
       "atom_layout_mnk": [
         2,
         2,

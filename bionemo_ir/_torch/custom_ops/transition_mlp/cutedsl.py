@@ -34,7 +34,6 @@ from bionemo_ir.dsl_kernels.cute_cache import FORCE_CUBIN_ENV, CuteKernelCache
 from bionemo_ir.logger import logger
 
 from ._config import (
-    KERNEL_ABIS,
     TransitionMlpVariant,
     buckets,
     get_tile_params,
@@ -43,6 +42,7 @@ from ._config import (
     shipped_variants,
     w1_rows,
 )
+from ._config import kernel_abi as tile_kernel_abi
 from ._cubin import TransitionMlpCubinExecutable
 
 __all__ = ["TransitionMlpCuTe", "TransitionMlpOp"]
@@ -162,7 +162,7 @@ class TransitionMlpCuTe(CuteKernelCache):
         tile_params = get_tile_params(self._sm_version, variant, bucket)
         if tile_params is None:
             raise ValueError(f"transition MLP has no SM{self._sm_version} config for {variant} at bucket {bucket}")
-        kernel_abi = KERNEL_ABIS[self._sm_version]
+        kernel_abi = tile_kernel_abi(self._sm_version, variant, bucket)
         # Buckets that share a tile share its compile.
         disk_key = ("transition_mlp_cute_v4", *key[:-1], kernel_abi, tuple(sorted(tile_params.items())))
         executable = TransitionMlpCuTe._compiled_cache.get(disk_key) or self.load_from_cache(disk_key)
@@ -281,31 +281,6 @@ class TransitionMlpOp:
 
     backend: TransitionMlpCuTe
     variant: TransitionMlpVariant
-
-    def prefers_fused(self, like: torch.Tensor, *, fp32_projection: bool = False) -> bool:
-        """Whether layers should fuse this shape, independently of operand compatibility.
-
-        SM8x SwiGLU provides little benefit below 4096 flattened rows. Keep those
-        calls on the existing projection path, including its numerical behavior.
-        Its rounded BF16 projections also cannot replace a caller's FP32 gated
-        projection. The conditioned two-way block keeps its dual-GEMM path.
-        Cap SM86 two-way fusion at 896 squared rows; larger pair
-        transitions retain their original arithmetic for iterative model accuracy.
-        Direct kernel calls remain available for every legal row count.
-        """
-        return not (
-            self.backend._sm_version in (80, 86, 89)
-            and self.variant.activation in ("silu_gate", "silu_gate_3way")
-            and (
-                fp32_projection
-                or like.numel() // self.variant.width < 4096
-                or (
-                    self.backend._sm_version == 86
-                    and self.variant.activation == "silu_gate"
-                    and like.numel() // self.variant.width > 896 * 896
-                )
-            )
-        )
 
     def accepts(
         self,

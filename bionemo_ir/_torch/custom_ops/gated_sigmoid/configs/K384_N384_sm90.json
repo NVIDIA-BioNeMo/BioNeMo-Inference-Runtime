@@ -1,41 +1,23 @@
 {
-  "kernel_abi": "sm80",
+  "kernel_abi": "sm90",
   "configs": {
     "0": {
-      "m_block_size": 64,
-      "n_block_size": 64,
-      "k_block_size": 32,
-      "num_stages": 3,
-      "atom_layout_mnk": [
-        2,
-        2,
-        1
-      ],
-      "raster_factor": 1
+      "n_block_size": 32,
+      "k_block_size": 64,
+      "num_stages": 6,
+      "unroll": 8
     },
     "1025": {
-      "m_block_size": 64,
-      "n_block_size": 64,
-      "k_block_size": 32,
-      "num_stages": 3,
-      "atom_layout_mnk": [
-        2,
-        2,
-        1
-      ],
-      "raster_factor": 1
+      "n_block_size": 32,
+      "k_block_size": 64,
+      "num_stages": 4,
+      "unroll": 2
     },
     "2049": {
-      "m_block_size": 64,
-      "n_block_size": 128,
+      "n_block_size": 64,
       "k_block_size": 64,
-      "num_stages": 2,
-      "atom_layout_mnk": [
-        2,
-        2,
-        1
-      ],
-      "raster_factor": 1
+      "num_stages": 3,
+      "unroll": 2
     }
   }
 }

@@ -552,7 +552,7 @@ def convert_hf_input_embedder_torch(
     atom_attn_enc_coder = convert_hf_diffusion_transformer_torch(
         config=config.atom_transformer_config,
         model_name=model_name,
-        weights=weights,
+        weights=state_dict,
         prefix="input_embedder.atom_attn_enc.atom_transformer.blocks",
     )
     for key, value in atom_attn_enc_coder.items():
@@ -971,7 +971,7 @@ def convert_hf_diffusion_module_torch(
     atom_attn_enc_coder = convert_hf_diffusion_transformer_torch(
         config=config.atom_transformer_encoder_config,
         model_name=model_name,
-        weights=weights,
+        weights=state_dict,
         prefix="diffusion_module.atom_attn_enc.atom_transformer.blocks",
     )
     atom_attn_enc_coder_weights = {}
@@ -985,7 +985,7 @@ def convert_hf_diffusion_module_torch(
     diffusion_transformer_coder = convert_hf_diffusion_transformer_torch(
         config=config.diffusion_transformer_config.token_transformer,
         model_name=model_name,
-        weights=weights,
+        weights=state_dict,
         prefix="diffusion_module.diffusion_transformer.blocks",
     )
     diffusion_transformer_coder_weights = {}
@@ -996,7 +996,7 @@ def convert_hf_diffusion_module_torch(
     atom_attn_dec_coder = convert_hf_diffusion_transformer_torch(
         config=config.atom_transformer_decoder_config,
         model_name=model_name,
-        weights=weights,
+        weights=state_dict,
         prefix="diffusion_module.atom_attn_dec.atom_transformer.blocks",
     )
     atom_attn_dec_coder_weights = {}

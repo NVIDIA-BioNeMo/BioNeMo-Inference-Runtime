@@ -1100,7 +1100,7 @@ def convert_hf_confidence_module_torch(
     }
 
     pairformer_weights = convert_hf_pairformer_torch(
-        config.pairformer, model_name=model_name, pairformer_type="confidence"
+        config.pairformer, model_name=model_name, weights=state_dict, pairformer_type="confidence"
     )
 
     confidence_heads_weights = {}

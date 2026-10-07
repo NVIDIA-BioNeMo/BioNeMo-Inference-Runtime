@@ -282,6 +282,66 @@ def test_cubin_chain_matches_source_chain_bitwise(case, monkeypatch):
     assert torch.equal(outputs[0], outputs[1])
 
 
+@pytest.mark.parametrize("mode", _CUTEDSL_MODES)
+def test_graph_replay_feeds_each_k1_the_x_its_k3_wrote(mode, monkeypatch):
+    """tri_mul_out's K3 writes the x tri_mul_in's K1 reads; replay must not let K1 read it early.
+
+    The node folds its weights once, so in the trunk K1 follows the previous K3 directly. At N = 64
+    K3 leaves SMs free, and a K1 overlapping it would read the previous replay's x.
+    """
+    skip_if_not_sm90()
+    caches = _use_mode(mode, monkeypatch)
+    problem = _problem(1, 64, 256, True, "full")
+    C = problem["x"].shape[-1]
+    op1 = k1.get_trimul_kf_k1_op(torch.bfloat16, C, C)
+    op2 = {outgoing: k2.get_trimul_kf_k2_op(torch.bfloat16, C, outgoing) for outgoing in (True, False)}
+    op3 = k3.get_trimul_kf_k3_op(torch.bfloat16, C, C, True)
+    fold_in = k1.fold_input_weights(
+        problem["norm_in_weight"],
+        problem["norm_in_bias"],
+        problem["p_in_weight"],
+        problem["g_in_weight"],
+        problem["p_in_bias"],
+        problem["g_in_bias"],
+    )
+    fold_out = k3.fold_output_weights(
+        problem["norm_out_weight"],
+        problem["norm_out_bias"],
+        problem["norm_in_weight"],
+        problem["norm_in_bias"],
+        problem["p_out_weight"],
+        problem["g_out_weight"],
+        problem["p_out_bias"],
+        problem["g_out_bias"],
+    )
+
+    def out_then_in(x: torch.Tensor, sync: bool) -> torch.Tensor:
+        """tri_mul_out then tri_mul_in on ``x``; ``sync`` finishes each chain before the next starts."""
+        for outgoing in (True, False):
+            a, b, stats = op1(x, problem["seqlen"], fold_in, _EPS)
+            prod = op2[outgoing](a, b)
+            x = op3(prod, x, fold_out, stats, _EPS, residual=True, actual_seqlen=problem["out_seqlen"])
+            if sync:
+                torch.cuda.synchronize()
+        return x
+
+    static = problem["x"].clone()
+    stream = torch.cuda.Stream()
+    stream.wait_stream(torch.cuda.current_stream())
+    with torch.cuda.stream(stream):
+        out_then_in(static, sync=False)
+    torch.cuda.current_stream().wait_stream(stream)
+    graph = torch.cuda.CUDAGraph()
+    with torch.cuda.graph(graph, stream=stream):
+        out = out_then_in(static, sync=False)
+    _assert_dispatched(caches, mode)
+    for seed in range(1, 4):
+        x = _problem(1, 64, C, True, "full", seed=seed)["x"]
+        static.copy_(x)
+        graph.replay()
+        torch.testing.assert_close(out, out_then_in(x, sync=True), rtol=0, atol=0)
+
+
 def _rows_reference(problem: dict, a: torch.Tensor, b: torch.Tensor, prod: torch.Tensor, outgoing: bool, rows):
     """fp32 ``a``, ``b``, product and output rows of the last batch, each from its stage's own inputs."""
     B, N, _, C = problem["x"].shape

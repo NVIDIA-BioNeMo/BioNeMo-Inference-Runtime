@@ -196,7 +196,7 @@ def _build_parser_stage(config: EngineProcessorConfig, processor_defaults: dict[
     parser_stage_cfg = resolve_stage_config(config.parser_stage, ParserStageConfig, processor_defaults)
     return ParserStage(
         fn_constructor_kwargs={"input_root": parser_stage_cfg.input_root},
-        map_batches_kwargs=build_cpu_stage_map_kwargs(parser_stage_cfg),
+        map_batches_kwargs=build_cpu_stage_map_kwargs(parser_stage_cfg) if config.executor_backend == "ray" else {},
         compute_by_rows=parser_stage_cfg.compute_by_rows,
         drop_keys=parser_stage_cfg.drop_keys,
     )
@@ -237,7 +237,7 @@ def _build_tokenizer_stage(config: EngineProcessorConfig, processor_defaults: di
             "pre_init": feature_factory.pre_init,
             "init_context": init_context,
         },
-        map_batches_kwargs=build_cpu_stage_map_kwargs(tokenizer_stage_cfg),
+        map_batches_kwargs=build_cpu_stage_map_kwargs(tokenizer_stage_cfg) if config.executor_backend == "ray" else {},
         compute_by_rows=tokenizer_stage_cfg.compute_by_rows,
         drop_keys=tokenizer_stage_cfg.drop_keys,
     )
@@ -275,7 +275,9 @@ def _build_feature_generator_stage(config: EngineProcessorConfig, processor_defa
             "init_context": feature_generator_stage_cfg.init_context,
         },
         # TODO: consider using GPU for feature factory
-        map_batches_kwargs=build_cpu_stage_map_kwargs(feature_generator_stage_cfg),
+        map_batches_kwargs=build_cpu_stage_map_kwargs(feature_generator_stage_cfg)
+        if config.executor_backend == "ray"
+        else {},
         compute_by_rows=feature_generator_stage_cfg.compute_by_rows,
         # Drop parsed to save memory
         drop_keys=feature_generator_stage_cfg.drop_keys
@@ -359,7 +361,7 @@ def _build_writer_stage(config: EngineProcessorConfig, processor_defaults: dict[
             "output_path": writer_stage_cfg.output_path,
             "format": writer_stage_cfg.format,
         },
-        map_batches_kwargs=build_cpu_stage_map_kwargs(writer_stage_cfg),
+        map_batches_kwargs=build_cpu_stage_map_kwargs(writer_stage_cfg) if config.executor_backend == "ray" else {},
         compute_by_rows=writer_stage_cfg.compute_by_rows,
         drop_keys=writer_stage_cfg.drop_keys,
     )

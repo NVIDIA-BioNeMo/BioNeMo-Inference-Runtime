@@ -15,11 +15,14 @@
 
 """Shared utility functions for processor builders."""
 
-from typing import Any
+from __future__ import annotations
 
-import ray
+from typing import TYPE_CHECKING, Any
 
 from bionemo_ir.pipeline.stages.configs import _StageConfigBase
+
+if TYPE_CHECKING:
+    from ray.data import ActorPoolStrategy
 
 
 def extract_resource_kwargs(
@@ -38,7 +41,7 @@ def extract_resource_kwargs(
     return kwargs
 
 
-def normalize_cpu_stage_concurrency(concurrency: int | tuple[int, int] | None) -> ray.data.ActorPoolStrategy:
+def normalize_cpu_stage_concurrency(concurrency: int | tuple[int, int] | None) -> ActorPoolStrategy:
     """
     Normalize concurrency specification to ActorPoolStrategy for CPU stages.
 
@@ -51,11 +54,13 @@ def normalize_cpu_stage_concurrency(concurrency: int | tuple[int, int] | None) -
     Returns:
         ray.data.ActorPoolStrategy configured based on the input specification
     """
+    from ray.data import ActorPoolStrategy
+
     if concurrency is None:
-        return ray.data.ActorPoolStrategy(min_size=1, max_size=1)
+        return ActorPoolStrategy(min_size=1, max_size=1)
     if isinstance(concurrency, int):
-        return ray.data.ActorPoolStrategy(min_size=1, max_size=concurrency)
-    return ray.data.ActorPoolStrategy(min_size=concurrency[0], max_size=concurrency[1])
+        return ActorPoolStrategy(min_size=1, max_size=concurrency)
+    return ActorPoolStrategy(min_size=concurrency[0], max_size=concurrency[1])
 
 
 def build_cpu_stage_map_kwargs(

@@ -170,8 +170,25 @@ class ProtenixDiffusionConditioning(nn.Module):
             pair_z = layer(pair_z, residual=True, inplace=True)
         return pair_z
 
+    def prepare_single(self, s_inputs: torch.Tensor, s_trunk: torch.Tensor) -> torch.Tensor:
+        """Project noise-independent single inputs once per diffusion rollout.
+
+        Args:
+            s_inputs: ``[B, N_token, c_s_inputs]``
+            s_trunk: ``[B, N_token, c_s]``
+
+        Returns:
+            ``[B, N_token, c_s]`` base conditioning, before adding noise.
+        """
+        single_s = torch.cat([s_trunk, s_inputs], dim=-1)
+        return self.linear_no_bias_s(self.layernorm_s(single_s))
+
     def forward_single(
-        self, t_hat_noise_level: torch.Tensor, s_inputs: torch.Tensor, s_trunk: torch.Tensor
+        self,
+        t_hat_noise_level: torch.Tensor,
+        s_inputs: torch.Tensor,
+        s_trunk: torch.Tensor,
+        prepared_single: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """Single conditioning (noise-dependent; recomputed each diffusion step).
 
@@ -179,6 +196,7 @@ class ProtenixDiffusionConditioning(nn.Module):
             t_hat_noise_level: ``[B, S]`` or ``[B, 1]`` for shared sample noise
             s_inputs: ``[B, N_token, c_s_inputs]``
             s_trunk: ``[B, N_token, c_s]``
+            prepared_single: :meth:`prepare_single` for the same trunk and inputs, if cached.
 
         Returns:
             ``[B, S, N_token, c_s]`` or ``[B, 1, N_token, c_s]`` for singleton noise
@@ -187,10 +205,9 @@ class ProtenixDiffusionConditioning(nn.Module):
         # uses [B, 1], whose singleton survives CUDA-graph input cloning.
         t = t_hat_noise_level
         if t.dim() >= 1 and t.shape[-1] > 1 and t.stride(-1) == 0:
-            single_s = self.forward_single(t[..., :1], s_inputs, s_trunk)
+            single_s = self.forward_single(t[..., :1], s_inputs, s_trunk, prepared_single=prepared_single)
             return single_s.expand(*t.shape, *single_s.shape[-2:])
-        single_s = torch.cat([s_trunk, s_inputs], dim=-1)
-        single_s = self.linear_no_bias_s(self.layernorm_s(single_s))
+        single_s = self.prepare_single(s_inputs, s_trunk) if prepared_single is None else prepared_single
         noise_n = self.fourier_embedding(torch.log(t / self.sigma_data) / 4).to(single_s.dtype)
         single_s = single_s.unsqueeze(-3) + self.linear_no_bias_n(self.layernorm_n(noise_n)).unsqueeze(-2)
         # ``single_s`` is a fresh broadcast sum, so update it in place.
@@ -254,7 +271,8 @@ class ProtenixDiffusionModule(nn.Module):
             (sample-independent atom-transformer projections of ``atom_p_lm``),
             ``token_pair_biases`` (the token transformer's projections of
             ``pair_z``, when it can prepare them), ``attn_metadata``,
-            ``n_token``, and ``atom_reduction`` (token slots, or ``None`` for
+            ``single_s`` (noise-independent single projection), ``n_token``,
+            and ``atom_reduction`` (token slots, or ``None`` for
             scatter).
         """
         pair_z = self.diffusion_conditioning.prepare_pair(input_feature_dict["relp"], z_trunk)
@@ -265,6 +283,7 @@ class ProtenixDiffusionModule(nn.Module):
         n_atom = atom_c_l.shape[-2]
         cache = {
             "pair_z": pair_z,
+            "single_s": self.diffusion_conditioning.prepare_single(s_inputs, s_trunk),
             "atom_c_l": atom_c_l,
             "atom_p_lm": atom_p_lm,
             "atom_encoder_pair_biases": self.atom_attention_encoder.prepare_pair_biases(
@@ -316,7 +335,9 @@ class ProtenixDiffusionModule(nn.Module):
             attn_metadata = cache["attn_metadata"]
             n_token = cache["n_token"]
             z_pair = cache["pair_z"]
-            s_single = self.diffusion_conditioning.forward_single(t_hat_noise_level, s_inputs, s_trunk)
+            s_single = self.diffusion_conditioning.forward_single(
+                t_hat_noise_level, s_inputs, s_trunk, prepared_single=cache.get("single_s")
+            )
             a_token, q_skip, c_skip, p_skip = self.atom_attention_encoder.run_coords_cached(
                 input_feature_dict["atom_to_token_idx"],
                 cache["atom_c_l"],

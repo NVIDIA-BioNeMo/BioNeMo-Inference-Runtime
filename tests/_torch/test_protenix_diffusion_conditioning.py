@@ -246,3 +246,49 @@ def test_protenix_diffusion_pair_transition_auto_chunk(torch_dtype: str):
             chunked = layer(z)
             torch.testing.assert_close(chunked, dense, **tol)
             z = z + chunked
+
+
+@pytest.mark.parametrize("batch", [1, 2])
+@pytest.mark.parametrize("samples", [1, 3])
+@pytest.mark.parametrize("dtype", ["float32", "bfloat16"])
+@pytest.mark.parametrize("shared_noise", [False, True])
+def test_prepared_single_reuses_projection_without_mutation(
+    batch: int, samples: int, dtype: str, shared_noise: bool
+) -> None:
+    """Cache only the static projection; varying noise still produces the eager result."""
+    torch.manual_seed(31)
+    config = DiffusionConditioningConfig(
+        c_s=32,
+        c_z=32,
+        c_s_inputs=16,
+        c_noise_embedding=32,
+        relpe_config=RelativePositionEncodingConfig(c_z=32),
+        dtype=dtype,
+        z_pair_dtype=dtype,
+    )
+    model = init_module_weights(ProtenixDiffusionConditioning(config).cuda()).eval()
+    torch_dtype = str_dtype_to_torch(dtype)
+    s_inputs = torch.randn(batch, 17, 16, device="cuda", dtype=torch_dtype)
+    s_trunk = torch.randn(batch, 17, 32, device="cuda", dtype=torch_dtype)
+    projections = []
+    handle = model.linear_no_bias_s.register_forward_pre_hook(lambda _module, args: projections.append(args[0].shape))
+    try:
+        with torch.inference_mode():
+            prepared = model.prepare_single(s_inputs, s_trunk)
+            saved = prepared.clone()
+            assert len(projections) == 1
+            for sigma in (0.5, 3.0):
+                noise = torch.rand(batch, 1 if shared_noise else samples, device="cuda", dtype=torch_dtype) + sigma
+                if shared_noise:
+                    noise = noise.expand(batch, samples)
+                actual = model.forward_single(noise, s_inputs, s_trunk, prepared_single=prepared)
+                assert len(projections) == 1
+                handle.remove()
+                expected = model.forward_single(noise, s_inputs, s_trunk)
+                torch.testing.assert_close(actual, expected, atol=0, rtol=0)
+                assert torch.equal(prepared, saved)
+                handle = model.linear_no_bias_s.register_forward_pre_hook(
+                    lambda _module, args: projections.append(args[0].shape)
+                )
+    finally:
+        handle.remove()

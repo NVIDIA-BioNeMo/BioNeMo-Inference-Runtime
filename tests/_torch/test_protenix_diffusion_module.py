@@ -831,3 +831,71 @@ def test_shared_noise_diffusion_cudagraph_parity(use_cache: bool, token_dtype: s
             dense_t = torch.full((1, sc.n_sample), sigma, device=device)
             expected = module(x_step, dense_t, batch, s_inputs, s_trunk, z_trunk, cache=cache)
             torch.testing.assert_close(actual, expected, atol=2e-3, rtol=2e-3)
+
+
+@pytest.mark.parametrize("token_dtype", ["float32", "bfloat16"])
+def test_precomputed_single_diffusion_graph_replay(token_dtype: str) -> None:
+    """Cache the single projection once, preserving graph replay and cache refresh parity."""
+    torch.manual_seed(17)
+    device = torch.device("cuda")
+    sc = Scenario(dtype="float32", token_dtype=token_dtype, z_pair_dtype="float32")
+    module = ProtenixDiffusionModule(_build_config(sc)).to(device).eval()
+    with torch.no_grad():
+        for name, param in module.named_parameters():
+            if name.endswith("weight") and "norm" in name:
+                param.fill_(1)
+            elif param.ndim > 1:
+                param.normal_(std=0.02)
+            else:
+                param.zero_()
+    batch, s_inputs, s_trunk, z_trunk = _sampler_inputs(device, sc, module)
+    x_noisy = torch.randn(1, sc.n_sample, sc.n_atom, 3, device=device)
+    calls = []
+    hook = module.diffusion_conditioning.linear_no_bias_s.register_forward_pre_hook(
+        lambda _module, args: calls.append(args[0].shape)
+    )
+    try:
+        with torch.inference_mode():
+            cache = module.prepare_cache(batch, s_inputs, s_trunk, z_trunk)
+            assert len(calls) == 1
+            saved = cache["single_s"].clone()
+            policy = copy.deepcopy(module.config.graph_optimization_config)
+            policy.verify_capture = True
+            sampler = ProtenixDiffusionSampler(module).eval()
+            sampler.graph.enable(policy)
+            kwargs = {
+                "input_feature_dict": batch,
+                "s_inputs": s_inputs,
+                "s_trunk": s_trunk,
+                "z_trunk": z_trunk,
+                "cache": cache,
+            }
+            noise = torch.full((1, sc.n_sample), 1.5, device=device)
+            for _ in range(4):
+                sampler.graph(x_noisy=x_noisy, t_hat_noise_level=noise, **kwargs)
+            tracker = sampler.graph.tracker
+            assert tracker is not None
+            states = list(tracker.graph_state_by_key.values())
+            assert states and all(s.preparation_state is CUDAGraphPreparationState.GRAPH_VERIFIED for s in states)
+            assert not any(tracker.fallback_to_eager_by_key.values())
+            assert len(calls) == 1
+            hook.remove()
+            for sigma in (0.5, 3.0):
+                noise = torch.full((1, sc.n_sample), sigma, device=device)
+                actual = sampler.graph(x_noisy=x_noisy + sigma, t_hat_noise_level=noise, **kwargs)
+                expected = module(x_noisy + sigma, noise, batch, s_inputs, s_trunk, z_trunk)
+                torch.testing.assert_close(actual, expected, atol=2e-3, rtol=2e-3)
+                # A cache created before this change still uses the uncached single path.
+                legacy_cache = {k: v for k, v in cache.items() if k != "single_s"}
+                legacy = module(x_noisy + sigma, noise, batch, s_inputs, s_trunk, z_trunk, cache=legacy_cache)
+                torch.testing.assert_close(actual, legacy, atol=2e-3, rtol=2e-3)
+                assert torch.equal(cache["single_s"], saved)
+            new_s_trunk = s_trunk + torch.randn_like(s_trunk) * 0.1
+            new_cache = module.prepare_cache(batch, s_inputs, new_s_trunk, z_trunk)
+            kwargs.update(s_trunk=new_s_trunk, cache=new_cache)
+            actual = sampler.graph(x_noisy=x_noisy, t_hat_noise_level=noise, **kwargs)
+            expected = module(x_noisy, noise, batch, s_inputs, new_s_trunk, z_trunk)
+            torch.testing.assert_close(actual, expected, atol=2e-3, rtol=2e-3)
+            assert len(tracker.graph_state_by_key) == 1
+    finally:
+        hook.remove()

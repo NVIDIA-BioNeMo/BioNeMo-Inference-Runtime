@@ -129,7 +129,7 @@ class TrimulKFK3CuTe(CuteKernelCache):
 
         if self._num_sms is None:
             self._num_sms = torch.cuda.get_device_properties(torch.cuda.current_device()).multi_processor_count
-        disk_key = ("trimul_kf_k3_cute_v1", *key, KERNEL_ABIS[self._sm_version])
+        disk_key = ("trimul_kf_k3_cute_v2", *key, KERNEL_ABIS[self._sm_version])
         executable = self.load_from_cache(disk_key)
         if executable is None:
             logger.info(

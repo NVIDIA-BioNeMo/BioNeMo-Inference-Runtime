@@ -194,6 +194,24 @@ code. Verify the active environment:
 python -c "import bionemo_ir.libs._cutedsl_kernels; print('ok')"
 ```
 
+### CuTeDSL Compiler
+
+`nvidia-cutlass-dsl[cu13]` installs both `nvidia-cutlass-dsl-libs-base` and
+`nvidia-cutlass-dsl-libs-cu13`. The two wheels ship the same native compiler
+module, each embedding its own ptxas (CUDA 12.9 and 13.1), and whichever unpacks
+last compiles every kernel. The image reinstalls the CUDA 13 wheel last, and the
+published CUBIN packs come from it. After any `uv sync`, do the same:
+
+```bash
+uv pip install --no-deps --reinstall-package nvidia-cutlass-dsl-libs-cu13 \
+  'nvidia-cutlass-dsl-libs-cu13==4.5.2'
+```
+
+Use the `nvidia-cutlass-dsl` version `pyproject.toml` pins. Without this step,
+source mode and locally built packs run different machine code from the shipped
+packs, so their timings do not transfer. The CUBIN build tooling warns about a
+foreign compiler and refuses to publish packs from it.
+
 uv's host project workflow builds in an isolated environment constrained by the
 `build` group in `uv.lock`. The image installs the same build and development
 groups on top of the NGC Python environment so it keeps the tested torch,

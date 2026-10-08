@@ -35,6 +35,7 @@ from ._config import (
     _KERNEL_CZ,
     _KERNEL_D,
     _OPM_CONFIGS_DIR,
+    _SUPPORTED_CZ,
     KernelConfig,
     _parse_key,
     _select_opm_config_bucket,
@@ -58,7 +59,7 @@ __all__ = [
 ]
 
 # SM86/89 use a smaller tile to fit their shared-memory limit.
-_SUPPORTED_SM = (80, 86, 89, 90, 100, 103)
+_SUPPORTED_SM = (80, 86, 89, 90)
 _DTYPE_STR = {torch.float16: "fp16", torch.bfloat16: "bf16"}
 
 
@@ -172,7 +173,7 @@ class OuterProductMeanCuTe(CuteKernelCache):
         if a.dtype not in _DTYPE_STR or a.dim() != 4 or b.dim() != 4:
             return False
         C, D, C_z = a.shape[-1], b.shape[-1], W_o.shape[0]
-        return C == _KERNEL_C and D == _KERNEL_D and C_z == _KERNEL_CZ
+        return C == _KERNEL_C and D == _KERNEL_D and C_z in _SUPPORTED_CZ
 
     def __call__(
         self,

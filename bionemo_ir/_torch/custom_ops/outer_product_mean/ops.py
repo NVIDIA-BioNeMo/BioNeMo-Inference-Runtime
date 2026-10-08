@@ -12,19 +12,34 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""PyTorch fallback for the fused outer-product-mean op."""
+"""Outer-product-mean public operator selection."""
 
 from __future__ import annotations
 
 from collections.abc import Callable
+from typing import TYPE_CHECKING
 
 import torch
 
+from bionemo_ir.dsl_kernels.triton.dense_outer_product import dense_outer_product
 from bionemo_ir.utils import get_sm_version
 
-from ._config import _KERNEL_C, _KERNEL_CZ, _KERNEL_D
+from ._config import _KERNEL_C, _KERNEL_D, _SUPPORTED_CZ
 
-_opm_cute_instance = None
+if TYPE_CHECKING:
+    from .cutedsl import OuterProductMeanCuTe
+
+# CuTe kernels written for each SM's own instructions. Elsewhere CuTe would run
+# the Ampere kernel, so the Triton kernel goes first.
+_CUTE_NATIVE = {
+    80: (torch.float16, torch.bfloat16),
+    86: (torch.float16, torch.bfloat16),
+    89: (torch.float16, torch.bfloat16),
+    90: (torch.bfloat16,),
+}
+# Triton's BF16 dot needs SM80.
+_TRITON_MIN_SM = 80
+_TRITON_DTYPES = (torch.float16, torch.bfloat16)
 
 
 def _invoke_vanilla_opm(
@@ -50,17 +65,57 @@ def _invoke_vanilla_opm(
     return out.to(out_dtype)
 
 
+def _invoke_triton_opm(
+    a: torch.Tensor,
+    b: torch.Tensor,
+    num_mask: torch.Tensor,
+    W_o: torch.Tensor,
+    bias: torch.Tensor | None = None,
+    norm_before: bool = True,
+) -> torch.Tensor:
+    """Run the Triton backend."""
+    return dense_outer_product(a, b, num_mask, W_o, bias, norm_before)
+
+
+_OPM_CUTE: OuterProductMeanCuTe | None = None
+
+
+def _get_cute_opm() -> OuterProductMeanCuTe:
+    """Return the process-wide CuTe backend instance."""
+    global _OPM_CUTE
+    if _OPM_CUTE is None:
+        # cutedsl imports this module for its PyTorch fallback.
+        from .cutedsl import OuterProductMeanCuTe
+
+        _OPM_CUTE = OuterProductMeanCuTe()
+    return _OPM_CUTE
+
+
+def _invoke_cute_opm(
+    a: torch.Tensor,
+    b: torch.Tensor,
+    num_mask: torch.Tensor,
+    W_o: torch.Tensor,
+    bias: torch.Tensor | None = None,
+    norm_before: bool = True,
+) -> torch.Tensor:
+    """Run the source-or-CUBIN CuTe backend."""
+    return _get_cute_opm()(a, b, num_mask, W_o, bias, norm_before)
+
+
 def get_outer_product_mean_op(dtype: torch.dtype, C: int, D: int, C_z: int) -> Callable:
-    """Return the CuTeDSL backend when a matching payload exists."""
-    if (C, D, C_z) != (_KERNEL_C, _KERNEL_D, _KERNEL_CZ):
+    """Return the best backend for one dtype, shape, and device.
+
+    CuTe runs where it has a native kernel for the SM and dtype; the Triton
+    kernel serves every other SM80+ call, and everything else takes the
+    PyTorch fallback.
+    """
+    if (C, D) != (_KERNEL_C, _KERNEL_D) or C_z not in _SUPPORTED_CZ:
         return _invoke_vanilla_opm
 
-    from .cutedsl import _DTYPE_STR, _SUPPORTED_SM, OuterProductMeanCuTe
-
     sm = get_sm_version()
-    if sm in _SUPPORTED_SM and dtype in _DTYPE_STR:
-        global _opm_cute_instance
-        if _opm_cute_instance is None:
-            _opm_cute_instance = OuterProductMeanCuTe()
-        return _opm_cute_instance
+    if dtype in _CUTE_NATIVE.get(sm, ()):
+        return _invoke_cute_opm
+    if sm >= _TRITON_MIN_SM and dtype in _TRITON_DTYPES:
+        return _invoke_triton_opm
     return _invoke_vanilla_opm

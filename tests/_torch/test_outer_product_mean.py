@@ -33,7 +33,8 @@ from bionemo_ir._torch.custom_ops.outer_product_mean import (
 )
 from bionemo_ir._torch.custom_ops.outer_product_mean import _cubin as opm_cubin
 from bionemo_ir._torch.custom_ops.outer_product_mean import cutedsl as opm_cutedsl
-from bionemo_ir._torch.custom_ops.outer_product_mean.ops import _invoke_vanilla_opm
+from bionemo_ir._torch.custom_ops.outer_product_mean._config import Sm90KernelConfig
+from bionemo_ir._torch.custom_ops.outer_product_mean.ops import _invoke_triton_opm, _invoke_vanilla_opm
 from bionemo_ir._torch.layers.outer_product_mean import OuterProductMean
 from bionemo_ir._torch.utils import ChunkPolicy
 from bionemo_ir.utils import str_dtype_to_torch
@@ -45,7 +46,7 @@ from tests._torch import (
     skip_if_no_cutedsl,
 )
 
-_CUTEDSL_SM = (80, 86, 89, 90, 100, 103)
+_CUTEDSL_SM = (80, 86, 89, 90)
 _CUTEDSL_MODES = cutedsl_test_modes("bionemo_ir._torch.custom_ops.outer_product_mean._source")
 
 
@@ -116,31 +117,30 @@ def test_outer_product_mean(sc: Scenario):
     load_outer_product_mean_weights_torch(outer_product_mean, weights_and_biases, dtype=dtype)
     outer_product_mean.to(device)
 
-    # On a CuTeDSL-capable GPU the half-precision, non-chunked path must resolve
-    # to the fused custom op (guards against a silent fall-back to eager).
-    if dtype in (torch.float16, torch.bfloat16) and SM_VERSION in _CUTEDSL_SM:
+    # On SM80+ the half-precision, non-chunked path must resolve to a fused
+    # custom op (guards against a silent fall-back to eager).
+    if dtype in (torch.float16, torch.bfloat16) and SM_VERSION >= 80:
         assert outer_product_mean._opm_eligible
-        assert isinstance(
+        assert (
             get_outer_product_mean_op(
                 dtype,
                 C=outer_product_mean.c_hidden,
                 D=outer_product_mean.c_hidden,
                 C_z=outer_product_mean.c_out,
-            ),
-            OuterProductMeanCuTe,
+            )
+            is not _invoke_vanilla_opm
         )
 
     m = torch.randn(bs, sc.n_seq, sc.n_res, ref_m.c_in, dtype=torch.float32).cuda()
     mask = torch.randint(0, 2, (bs, sc.n_seq, sc.n_res), dtype=torch.float32).to(device)
 
-    with torch.inference_mode():
-        ref_output_float = ref_m(m, mask)
-        m = m.to(dtype)
-        mask = mask.to(dtype)
-        ref_m = ref_m.to(dtype)
+    ref_output_float = ref_m(m, mask)
+    m = m.to(dtype)
+    mask = mask.to(dtype)
+    ref_m = ref_m.to(dtype)
 
-        ref_output = ref_m(m, mask)
-        output = outer_product_mean.forward(m, mask)
+    ref_output = ref_m(m, mask)
+    output = outer_product_mean.forward(m, mask)
 
     assert ref_output.shape == output.shape
     if dtype == torch.float32:
@@ -172,19 +172,16 @@ def test_outer_product_mean_chunk_matches_dense(rows: int):
     opm.eval()
     # Constructed weights are zero-initialized (production loads them); give them real values so
     # the dense-vs-chunked comparison is meaningful rather than 0 == 0.
-    with torch.no_grad():
-        for p in opm.parameters():
-            p.normal_(mean=0.0, std=0.1)
+    opm.load_state_dict({name: torch.randn_like(value) * 0.1 for name, value in opm.state_dict().items()})
     m = torch.randn(1, 6, 40, 32, device=device)  # N=40 output rows
     mask = torch.randint(0, 2, (1, 6, 40), dtype=torch.float32, device=device)
 
-    with torch.inference_mode():
-        # Registry default (memory-scaled min_size) not tripped at N=40 -> dense.
-        dense = opm(m, mask)
+    # Registry default (memory-scaled min_size) not tripped at N=40 -> dense.
+    dense = opm(m, mask)
 
-        # Registry-style policy chunking over output token-rows (rows=7 hits a partial tail).
-        opm.chunk_policy = ChunkPolicy(chunk_size=rows, min_size=1)
-        policy = opm(m, mask)
+    # Registry-style policy chunking over output token-rows (rows=7 hits a partial tail).
+    opm.chunk_policy = ChunkPolicy(chunk_size=rows, min_size=1)
+    policy = opm(m, mask)
 
     torch.testing.assert_close(policy, dense, atol=1e-4, rtol=1e-4)
 
@@ -202,11 +199,12 @@ def test_outer_product_mean_chunk_matches_dense(rows: int):
 @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16], ids=["fp16", "bf16"])
 @pytest.mark.parametrize("has_bias", [False, True], ids=["no_bias", "bias"])
 @pytest.mark.parametrize("norm_before", [False, True], ids=["norm_after", "norm_before"])
-def test_outer_product_mean_source_and_cubin(mode, dtype, has_bias, norm_before, monkeypatch):
+@pytest.mark.parametrize("C_z", [128, 256], ids=["cz128", "cz256"])
+def test_outer_product_mean_source_and_cubin(mode, dtype, has_bias, norm_before, C_z, monkeypatch):
     if SM_VERSION not in _CUTEDSL_SM:
         pytest.skip(f"OPM CUBINs do not target SM{SM_VERSION}")
     torch.manual_seed(7)
-    B, S, I, J, C, D, C_z = 1, 31, 17, 19, 32, 32, 128
+    B, S, I, J, C, D = 1, 31, 17, 19, 32, 32
     a = torch.randn(B, S, I, C, device="cuda", dtype=dtype).mul_(0.2)
     b = torch.randn(B, S, J, D, device="cuda", dtype=dtype).mul_(0.2)
     num_mask = torch.randint(1, S + 1, (B, I, J), device="cuda", dtype=torch.int32).float()
@@ -222,6 +220,82 @@ def test_outer_product_mean_source_and_cubin(mode, dtype, has_bias, norm_before,
     )
     reference = _invoke_vanilla_opm(a, b, num_mask, weight, bias, norm_before)
     torch.testing.assert_close(result, reference, atol=0.08, rtol=0.02)
+
+
+# (dtype, B, S, I, J, C_z, has_bias, norm_before): every axis off its tile multiple and I != J,
+# with sqrt(I * J) near each tuned N bucket so every shipped tile -- paired tiles, the C split,
+# and j-strip rasterization included -- runs partial tiles. Paired tiles see an odd tile count.
+_UNALIGNED_CASES = [
+    (torch.bfloat16, 1, 255, 117, 133, 128, True, True),
+    (torch.bfloat16, 2, 511, 245, 259, 128, False, True),
+    (torch.bfloat16, 1, 500, 515, 513, 128, True, False),
+    (torch.bfloat16, 1, 1000, 1001, 1003, 128, True, True),
+    (torch.bfloat16, 1, 999, 1301, 1299, 128, False, False),
+    (torch.bfloat16, 1, 599, 821, 827, 256, True, True),
+    (torch.bfloat16, 2, 33, 260, 251, 256, True, False),
+    (torch.float16, 1, 300, 517, 515, 128, True, True),
+    (torch.float16, 1, 97, 263, 257, 256, False, True),
+]
+
+
+def _unaligned_operands(dtype, B, S, I, J, C_z, has_bias):
+    torch.manual_seed(I + J + S)
+    a = torch.randn(B, S, I, 32, device="cuda", dtype=dtype)
+    b = torch.randn(B, S, J, 32, device="cuda", dtype=dtype)
+    # Counts near S keep every output on one scale, so the tolerance catches a wrong tile.
+    num_mask = torch.randint(S // 2 + 1, S + 2, (B, I, J), device="cuda").float()
+    weight = torch.randn(C_z, 1024, device="cuda", dtype=dtype).mul_(0.05)
+    bias = torch.randn(C_z, device="cuda", dtype=dtype).mul_(0.1) if has_bias else None
+    return a, b, num_mask, weight, bias
+
+
+def _assert_matches_fp32_reference(result, a, b, num_mask, weight, bias, norm_before):
+    # Row blocks bound the reference's FP32 [B, rows, J, 1024] intermediate.
+    reference = torch.cat(
+        [
+            _invoke_vanilla_opm(
+                a[:, :, i : i + 256].float(), b.float(), num_mask[:, i : i + 256], weight.float(), bias, norm_before
+            )
+            for i in range(0, a.shape[2], 256)
+        ],
+        dim=1,
+    )
+    assert result.shape == reference.shape and result.dtype == a.dtype
+    torch.testing.assert_close(result.float(), reference, rtol=0.02, atol=0.02 * reference.abs().median().item())
+
+
+@pytest.mark.parametrize("mode", _CUTEDSL_MODES)
+@pytest.mark.parametrize(
+    "dtype,B,S,I,J,C_z,has_bias,norm_before",
+    _UNALIGNED_CASES,
+    ids=[f"{str(c[0]).removeprefix('torch.')}-B{c[1]}-S{c[2]}-I{c[3]}-J{c[4]}-cz{c[5]}" for c in _UNALIGNED_CASES],
+)
+def test_outer_product_mean_cute_unaligned(mode, dtype, B, S, I, J, C_z, has_bias, norm_before, monkeypatch):
+    if SM_VERSION not in _CUTEDSL_SM:
+        pytest.skip(f"OPM CUBINs do not target SM{SM_VERSION}")
+    a, b, num_mask, weight, bias = _unaligned_operands(dtype, B, S, I, J, C_z, has_bias)
+    result = run_cutedsl_test_mode(
+        mode,
+        monkeypatch,
+        OuterProductMeanCuTe,
+        opm_cutedsl,
+        lambda: OuterProductMeanCuTe()(a, b, num_mask, weight, bias, norm_before),
+    )
+    _assert_matches_fp32_reference(result, a, b, num_mask, weight, bias, norm_before)
+
+
+@pytest.mark.parametrize("sm", [86, 89])
+@pytest.mark.parametrize("C_z", [128, 256], ids=["cz128", "cz256"])
+@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16], ids=["bf16", "fp16"])
+def test_outer_product_mean_smem_constrained_tiles(sm, C_z, dtype):
+    """The SM86/89 tiles, including the C_z = 256 default, run exactly through the source path."""
+    if SM_VERSION not in _CUTEDSL_SM or "source" not in _CUTEDSL_MODES:
+        pytest.skip("the SM86/89 tiles compile for this GPU only through the CuTeDSL source path")
+    backend = OuterProductMeanCuTe()
+    # Select that SM's tile; the source path compiles it for the local GPU.
+    backend._sm_version = sm
+    a, b, num_mask, weight, bias = _unaligned_operands(dtype, 2, 97, 263, 257, C_z, True)
+    _assert_matches_fp32_reference(backend(a, b, num_mask, weight, bias, False), a, b, num_mask, weight, bias, False)
 
 
 def test_outer_product_mean_force_cubin_ignores_warmed_source(monkeypatch):
@@ -284,33 +358,26 @@ def test_outer_product_mean_cubin_rejects_wrong_static_tail(operand, tail):
     [(128, 64), (256, 128), (100, 130), (127, 63), (31, 129)],
     ids=["s128n64", "s256n128", "s100n130", "s127n63", "s31n129"],
 )
-def test_outer_product_mean_cute_matches_eager(dtype, norm_before_output, n_seq, n_res):
+@pytest.mark.parametrize("c_out", [128, 256], ids=["cz128", "cz256"])
+def test_outer_product_mean_fused_matches_eager(dtype, norm_before_output, n_seq, n_res, c_out):
     skip_if_no_cutedsl()
     torch.manual_seed(0)
-    c_in, c_hidden, c_out = 128, 32, 128
+    c_in, c_hidden = 128, 32
 
     layer = OuterProductMean(
         c_in=c_in, c_hidden=c_hidden, c_out=c_out, norm_before_output=norm_before_output, dtype=dtype
     ).cuda()
-    with torch.no_grad():
-        for p in layer.parameters():
-            p.normal_(0, 0.3)
+    layer.load_state_dict({name: torch.randn_like(value) * 0.3 for name, value in layer.state_dict().items()})
 
-    # Kernel-eligible (single-GPU, c_hidden==32, c_out==128) and the op resolves
-    # to the CuTe backend on this GPU.
+    # Kernel-eligible (single-GPU, c_hidden==32, c_out in {128, 256}): the layer runs a fused backend.
     assert layer._opm_eligible
-    assert isinstance(
-        get_outer_product_mean_op(dtype, C=layer.c_hidden, D=layer.c_hidden, C_z=layer.c_out),
-        OuterProductMeanCuTe,
-    )
 
     m = torch.randn(1, n_seq, n_res, c_in, dtype=dtype, device="cuda")
     mask = (torch.rand(1, n_seq, n_res, device="cuda") < 0.9).to(dtype)
 
-    with torch.inference_mode():
-        out_kernel = layer(m, mask)
-        layer._opm_eligible = False  # force the original eager path
-        out_eager = layer(m, mask)
+    out_kernel = layer(m, mask)
+    layer._opm_eligible = False  # force the original eager path
+    out_eager = layer(m, mask)
 
     assert out_kernel.shape == out_eager.shape == (1, n_res, n_res, c_out)
     diff = (out_kernel.float() - out_eager.float()).abs()
@@ -321,23 +388,25 @@ def test_outer_product_mean_cute_matches_eager(dtype, norm_before_output, n_seq,
 
 
 def test_outer_product_mean_op_selector():
-    """The selector returns the CuTe op on CuTeDSL GPUs for fp16/bf16 and the
-    vanilla fallback for fp32 / unsupported hardware."""
+    """The selector returns a fused op on SM80+ for fp16/bf16 and the vanilla
+    fallback for fp32 and unsupported dims."""
     op_bf16 = get_outer_product_mean_op(torch.bfloat16, C=32, D=32, C_z=128)
     op_fp32 = get_outer_product_mean_op(torch.float32, C=32, D=32, C_z=128)
-    if SM_VERSION in _CUTEDSL_SM:
-        assert isinstance(op_bf16, OuterProductMeanCuTe)
-    assert not isinstance(op_fp32, OuterProductMeanCuTe)
+    if SM_VERSION >= 80:
+        assert op_bf16 is not _invoke_vanilla_opm
+        assert get_outer_product_mean_op(torch.bfloat16, C=32, D=32, C_z=256) is not _invoke_vanilla_opm
+    assert op_fp32 is _invoke_vanilla_opm
     assert get_outer_product_mean_op(torch.bfloat16, C=64, D=32, C_z=128) is _invoke_vanilla_opm
+    assert get_outer_product_mean_op(torch.bfloat16, C=32, D=32, C_z=192) is _invoke_vanilla_opm
 
 
 @pytest.mark.parametrize("sm", [100, 103])
-def test_outer_product_mean_supports_blackwell(monkeypatch, sm):
-    sentinel = object()
+def test_outer_product_mean_blackwell_runs_triton(monkeypatch, sm):
+    """Blackwell has no native CuTe OPM kernel, so the Triton kernel goes first."""
     # Public backend selection lives in ops.py; patch it where it is defined.
     monkeypatch.setattr(opm_ops.ops, "get_sm_version", lambda: sm)
-    monkeypatch.setattr(opm_ops.ops, "_opm_cute_instance", sentinel)
-    assert opm_ops.get_outer_product_mean_op(torch.bfloat16, C=32, D=32, C_z=128) is sentinel
+    for dtype in (torch.bfloat16, torch.float16):
+        assert opm_ops.get_outer_product_mean_op(dtype, C=32, D=32, C_z=128) is _invoke_triton_opm
 
 
 def test_outer_product_mean_config_selects_n_bucket_before_s():
@@ -356,3 +425,12 @@ def test_outer_product_mean_config_selects_n_bucket_before_s():
     assert selected.config_key() == config.config_key()
     # N=1024 has three distinct tuned S variants; the backend precompiles all.
     assert len({variant.config_key() for variant in variants}) == 3
+
+
+@pytest.mark.parametrize("C_z", [128, 256], ids=["cz128", "cz256"])
+def test_outer_product_mean_sm90_config_selection(C_z):
+    """SM90 bf16 selects the warp-specialized kernel for its C_z; fp16 keeps the SM80 kernel."""
+    config = select_opm_config(90, 824, 824, 600, True, True, "bf16", C_z=C_z)
+    assert isinstance(config, Sm90KernelConfig)
+    assert config.cz == C_z
+    assert not isinstance(select_opm_config(90, 824, 824, 600, True, True, "fp16", C_z=C_z), Sm90KernelConfig)

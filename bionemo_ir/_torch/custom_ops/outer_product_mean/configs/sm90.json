@@ -1,117 +1,138 @@
 {
-  "kernel_abi": "sm80",
+  "kernel_abi": "sm90",
   "configs": {
-    "N=128|S=128|nb=1|bias=1|dt=bf16": {
-      "ab_dtype": "bf16", "TILE_I": 4, "TILE_J": 8, "TILE_C": 32, "TILE_S": 32,
-      "KO_TILE": 64, "num_stages": 3, "num_stages_w": 2, "reg_prefetch": true,
-      "vec_epilogue": true, "swizzle": true, "swizzle_ab": true, "raster_factor": 8,
-      "C": 32, "D": 32, "C_z": 128, "num_threads": 256,
-      "atom_layout_s": [2, 4, 1], "atom_layout_o": [2, 4, 1]
+    "N=128|S=256|nb=1|bias=1|dt=bf16|cz=128": {
+      "ab_dtype": "bf16",
+      "C": 32,
+      "D": 32,
+      "C_z": 128,
+      "TI": 8,
+      "TJ": 8,
+      "TILE_S": 32,
+      "stages": 3,
+      "KO": 64,
+      "w_stages": 5,
+      "raster": 8,
+      "rswap": 0,
+      "o_lag": 1,
+      "csplit": 2,
+      "zsep": 1,
+      "ptile": 2,
+      "zstm": 1
     },
-    "N=128|S=256|nb=1|bias=1|dt=bf16": {
-      "ab_dtype": "bf16", "TILE_I": 4, "TILE_J": 8, "TILE_C": 32, "TILE_S": 32,
-      "KO_TILE": 64, "num_stages": 3, "num_stages_w": 2, "reg_prefetch": true,
-      "vec_epilogue": true, "swizzle": true, "swizzle_ab": true, "raster_factor": 8,
-      "C": 32, "D": 32, "C_z": 128, "num_threads": 256,
-      "atom_layout_s": [2, 4, 1], "atom_layout_o": [2, 4, 1]
+    "N=256|S=512|nb=1|bias=1|dt=bf16|cz=128": {
+      "ab_dtype": "bf16",
+      "C": 32,
+      "D": 32,
+      "C_z": 128,
+      "TI": 8,
+      "TJ": 8,
+      "TILE_S": 32,
+      "stages": 3,
+      "KO": 64,
+      "w_stages": 5,
+      "raster": 16,
+      "rswap": 0,
+      "o_lag": 1,
+      "csplit": 2,
+      "zsep": 1,
+      "ptile": 2,
+      "zstm": 1
     },
-    "N=128|S=512|nb=1|bias=1|dt=bf16": {
-      "ab_dtype": "bf16", "TILE_I": 4, "TILE_J": 8, "TILE_C": 32, "TILE_S": 32,
-      "KO_TILE": 64, "num_stages": 3, "num_stages_w": 2, "reg_prefetch": true,
-      "vec_epilogue": true, "swizzle": true, "swizzle_ab": true, "raster_factor": 8,
-      "C": 32, "D": 32, "C_z": 128, "num_threads": 256,
-      "atom_layout_s": [4, 2, 1], "atom_layout_o": [2, 4, 1]
+    "N=512|S=512|nb=1|bias=1|dt=bf16|cz=128": {
+      "ab_dtype": "bf16",
+      "C": 32,
+      "D": 32,
+      "C_z": 128,
+      "TI": 8,
+      "TJ": 8,
+      "TILE_S": 32,
+      "stages": 3,
+      "KO": 64,
+      "w_stages": 4,
+      "raster": 8,
+      "rswap": 0,
+      "o_lag": 1,
+      "csplit": 2,
+      "zsep": 1,
+      "ptile": 2,
+      "zstm": 1
     },
-    "N=256|S=128|nb=1|bias=1|dt=bf16": {
-      "ab_dtype": "bf16", "TILE_I": 4, "TILE_J": 8, "TILE_C": 32, "TILE_S": 32,
-      "KO_TILE": 64, "num_stages": 3, "num_stages_w": 2, "reg_prefetch": true,
-      "vec_epilogue": true, "swizzle": true, "swizzle_ab": true, "raster_factor": 8,
-      "C": 32, "D": 32, "C_z": 128, "num_threads": 256,
-      "atom_layout_s": [2, 4, 1], "atom_layout_o": [2, 4, 1]
+    "N=1024|S=1024|nb=1|bias=1|dt=bf16|cz=128": {
+      "ab_dtype": "bf16",
+      "C": 32,
+      "D": 32,
+      "C_z": 128,
+      "TI": 8,
+      "TJ": 6,
+      "TILE_S": 32,
+      "stages": 4,
+      "KO": 64,
+      "w_stages": 5,
+      "raster": 16,
+      "rswap": 0,
+      "o_lag": 1,
+      "csplit": 1,
+      "zsep": 0,
+      "ptile": 1,
+      "zstm": 1
     },
-    "N=256|S=256|nb=1|bias=1|dt=bf16": {
-      "ab_dtype": "bf16", "TILE_I": 8, "TILE_J": 4, "TILE_C": 32, "TILE_S": 32,
-      "KO_TILE": 64, "num_stages": 3, "num_stages_w": 2, "reg_prefetch": true,
-      "vec_epilogue": true, "swizzle": true, "swizzle_ab": true, "raster_factor": 8,
-      "C": 32, "D": 32, "C_z": 128, "num_threads": 256,
-      "atom_layout_s": [2, 4, 1], "atom_layout_o": [2, 4, 1]
+    "N=1536|S=2048|nb=1|bias=1|dt=bf16|cz=128": {
+      "ab_dtype": "bf16",
+      "C": 32,
+      "D": 32,
+      "C_z": 128,
+      "TI": 8,
+      "TJ": 6,
+      "TILE_S": 32,
+      "stages": 4,
+      "KO": 64,
+      "w_stages": 5,
+      "raster": 16,
+      "rswap": 1,
+      "o_lag": 1,
+      "csplit": 1,
+      "zsep": 0,
+      "ptile": 1,
+      "zstm": 0
     },
-    "N=256|S=512|nb=1|bias=1|dt=bf16": {
-      "ab_dtype": "bf16", "TILE_I": 8, "TILE_J": 4, "TILE_C": 32, "TILE_S": 32,
-      "KO_TILE": 64, "num_stages": 3, "num_stages_w": 2, "reg_prefetch": true,
-      "vec_epilogue": true, "swizzle": true, "swizzle_ab": true, "raster_factor": 8,
-      "C": 32, "D": 32, "C_z": 128, "num_threads": 256,
-      "atom_layout_s": [2, 4, 1], "atom_layout_o": [2, 4, 1]
+    "N=2048|S=8161|nb=1|bias=1|dt=bf16|cz=128": {
+      "ab_dtype": "bf16",
+      "C": 32,
+      "D": 32,
+      "C_z": 128,
+      "TI": 8,
+      "TJ": 6,
+      "TILE_S": 32,
+      "stages": 4,
+      "KO": 64,
+      "w_stages": 5,
+      "raster": 16,
+      "rswap": 1,
+      "o_lag": 1,
+      "csplit": 1,
+      "zsep": 0,
+      "ptile": 1,
+      "zstm": 0
     },
-    "N=512|S=128|nb=1|bias=1|dt=bf16": {
-      "ab_dtype": "bf16", "TILE_I": 8, "TILE_J": 4, "TILE_C": 32, "TILE_S": 32,
-      "KO_TILE": 64, "num_stages": 3, "num_stages_w": 2, "reg_prefetch": true,
-      "vec_epilogue": true, "swizzle": true, "swizzle_ab": true, "raster_factor": 8,
-      "C": 32, "D": 32, "C_z": 128, "num_threads": 256,
-      "atom_layout_s": [2, 4, 1], "atom_layout_o": [2, 4, 1]
-    },
-    "N=512|S=256|nb=1|bias=1|dt=bf16": {
-      "ab_dtype": "bf16", "TILE_I": 8, "TILE_J": 4, "TILE_C": 32, "TILE_S": 32,
-      "KO_TILE": 64, "num_stages": 3, "num_stages_w": 2, "reg_prefetch": true,
-      "vec_epilogue": true, "swizzle": true, "swizzle_ab": true, "raster_factor": 8,
-      "C": 32, "D": 32, "C_z": 128, "num_threads": 256,
-      "atom_layout_s": [2, 4, 1], "atom_layout_o": [2, 4, 1]
-    },
-    "N=512|S=512|nb=1|bias=1|dt=bf16": {
-      "ab_dtype": "bf16", "TILE_I": 8, "TILE_J": 4, "TILE_C": 32, "TILE_S": 32,
-      "KO_TILE": 64, "num_stages": 3, "num_stages_w": 2, "reg_prefetch": true,
-      "vec_epilogue": true, "swizzle": true, "swizzle_ab": true, "raster_factor": 8,
-      "C": 32, "D": 32, "C_z": 128, "num_threads": 256,
-      "atom_layout_s": [2, 4, 1], "atom_layout_o": [2, 4, 1]
-    },
-    "N=2048|S=8162|nb=1|bias=1|dt=bf16": {
-      "ab_dtype": "bf16", "TILE_I": 8, "TILE_J": 4, "TILE_C": 32, "TILE_S": 32,
-      "KO_TILE": 64, "num_stages": 3, "num_stages_w": 2, "reg_prefetch": true,
-      "vec_epilogue": true, "swizzle": true, "swizzle_ab": true, "raster_factor": 8,
-      "C": 32, "D": 32, "C_z": 128, "num_threads": 256,
-      "atom_layout_s": [4, 2, 1], "atom_layout_o": [2, 4, 1]
-    },
-    "N=1024|S=512|nb=1|bias=1|dt=bf16": {
-      "ab_dtype": "bf16", "TILE_I": 8, "TILE_J": 4, "TILE_C": 32, "TILE_S": 32,
-      "KO_TILE": 64, "num_stages": 3, "num_stages_w": 2, "reg_prefetch": true,
-      "vec_epilogue": true, "swizzle": true, "swizzle_ab": true, "raster_factor": 8,
-      "C": 32, "D": 32, "C_z": 128, "num_threads": 256,
-      "atom_layout_s": [2, 4, 1], "atom_layout_o": [2, 4, 1]
-    },
-    "N=1024|S=1024|nb=1|bias=1|dt=bf16": {
-      "ab_dtype": "bf16", "TILE_I": 8, "TILE_J": 4, "TILE_C": 32, "TILE_S": 32,
-      "KO_TILE": 64, "num_stages": 3, "num_stages_w": 2, "reg_prefetch": true,
-      "vec_epilogue": true, "swizzle": true, "swizzle_ab": true, "raster_factor": 8,
-      "C": 32, "D": 32, "C_z": 128, "num_threads": 256,
-      "atom_layout_s": [4, 2, 1], "atom_layout_o": [2, 4, 1]
-    },
-    "N=1024|S=2048|nb=1|bias=1|dt=bf16": {
-      "ab_dtype": "bf16", "TILE_I": 8, "TILE_J": 4, "TILE_C": 32, "TILE_S": 32,
-      "KO_TILE": 64, "num_stages": 3, "num_stages_w": 2, "reg_prefetch": true,
-      "vec_epilogue": true, "swizzle": true, "swizzle_ab": true, "raster_factor": 8,
-      "C": 32, "D": 32, "C_z": 128, "num_threads": 256,
-      "atom_layout_s": [4, 2, 1], "atom_layout_o": [1, 8, 1]
-    },
-    "N=1536|S=1024|nb=1|bias=1|dt=bf16": {
-      "ab_dtype": "bf16", "TILE_I": 8, "TILE_J": 4, "TILE_C": 32, "TILE_S": 32,
-      "KO_TILE": 64, "num_stages": 3, "num_stages_w": 2, "reg_prefetch": true,
-      "vec_epilogue": true, "swizzle": true, "swizzle_ab": true, "raster_factor": 8,
-      "C": 32, "D": 32, "C_z": 128, "num_threads": 256,
-      "atom_layout_s": [2, 4, 1], "atom_layout_o": [2, 4, 1]
-    },
-    "N=1536|S=1536|nb=1|bias=1|dt=bf16": {
-      "ab_dtype": "bf16", "TILE_I": 8, "TILE_J": 4, "TILE_C": 32, "TILE_S": 32,
-      "KO_TILE": 64, "num_stages": 3, "num_stages_w": 2, "reg_prefetch": true,
-      "vec_epilogue": true, "swizzle": true, "swizzle_ab": true, "raster_factor": 8,
-      "C": 32, "D": 32, "C_z": 128, "num_threads": 256,
-      "atom_layout_s": [4, 2, 1], "atom_layout_o": [2, 4, 1]
-    },
-    "N=1536|S=2048|nb=1|bias=1|dt=bf16": {
-      "ab_dtype": "bf16", "TILE_I": 8, "TILE_J": 4, "TILE_C": 32, "TILE_S": 32,
-      "KO_TILE": 64, "num_stages": 3, "num_stages_w": 2, "reg_prefetch": true,
-      "vec_epilogue": true, "swizzle": true, "swizzle_ab": true, "raster_factor": 8,
-      "C": 32, "D": 32, "C_z": 128, "num_threads": 256,
-      "atom_layout_s": [4, 2, 1], "atom_layout_o": [2, 4, 1]
+    "N=824|S=600|nb=1|bias=1|dt=bf16|cz=256": {
+      "ab_dtype": "bf16",
+      "C": 32,
+      "D": 32,
+      "C_z": 256,
+      "TI": 8,
+      "TJ": 8,
+      "TILE_S": 32,
+      "stages": 5,
+      "KO": 64,
+      "w_stages": 3,
+      "raster": 8,
+      "rswap": 0,
+      "o_lag": 0,
+      "csplit": 2,
+      "zsep": 0,
+      "ptile": 1,
+      "zstm": 1
     }
   }
 }

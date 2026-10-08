@@ -21,9 +21,12 @@
 
 #include <cuda.h>
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <iterator>
+#include <limits>
 #include <stdexcept>
 #include <string>
 
@@ -33,6 +36,12 @@ namespace
 {
 
 constexpr char kSM80LaunchAbi[] = "outer_product_mean_sm80";
+constexpr char kSM90LaunchAbi[] = "outer_product_mean_sm90";
+
+bool has_launch_abi(EmbeddedCubinImage const& cubin, std::int32_t kernel_sm, char const* launch_abi)
+{
+  return cubin.kernel_sm == kernel_sm && cubin.launch_abi != nullptr && std::strcmp(cubin.launch_abi, launch_abi) == 0;
+}
 
 void validate_launch(KernelConfig const& config, LaunchParams const& params)
 {
@@ -42,12 +51,10 @@ void validate_launch(KernelConfig const& config, LaunchParams const& params)
     throw std::invalid_argument("embedded CUBIN variant_id must not be empty");
   if (config.cubin.kernel_symbol == nullptr || config.cubin.kernel_symbol[0] == '\0')
     throw std::invalid_argument("kernel_symbol must not be empty");
-  if (
-    config.cubin.kernel_sm != 80 || config.cubin.launch_abi == nullptr
-    || std::strcmp(config.cubin.launch_abi, kSM80LaunchAbi) != 0)
-  {
+  bool const compatible = config.spec.is_sm90 ? has_launch_abi(config.cubin, 90, kSM90LaunchAbi)
+                                              : has_launch_abi(config.cubin, 80, kSM80LaunchAbi);
+  if (!compatible)
     throw std::invalid_argument("outer-product-mean CUBIN has an incompatible launch ABI");
-  }
   if (!cubin_supports_sm(config.cubin, config.spec.target_sm))
     throw std::invalid_argument("outer-product-mean CUBIN does not support its configured target SM");
   if (config.spec.num_threads <= 0 || config.spec.tile_i <= 0 || config.spec.tile_j <= 0)
@@ -64,7 +71,7 @@ void validate_launch(KernelConfig const& config, LaunchParams const& params)
   validate_tensor(params.output, "output", 16);
   validate_static_tail(params.a, kChannelsC, "a");
   validate_static_tail(params.b, kChannelsD, "b");
-  validate_static_tail(params.output, kChannelsCz, "output");
+  validate_static_tail(params.output, config.spec.c_z, "output");
 
   /* C, D and C_z stay in host metadata for validation, then the launcher
    * projects only the dynamic leading extents into the device descriptors.
@@ -80,14 +87,22 @@ void validate_launch(KernelConfig const& config, LaunchParams const& params)
     throw std::invalid_argument("num_mask must be [B, I, J]");
   if (params.output.shape[0] != batch || params.output.shape[1] != rows || params.output.shape[2] != columns)
     throw std::invalid_argument("output must be [B, I, J, C_z]");
-  if (params.weight.shape[0] != kChannelsCz || params.weight.shape[1] != kChannelsC * kChannelsD)
+  if (params.weight.shape[0] != config.spec.c_z || params.weight.shape[1] != kChannelsC * kChannelsD)
   {
     throw std::invalid_argument(
-      "weight must be [" + std::to_string(kChannelsCz) + ", " + std::to_string(kChannelsC * kChannelsD)
+      "weight must be [" + std::to_string(config.spec.c_z) + ", " + std::to_string(kChannelsC * kChannelsD)
       + "]: the kernel compiles C, D and C_z as constants");
   }
-  if (config.has_bias && params.bias.shape[0] != kChannelsCz)
+  if (config.has_bias && params.bias.shape[0] != config.spec.c_z)
     throw std::invalid_argument("bias must be [C_z]");
+  if (config.spec.is_sm90)
+  {
+    /* TMA reads a and b as dense (i, c) and (j, d) rows of each s. */
+    if (params.a.strides[2] != kChannelsC || params.b.strides[2] != kChannelsD)
+      throw std::invalid_argument("the SM90 kernel needs a and b dense over their last two dimensions");
+    if (config.spec.tile_s <= 0 || config.spec.ptile <= 0 || (config.spec.csplit != 1 && config.spec.csplit != 2))
+      throw std::invalid_argument("outer-product-mean SM90 spec has an invalid tile");
+  }
 }
 
 void validate_operand_devices(KernelConfig const& config, LaunchParams const& params, std::int32_t device)
@@ -178,6 +193,137 @@ void launch_sm80(
     "launch_cubin_kernel(outer_product_mean_sm80)");
 }
 
+/* TMA source views, outermost dimension first, matching the recipes the builder records. */
+TmaTensorSource a_source(Tensor4View const& a, std::int32_t csplit, std::int32_t c_half)
+{
+  if (csplit == 1) // contiguous (i, c) rows fold into one dimension
+  {
+    return TmaTensorSource{
+      a.data,
+      {static_cast<std::uint64_t>(a.shape[0]),
+       static_cast<std::uint64_t>(a.shape[1]),
+       static_cast<std::uint64_t>(a.shape[2]) * kChannelsC,
+       0},
+      {static_cast<std::uint64_t>(a.strides[0]), static_cast<std::uint64_t>(a.strides[1]), 1, 0},
+    };
+  }
+  std::int32_t const c_pass = kChannelsC / csplit;
+  return TmaTensorSource{
+    a.data + static_cast<std::uint64_t>(c_half) * static_cast<std::uint64_t>(c_pass) * 2,
+    {static_cast<std::uint64_t>(a.shape[0]),
+     static_cast<std::uint64_t>(a.shape[1]),
+     static_cast<std::uint64_t>(a.shape[2]),
+     static_cast<std::uint64_t>(c_pass)},
+    {static_cast<std::uint64_t>(a.strides[0]),
+     static_cast<std::uint64_t>(a.strides[1]),
+     static_cast<std::uint64_t>(a.strides[2]),
+     1},
+  };
+}
+
+TmaTensorSource b_source(Tensor4View const& b)
+{
+  return TmaTensorSource{
+    b.data,
+    {static_cast<std::uint64_t>(b.shape[0]),
+     static_cast<std::uint64_t>(b.shape[1]),
+     static_cast<std::uint64_t>(b.shape[2]) * kChannelsD,
+     0},
+    {static_cast<std::uint64_t>(b.strides[0]), static_cast<std::uint64_t>(b.strides[1]), 1, 0},
+  };
+}
+
+std::int32_t checked_i32(std::uint64_t value, char const* name)
+{
+  if (value > static_cast<std::uint64_t>(std::numeric_limits<std::int32_t>::max()))
+    throw std::overflow_error(std::string(name) + " does not fit int32");
+  return static_cast<std::int32_t>(value);
+}
+
+/* Reproduces the CuTeDSL host launcher's arithmetic: one CTA per `ptile` (i, j)
+ * tiles, else a (i tiles, j tiles) grid, with the batch on grid.z.
+ */
+void launch_sm90(
+  cubin_kernel_t loaded,
+  KernelConfig const& config,
+  LaunchParams const& params,
+  CUcontext context,
+  std::uint32_t smem_bytes)
+{
+  validate_operand_devices(config, params, cuda_device_for_context(context));
+  embedded::CubinImage const& image = *config.embedded_image;
+  embedded::SM90LaunchInfo const& metadata = image.sm90;
+  if (!metadata.is_sm90)
+    throw std::invalid_argument("outer-product-mean CUBIN is missing its Hopper launch metadata");
+  KernelSpec const& spec = config.spec;
+  CUtensorMapDataType const dtype = tma_data_type(true);
+
+  abi::SM90Params device_params{};
+  auto const encode
+    = [dtype](CUtensorMap& atom, TmaDescriptorInfo const& info, TmaTensorSource const& source, char const* name)
+  {
+    encode_tma_descriptor(atom, info, dtype, source, name);
+    finalize_sm90_tma_atom(atom, sm90_tma_operation_tag(source));
+  };
+  encode(device_params.a_tma, metadata.a, a_source(params.a, spec.csplit, 0), "a");
+  encode(device_params.a2_tma, metadata.a2, a_source(params.a, spec.csplit, spec.csplit > 1 ? 1 : 0), "a2");
+  encode(device_params.b_tma, metadata.b, b_source(params.b), "b");
+  encode(device_params.w_tma, metadata.w, make_tma_tensor2_source(params.weight, false), "w");
+
+  std::int32_t const batch = params.a.shape[0];
+  std::int32_t const sequence = params.a.shape[1];
+  std::int32_t const rows = params.a.shape[2];
+  std::int32_t const columns = params.b.shape[2];
+  device_params.a_coord = CoordTensorS3{{rows, sequence, batch}};
+  device_params.a2_coord = device_params.a_coord;
+  device_params.b_coord
+    = CoordTensorS3{{checked_i32(static_cast<std::uint64_t>(columns) * kChannelsD, "J * D"), sequence, batch}};
+  device_params.num_mask = make_tensor3_descriptor(params.num_mask);
+  if (config.has_bias)
+    device_params.bias.data = static_cast<CUdeviceptr>(params.bias.data);
+  device_params.output = make_tensor3_descriptor(params.output);
+
+  std::uint64_t const i_tiles = ceil_div(static_cast<std::uint64_t>(rows), static_cast<std::uint64_t>(spec.tile_i));
+  std::uint64_t const j_tiles = ceil_div(static_cast<std::uint64_t>(columns), static_cast<std::uint64_t>(spec.tile_j));
+  std::uint64_t const k_tiles = ceil_div(static_cast<std::uint64_t>(sequence), static_cast<std::uint64_t>(spec.tile_s));
+  std::int32_t const scalars[5] = {
+    checked_i32(i_tiles, "i tiles"),
+    checked_i32(j_tiles, "j tiles"),
+    checked_i32(k_tiles, "k tiles"),
+    rows,
+    columns,
+  };
+  std::copy(std::begin(scalars), std::end(scalars), std::begin(device_params.scalars));
+
+  void* kernel_params[abi::kSM90MaxParameterCount]{};
+  if (
+    abi::pack_sm90_kernel_params(&device_params, kernel_params, config.has_bias)
+    != abi::sm90_parameter_count(config.has_bias))
+    throw std::logic_error("outer-product-mean SM90 parameter packer produced the wrong ABI count");
+
+  cubin_launch_config_t launch_config{};
+  if (spec.ptile > 1)
+  {
+    launch_config.grid_x
+      = checked_u32(ceil_div(i_tiles * j_tiles, static_cast<std::uint64_t>(spec.ptile)), "outer-product-mean grid.x");
+    launch_config.grid_y = 1;
+  }
+  else
+  {
+    launch_config.grid_x = checked_u32(i_tiles, "outer-product-mean grid.x");
+    launch_config.grid_y = checked_u32(j_tiles, "outer-product-mean grid.y");
+  }
+  launch_config.grid_z = checked_u32(static_cast<std::uint64_t>(batch), "outer-product-mean grid.z");
+  launch_config.block_x = metadata.block_dims[0];
+  launch_config.block_y = metadata.block_dims[1];
+  launch_config.block_z = metadata.block_dims[2];
+  launch_config.dynamic_smem_bytes = smem_bytes;
+  launch_config.stream = reinterpret_cast<CUstream>(static_cast<std::uintptr_t>(params.stream));
+  check_cuda_driver(
+    launch_cubin_kernel(loaded, &launch_config, kernel_params, nullptr),
+    "launch_cubin_kernel(outer_product_mean_sm90)");
+}
+
 embedded::CubinImage const&
 find_embedded_cubin(std::int32_t target_sm, DType dtype, bool has_bias, bool norm_before, char const* config_identity)
 {
@@ -226,6 +372,11 @@ make_kernel_config(std::int32_t target_sm, DType dtype, bool has_bias, bool norm
     image.tile_j,
     image.raster_factor,
     image.num_threads,
+    image.c_z,
+    image.tile_s,
+    image.ptile,
+    image.csplit,
+    has_launch_abi(image.cubin, 90, kSM90LaunchAbi),
   };
   return KernelConfig{
     spec,
@@ -250,7 +401,10 @@ void launch(KernelConfig const& config, LaunchParams const& params)
   }
 
   cubin_kernel_t const loaded = load_embedded_kernel(context, config.cubin);
-  launch_sm80(loaded, config, params, context, dynamic_smem_bytes(config));
+  if (config.spec.is_sm90)
+    launch_sm90(loaded, config, params, context, dynamic_smem_bytes(config));
+  else
+    launch_sm80(loaded, config, params, context, dynamic_smem_bytes(config));
 }
 
 } // namespace bioir::cutedsl::outer_product_mean

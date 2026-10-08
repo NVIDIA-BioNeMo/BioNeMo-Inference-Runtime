@@ -16,7 +16,7 @@
 import torch
 import torch.nn as nn
 
-from bionemo_ir._torch.custom_ops.outer_product_mean import OuterProductMeanCuTe, get_outer_product_mean_op
+from bionemo_ir._torch.custom_ops.outer_product_mean import _invoke_vanilla_opm, get_outer_product_mean_op
 from bionemo_ir._torch.utils import CHUNK_REGISTRY, OUTER_PRODUCT_MEAN, ChunkPolicy, chunk_apply
 
 from .linear import Linear, WeightMode, WeightsLoadingConfig
@@ -67,13 +67,13 @@ class OuterProductMean(nn.Module):
         # The fused custom op handles the full OPM without materializing the
         # [B, N, N, c_hidden**2] intermediate. If it is unavailable, forward
         # falls through to the registry-driven eager row-chunking path.
-        self._opm_eligible = self.c_hidden == 32 and self.c_out == 128
         self._opm_op = get_outer_product_mean_op(
             dtype or torch.get_default_dtype(),
             C=self.c_hidden,
             D=self.c_hidden,
             C_z=self.c_out,
         )
+        self._opm_eligible = self._opm_op is not _invoke_vanilla_opm
         self.norm = nn.LayerNorm(c_in, eps=eps, dtype=dtype)
         self.fused_proj_a_b = Linear(
             c_in,
@@ -155,19 +155,17 @@ class OuterProductMean(nn.Module):
         ab = self.fused_proj_a_b(m)
         a, b = ab.split([self.c_hidden, self.c_hidden], dim=-1)
 
-        # Masked projections. Kept in the model dtype so the fused SM80 kernel
-        # can consume them directly (it accumulates in fp32 internally); the
+        # Masked projections. Kept in the model dtype so the fused kernels
+        # can consume them directly (they accumulate in fp32 internally); the
         # eager path casts to fp32 below when configured.
         a = a * mask
         b = b * mask
 
-        use_fused_opm = self._opm_eligible and isinstance(self._opm_op, OuterProductMeanCuTe)
+        # The fused OPM kernels expect an fp32 num_mask; the eager PyTorch
+        # fallback computes it in the mask's own dtype.
+        num_mask = self._compute_num_mask(mask, dtype=torch.float32 if self._opm_eligible else mask.dtype)
 
-        # The fused CuTe OPM kernel expects an fp32 num_mask; the eager
-        # PyTorch fallback computes it in the mask's own dtype.
-        num_mask = self._compute_num_mask(mask, dtype=torch.float32 if use_fused_opm else mask.dtype)
-
-        if use_fused_opm:
+        if self._opm_eligible:
             return self._opm_op(
                 a, b, num_mask.squeeze(-1), self.proj_o.weight, self.proj_o.bias, norm_before=self.norm_before_output
             )

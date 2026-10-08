@@ -70,6 +70,7 @@ _SM90_LAUNCH_SHAPES = {
     "attn_epilogue": (("o", "g", "w", "z", "y", "d"), (4, 3, 2, 3, 3, 3), False, 384),
     "dual_gemm_x0_x1": (("x0", "x1", "w0", "w1", "output"), 2, True, 128),
     "dual_gemm_x_x": (("x0", "x1", "w0", "w1", "output"), 2, True, 128),
+    "outer_product_mean": (("a", "a2", "b", "w"), (3, 4, 3, 2), False, 384),
     "pairwise_attention": (("q", "k", "v", "bias", "output"), 4, False, 128),
     "transition_mlp": (("x", "w1", "w2", "residual", "output"), 2, False, 384),
     "triangle_attention": (("q", "k", "v", "bias", "output"), 4, False, 128),
@@ -195,6 +196,10 @@ def _metadata(family: str, dtype: str, kernel_sm: int) -> dict[str, object]:
             "raster_factor": 1,
             "num_threads": 128,
         }
+        if kernel_sm == 90:
+            concrete.update(
+                num_threads=384, c_z=256, tile_s=32, ptile=2, csplit=2, sm90_launch=_sm90_launch(family, dtype)
+            )
     elif family == "pair_weighted_averaging":
         concrete = {
             "is_bfloat16": dtype == "bf16",
@@ -592,6 +597,31 @@ def test_sm90_rejects_an_operand_with_another_rank(tmp_path: Path, monkeypatch: 
     index = _write_case(tmp_path / "source", family, kernel_sm=90)
 
     with pytest.raises(materializer.MaterializationError, match=r"tma_descriptors\.w\.rank must be 2"):
+        materializer.verify_packs([(family, index)])
+
+
+def test_sm90_outer_product_mean_takes_either_rank_for_a(tmp_path: Path) -> None:
+    """The a and a2 maps lower to rank 3 without a C split and to rank 4 with one."""
+    family = "outer_product_mean"
+    index = _write_case(tmp_path / "source", family, kernel_sm=90)
+    result = materializer.materialize([(family, index)], tmp_path / "build")
+    header = (result.output_dir / f"{family}_registry.h").read_text()
+    source = (result.output_dir / f"{family}_registry.cpp").read_text()
+
+    assert all(f"  TmaDescriptorInfo {name};" in header for name in ("a", "a2", "b", "w"))
+    for rank in (3, 4, 3, 2):
+        assert f"    {rank}U," in source
+
+
+def test_sm90_outer_product_mean_rejects_a_rank_outside_its_set(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    family = "outer_product_mean"
+    names, _, epi_tile, threads = _SM90_LAUNCH_SHAPES[family]
+    monkeypatch.setitem(_SM90_LAUNCH_SHAPES, family, (names, (2, 4, 3, 2), epi_tile, threads))
+    index = _write_case(tmp_path / "source", family, kernel_sm=90)
+
+    with pytest.raises(materializer.MaterializationError, match=r"tma_descriptors\.a\.rank must be one of \[3, 4\]"):
         materializer.verify_packs([(family, index)])
 
 

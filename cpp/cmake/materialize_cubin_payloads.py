@@ -165,7 +165,8 @@ class _Sm90Spec:
     rank: int = 4
     epi_tile: bool = False
     # Per-operand TMA ranks in ``operands`` order, for families whose operands differ; empty uses ``rank``.
-    ranks: tuple[int, ...] = ()
+    # A tuple entry lists the ranks an operand may lower to.
+    ranks: tuple[int | tuple[int, ...], ...] = ()
     # Operands only some images record, each with its TMA rank; an absent one renders as a rank-0 map.
     optional: tuple[tuple[str, int], ...] = ()
 
@@ -287,8 +288,14 @@ _FAMILY_SPECS: dict[str, _FamilySpec] = {
             _Field("tile_j", _POSITIVE, "std::int32_t tile_j;"),
             _Field("raster_factor", _COUNT, "std::int32_t raster_factor;"),
             _Field("num_threads", _POSITIVE, "std::int32_t num_threads;"),
+            # Images published before C_z = 256 and the SM90 kernel carry none of these.
+            _Field("c_z", _POSITIVE, "std::int32_t c_z;", default=128),
+            _Field("tile_s", _POSITIVE, "std::int32_t tile_s;", default=32),
+            _Field("ptile", _POSITIVE, "std::int32_t ptile;", default=1),
+            _Field("csplit", _POSITIVE, "std::int32_t csplit;", default=1),
         ),
         runtime_key=("is_bfloat16", "has_bias", "norm_before", "config_identity"),
+        sm90=_Sm90Spec("is_sm90", ("a", "a2", "b", "w"), ranks=((3, 4), (3, 4), 3, 2)),
     ),
     "pair_weighted_averaging": _FamilySpec(
         fields=(
@@ -691,7 +698,7 @@ def _read_index(path: Path) -> tuple[dict[str, object], bytes]:
     return _as_object(value, str(path)), raw
 
 
-def _validate_tma_descriptor(value: object, where: str, dtype: str, rank: int) -> dict[str, object]:
+def _validate_tma_descriptor(value: object, where: str, dtype: str, rank: int | tuple[int, ...]) -> dict[str, object]:
     descriptor = _as_object(value, where)
     _exact_keys(
         descriptor,
@@ -708,8 +715,10 @@ def _validate_tma_descriptor(value: object, where: str, dtype: str, rank: int) -
         },
         where,
     )
-    if _integer(descriptor["rank"], f"{where}.rank", minimum=1, maximum=5) != rank:
-        _fail(f"{where}.rank must be {rank}")
+    accepted = rank if isinstance(rank, tuple) else (rank,)
+    rank = _integer(descriptor["rank"], f"{where}.rank", minimum=1, maximum=5)
+    if rank not in accepted:
+        _fail(f"{where}.rank must be {accepted[0] if len(accepted) == 1 else f'one of {list(accepted)}'}")
     expected_dtype = "bfloat16" if dtype == "bf16" else "float16"
     if _string(descriptor["data_type"], f"{where}.data_type") != expected_dtype:
         _fail(f"{where}.data_type does not match dtype {dtype}")

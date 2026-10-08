@@ -105,6 +105,74 @@ static_assert(
   offsetof(SM80Params, output) - sizeof(cute_tensor_s0_d0_t) == 128,
   "outer-product-mean no-bias output ordinal changed");
 
+/* Hopper device ABI from EIATTR_KPARAM_INFO (launch ABI outer_product_mean_sm90):
+ *
+ *   ord  0  0x030  0x80  a_tma       non-executable TMA load atom
+ *   ord  1  0x0b0  0x0c  a_coord     CoordTensorS3 {I, S, B}
+ *   ord  2  0x0f0  0x80  a2_tma      second C half (the same map at csplit=1)
+ *   ord  3  0x170  0x0c  a2_coord
+ *   ord  4  0x1b0  0x80  b_tma
+ *   ord  5  0x230  0x0c  b_coord     CoordTensorS3 {J*D, S, B}
+ *   ord  6  0x270  0x80  w_tma       static extents: no coordinate tensor
+ *   ord  7  0x2f0  0x28  num_mask    cute_tensor_s3_d2_t
+ *   ord  8  0x318  0x08  bias        pointer; the slot is absent without a bias
+ *   ord  9  0x320  0x28  output      cute_tensor_s3_d2_t
+ *   ord 10  0x348  0x04  i_tiles, then j_tiles, k_tiles, I and J (int32 each)
+ *   ord 15  0x35c  0x01  S-GEMM tiled-MMA accumulate flag
+ *   ord 16  0x35d  0x01  O-GEMM tiled-MMA accumulate flag
+ *
+ * The bank is the same for every tile, C split and C_z.
+ */
+struct SM90Params
+{
+  CUtensorMap a_tma;
+  CoordTensorS3 a_coord;
+  CUtensorMap a2_tma;
+  CoordTensorS3 a2_coord;
+  CUtensorMap b_tma;
+  CoordTensorS3 b_coord;
+  CUtensorMap w_tma;
+  cute_tensor_s3_d2_t num_mask;
+  cute_tensor_s0_d0_t bias;
+  cute_tensor_s3_d2_t output;
+  std::int32_t scalars[5];
+  std::uint8_t mma_s;
+  std::uint8_t mma_o;
+};
+
+inline constexpr std::size_t kSM90MaxParameterCount = 17;
+
+inline constexpr std::size_t sm90_parameter_count(bool has_bias)
+{
+  return has_bias ? kSM90MaxParameterCount : kSM90MaxParameterCount - 1;
+}
+
+/* Returns the number of packed parameters. */
+inline std::size_t
+pack_sm90_kernel_params(SM90Params* params, void* kernel_params[kSM90MaxParameterCount], bool has_bias)
+{
+  std::size_t index = 0;
+  kernel_params[index++] = &params->a_tma;
+  kernel_params[index++] = &params->a_coord;
+  kernel_params[index++] = &params->a2_tma;
+  kernel_params[index++] = &params->a2_coord;
+  kernel_params[index++] = &params->b_tma;
+  kernel_params[index++] = &params->b_coord;
+  kernel_params[index++] = &params->w_tma;
+  kernel_params[index++] = &params->num_mask;
+  if (has_bias)
+    kernel_params[index++] = &params->bias;
+  kernel_params[index++] = &params->output;
+  for (std::int32_t& scalar : params->scalars)
+    kernel_params[index++] = &scalar;
+  kernel_params[index++] = &params->mma_s;
+  kernel_params[index++] = &params->mma_o;
+  return index;
+}
+
+static_assert(sizeof(CUtensorMap) == 0x80, "outer-product-mean TMA atom slot size changed");
+static_assert(sizeof(CoordTensorS3) == 0x0c, "outer-product-mean coordinate tensor size changed");
+
 } // namespace bioir::cutedsl::outer_product_mean::abi
 
 namespace bioir::cutedsl::outer_product_mean
@@ -117,12 +185,11 @@ enum class DType : std::uint8_t
 };
 
 /* Static problem dimensions the kernel bakes in. The launcher checks the
- * caller's operands against these; a mismatch means the interface picked the
- * wrong payload, not a recoverable shape.
+ * caller's operands against these and the image's C_z; a mismatch means the
+ * interface picked the wrong payload, not a recoverable shape.
  */
 inline constexpr std::int32_t kChannelsC = 32;
 inline constexpr std::int32_t kChannelsD = 32;
-inline constexpr std::int32_t kChannelsCz = 128;
 
 /* One compiled tile configuration.
  *
@@ -138,6 +205,12 @@ struct KernelSpec
   std::int32_t tile_j;
   std::int32_t raster_factor;
   std::int32_t num_threads;
+  std::int32_t c_z;
+  /* SM90 kernel only: S-GEMM K tile, (i, j) tiles per CTA and C passes. */
+  std::int32_t tile_s;
+  std::int32_t ptile;
+  std::int32_t csplit;
+  bool is_sm90;
 };
 
 struct KernelConfig

@@ -50,6 +50,11 @@ std::vector<KernelSpec> all_kernel_specs()
         image.tile_j,
         image.raster_factor,
         image.num_threads,
+        image.c_z,
+        image.tile_s,
+        image.ptile,
+        image.csplit,
+        image.cubin.kernel_sm == 90,
       };
     });
 }
@@ -73,7 +78,6 @@ void bind(nb::module_& parent)
 
   module.attr("CHANNELS_C") = kChannelsC;
   module.attr("CHANNELS_D") = kChannelsD;
-  module.attr("CHANNELS_CZ") = kChannelsCz;
 
   nb::class_<KernelSpec>(module, "KernelSpec")
     .def_ro("target_sm", &KernelSpec::target_sm)
@@ -81,6 +85,11 @@ void bind(nb::module_& parent)
     .def_ro("tile_j", &KernelSpec::tile_j)
     .def_ro("raster_factor", &KernelSpec::raster_factor)
     .def_ro("num_threads", &KernelSpec::num_threads)
+    .def_ro("c_z", &KernelSpec::c_z)
+    .def_ro("tile_s", &KernelSpec::tile_s)
+    .def_ro("ptile", &KernelSpec::ptile)
+    .def_ro("csplit", &KernelSpec::csplit)
+    .def_ro("is_sm90", &KernelSpec::is_sm90)
     .def_prop_ro("supports_direct_launch", [](KernelSpec const&) { return true; });
 
   nb::class_<KernelConfig>(module, "KernelConfig")

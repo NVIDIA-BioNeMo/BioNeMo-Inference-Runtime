@@ -146,7 +146,7 @@ def test_prefetch_failure_rng(target: str) -> None:
     assert random.getstate() == before
 
 
-@pytest.mark.parametrize("sequence", ["A" * 31, "A" * 31 + "J"])
+@pytest.mark.parametrize("sequence", ["A" * 7, "A" * 31 + "J"])
 def test_serial_gate(sequence: str) -> None:
     with patch.object(fc, "_prefetch_protein_mols") as prefetch:
         fc._build_structure_from_polymers([{"sequence": sequence, "chain_id": "A", "polymer_type": "protein"}])

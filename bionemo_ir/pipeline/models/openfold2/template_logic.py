@@ -306,22 +306,28 @@ def extract_template_chains(content: str, fmt: str = "cif") -> dict[str, ChainTe
             atom_array = get_structure(cif, model=1, use_author_fields=False, altloc="occupancy")
         except Exception as error:
             raise ValueError("Could not read atom_site from template CIF") from error
+        chain_ids = atom_array.chain_id
+        residue_ids = atom_array.res_id
+        atom_names = atom_array.atom_name
+        residue_names = atom_array.res_name
+        coordinates = np.asarray(atom_array.coord, dtype=np.float32)
+        finite = np.isfinite(coordinates).all(axis=1)
         for index in range(atom_array.array_length()):
-            label = str(atom_array.chain_id[index])
+            label = str(chain_ids[index])
             try:
-                position = int(atom_array.res_id[index])
+                position = int(residue_ids[index])
             except (TypeError, ValueError):
                 continue
             if position < 1:
                 continue
-            atom_name = str(atom_array.atom_name[index]).strip().upper()
-            residue_name = str(atom_array.res_name[index]).strip().upper()
+            atom_name = str(atom_names[index]).strip().upper()
+            residue_name = str(residue_names[index]).strip().upper()
             if residue_name == "MSE" and atom_name == "SE":
                 atom_name = "SD"
             if atom_name not in rc.atom_order:
                 continue
-            coordinate = np.asarray(atom_array.coord[index], dtype=np.float32)
-            if not np.all(np.isfinite(coordinate)):
+            coordinate = coordinates[index]
+            if not finite[index]:
                 raise ValueError(
                     "Template CIF contains a non-finite coordinate for "
                     f"label chain {label!r}, residue {position}, atom "

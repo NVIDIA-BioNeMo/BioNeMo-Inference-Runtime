@@ -224,6 +224,8 @@ def _embed_conformer_inplace(
 def _build_nucleotide_rdkit_mol(
     ccd_code: str,
     random_seed: int | None = None,
+    *,
+    retry_seed: Callable[[], int] | None = None,
 ) -> tuple[Chem.Mol | None, np.ndarray]:
     """Convert a CCD nucleotide residue to an RDKit Mol with 3D conformer.
 
@@ -239,7 +241,7 @@ def _build_nucleotide_rdkit_mol(
     try:
         mol, in_crop_mask = _nucleotide_rdkit_topology(ccd_code)
         mol_h = Chem.AddHs(Chem.Mol(mol))
-        _embed_conformer_inplace(mol_h, random_seed)
+        _embed_conformer_inplace(mol_h, random_seed, retry_seed=retry_seed)
         mol_h = Chem.RemoveHs(mol_h)
         return mol_h, in_crop_mask.copy()
     except Exception as e:
@@ -318,6 +320,14 @@ def _build_residue_rdkit_mol(
 
 
 def _prefetch_protein_mols(ccd_codes: list[str]) -> list[tuple[Chem.Mol | None, np.ndarray]] | None:
+    return _prefetch_serial_mols(ccd_codes, _residue_rdkit_topology, _build_residue_rdkit_mol)
+
+
+def _prefetch_serial_mols(
+    ccd_codes: list[str],
+    topology: Callable[[str], tuple[Chem.Mol, np.ndarray]],
+    builder: Callable[..., tuple[Chem.Mol | None, np.ndarray]],
+) -> list[tuple[Chem.Mol | None, np.ndarray]] | None:
     """Speculate primary embeddings; commit draws in order.
 
     Failed speculation and shifted seeds replay serially. Workers never draw
@@ -325,28 +335,28 @@ def _prefetch_protein_mols(ccd_codes: list[str]) -> list[tuple[Chem.Mol | None, 
     """
     try:
         for ccd_code in dict.fromkeys(ccd_codes):
-            mol, _ = _residue_rdkit_topology(ccd_code)
+            mol, _ = topology(ccd_code)
             if mol.GetNumAtoms() < 2:
                 return None
         predictor = random.Random()
         predictor.setstate(_python_rng().getstate())
         seeds = [predictor.randint(0, 10**9) for _ in ccd_codes]
-        build = partial(_build_residue_rdkit_mol, retry_seed=_defer_conformer_retry)
+        build = partial(builder, retry_seed=_defer_conformer_retry)
         with ThreadPoolExecutor(max_workers=_CONFORMER_WORKERS) as executor:
             speculative = list(executor.map(build, ccd_codes, seeds))
     except Exception as e:
-        _logger.debug("Protein conformer prefetch failed: %s", e)
+        _logger.debug("Conformer prefetch failed: %s", e)
         return None
 
     results = []
     for ccd_code, predicted_seed, result in zip(ccd_codes, seeds, speculative, strict=True):
         if result[0] is None:
-            result = _build_residue_rdkit_mol(ccd_code)
+            result = builder(ccd_code, retry_seed=_draw_conformer_seed)
         else:
             # Never rewind another caller's random draws.
             seed = _draw_conformer_seed()
             if seed != predicted_seed:
-                result = _build_residue_rdkit_mol(ccd_code, seed)
+                result = builder(ccd_code, seed, retry_seed=_draw_conformer_seed)
         results.append(result)
     return results
 
@@ -627,8 +637,19 @@ def _build_structure_from_polymers(
 
         for cid in chain_ids:
             prebuilt_mols = None
-            if polymer_type == "protein" and len(sequence) >= 32 and all(char in resname_1_to_3 for char in sequence):
+            if polymer_type == "protein" and len(sequence) >= 8 and all(char in resname_1_to_3 for char in sequence):
                 prebuilt_mols = _prefetch_protein_mols([resname_1_to_3[char] for char in sequence])
+            if (
+                polymer_type in ("rna", "dna")
+                and 8 <= len(sequence) < 32
+                and all(char in resname_1_to_3 for char in sequence)
+            ):
+                prebuilt_mols = _prefetch_serial_mols(
+                    [resname_1_to_3[char] for char in sequence],
+                    _nucleotide_rdkit_topology,
+                    _build_nucleotide_rdkit_mol,
+                )
+            # Retain legacy retry seeds for long nucleotides.
             if (
                 polymer_type in ("rna", "dna")
                 and len(sequence) >= 32

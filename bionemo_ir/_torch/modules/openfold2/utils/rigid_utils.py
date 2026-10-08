@@ -26,6 +26,8 @@ from typing import Any
 import numpy as np
 import torch
 
+from bionemo_ir.dsl_kernels.triton.rotation_product import rotation_product
+
 
 def rot_matmul(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
     """
@@ -38,6 +40,10 @@ def rot_matmul(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
     Returns:
         The product ab
     """
+
+    fused = rotation_product(a, b, matrix=True)
+    if fused is not None:
+        return fused
 
     def row_mul(i):
         return torch.stack(
@@ -70,6 +76,9 @@ def rot_vec_mul(r: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
     Returns:
         [*, 3] rotated coordinates
     """
+    fused = rotation_product(r, t, matrix=False)
+    if fused is not None:
+        return fused
     x, y, z = torch.unbind(t, dim=-1)
     return torch.stack(
         [

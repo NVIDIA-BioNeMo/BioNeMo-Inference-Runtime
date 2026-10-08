@@ -11,18 +11,6 @@
       "sm90_launch": "9670eea3f29fc92af6c900074ece4f40a1d29474a97b052e09d3685b76e879c5",
       "target_arch": "sm_90a",
       "target_sm": 90
-    },
-    "062bb24f40ff8fc5a1ea42a091b98592b55583cbfbd0779328f93844817f65a0": {
-      "dtype": "bf16",
-      "dynamic_smem_bytes": 228352,
-      "image_sha256": "6adc8cc3ba6dad9511fa1b343c11428331305f7425e2414bce0db1e745326ed3",
-      "image_size": 67296,
-      "kernel_sm": 90,
-      "kernel_symbol": "bad9f1a4a7ef4a5e30bdb81445dddd9b2db6b9ea83d6bd19cb61f0d97f097d6c",
-      "launch_abi": "trimul_kf_k3_sm90_v2",
-      "sm90_launch": "9670eea3f29fc92af6c900074ece4f40a1d29474a97b052e09d3685b76e879c5",
-      "target_arch": "sm_90a",
-      "target_sm": 90
     }
   },
   "kernel_symbols": {

@@ -1,0 +1,33 @@
+{
+  "executables": {
+    "8176d007365e1e7b65b44416182c27d41b174d38c4722918ff657514cecba199": {
+      "dtype": "bf16",
+      "dynamic_smem_bytes": 225280,
+      "image_sha256": "6f96c1f0a930c2b8895cb13d81e439f35fcf0cfa6ef9b8f9ee6316d04af6085a",
+      "image_size": 101088,
+      "kernel_sm": 90,
+      "kernel_symbol": "ee082ea2fa0466399b1bccfe3f7faf889a26a8ed10227b97695fbccd033f40b7",
+      "launch_abi": "trimul_kf_k3_sm90_v2",
+      "sm90_launch": "c7633dd84935bfeefed4e4548129ae8a7dc8256e902ae562f563ca47ac646d4d",
+      "target_arch": "sm_90a",
+      "target_sm": 90
+    }
+  },
+  "kernel_symbols": {},
+  "sm90_launches": {},
+  "variants": [
+    {
+      "executable": "234b3e1c45c4a9907d700a177e8a4d00c1efd53d018cc30fcc646072744fa5b7",
+      "runtime_metadata": {
+        "C": 32,
+        "D": 32,
+        "kernel_variant": 0,
+        "num_threads": 512,
+        "residual": false,
+        "tile_ctas": 1,
+        "tile_m": 128
+      },
+      "variant_id": "88ae94477dcf8b1bcfca"
+    }
+  ]
+}

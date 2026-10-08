@@ -17,7 +17,7 @@
   "sm90_launches": {},
   "variants": [
     {
-      "executable": "eecdd4b7ba394b3ac41fb12708005b7e6bbef27472317e05e46e9a2998d723f3",
+      "executable": "8176d007365e1e7b65b44416182c27d41b174d38c4722918ff657514cecba199",
       "runtime_metadata": {
         "C": 384,
         "D": 256,
@@ -30,7 +30,7 @@
       "variant_id": "2a353af39be2effeb768"
     },
     {
-      "executable": "486ec26be85e58549ac857d8365be55287daaa52398dd73537d0d67672aba95f",
+      "executable": "5ccb48e5ab32c742dd0e1d786db917beee7f2c890b7a666f2a098e80c43a704e",
       "runtime_metadata": {
         "C": 256,
         "D": 256,

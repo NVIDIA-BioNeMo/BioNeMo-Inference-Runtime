@@ -22,6 +22,7 @@ import torch.nn as nn
 from bionemo_ir._torch.layers.linear import Linear, WeightMode, WeightsLoadingConfig
 from bionemo_ir._torch.utils import dict_multimap, dist_one_hot, recursive_calling_load_weights, tensor_tree_map
 from bionemo_ir.configs import BaseConfig
+from bionemo_ir.dsl_kernels.triton.distance_embedding import project_distance_bins
 from bionemo_ir.dsl_kernels.triton.fused_relpos_embed import fused_relpos_embed
 
 from .template import TemplatePairStack, TemplatePointwiseAttention
@@ -381,14 +382,9 @@ class RecyclingEmbedder(nn.Module):
         # [*, N, N, C_z]
         z_update = self.layer_norm_z(z)
 
-        d = torch.sum((x[..., None, :] - x[..., None, :, :]) ** 2, dim=-1, keepdims=True)
-
-        # [*, N, N, no_bins]
-        d = ((d > self.squared_bins) * (d < self.upper)).to(x)
-
         # [*, N, N, C_z]
-        d = self.linear(d)
-        z_update = z_update + d
+        d = project_distance_bins(x, x, self.squared_bins, self.upper, self.linear.weight, bias=self.linear.bias)
+        z_update = z_update + d.to(z_update.dtype)
 
         return m_update, z_update
 

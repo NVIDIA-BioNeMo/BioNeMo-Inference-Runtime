@@ -43,6 +43,7 @@ from bionemo_ir._torch.utils import (
     iter_chunks,
     recursive_calling_load_weights,
 )
+from bionemo_ir.dsl_kernels.triton.distance_embedding import project_distance_bins
 
 if TYPE_CHECKING:
     from bionemo_ir.configs import TrunkPadSpec
@@ -235,6 +236,10 @@ class PairformerEmbedding(nn.Module):
         si, zij = self.pairformer_stack(si, zij, single_mask, pair_mask, inplace_safe=True)
         return unpad_trunk_tokens(si, zij, n_true=n_true, kinds=("single", "pair"))
 
+    def _embed_distances(self, rows: torch.Tensor, coordinates: torch.Tensor) -> torch.Tensor:
+        """Project ``rows`` to ``coordinates`` distance bins into FP32 [..., I, J, C_z]."""
+        return project_distance_bins(rows, coordinates, self.squared_bins, self.upper, self.linear_distance.weight)
+
     def _embed_zij_dense(
         self,
         si_input: torch.Tensor,
@@ -247,14 +252,7 @@ class PairformerEmbedding(nn.Module):
             # si projection to zij
             zij = zij + self.linear_i(si_input.unsqueeze(-2)) + self.linear_j(si_input.unsqueeze(-3))
 
-            # Embed pair distances of representative atoms
-            dij = torch.sum(
-                (x_pred[..., None, :] - x_pred[..., None, :, :]) ** 2,
-                dim=-1,
-                keepdims=True,
-            )
-            dij = ((dij > self.squared_bins) * (dij < self.upper)).type(x_pred.dtype)
-            zij = zij + self.linear_distance(dij)
+            zij = zij + self._embed_distances(x_pred, x_pred)
 
         return zij.to(dtype=orig_dtype)
 
@@ -282,15 +280,9 @@ class PairformerEmbedding(nn.Module):
                 embedded_rows = pair_rows + projected_i_rows + projected_j
 
                 x_pred_rows = x_pred.narrow(x_row_dim, start, length)
-                dij = torch.sum(
-                    (x_pred_rows[..., None, :] - x_pred[..., None, :, :]) ** 2,
-                    dim=-1,
-                    keepdims=True,
-                )
-                dij = ((dij > self.squared_bins) * (dij < self.upper)).type(x_pred.dtype)
-                embedded_rows = embedded_rows + self.linear_distance(dij)
+                embedded_rows = embedded_rows + self._embed_distances(x_pred_rows, x_pred)
                 output.narrow(output.ndim - 3, start, length).copy_(embedded_rows)
-                del dij, embedded_rows, pair_rows, projected_i_rows, x_pred_rows
+                del embedded_rows, pair_rows, projected_i_rows, x_pred_rows
 
         return output
 

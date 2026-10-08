@@ -23,6 +23,7 @@ from bionemo_ir._torch.layers.linear import Linear
 from bionemo_ir._torch.layers.token_padding import pad_trunk_tokens, unpad_trunk_tokens
 from bionemo_ir._torch.layers.transformers.pairformer import PairformerModule
 from bionemo_ir.configs import BaseConfig
+from bionemo_ir.dsl_kernels.triton.distance_embedding import project_distance_bins
 from bionemo_ir.dsl_kernels.triton.indexed_projection import IndexedRows, indexed_projection, prepare_indexed_rows
 
 
@@ -92,13 +93,16 @@ class ProtenixConfidenceHead(nn.Module):
     def _distance_embed(self, z_pair: torch.Tensor, x_rep: torch.Tensor) -> torch.Tensor:
         """Add the representative-atom distance embedding (one-hot + raw)."""
         x_rep = x_rep.to(torch.float32)
-        distance = torch.cdist(x_rep, x_rep)  # [*, N_token, N_token]
-        onehot = ((distance.unsqueeze(-1) > self.lower_bins) & (distance.unsqueeze(-1) < self.upper_bins)).to(
-            self.dtype
+        embedding = project_distance_bins(
+            x_rep,
+            x_rep,
+            self.lower_bins,
+            self.upper_bins,
+            self.linear_no_bias_d.weight,
+            distance_weight=self.linear_no_bias_d_wo_onehot.weight,
+            euclidean=True,
         )
-        z_pair = z_pair + self.linear_no_bias_d(onehot)
-        z_pair = z_pair + self.linear_no_bias_d_wo_onehot(distance.unsqueeze(-1).to(self.dtype))
-        return z_pair
+        return z_pair + embedding.to(z_pair.dtype)
 
     def _per_sample(
         self,

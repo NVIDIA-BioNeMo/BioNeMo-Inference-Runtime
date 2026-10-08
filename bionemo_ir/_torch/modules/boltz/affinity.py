@@ -73,7 +73,6 @@ def compute_distogram(
     boundaries: torch.Tensor,
     token_to_rep_atom: torch.Tensor,
     multiplicity: int = 1,
-    dtype: torch.dtype = torch.int32,
 ) -> torch.Tensor:
     """
     Compute the distogram from the predicted atom coordinates.
@@ -94,7 +93,7 @@ def compute_distogram(
         mult = multiplicity
     x_pred_repr = torch.bmm(token_to_rep_atom.float(), x_pred)
     d = torch.cdist(x_pred_repr, x_pred_repr)
-    distogram = (d.unsqueeze(-1) > boundaries).sum(dim=-1).to(dtype)
+    distogram = torch.bucketize(d, boundaries.to(d.dtype), out_int32=True)
     return distogram
 
 

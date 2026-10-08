@@ -398,17 +398,16 @@ def test_confidence_pair_embedding_chunks_rows_with_random_weights() -> None:
         expected = module.embed_zij(si_input, zij, x_pred)
 
     seen_rows: list[int] = []
+    embed_distances = module._embed_distances
 
-    def record_rows(_module: nn.Module, inputs: tuple[torch.Tensor, ...]) -> None:
-        seen_rows.append(inputs[0].shape[-3])
+    def record_rows(rows: torch.Tensor, coordinates: torch.Tensor) -> torch.Tensor:
+        seen_rows.append(rows.shape[-2])
+        return embed_distances(rows, coordinates)
 
-    handle = module.linear_distance.register_forward_pre_hook(record_rows)
+    module._embed_distances = record_rows
     module.pair_embedding_chunk_policy = policy.replace(chunk_size=3, min_size=1)
-    try:
-        with torch.inference_mode():
-            actual = module.embed_zij(si_input, zij, x_pred)
-    finally:
-        handle.remove()
+    with torch.inference_mode():
+        actual = module.embed_zij(si_input, zij, x_pred)
 
     assert seen_rows == [3, 3, 2]
     assert actual.shape == expected.shape == (batch_size, samples, tokens, tokens, 8)

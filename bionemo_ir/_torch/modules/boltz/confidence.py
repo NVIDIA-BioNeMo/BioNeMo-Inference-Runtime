@@ -972,9 +972,7 @@ class Boltz1ConfidenceModule(nn.Module):
         """Fold the distogram embedding into ``z_chunk`` in a helper so the large fp32 ``distogram``
         intermediate (~8 GB at large N) frees on return, before the msa_module/pairformer run.
         """
-        d, distogram = compute_distogram(
-            x_chunk, self.boundaries, token_to_rep_atom, n_samples, dtype=self.config.torch_dtype
-        )
+        d, distogram = compute_distogram(x_chunk, self.boundaries, token_to_rep_atom, n_samples)
         distogram = self.dist_bin_pairwise_embed(distogram)
         z_chunk += distogram  # [B, mult, N_tokens, N_tokens, token_z]
         return d, z_chunk

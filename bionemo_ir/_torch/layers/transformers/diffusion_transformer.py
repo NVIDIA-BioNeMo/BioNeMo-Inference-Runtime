@@ -15,6 +15,7 @@
 
 import contextlib
 from collections.abc import Iterator
+from typing import NamedTuple
 
 import torch
 import torch.nn as nn
@@ -29,7 +30,7 @@ from bionemo_ir._torch.graph_optimization.config import (
 )
 from bionemo_ir._torch.graph_optimization.decorator import NamedDimTies, support_graph_optimization
 from bionemo_ir._torch.layers.attention import AttentionPairBias
-from bionemo_ir._torch.layers.normalization import AdaLN
+from bionemo_ir._torch.layers.normalization import AdaLN, FusedLayerNorm
 from bionemo_ir._torch.layers.sequence_local_atom import build_local_attn_metadata, to_blocks
 from bionemo_ir._torch.layers.transition import ConditionedTransitionBlock
 from bionemo_ir._torch.utils import recursive_calling_load_weights
@@ -613,6 +614,109 @@ class OpenFold3DiffusionTransformer(nn.Module):
         return a
 
 
+class TokenLayerConditioning(NamedTuple):
+    """One token layer's AdaLN halves and output-gate logits, projected for all layers at once."""
+
+    attn_scale: torch.Tensor
+    attn_shift: torch.Tensor
+    attn_gate: torch.Tensor
+    transition_scale: torch.Tensor
+    transition_shift: torch.Tensor
+
+
+def _conditioned_token_layer(
+    layer: DiffusionTransformerLayer,
+    a: torch.Tensor,
+    s: torch.Tensor,
+    bias: torch.Tensor,
+    mask: torch.Tensor | None,
+    buffers: PreallocatedBuffers | None,
+    conditioning: TokenLayerConditioning,
+    masks: PrecomputedSingleMasks | None = None,
+) -> torch.Tensor:
+    """``DiffusionTransformerLayer.forward`` on the token path with projected conditioning."""
+    b = layer.adaln.normalize(
+        a, conditioning.attn_scale, conditioning.attn_shift, buffers=buffers, buffer_key="dit_bsd_scratch"
+    )
+    a = layer.pair_bias_attn(
+        s=b,
+        z=bias,
+        single_embedding=s,
+        mask=mask,
+        mask_bias=None if masks is None else masks.mask_bias,
+        buffers=buffers,
+        residual=a,
+        output_gate_logits=conditioning.attn_gate,
+    )
+    # ConditionedTransitionBlock.forward with its AdaLN projection precomputed.
+    transition = layer.transition
+    t = transition.adaln.normalize(
+        a, conditioning.transition_scale, conditioning.transition_shift, buffers=buffers, buffer_key="dit_bsd_scratch"
+    )
+    t = transition._swiglu_mlp(t)
+    return transition._gated_sigmoid_op(
+        s,
+        transition.output_projection.weight,
+        t,
+        transition.output_projection.bias,
+        output=None,
+        residual=a,
+    )
+
+
+class LocalLayerConditioning(NamedTuple):
+    """One atom layer's conditioning, projected once per rollout; ``cond`` is the blocked ``s``."""
+
+    q_scale: torch.Tensor
+    q_shift: torch.Tensor
+    k_scale: torch.Tensor
+    k_shift: torch.Tensor
+    attn_gate: torch.Tensor
+    transition_scale: torch.Tensor
+    transition_shift: torch.Tensor
+    cond: torch.Tensor
+
+
+def _conditioned_local_layer(
+    layer: DiffusionTransformerLayer,
+    a: torch.Tensor,
+    bias: torch.Tensor,
+    attn_metadata: AttentionMetadata,
+    buffers: PreallocatedBuffers | None,
+    conditioning: tuple[torch.Tensor, ...],
+) -> torch.Tensor:
+    """``DiffusionTransformerLayer.forward`` on the atom path with projected conditioning.
+
+    ``bias`` carries the key mask; ``conditioning`` is a plain tuple so that graph capture can clone it.
+    """
+    conditioning = LocalLayerConditioning(*conditioning)
+    a = layer.pair_bias_attn(
+        s=a,
+        z=bias,
+        single_embedding=conditioning.cond,
+        mask=None,
+        attn_metadata=attn_metadata,
+        buffers=buffers,
+        residual=a,
+        output_gate_logits=conditioning.attn_gate,
+        adaln_conditioning=(conditioning.q_scale, conditioning.q_shift, conditioning.k_scale, conditioning.k_shift),
+    )
+    # ConditionedTransitionBlock.forward with its AdaLN projection precomputed.
+    transition = layer.transition
+    t = transition.adaln.normalize(
+        a, conditioning.transition_scale, conditioning.transition_shift, buffers=buffers, buffer_key="dit_bsd_scratch"
+    )
+    t = transition._swiglu_mlp(t)
+    return transition._gated_sigmoid_op(
+        conditioning.cond,
+        transition.output_projection.weight,
+        t,
+        transition.output_projection.bias,
+        output=None,
+        residual=a,
+    )
+
+
 @support_graph_optimization(
     named_dims=_TOKEN_TRANSFORMER_DIMS,
     workspace_kwargs=("buffers",),
@@ -692,6 +796,163 @@ class ProtenixDiffusionTransformer(nn.Module):
             z, w_mega, len(self.layers), self._num_heads, self._norm_eps, self._bias_pad_multiple
         )
 
+    def _conditioning_supported(self) -> bool:
+        """Whether every layer conditions through a bias-free fused LayerNorm with one shared eps."""
+        eps = None
+        for layer in self.layers:
+            attention, transition = layer.pair_bias_attn, layer.transition
+            if (
+                not layer.initial_norm
+                or layer.post_lnorm is not None
+                or attention.use_separate_layer_norm
+                or attention.output_projection is None
+                or attention.output_projection.bias is None
+                or transition.output_projection.bias is None
+            ):
+                return False
+            for adaln in (layer.adaln, transition.adaln):
+                norm = adaln.s_norm
+                if (
+                    adaln.norm_type != "layer_norm"
+                    or not isinstance(norm, FusedLayerNorm)
+                    or norm.weight is None
+                    or getattr(norm, "bias", None) is not None
+                    or adaln.fused_s_scale_s_bias.bias is None
+                    or (eps is not None and norm.eps != eps)
+                ):
+                    return False
+                eps = norm.eps
+        return True
+
+    def conditioning_weights(self) -> tuple[torch.Tensor, ...] | None:
+        """The layers' AdaLN and output-gate parameters stacked for the batched projections, or ``None``.
+
+        Returns ``(gamma [2L, c], w_adaln [2L, c, 2d], b_adaln [2L, 1, 2d], w_gate [L, c, d], b_gate [L, 1, d])``;
+        AdaLN entry ``2i`` is layer ``i``'s attention, ``2i + 1`` its transition. Read from the live parameters:
+        the rollout cache takes them once per rollout.
+        """
+        if not self.layers or not self._conditioning_supported():
+            return None
+        with torch.no_grad():
+            adalns = [adaln for layer in self.layers for adaln in (layer.adaln, layer.transition.adaln)]
+            gates = [layer.pair_bias_attn.output_projection for layer in self.layers]
+            return (
+                torch.stack([adaln.s_norm.weight.float() for adaln in adalns]),
+                torch.stack([adaln.fused_s_scale_s_bias.weight.t() for adaln in adalns]).contiguous(),
+                torch.stack([adaln.fused_s_scale_s_bias.bias.float() for adaln in adalns]).unsqueeze(1).contiguous(),
+                torch.stack([gate.weight.t() for gate in gates]).contiguous(),
+                torch.stack([gate.bias.float() for gate in gates]).unsqueeze(1).contiguous(),
+            )
+
+    def prepare_token_conditioning(
+        self, s: torch.Tensor, weights: tuple[torch.Tensor, ...] | None = None
+    ) -> list[TokenLayerConditioning] | None:
+        """Project every layer's AdaLN and output-gate conditioning of ``s`` in two batched GEMMs.
+
+        One unscaled fused LayerNorm of ``s`` serves every AdaLN; the rounding points stay the layers' own, only the
+        GEMM summation order may differ.
+
+        Args:
+            s: ``[*, N, c_s]`` token conditioning.
+            weights: :meth:`conditioning_weights` of this rollout; read from the parameters when ``None``.
+
+        Returns:
+            One :class:`TokenLayerConditioning` per layer, or ``None`` when the batched path does not apply.
+        """
+        if torch.is_autocast_enabled("cuda"):  # the layers' own Linears choose the dtype under autocast
+            return None
+        if weights is None:
+            weights = self.conditioning_weights()
+            if weights is None:
+                return None
+        gamma, w_adaln, b_adaln, w_gate, b_gate = weights
+        if s.dtype != w_adaln.dtype or not s.is_cuda:
+            return None
+        lead, width = s.shape[:-1], s.shape[-1]
+        rows = s.reshape(-1, width)
+        x_hat = layer_norm_transpose(
+            rows,
+            None,
+            None,
+            eps=self.layers[0].adaln.s_norm.eps,
+            elementwise_affine=False,
+            layout="nd->nd",  # codespell:ignore nd
+            out_dtype=torch.float32,
+        )
+        normed = (x_hat.unsqueeze(0) * gamma.unsqueeze(1)).to(s.dtype)
+        # fp32 accumulation and bias, one rounding per output, as each layer's Linear rounds it.
+        adaln = torch.baddbmm(b_adaln, normed, w_adaln, out_dtype=torch.float32).to(s.dtype)
+        gates = torch.baddbmm(
+            b_gate, rows.unsqueeze(0).expand(w_gate.shape[0], -1, -1), w_gate, out_dtype=torch.float32
+        ).to(s.dtype)
+        dim = w_gate.shape[-1]
+        conditioning = []
+        for i in range(len(self.layers)):
+            attn_scale, attn_shift = adaln[2 * i].view(*lead, 2 * dim).split([dim, dim], dim=-1)
+            transition_scale, transition_shift = adaln[2 * i + 1].view(*lead, 2 * dim).split([dim, dim], dim=-1)
+            conditioning.append(
+                TokenLayerConditioning(
+                    attn_scale, attn_shift, gates[i].view(*lead, dim), transition_scale, transition_shift
+                )
+            )
+        return conditioning
+
+    def prepare_local_conditioning(
+        self, s: torch.Tensor, n_queries: int, num_blocks: int, attn_metadata: AttentionMetadata
+    ) -> list[tuple[torch.Tensor, ...]] | None:
+        """Project a step-invariant atom conditioning ``s`` for every layer once per rollout, with each layer's
+        own modules (query and key AdaLNs, output gate, transition AdaLN).
+
+        Args:
+            s: ``[B, N, c]`` conditioning, as :meth:`forward` takes it on the local path.
+            n_queries: Window size ``W``.
+            num_blocks: Window count ``K``.
+            attn_metadata: Local-window metadata whose ``query_to_keys`` gathers the keys.
+
+        Returns:
+            Per layer, the :class:`LocalLayerConditioning` fields as a tuple, or ``None`` when a layer does not
+            chain its key AdaLN.
+        """
+        for layer in self.layers:
+            attention = layer.pair_bias_attn
+            if (
+                layer.initial_norm
+                or layer.post_lnorm is not None
+                or not (attention.use_separate_layer_norm and attention.use_ada_layer_norm and attention.chain_kv_norm)
+                or attention.output_projection is None
+                or attention.output_projection.bias is None
+                or layer.transition.output_projection.bias is None
+            ):
+                return None
+        s = s.to(self.dtype)
+        s_q = to_blocks(s, num_blocks, n_queries).unsqueeze(1)  # [B, 1, K, W, c]
+        s_k = attn_metadata.query_to_keys(s_q)  # [B, 1, K, H, c]
+        conditioning = []
+        for layer in self.layers:
+            attention, transition = layer.pair_bias_attn, layer.transition
+
+            def project(adaln: AdaLN, rows: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+                return adaln.fused_s_scale_s_bias(adaln.s_norm(rows)).split([adaln.dim, adaln.dim], dim=-1)
+
+            q_scale, q_shift = project(attention.layer_norm_a_q, s_q)
+            k_scale, k_shift = project(attention.layer_norm_a_k, s_k)
+            transition_scale, transition_shift = project(transition.adaln, s_q)
+            conditioning.append(
+                tuple(
+                    LocalLayerConditioning(
+                        q_scale,
+                        q_shift,
+                        k_scale,
+                        k_shift,
+                        attention.output_projection(s_q),
+                        transition_scale,
+                        transition_shift,
+                        s_q,
+                    )
+                )
+            )
+        return conditioning
+
     def prepare_pair_biases(
         self,
         z: torch.Tensor,
@@ -725,6 +986,8 @@ class ProtenixDiffusionTransformer(nn.Module):
         attn_metadata: AttentionMetadata | None = None,
         buffers: PreallocatedBuffers | None = None,
         prepared_pair_biases: list[torch.Tensor] | None = None,
+        prepared_conditioning_weights: tuple[torch.Tensor, ...] | None = None,
+        prepared_conditioning: list[tuple[torch.Tensor, ...]] | None = None,
     ) -> torch.Tensor:
         """Apply local atom or global token diffusion attention.
 
@@ -739,6 +1002,9 @@ class ProtenixDiffusionTransformer(nn.Module):
             attn_metadata: optional local gather metadata.
             buffers: optional shared layer-stack buffers.
             prepared_pair_biases: projected biases; local windows include a singleton sample axis.
+            prepared_conditioning_weights: the token path's :meth:`conditioning_weights` of this rollout.
+            prepared_conditioning: the atom path's :meth:`prepare_local_conditioning` of ``s``; ``s`` may then
+                be ``None``.
 
         Returns:
             Updated representation with the same shape as ``a``.
@@ -750,7 +1016,12 @@ class ProtenixDiffusionTransformer(nn.Module):
             if attn_metadata is None:
                 attn_metadata = self.build_attn_metadata(K, n_queries, n_keys, a.device)
             a_in = to_blocks(a, K, W).unsqueeze(1)  # [B, 1, K, W, c_a]
-            s_in = to_blocks(s, K, W).unsqueeze(1)  # [B, 1, K, W, c_a]
+            # Prepared conditioning needs prepared biases that carry the key mask.
+            if prepared_conditioning is not None and (prepared_pair_biases is None or mask is not None):
+                if s is None:
+                    raise ValueError("prepared conditioning without s needs prepared pair biases that carry the mask")
+                prepared_conditioning = None
+            s_in = None if prepared_conditioning is not None else to_blocks(s, K, W).unsqueeze(1)  # [B, 1, K, W, c_a]
             z_in = z.unsqueeze(1)  # [B, 1, K, W, H, c_z]
             mask_in = None
             if mask is not None:
@@ -764,16 +1035,33 @@ class ProtenixDiffusionTransformer(nn.Module):
         if buffers is None and self.pairwise_attention_backend == "CuTeDSL":
             buffers = {}
 
+        # Count the CuTeDSL kernel's valid keys once for all layers, as the backend does.
+        masks = None
+        if not local and mask_in is not None and self.pairwise_attention_backend == "CuTeDSL":
+            counts = (mask_in > 0.5).sum(dim=-1, dtype=torch.int32)
+            masks = PrecomputedSingleMasks(single_mask=mask_in, mask_bias=counts)
+
         biases = prepared_pair_biases
         if biases is None and self._precompute_bias:
             biases = self._precompute_all_biases(z_in)
+        conditioning = None if local else self.prepare_token_conditioning(s_in, prepared_conditioning_weights)
+
+        local_conditioning = prepared_conditioning if local else None
+
+        def run(layer: DiffusionTransformerLayer, index: int, a: torch.Tensor, bias: torch.Tensor) -> torch.Tensor:
+            if local_conditioning is not None:
+                return _conditioned_local_layer(layer, a, bias, attn_metadata, buffers, local_conditioning[index])
+            if conditioning is None:
+                return layer(a, s_in, bias, mask_in, attn_metadata, precomputed_single_masks=masks, buffers=buffers)
+            return _conditioned_token_layer(layer, a, s_in, bias, mask_in, buffers, conditioning[index], masks)
+
         if biases is None:
-            for layer in self.layers:
-                a_in = layer(a_in, s_in, z_in, mask_in, attn_metadata, buffers=buffers)
+            for index, layer in enumerate(self.layers):
+                a_in = run(layer, index, a_in, z_in)
         else:
             with _projected_pair_biases(self.layers, biases):
-                for layer, bias in zip(self.layers, biases, strict=True):
-                    a_in = layer(a_in, s_in, bias, mask_in, attn_metadata, buffers=buffers)
+                for index, (layer, bias) in enumerate(zip(self.layers, biases, strict=True)):
+                    a_in = run(layer, index, a_in, bias)
 
         if local:
             return a_in.reshape(B, K * W, -1)[:, :N]

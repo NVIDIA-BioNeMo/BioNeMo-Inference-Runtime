@@ -171,3 +171,42 @@ def test_cached_decoder_biases(dtype: str, batch_size: int, n_sample: int, preco
     exact = torch_dtype == torch.float32
     torch.testing.assert_close(actual, expected, atol=1e-5 if exact else 2e-3, rtol=1e-4 if exact else 2e-2)
     assert not torch.allclose(unbiased, expected, atol=1e-3), "pair biases do not reach the decoder output"
+
+
+def test_cached_decoder_hands_c_skip_on_when_its_transformer_declines_the_cache() -> None:
+    """With the cache the decoder drops c_skip; under CUDA autocast its transformer declines the prepared conditioning,
+    so the decoder hands c_skip on. (A stand-in transformer records its inputs: the atom kernels run without autocast.)"""
+    torch.manual_seed(0)
+    sc = Scenario(dtype="float32")
+    device = torch.device("cuda")
+    config = AtomAttentionDecoderConfig(
+        c_token=sc.c_token, c_atom=sc.c_atom, c_atompair=sc.c_atompair, n_queries=sc.n_queries, n_keys=sc.n_keys
+    )
+    model = ProtenixAtomAttentionDecoder(config).to(device).eval()
+    K = math.ceil(sc.n_atoms / sc.n_queries)
+    a2t = (torch.arange(sc.n_atoms, device=device) // (sc.n_atoms // sc.n_token)).expand(1, -1)
+    a = torch.randn(1, sc.n_token, sc.c_token, device=device)
+    q_skip = torch.randn(1, sc.n_atoms, sc.c_atom, device=device)
+    c_skip = torch.randn_like(q_skip)
+    p_lm = torch.randn(1, K, sc.n_queries, sc.n_keys, sc.c_atompair, device=device)
+    seen = []
+
+    class Recorder(torch.nn.Module):
+        dtype = torch.float32
+        window_attention_enabled = False
+
+        def forward(self, q, c, *args, prepared_conditioning=None, **kwargs):
+            seen.append((c is not None, prepared_conditioning is not None))
+            return q
+
+    with torch.inference_mode():
+        metadata = model.atom_transformer.build_attn_metadata(K, sc.n_queries, sc.n_keys, device)
+        biases = model.prepare_pair_biases(p_lm, sc.n_atoms, metadata)
+        conditioning = model.prepare_conditioning(c_skip, K, metadata)
+        assert conditioning is not None, "the prepared conditioning did not engage"
+        model.atom_transformer = Recorder()
+        cached = {"prepared_pair_biases": biases, "prepared_conditioning": conditioning}
+        model(a2t, a, q_skip, c_skip, p_lm, metadata, **cached)
+        with torch.autocast("cuda", dtype=torch.bfloat16):
+            model(a2t, a, q_skip, c_skip, p_lm, metadata, **cached)
+    assert seen == [(False, True), (True, False)]

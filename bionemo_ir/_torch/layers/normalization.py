@@ -118,7 +118,25 @@ class AdaLN(nn.Module):
         s_normed = self.s_norm(s)
         ss = self.fused_s_scale_s_bias(s_normed)
         s_scale, s_bias = ss.split([self.dim, self.dim], dim=-1)
+        return self.normalize(a, s_scale, s_bias, buffers=buffers, buffer_key=buffer_key, mask=mask)
 
+    def normalize(
+        self,
+        a: torch.Tensor,
+        s_scale: torch.Tensor,
+        s_bias: torch.Tensor,
+        buffers: PreallocatedBuffers | None = None,
+        buffer_key: str = "adaln_out",
+        mask: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        """``sigmoid(s_scale) * Norm(a) + s_bias`` from an already projected condition.
+
+        Args:
+            a: [B, I, d]
+            s_scale, s_bias: [B, I, d] halves of ``fused_s_scale_s_bias(s_norm(s))``;
+                one leading dimension may be 1 and broadcast.
+            buffers, buffer_key, mask: as in :meth:`forward`.
+        """
         # The dispatcher returns a torch fallback when no payload is available.
         # Tests also clear this to force the inline path as an independent
         # reference.

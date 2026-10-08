@@ -657,6 +657,7 @@ class AttentionPairBias(nn.Module):
         attn_metadata: AttentionMetadata | None,
         mask_bias: torch.Tensor | None,
         mask_bias_local: torch.Tensor | None,
+        adaln_conditioning: tuple[torch.Tensor, ...] | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor | None]:
         """Normalize *s*, derive *kv_in*, and route masks through ``query_to_keys``.
 
@@ -713,6 +714,12 @@ class AttentionPairBias(nn.Module):
                 if self.use_separate_layer_norm and self.chain_kv_norm:
                     # Gather commutes with the per-row query AdaLN.
                     assert self.use_ada_layer_norm, "chain_kv_norm requires use_ada_layer_norm"
+                    if adaln_conditioning is not None:
+                        # Projected query and gathered-key conditions (q scale, q shift, k scale, k shift).
+                        q_scale, q_shift, k_scale, k_shift = adaln_conditioning
+                        s = self.layer_norm_a_q.normalize(s, q_scale, q_shift)
+                        kv_in = self.layer_norm_a_k.normalize(query_to_keys(s), k_scale, k_shift)
+                        return s, kv_in, mask, mask_bias
                     assert single_embedding is not None, "single_embedding is required for AdaLN"
                     s = self.layer_norm_a_q(s, single_embedding)
                     kv_in = self.layer_norm_a_k(query_to_keys(s), query_to_keys(single_embedding))
@@ -914,6 +921,8 @@ class AttentionPairBias(nn.Module):
         mask_bias_local: torch.Tensor | None = None,
         buffers: PreallocatedBuffers | None = None,
         residual: torch.Tensor | None = None,
+        output_gate_logits: torch.Tensor | None = None,
+        adaln_conditioning: tuple[torch.Tensor, ...] | None = None,
     ) -> torch.Tensor:
         """Single and TP Distributed version for AttentionPairBias.
 
@@ -958,14 +967,19 @@ class AttentionPairBias(nn.Module):
             residual: Same shape as *s*. Return ``residual + update`` instead
                 of the update; with a tuned kernel, one launch runs the gate,
                 the output projection, the output gate and this add.
+            output_gate_logits: ``output_projection(single_embedding)``, when the
+                caller already projected it; it then replaces that projection.
+            adaln_conditioning: For chained local AdaLNs, the projected query and
+                gathered-key conditions ``(q_scale, q_shift, k_scale, k_shift)``
+                from ``single_embedding``; they replace its two AdaLN projections.
 
         Returns:
             Output tensor with the same shape as *s*.
         """
-        if self.output_projection is not None and single_embedding is None:
+        if self.output_projection is not None and single_embedding is None and output_gate_logits is None:
             raise ValueError("the output gate needs single_embedding")
         s, kv_in, mask, mask_bias = self._prep_inputs(
-            s, mask, single_embedding, attn_metadata, mask_bias, mask_bias_local
+            s, mask, single_embedding, attn_metadata, mask_bias, mask_bias_local, adaln_conditioning
         )
 
         q, k, v, g = self._prep_qkvg(s, kv_in)
@@ -996,13 +1010,16 @@ class AttentionPairBias(nn.Module):
         if mha_o.dtype != attn_in_dtype:
             mha_o = mha_o.to(dtype=attn_in_dtype)
         if residual is not None and self._epilogue is not None:
-            fused = self._fused_output(mha_o, g, residual, single_embedding)
+            fused = self._fused_output(mha_o, g, residual, single_embedding, output_gate_logits)
             if fused is not None:
                 return fused
 
         # Nothing reads the attention output or the gate columns again.
         update = self.proj_o(mha_o.reshape(g.shape).mul_(g.sigmoid_()))
-        if self.output_projection is not None:
+        if output_gate_logits is not None:
+            # Precomputed ``output_projection(single_embedding)``: not projected again.
+            update = update * output_gate_logits.sigmoid()
+        elif self.output_projection is not None:
             update = self._output_gate_op(
                 single_embedding,
                 self.output_projection.weight,
@@ -1018,6 +1035,7 @@ class AttentionPairBias(nn.Module):
         gate: torch.Tensor,
         residual: torch.Tensor,
         single_embedding: torch.Tensor | None,
+        output_gate_logits: torch.Tensor | None = None,
     ) -> torch.Tensor | None:
         """Run the epilogue kernel over rows grouped as ``(outer, mult, inner)``.
 
@@ -1029,7 +1047,8 @@ class AttentionPairBias(nn.Module):
         if self.output_projection is None:
             split = (1, 1, math.prod(lead))
         else:
-            split = _broadcast_rows(lead, single_embedding.shape[:-1])
+            gate_source = output_gate_logits if output_gate_logits is not None else single_embedding
+            split = _broadcast_rows(lead, gate_source.shape[:-1])
         if split is None:
             return None
         outer, mult, inner = split
@@ -1041,7 +1060,12 @@ class AttentionPairBias(nn.Module):
             return None
         output_gate = None
         if self.output_projection is not None:
-            output_gate = self.output_projection(single_embedding).view(outer, 1, inner, self.c_s)
+            if output_gate_logits is None:
+                output_gate_logits = self.output_projection(single_embedding)
+            try:
+                output_gate = output_gate_logits.view(outer, 1, inner, self.c_s)
+            except RuntimeError:
+                return None
         fused = self._epilogue(
             attention, gate_rows, self.proj_o.weight, residual_rows, bias=self.proj_o.bias, output_gate=output_gate
         )

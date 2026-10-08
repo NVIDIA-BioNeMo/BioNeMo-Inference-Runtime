@@ -116,3 +116,65 @@ def test_protenix_atom_transformer(sc: Scenario):
     r = _rmse_ratio(out, ref_out)
     tol = 2e-3 if torch_dtype == torch.float32 else 5e-2
     assert r < tol, f"rmse_ratio={r:.3e} exceeds {tol:.0e} ({sc.dtype})"
+
+
+def test_prepared_local_conditioning_matches_the_per_layer_path():
+    """Prepared atom conditioning reproduces the per-layer path on the same prepared biases. A mask given to forward
+    takes the per-layer path, which applies it; without s, that is refused."""
+    torch.manual_seed(0)
+    device = torch.device("cuda")
+    sc = Scenario(n_atoms=200, n_blocks=2)
+    config = DiffusionTransformerConfig(
+        num_blocks=sc.n_blocks,
+        num_heads=sc.n_heads,
+        dim=sc.c_atom,
+        dim_single_cond=sc.c_atom,
+        dim_pairwise=sc.c_atompair,
+        dtype=sc.dtype,
+    )
+    model = ProtenixDiffusionTransformer(config).to(device).eval()
+    with torch.no_grad():
+        for parameter in model.parameters():
+            parameter.normal_(0, 0.05)
+    blocks = math.ceil(sc.n_atoms / sc.n_queries)
+    q = torch.randn(1, sc.n_atoms, sc.c_atom, device=device)
+    c = torch.randn(1, sc.n_atoms, sc.c_atom, device=device)
+    p_lm = torch.randn(1, blocks, sc.n_queries, sc.n_keys, sc.c_atompair, device=device)
+    mask = torch.ones(1, sc.n_atoms, device=device)
+    mask[:, -24:] = 0
+    metadata = model.build_attn_metadata(blocks, sc.n_queries, sc.n_keys, device)
+    window = (sc.n_queries, sc.n_keys, metadata)
+    with torch.inference_mode():
+        conditioning = model.prepare_local_conditioning(c, sc.n_queries, blocks, metadata)
+        assert conditioning is not None, "the prepared path did not engage"
+        masked = model.prepare_pair_biases(p_lm.unsqueeze(1), mask, metadata)
+        per_layer = model(q, c, p_lm, None, *window, prepared_pair_biases=masked)
+        prepared = model(q, None, p_lm, None, *window, prepared_pair_biases=masked, prepared_conditioning=conditioning)
+        torch.testing.assert_close(prepared, per_layer, rtol=1e-5, atol=1e-5)
+        plain = model.prepare_pair_biases(p_lm.unsqueeze(1), None, metadata)
+        want = model(q, c, p_lm, mask, *window, prepared_pair_biases=plain)
+        got = model(q, c, p_lm, mask, *window, prepared_pair_biases=plain, prepared_conditioning=conditioning)
+        assert torch.equal(got, want)
+        with pytest.raises(ValueError, match="carry the mask"):
+            model(q, None, p_lm, mask, *window, prepared_pair_biases=plain, prepared_conditioning=conditioning)
+
+
+def test_cached_atom_conditioning_steps_aside_under_autocast():
+    """Under CUDA autocast the atom transformer conditions on c itself: the cache was projected outside autocast."""
+    from bionemo_ir._torch.modules.protenix.atom_attention import _run_atom_transformer
+
+    calls = []
+
+    class Recorder(torch.nn.Module):
+        dtype = torch.float32
+
+        def forward(self, q, c, *args, prepared_conditioning=None, **kwargs):
+            calls.append((c is None, prepared_conditioning is not None))
+            return q
+
+    q = torch.zeros(1, 4, 8, device="cuda")
+    args = (Recorder(), torch.float32, q, q, q, q, 4, 4, None)
+    _run_atom_transformer(*args, prepared_pair_biases=[q], prepared_conditioning=[(q,)])
+    with torch.autocast("cuda", dtype=torch.float16):
+        _run_atom_transformer(*args, prepared_pair_biases=[q], prepared_conditioning=[(q,)])
+    assert calls == [(True, True), (False, False)]

@@ -281,6 +281,7 @@ class ProtenixDiffusionModule(nn.Module):
         )
         # Both also add their atom windows' fixed key mask once.
         n_atom = atom_c_l.shape[-2]
+        num_blocks = atom_p_lm.shape[1]
         cache = {
             "pair_z": pair_z,
             "single_s": self.diffusion_conditioning.prepare_single(s_inputs, s_trunk),
@@ -299,9 +300,22 @@ class ProtenixDiffusionModule(nn.Module):
                 input_feature_dict["atom_to_token_idx"], s_trunk.shape[-2]
             ),
         }
+        # Both atom transformers condition on the step-invariant c_l: project it once per rollout
+        # (one batch row, so that it broadcasts over the samples).
+        if atom_c_l.shape[0] == 1:
+            cache["atom_encoder_conditioning"] = self.atom_attention_encoder.prepare_conditioning(
+                atom_c_l, num_blocks, attn_metadata
+            )
+            cache["atom_decoder_conditioning"] = self.atom_attention_decoder.prepare_conditioning(
+                atom_c_l, num_blocks, attn_metadata
+            )
         # A wrapped or engine-backed token transformer keeps its own bias path.
         if isinstance(self.diffusion_transformer, ProtenixDiffusionTransformer):
             cache["token_pair_biases"] = self.diffusion_transformer.prepare_pair_biases(pair_z)
+            # Read from the live parameters each rollout, as the pair-bias mega weight is.
+            weights = self.diffusion_transformer.conditioning_weights()
+            if weights is not None:
+                cache["token_conditioning_weights"] = weights
         return cache
 
     def f_forward(
@@ -347,6 +361,7 @@ class ProtenixDiffusionModule(nn.Module):
                 attn_metadata,
                 reduction=cache.get("atom_reduction"),
                 prepared_pair_biases=cache.get("atom_encoder_pair_biases"),
+                prepared_conditioning=cache.get("atom_encoder_conditioning"),
             )
         else:
             if attn_metadata is None:
@@ -382,26 +397,36 @@ class ProtenixDiffusionModule(nn.Module):
         BS = B * S
         a_bs = a_token.reshape(BS, n_token, -1).to(self._token_dtype)
         # Shared noise keeps conditioning at [B, 1, N, C] through its projection.
-        # Expand only at the token boundary; kernels expect dense B*S rows.
-        s_bs = s_single.expand(B, S, n_token, -1).reshape(BS, n_token, -1).to(self._token_dtype).contiguous()
+        shared = B == 1 and (s_single.shape[1] == 1 or s_single.stride(1) == 0)
+        if shared and isinstance(self.diffusion_transformer, ProtenixDiffusionTransformer):
+            # One noise level for every sample: one row set, broadcast over the samples.
+            s_bs = s_single[:, :1].reshape(1, n_token, -1).to(self._token_dtype)
+        else:
+            # Expand at the token boundary; kernels expect dense B*S rows.
+            s_bs = s_single.expand(B, S, n_token, -1).reshape(BS, n_token, -1).to(self._token_dtype).contiguous()
         token_kwargs = {}
         if cache is not None and "token_pair_biases" in cache:
             token_kwargs["prepared_pair_biases"] = cache["token_pair_biases"]
         # Prepared biases replace the pair, which then skips its cast.
         z_token = z_pair if token_kwargs else z_pair.to(self._token_dtype)
+        if cache is not None and "token_conditioning_weights" in cache:
+            token_kwargs["prepared_conditioning_weights"] = cache["token_conditioning_weights"]
         token_mask = a_bs.new_ones(B, n_token)
         a_bs = self.diffusion_transformer(a_bs, s_bs, z_token, token_mask, **token_kwargs)
         a_bs = self.layernorm_a(a_bs.to(self.dtype))
 
         a2t_bs = input_feature_dict["atom_to_token_idx"].unsqueeze(1).expand(B, S, -1).reshape(BS, -1)
+        decoder_biases = None if cache is None else cache.get("atom_decoder_pair_biases")
         r_update = self.atom_attention_decoder(
             a2t_bs,
             a_bs,
             q_skip.reshape(BS, q_skip.shape[-2], -1),
             c_skip.reshape(BS, c_skip.shape[-2], -1),
-            p_skip.reshape(BS, *p_skip.shape[2:]),
+            # Prepared biases replace the skip pair, which then only gives the window count.
+            p_skip[:, 0] if decoder_biases is not None else p_skip.reshape(BS, *p_skip.shape[2:]),
             attn_metadata=attn_metadata,
-            prepared_pair_biases=None if cache is None else cache.get("atom_decoder_pair_biases"),
+            prepared_pair_biases=decoder_biases,
+            prepared_conditioning=None if cache is None else cache.get("atom_decoder_conditioning"),
         )
         return r_update.reshape(B, S, n_atom, 3)
 

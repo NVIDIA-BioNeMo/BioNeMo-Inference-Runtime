@@ -534,6 +534,114 @@ def test_sample_diffusion_smoke(use_cache: bool, monkeypatch: pytest.MonkeyPatch
         assert prepared == [use_cache] * len(prepared)
 
 
+def test_token_conditioning_matches_layers_bitwise() -> None:
+    """With fused LayerNorms (as the model installs them), the batched token conditioning
+    reproduces every layer's own AdaLN projections and output-gate logits bit for bit, the stack
+    with it equals the per-layer stack, and the stacks follow an in-place weight update."""
+    from bionemo_ir._torch.layers.normalization import replace_with_fused_layernorm
+    from bionemo_ir._torch.layers.transformers import diffusion_transformer as dt
+
+    torch.manual_seed(0)
+    device = torch.device("cuda")
+    sc = Scenario()
+    stack = ProtenixDiffusionTransformer(_token_tc(sc, "bfloat16")).to(device).eval()
+    with torch.no_grad():
+        for name, param in stack.named_parameters():
+            param.normal_(mean=1.0 if name.endswith("s_norm.weight") else 0.0, std=0.05)
+    replace_with_fused_layernorm(stack)
+    n = 37
+    s = (torch.randn(1, n, sc.c_s, device=device) * 2.0).to(torch.bfloat16)
+    a = torch.randn(sc.n_sample, n, sc.c_token, device=device).to(torch.bfloat16)
+    z = (torch.randn(1, n, n, sc.c_z, device=device) * 0.1).to(torch.bfloat16)
+    mask = torch.ones(1, n, device=device, dtype=torch.bfloat16)
+
+    def check_layers() -> None:
+        conditioning = stack.prepare_token_conditioning(s)
+        assert conditioning is not None, "the batched path did not engage"
+        for layer, c in zip(stack.layers, conditioning, strict=True):
+            for adaln, scale, shift in (
+                (layer.adaln, c.attn_scale, c.attn_shift),
+                (layer.transition.adaln, c.transition_scale, c.transition_shift),
+            ):
+                expected = adaln.fused_s_scale_s_bias(adaln.s_norm(s))
+                assert torch.equal(torch.cat([scale, shift], -1), expected)
+            assert torch.equal(c.attn_gate, layer.pair_bias_attn.output_projection(s))
+
+    with torch.inference_mode():
+        check_layers()
+        batched = stack(a, s, z, mask)
+        with pytest.MonkeyPatch.context() as patch:
+            patch.setattr(dt.ProtenixDiffusionTransformer, "prepare_token_conditioning", lambda self, *args: None)
+            per_layer = stack(a, s, z, mask)
+        assert torch.equal(batched, per_layer)
+        # A .data update bumps no version counter; the stacks are read from the parameters per call.
+        stack.layers[1].adaln.fused_s_scale_s_bias.weight.data.mul_(2.0)
+        stack.layers[0].pair_bias_attn.output_projection.bias.data.add_(0.5)
+        check_layers()
+
+
+@pytest.mark.parametrize("batch_size", [1, 2])
+@pytest.mark.parametrize("use_cache", [False, True], ids=["uncached", "cached"])
+@pytest.mark.parametrize(
+    "sc",
+    [
+        Scenario(c_token=128, c_s=128, dtype="float32", z_pair_dtype="float32", token_dtype="bfloat16"),
+        Scenario(
+            c_token=128, c_s=128, dtype="float32", token_dtype="bfloat16", enc_dtype="bfloat16", dec_dtype="bfloat16"
+        ),
+    ],
+    ids=["fp32_bf16_tokens", "fp32_bf16_score"],
+)
+def test_shared_noise_level_matches_per_sample_levels(sc: Scenario, use_cache: bool, batch_size: int) -> None:
+    """A ``[B, 1]`` noise level (the sampler shares one level across its samples) denoises as that
+    level expanded to ``[B, S]``, with and without the rollout cache and for a batch of two. The token
+    transformer runs on CuTeDSL, the production backend (SDPA cannot broadcast a ``[B, H, N, N]`` pair
+    bias over ``B * S`` folded samples when ``B > 1``, on either level shape)."""
+    skip_if_cutedsl("CuTeDSL")
+    torch.backends.cuda.matmul.allow_tf32 = False
+    torch.backends.cudnn.allow_tf32 = False
+    torch.manual_seed(0)
+    torch.cuda.manual_seed_all(0)
+    device = torch.device("cuda")
+    B, S = batch_size, 3
+    config = _build_config(sc)
+    config = config.model_copy(
+        update={"token_transformer_config": _token_tc(sc, sc.token_dtype or sc.dtype, backend="CuTeDSL")}
+    )
+    module = ProtenixDiffusionModule(config).to(device).eval()
+    with torch.no_grad():
+        for name, param in module.named_parameters():
+            if name.endswith("weight") and "norm" in name:
+                param.fill_(1)
+            elif param.ndim > 1:
+                param.normal_(mean=0.0, std=0.02)
+            else:
+                param.zero_()
+    batch, s_inputs, s_trunk, z_trunk = _sampler_inputs(device, sc, module)
+    if B > 1:
+        batch = {k: v if k == "pad_info" else v.expand(B, *v.shape[1:]).contiguous() for k, v in batch.items()}
+        s_inputs, s_trunk, z_trunk = (x.expand(B, *x.shape[1:]).contiguous() for x in (s_inputs, s_trunk, z_trunk))
+    # Different rows per batch element, so a broadcast across the batch would show.
+    s_inputs = s_inputs * 0.1 * torch.arange(1, B + 1, device=device).view(B, 1, 1)
+    s_trunk = s_trunk * 0.1
+    z_trunk = z_trunk * 0.1
+    x_noisy = torch.randn(B, S, sc.n_atom, 3, device=device) * 5.0
+    level = torch.rand(B, 1, device=device) * 20.0 + 0.5
+
+    with torch.inference_mode():
+        cache = module.prepare_cache(batch, s_inputs, s_trunk, z_trunk) if use_cache else None
+        # The per-sample levels first: the path every caller had before the shared level.
+        per_sample = module(x_noisy, level.expand(B, S), batch, s_inputs, s_trunk, z_trunk, cache=cache)
+        shared = module(x_noisy, level, batch, s_inputs, s_trunk, z_trunk, cache=cache)
+
+    assert shared.shape == per_sample.shape == (B, S, sc.n_atom, 3)
+    assert torch.isfinite(shared).all()
+    any_bf16 = "bfloat16" in (sc.enc_dtype, sc.dec_dtype)
+    tol = 2e-2 if any_bf16 else 1e-2
+    r = _rmse_ratio(shared, per_sample)
+    assert r < tol, f"[B, 1] level diverged from [B, S]: rmse_ratio={r:.3e} exceeds {tol:.0e}"
+
+
 @pytest.mark.parametrize(
     "sc",
     [
@@ -819,9 +927,8 @@ def test_shared_noise_diffusion_cudagraph_parity(use_cache: bool, token_dtype: s
             assert states and all(s.preparation_state is CUDAGraphPreparationState.GRAPH_CAPTURED for s in states)
             assert not any(tracker.fallback_to_eager_by_key.values())
             assert noise_shapes and set(noise_shapes) == {(1, 1)}
-            assert token_layouts and all(
-                shape == (sc.n_sample, sc.n_token, sc.c_s) and dense for shape, dense in token_layouts
-            )
+            # One conditioning row set reaches the token stack, which broadcasts it over the samples.
+            assert token_layouts and all(shape == (1, sc.n_token, sc.c_s) and dense for shape, dense in token_layouts)
         finally:
             noise_hook.remove()
             token_hook.remove()
@@ -899,3 +1006,63 @@ def test_precomputed_single_diffusion_graph_replay(token_dtype: str) -> None:
             assert len(tracker.graph_state_by_key) == 1
     finally:
         hook.remove()
+
+
+def test_zero_layer_token_stack_has_no_batched_conditioning() -> None:
+    """A token stack without layers has nothing to stack: the batched conditioning declines."""
+    sc = Scenario()
+    stack = ProtenixDiffusionTransformer(_token_tc(sc, "bfloat16")).cuda().eval()
+    stack.layers = torch.nn.ModuleList()
+    with torch.inference_mode():
+        assert stack.conditioning_weights() is None
+        s = torch.randn(1, 5, sc.c_s, device="cuda").to(torch.bfloat16)
+        assert stack.prepare_token_conditioning(s) is None
+
+
+def test_token_conditioning_steps_aside_under_autocast() -> None:
+    """Under autocast the layers' own Linears choose their output dtype: the batched conditioning declines."""
+    from bionemo_ir._torch.layers.normalization import replace_with_fused_layernorm
+
+    sc = Scenario()
+    stack = ProtenixDiffusionTransformer(_token_tc(sc, "bfloat16")).cuda().eval()
+    replace_with_fused_layernorm(stack)
+    s = torch.randn(1, 5, sc.c_s, device="cuda").to(torch.bfloat16)
+    with torch.inference_mode():
+        assert stack.prepare_token_conditioning(s) is not None
+        with torch.autocast("cuda", dtype=torch.float16):
+            assert stack.prepare_token_conditioning(s) is None
+
+
+def test_wrapped_token_transformer_gets_dense_conditioning() -> None:
+    """Only the built-in token transformer takes one conditioning row set for a shared noise level."""
+    torch.manual_seed(0)
+    device = torch.device("cuda")
+    sc = Scenario(dtype="float32", z_pair_dtype="float32")
+    module = ProtenixDiffusionModule(_build_config(sc)).to(device).eval()
+    with torch.no_grad():
+        for name, param in module.named_parameters():
+            if name.endswith("weight") and "norm" in name:
+                param.fill_(1)
+            elif param.ndim > 1:
+                param.normal_(std=0.02)
+            else:
+                param.zero_()
+    seen = []
+
+    class Wrapper(torch.nn.Module):
+        def __init__(self, inner: torch.nn.Module) -> None:
+            super().__init__()
+            self.inner = inner
+
+        def forward(self, a, s, *args, **kwargs):
+            seen.append(tuple(s.shape))
+            return self.inner(a, s, *args, **kwargs)
+
+    batch, s_inputs, s_trunk, z_trunk = _sampler_inputs(device, sc, module)
+    x_noisy = torch.randn(1, sc.n_sample, sc.n_atom, 3, device=device)
+    level = torch.full((1, 1), 1.5, device=device)
+    with torch.inference_mode():
+        module(x_noisy, level, batch, s_inputs, s_trunk, z_trunk)
+        module.diffusion_transformer = Wrapper(module.diffusion_transformer)
+        module(x_noisy, level, batch, s_inputs, s_trunk, z_trunk)
+    assert seen == [(sc.n_sample, sc.n_token, sc.c_s)]

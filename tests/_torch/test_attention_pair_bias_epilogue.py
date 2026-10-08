@@ -279,3 +279,34 @@ def test_sm8x_token_width_tunings_add_the_gated_update(sm: int, anchor: int) -> 
 
     assert actual is not None
     torch.testing.assert_close(actual, expected, atol=2e-2, rtol=2e-2)
+
+
+def test_unfused_output_takes_the_precomputed_gate_logits(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Without the fused epilogue, precomputed output-gate logits replace the gate projection even when
+    ``single_embedding`` is given (the token layers pass both)."""
+    torch.manual_seed(0)
+    attention = AttentionPairBias(
+        layer_idx=0,
+        c_s=CHANNELS,
+        c_z=PAIR_CHANNELS,
+        num_heads=HEADS,
+        initial_norm=False,
+        bias_proj=True,
+        output_gate_dim=CHANNELS,
+        dtype=torch.bfloat16,
+        attn_backend="SDPA",
+    ).cuda()
+    _init(attention)
+    attention._epilogue = None
+    n = 64
+    s = torch.randn(1, 1, n, CHANNELS, device="cuda", dtype=torch.bfloat16)
+    cond = torch.randn(1, 1, n, CHANNELS, device="cuda", dtype=torch.bfloat16)
+    z = torch.randn(1, n, n, PAIR_CHANNELS, device="cuda", dtype=torch.bfloat16)
+    mask = torch.ones(1, n, device="cuda", dtype=torch.bfloat16)
+    residual = torch.randn_like(s)
+    with torch.inference_mode():
+        logits = attention.output_projection(cond)
+        expected = attention(s, z, mask, single_embedding=cond, residual=residual)
+        monkeypatch.setattr(attention, "_output_gate_op", lambda *args, **kwargs: pytest.fail("projected again"))
+        actual = attention(s, z, mask, single_embedding=cond, residual=residual, output_gate_logits=logits)
+    torch.testing.assert_close(actual, expected, atol=2e-2, rtol=2e-2)

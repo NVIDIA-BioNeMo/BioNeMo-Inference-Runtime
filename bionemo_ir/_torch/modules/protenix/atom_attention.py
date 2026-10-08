@@ -93,6 +93,16 @@ def _fold_bs(x: torch.Tensor, B: int, S: int) -> torch.Tensor:
     return x.reshape(B * S, *x.shape[2:])
 
 
+def _takes_prepared_conditioning(
+    prepared_pair_biases: list[torch.Tensor] | None, prepared_conditioning: list[tuple[torch.Tensor, ...]] | None
+) -> bool:
+    """Whether the atom transformer takes the prepared conditioning instead of conditioning on ``c``: it needs the
+    prepared biases, and under CUDA autocast the layers' own projections choose their dtype."""
+    return (
+        prepared_pair_biases is not None and prepared_conditioning is not None and not torch.is_autocast_enabled("cuda")
+    )
+
+
 def _run_atom_transformer(
     transformer: ProtenixDiffusionTransformer,
     out_dtype: torch.dtype,
@@ -104,23 +114,28 @@ def _run_atom_transformer(
     n_keys: int,
     attn_metadata: AttentionMetadata,
     prepared_pair_biases: list[torch.Tensor] | None = None,
+    prepared_conditioning: list[tuple[torch.Tensor, ...]] | None = None,
 ) -> torch.Tensor:
     """Run the atom transformer in its own dtype and return ``q`` in ``out_dtype``.
 
     The transformer may run in bf16 inside an fp32 encoder or decoder. Prepared
-    biases replace ``p`` and carry the key mask, so both then stay unused.
+    biases replace ``p`` and carry the key mask, so both then stay unused; with
+    them, prepared conditioning of ``c`` replaces ``c``, except under CUDA
+    autocast, where the layers' own projections choose their dtype.
     """
     dtype = transformer.dtype
     prepared = prepared_pair_biases is not None
+    conditioned = _takes_prepared_conditioning(prepared_pair_biases, prepared_conditioning)
     q = transformer(
         q.to(dtype),
-        c.to(dtype),
+        None if conditioned else c.to(dtype),
         p if prepared else p.to(dtype),
         None if prepared else mask.to(dtype),
         n_queries,
         n_keys,
         attn_metadata,
         prepared_pair_biases=prepared_pair_biases,
+        prepared_conditioning=prepared_conditioning if conditioned else None,
     )
     return q.to(out_dtype)
 
@@ -380,6 +395,7 @@ class ProtenixAtomAttentionEncoder(nn.Module):
         *,
         reduction: IndexedReduction | None = None,
         prepared_pair_biases: list[torch.Tensor] | None = None,
+        prepared_conditioning: list[tuple[torch.Tensor, ...]] | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Noisy-coord-dependent path on pre-conditioned ``c_l`` / ``p_lm``."""
         W, H = self.n_queries, self.n_keys
@@ -387,7 +403,17 @@ class ProtenixAtomAttentionEncoder(nn.Module):
         q_l = c_l + self.linear_no_bias_r(r_l.reshape(BS, *r_l.shape[2:]))
         atom_mask = c_l.new_ones(BS, c_l.shape[-2])
         q_l = _run_atom_transformer(
-            self.atom_transformer, self.dtype, q_l, c_l, p_lm, atom_mask, W, H, attn_metadata, prepared_pair_biases
+            self.atom_transformer,
+            self.dtype,
+            q_l,
+            c_l,
+            p_lm,
+            atom_mask,
+            W,
+            H,
+            attn_metadata,
+            prepared_pair_biases,
+            prepared_conditioning,
         )
         a = _aggregate_atom_to_token(F.relu(self.linear_no_bias_q(q_l)), a2t, n_token, reduction)
         return a, q_l
@@ -489,6 +515,7 @@ class ProtenixAtomAttentionEncoder(nn.Module):
         *,
         reduction: IndexedReduction | None = None,
         prepared_pair_biases: list[torch.Tensor] | None = None,
+        prepared_conditioning: list[tuple[torch.Tensor, ...]] | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """Per-step coord path from cached sample-independent ``c_l`` / ``p_lm``.
 
@@ -502,28 +529,55 @@ class ProtenixAtomAttentionEncoder(nn.Module):
                 samples; scatter without them.
             prepared_pair_biases: Biases from :meth:`prepare_pair_biases`, shared
                 across samples.
+            prepared_conditioning: :meth:`prepare_conditioning` of ``c_l``, shared
+                across samples; used with ``prepared_pair_biases``.
 
         Returns:
             ``a`` ``[B, S, N_token, c_token]``,
             ``q_l`` / ``c_l`` ``[B, S, N_atom, c_atom]``,
-            ``p_lm`` ``[B, S, K, W, H, c_atompair]``
+            ``p_lm`` ``[B, S, K, W, H, c_atompair]`` (a broadcast view with prepared biases)
         """
         B, S = r_l.shape[0], r_l.shape[1]
         r_l = r_l.to(self.dtype)
         c_l = _expand_bs(c_l, B, S)
-        p_lm = _expand_bs(p_lm, B, S)
         a2t = _expand_bs(atom_to_token_idx, B, S)
         if prepared_pair_biases is not None:
             prepared_pair_biases = [_expand_bs(bias, B, S) for bias in prepared_pair_biases]
+            # Prepared biases replace p_lm, which then only gives the window count.
+            p_lm_run = p_lm
+            p_lm = p_lm.unsqueeze(1).expand(B, S, *p_lm.shape[1:])
+        else:
+            p_lm_run = _expand_bs(p_lm, B, S)
+            p_lm = p_lm_run.reshape(B, S, *p_lm_run.shape[1:])
         a, q_l = self._run_coords(
-            a2t, c_l, p_lm, r_l, n_token, attn_metadata, reduction=reduction, prepared_pair_biases=prepared_pair_biases
+            a2t,
+            c_l,
+            p_lm_run,
+            r_l,
+            n_token,
+            attn_metadata,
+            reduction=reduction,
+            prepared_pair_biases=prepared_pair_biases,
+            prepared_conditioning=prepared_conditioning,
         )
         return (
             a.reshape(B, S, n_token, -1),
             q_l.reshape(B, S, q_l.shape[-2], -1),
             c_l.reshape(B, S, c_l.shape[-2], -1),
-            p_lm.reshape(B, S, *p_lm.shape[1:]),
+            p_lm,
         )
+
+    def prepare_conditioning(
+        self, c_l: torch.Tensor, num_blocks: int, attn_metadata: AttentionMetadata
+    ) -> list[tuple[torch.Tensor, ...]] | None:
+        """The atom transformer's conditioning of the cached ``c_l``, once per rollout.
+
+        Args:
+            c_l: ``[B, N_atom, c_atom]`` from :meth:`prepare_coords_cache`
+            num_blocks: Window count ``K``.
+            attn_metadata: Metadata whose ``query_to_keys`` gathers the key windows.
+        """
+        return self.atom_transformer.prepare_local_conditioning(c_l, self.n_queries, num_blocks, attn_metadata)
 
 
 class ProtenixAtomAttentionDecoder(nn.Module):
@@ -553,6 +607,20 @@ class ProtenixAtomAttentionDecoder(nn.Module):
         self.layernorm_q = nn.LayerNorm(c_atom, bias=False, eps=config.norm_epsilon, dtype=dtype)
         self.linear_no_bias_out = Linear(c_atom, 3, bias=False, dtype=dtype, skip_create_weights=skip)
 
+    def prepare_conditioning(
+        self, c_skip: torch.Tensor, num_blocks: int, attn_metadata: AttentionMetadata
+    ) -> list[tuple[torch.Tensor, ...]] | None:
+        """The atom transformer's conditioning of a step-invariant ``c_skip``, once per rollout.
+
+        Args:
+            c_skip: ``[B, N_atom, c_atom]``, the cached encoder ``c_l``
+            num_blocks: Window count ``K``.
+            attn_metadata: Metadata whose ``query_to_keys`` gathers the key windows.
+        """
+        return self.atom_transformer.prepare_local_conditioning(
+            c_skip.to(self.dtype), self.n_queries, num_blocks, attn_metadata
+        )
+
     def prepare_pair_biases(
         self, p_lm: torch.Tensor, num_atoms: int, attn_metadata: AttentionMetadata
     ) -> list[torch.Tensor]:
@@ -580,6 +648,7 @@ class ProtenixAtomAttentionDecoder(nn.Module):
         p_skip: torch.Tensor,
         attn_metadata: AttentionMetadata | None = None,
         prepared_pair_biases: list[torch.Tensor] | None = None,
+        prepared_conditioning: list[tuple[torch.Tensor, ...]] | None = None,
     ) -> torch.Tensor:
         """Decode per-token features to a per-atom coordinate update.
 
@@ -592,12 +661,15 @@ class ProtenixAtomAttentionDecoder(nn.Module):
             attn_metadata: Optional prebuilt atom-window metadata.
             prepared_pair_biases: Biases from :meth:`prepare_pair_biases` for the
                 ``p_skip`` every folded sample shares; skips its projection.
+            prepared_conditioning: :meth:`prepare_conditioning` of the ``c_skip`` every
+                folded sample shares; with ``prepared_pair_biases`` it replaces ``c_skip``.
 
         Returns:
             ``[B, N_atom, 3]`` per-atom coordinate update
         """
         d = self.dtype
-        a, q_skip, c_skip = a.to(d), q_skip.to(d), c_skip.to(d)
+        a, q_skip = a.to(d), q_skip.to(d)
+        c_skip = None if _takes_prepared_conditioning(prepared_pair_biases, prepared_conditioning) else c_skip.to(d)
         p_skip = p_skip.to(d)
         q = _broadcast_token_to_atom(self.linear_no_bias_a(a), atom_to_token_idx) + q_skip
 
@@ -620,6 +692,7 @@ class ProtenixAtomAttentionDecoder(nn.Module):
             self.n_keys,
             attn_metadata,
             prepared_pair_biases,
+            prepared_conditioning,
         )
 
         return self.linear_no_bias_out(self.layernorm_q(q))

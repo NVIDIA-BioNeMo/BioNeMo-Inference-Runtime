@@ -114,14 +114,14 @@ class ProtenixDiffusionConditioning(nn.Module):
         """Condition single/pair trunk embeddings on noise (AF3 Alg. 21).
 
         Args:
-            t_hat_noise_level: ``[B, S]`` per-sample noise levels
+            t_hat_noise_level: ``[B, S]`` or ``[B, 1]`` for shared sample noise
             relp: relative-position features for ``relpe``
             s_inputs: ``[B, N_token, c_s_inputs]``
             s_trunk: ``[B, N_token, c_s]``
             z_trunk: ``[B, N_token, N_token, c_z]``
 
         Returns:
-            ``s`` ``[B, S, N_token, c_s]``, ``z`` ``[B, N_token, N_token, c_z]``
+            ``s`` ``[B, S, N_token, c_s]`` or ``[B, 1, N_token, c_s]`` for singleton noise, ``z`` ``[B, N_token, N_token, c_z]``
         """
         pair_z = self.prepare_pair(relp, z_trunk)
         single_s = self.forward_single(t_hat_noise_level, s_inputs, s_trunk)
@@ -176,16 +176,22 @@ class ProtenixDiffusionConditioning(nn.Module):
         """Single conditioning (noise-dependent; recomputed each diffusion step).
 
         Args:
-            t_hat_noise_level: ``[B, S]``
+            t_hat_noise_level: ``[B, S]`` or ``[B, 1]`` for shared sample noise
             s_inputs: ``[B, N_token, c_s_inputs]``
             s_trunk: ``[B, N_token, c_s]``
 
         Returns:
-            ``[B, S, N_token, c_s]``
+            ``[B, S, N_token, c_s]`` or ``[B, 1, N_token, c_s]`` for singleton noise
         """
+        # Keep support for callers that expand shared noise over S. The sampler
+        # uses [B, 1], whose singleton survives CUDA-graph input cloning.
+        t = t_hat_noise_level
+        if t.dim() >= 1 and t.shape[-1] > 1 and t.stride(-1) == 0:
+            single_s = self.forward_single(t[..., :1], s_inputs, s_trunk)
+            return single_s.expand(*t.shape, *single_s.shape[-2:])
         single_s = torch.cat([s_trunk, s_inputs], dim=-1)
         single_s = self.linear_no_bias_s(self.layernorm_s(single_s))
-        noise_n = self.fourier_embedding(torch.log(t_hat_noise_level / self.sigma_data) / 4).to(single_s.dtype)
+        noise_n = self.fourier_embedding(torch.log(t / self.sigma_data) / 4).to(single_s.dtype)
         single_s = single_s.unsqueeze(-3) + self.linear_no_bias_n(self.layernorm_n(noise_n)).unsqueeze(-2)
         # ``single_s`` is a fresh broadcast sum, so update it in place.
         for layer in self.transition_s:
@@ -294,7 +300,7 @@ class ProtenixDiffusionModule(nn.Module):
 
         Args:
             r_noisy: ``[B, S, N_atom, 3]`` EDM-scaled noisy coordinates
-            t_hat_noise_level: ``[B, S]``
+            t_hat_noise_level: ``[B, S]`` or ``[B, 1]`` for shared sample noise
             s_inputs: ``[B, N_token, c_s_inputs]``
             s_trunk: ``[B, N_token, c_s]``
             z_trunk: ``[B, N_token, N_token, c_z]`` (unused when ``cache`` set)
@@ -354,7 +360,9 @@ class ProtenixDiffusionModule(nn.Module):
         # [1, H, N, N] bias broadcasts; CuTeDSL infers mult=S from Q's batch.
         BS = B * S
         a_bs = a_token.reshape(BS, n_token, -1).to(self._token_dtype)
-        s_bs = s_single.reshape(BS, n_token, -1).to(self._token_dtype)
+        # Shared noise keeps conditioning at [B, 1, N, C] through its projection.
+        # Expand only at the token boundary; kernels expect dense B*S rows.
+        s_bs = s_single.expand(B, S, n_token, -1).reshape(BS, n_token, -1).to(self._token_dtype).contiguous()
         token_kwargs = {}
         if cache is not None and "token_pair_biases" in cache:
             token_kwargs["prepared_pair_biases"] = cache["token_pair_biases"]
@@ -391,7 +399,7 @@ class ProtenixDiffusionModule(nn.Module):
 
         Args:
             x_noisy: ``[B, S, N_atom, 3]``
-            t_hat_noise_level: ``[B, S]``
+            t_hat_noise_level: ``[B, S]`` or ``[B, 1]`` for shared sample noise
             s_inputs: ``[B, N_token, c_s_inputs]``
             s_trunk: ``[B, N_token, c_s]``
             z_trunk: ``[B, N_token, N_token, c_z]``
@@ -457,7 +465,9 @@ class ProtenixDiffusionSampler(nn.Module):
         attn_metadata: AttentionMetadata | None,
         cache: dict[str, Any] | None,
     ) -> torch.Tensor:
-        t_hat = sigma_hat.reshape((1,) * (len(batch_shape) + 1)).expand(*batch_shape, n_sample).to(x_noisy.dtype)
+        # A singleton sample axis survives both dtype conversion and graph cloning.
+        # Coordinate scaling broadcasts it over samples; conditioning runs once.
+        t_hat = sigma_hat.reshape((1,) * (len(batch_shape) + 1)).expand(*batch_shape, 1).to(x_noisy.dtype)
         return self.graph(
             x_noisy=x_noisy,
             t_hat_noise_level=t_hat,

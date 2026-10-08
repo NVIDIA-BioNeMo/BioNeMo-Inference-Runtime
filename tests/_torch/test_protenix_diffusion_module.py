@@ -765,3 +765,69 @@ def test_diffusion_module_cudagraph_skips_stable_copies(real_case, monkeypatch):
     x_skipped, bytes_skipped = _roll(skip=True)
     assert torch.equal(x_skipped, x_copied)
     assert bytes_skipped < bytes_copied / 2
+
+
+@pytest.mark.parametrize("use_cache", [False, True])
+@pytest.mark.parametrize("token_dtype", ["float32", "bfloat16"])
+def test_shared_noise_diffusion_cudagraph_parity(use_cache: bool, token_dtype: str) -> None:
+    """Shared-noise denoising matches dense noise through capture and changed-input replay."""
+    torch.manual_seed(7)
+    device = torch.device("cuda")
+    sc = Scenario(dtype="float32", token_dtype=token_dtype, z_pair_dtype="float32")
+    module = ProtenixDiffusionModule(_build_config(sc)).to(device).eval()
+    with torch.no_grad():
+        for name, param in module.named_parameters():
+            if name.endswith("weight") and "norm" in name:
+                param.fill_(1)
+            elif param.ndim > 1:
+                param.normal_(std=0.02)
+            else:
+                param.zero_()
+    batch, s_inputs, s_trunk, z_trunk = _sampler_inputs(device, sc, module)
+    x_noisy = torch.randn(1, sc.n_sample, sc.n_atom, 3, device=device)
+    noise_shapes = []
+    token_layouts = []
+
+    def record_noise(_module, args):
+        noise_shapes.append(tuple(args[0].shape))
+
+    def record_token(_module, args):
+        token_layouts.append((tuple(args[1].shape), args[1].is_contiguous()))
+
+    with torch.inference_mode():
+        cache = module.prepare_cache(batch, s_inputs, s_trunk, z_trunk) if use_cache else None
+        # Use the production region policy; compare replay with eager below.
+        sampler = ProtenixDiffusionSampler(module).eval()
+        kwargs = {
+            "batch_shape": (1,),
+            "n_sample": sc.n_sample,
+            "input_feature_dict": batch,
+            "s_inputs": s_inputs,
+            "s_trunk": s_trunk,
+            "z_trunk": z_trunk,
+            "attn_metadata": None,
+            "cache": cache,
+        }
+        noise_hook = module.diffusion_conditioning.fourier_embedding.register_forward_pre_hook(record_noise)
+        token_hook = module.diffusion_transformer.register_forward_pre_hook(record_token)
+        try:
+            for _ in range(4):
+                sampler.denoise(x_noisy, torch.tensor(1.5, device=device), **kwargs)
+            tracker = sampler.graph.tracker
+            assert tracker is not None
+            states = list(tracker.graph_state_by_key.values())
+            assert states and all(s.preparation_state is CUDAGraphPreparationState.GRAPH_CAPTURED for s in states)
+            assert not any(tracker.fallback_to_eager_by_key.values())
+            assert noise_shapes and set(noise_shapes) == {(1, 1)}
+            assert token_layouts and all(
+                shape == (sc.n_sample, sc.n_token, sc.c_s) and dense for shape, dense in token_layouts
+            )
+        finally:
+            noise_hook.remove()
+            token_hook.remove()
+        for sigma in (0.5, 3.0):
+            x_step = x_noisy + sigma * 0.01
+            actual = sampler.denoise(x_step, torch.tensor(sigma, device=device), **kwargs)
+            dense_t = torch.full((1, sc.n_sample), sigma, device=device)
+            expected = module(x_step, dense_t, batch, s_inputs, s_trunk, z_trunk, cache=cache)
+            torch.testing.assert_close(actual, expected, atol=2e-3, rtol=2e-3)

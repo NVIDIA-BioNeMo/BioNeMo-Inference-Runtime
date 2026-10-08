@@ -323,6 +323,8 @@ class Protenix(nn.Module, OptimizedModuleSetterMixin):
         is_polymer = 1 - _unbatch(batch["is_ligand"], 1)
         has_frame = _unbatch(batch["has_frame"], 1)
         token_is_ligand = summ.token_is_ligand(asym_id, atom_to_token_idx, is_polymer)
+        # The chain bookkeeping is the same for every sample: one host round trip.
+        chain_index = summ.chain_index(asym_id, has_frame, token_is_ligand, atom_to_token_idx, is_polymer)
         ctx = head.prepare(batch, held["s_inputs"], held["s"], held["z"], pair_mask=batch.get("pair_mask"))
         if compact_output:
             held.pop("s_inputs", None)
@@ -353,6 +355,7 @@ class Protenix(nn.Module, OptimizedModuleSetterMixin):
                 token_is_ligand,
                 num_cycles,
                 return_full_data=return_full_data,
+                chain_index=chain_index,
             )
             summary_list.append(summary_i)
             if full_list is not None:

@@ -157,3 +157,19 @@ def test_protenix_confidence_summary():
         assert compact.keys() == full.keys()
         for key in compact:
             torch.testing.assert_close(compact[key], full[key])
+
+
+def test_bin_centers_follow_the_default_dtype():
+    """get_bin_centers computes in the default dtype, so the device cache keys on it."""
+    from bionemo_ir._torch.modules.protenix import summary
+
+    device = torch.device("cpu")
+    single = summary._bin_centers_on(device, torch.float32, 0.0, 32.0, 64)
+    previous = torch.get_default_dtype()
+    torch.set_default_dtype(torch.float64)
+    try:
+        double = summary._bin_centers_on(device, torch.float32, 0.0, 32.0, 64)
+        assert torch.equal(double, summary.get_bin_centers(0.0, 32.0, 64).to(device, torch.float32))
+    finally:
+        torch.set_default_dtype(previous)
+    assert torch.equal(single, summary.get_bin_centers(0.0, 32.0, 64).to(device, torch.float32))

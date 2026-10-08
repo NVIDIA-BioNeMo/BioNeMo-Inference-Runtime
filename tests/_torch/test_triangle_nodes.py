@@ -25,7 +25,12 @@ from test_utils.boltz.create_and_load_weights import (
 )
 from test_utils.boltz.ref_layers import RefTriangleAttentionNode, RefTriangleMultiplicationNode
 
-from bionemo_ir._torch.attention_backend import AttentionType, get_attention_backend
+from bionemo_ir._torch.attention_backend import (
+    AttentionType,
+    auto_select_triangle_attention_backend,
+    get_attention_backend,
+)
+from bionemo_ir._torch.layers.attention import pair_bias_rows
 from bionemo_ir._torch.layers.normalization import replace_with_fused_layernorm
 from bionemo_ir._torch.layers.triangle_nodes import (
     TriangleAttentionNode,
@@ -35,6 +40,7 @@ from bionemo_ir._torch.layers.triangle_nodes import (
     TriangleMultiplicationNodeType,
     precompute_trimul_metadata,
     set_trimul_token_padding,
+    split_pair_bias_proj,
 )
 from bionemo_ir._torch.utils import ChunkPolicy, recursive_calling_load_weights
 from bionemo_ir.utils import str_dtype_to_torch
@@ -540,3 +546,125 @@ def test_bias_free_trimul_has_no_bias_parameters_and_runs() -> None:
             kf = node(x, pair_mask, metadata)
             regular = node._forward_impl(x, pair_mask, metadata)
         assert _relative_l2(kf, regular) < 1e-2
+
+
+def _bias_in_norm_pair(node_type: TriangleAttentionNodeType, tokens: int, transposed_bias: bool = False):
+    """Nodes without and with ``bias_in_norm`` holding the same weights, an input and its pair mask."""
+    if torch.cuda.get_device_capability()[0] < 8:
+        pytest.skip("the LayerNorm-bias kernel needs SM80+")
+    torch.manual_seed(43)
+    old, new = (
+        TriangleAttentionNode(
+            c_in=256,
+            c_hidden=32,
+            num_heads=8,
+            node_type=node_type,
+            dtype=torch.bfloat16,
+            attn_backend=auto_select_triangle_attention_backend(torch.bfloat16),
+            skip_create_weights=False,
+            transposed_bias=transposed_bias,
+            bias_in_norm=bias_in_norm,
+        ).cuda()
+        for bias_in_norm in (False, True)
+    )
+    with torch.no_grad():
+        for name, parameter in old.named_parameters():
+            if name.startswith("layer_norm") and name.endswith("weight"):
+                parameter.normal_(1.0, 0.2)
+            elif name.endswith("bias"):
+                parameter.normal_(0.0, 0.2)
+            else:
+                parameter.normal_(0.0, parameter.shape[-1] ** -0.5)
+        rows = old.mha.in_proj.weight.shape[0] - pair_bias_rows(8)
+        new.layer_norm.load_state_dict(old.layer_norm.state_dict())
+        new.mha.in_proj.weight.copy_(old.mha.in_proj.weight[:rows])
+        new.pair_bias_proj.weight.copy_(old.mha.in_proj.weight[rows : rows + 8])
+        new.mha.o_proj.weight.copy_(old.mha.o_proj.weight)
+    assert replace_with_fused_layernorm(old) == 1 and replace_with_fused_layernorm(new) == 1
+    x = torch.randn(1, tokens, tokens, 256, device="cuda", dtype=torch.bfloat16)
+    mask = make_left_aligned_pair_mask(1, tokens, dtype=torch.bfloat16, device="cuda")
+    return old, new, x, mask
+
+
+_BIAS_IN_NORM_NODES = pytest.mark.parametrize(
+    ("node_type", "transposed_bias"),
+    [
+        (TriangleAttentionNodeType.STARTING, False),
+        (TriangleAttentionNodeType.ENDING, False),
+        (TriangleAttentionNodeType.ENDING, True),
+    ],
+    ids=["starting", "ending", "ending-transposed"],
+)
+
+
+@pytest.mark.parametrize("tokens", [120, 123])
+@_BIAS_IN_NORM_NODES
+def test_bias_in_norm_matches_the_in_proj_bias_rows(node_type, transposed_bias, tokens, monkeypatch) -> None:
+    """A ``bias_in_norm`` node matches one projecting the heads in ``in_proj``; 123 tokens pad the keys."""
+    old, new, x, mask = _bias_in_norm_pair(node_type, tokens, transposed_bias)
+    assert new.mha.in_proj.weight.shape[0] == 4 * 256 and not hasattr(new.mha, "_moveaxis_pad")
+    kernel = new._ln_pair_bias
+    served = []
+
+    def counted(*args, **kwargs):
+        result = kernel(*args, **kwargs)
+        served.append(result is not None)
+        return result
+
+    monkeypatch.setattr(new, "_ln_pair_bias", counted)
+    with torch.inference_mode():
+        expected = old(x, mask, residual=True)
+        actual = new(x, mask, residual=True)
+    assert served == [True]
+    torch.testing.assert_close(actual, expected, atol=2e-2, rtol=2e-2)
+
+
+@_BIAS_IN_NORM_NODES
+def test_bias_in_norm_falls_back_to_pytorch(node_type, transposed_bias, monkeypatch) -> None:
+    """The PyTorch path matches the kernel."""
+    _, new, x, mask = _bias_in_norm_pair(node_type, 123, transposed_bias)
+    with torch.inference_mode():
+        expected = new(x, mask, residual=True)
+        monkeypatch.setattr(new, "_ln_pair_bias", lambda *args, **kwargs: None)
+        actual = new(x, mask, residual=True)
+    torch.testing.assert_close(actual, expected, atol=2e-2, rtol=2e-2)
+
+
+def test_tri_attn_converter_keeps_the_bias_heads_out_of_in_proj() -> None:
+    """``bias_in_norm`` moves the bias heads from ``in_proj`` to ``pair_bias_proj``."""
+    from bionemo_ir.models.boltz1.convert import get_tri_attn_node_weights
+
+    torch.manual_seed(0)
+    c, heads, width = 64, 2, 32
+    state = {
+        "p.layer_norm.weight": torch.randn(c),
+        "p.layer_norm.bias": torch.randn(c),
+        "p.linear.weight": torch.randn(heads, c),
+        "p.mha.linear_o.weight": torch.randn(c, heads * width),
+    }
+    for name in "qkvg":
+        state[f"p.mha.linear_{name}.weight"] = torch.randn(heads * width, c)
+    separate = get_tri_attn_node_weights(state, "p", "n")
+    assert torch.equal(separate["n.pair_bias_proj.weight"], state["p.linear.weight"])
+    qkvg = torch.cat([state[f"p.mha.linear_{name}.weight"] for name in "qkvg"])
+    assert torch.equal(separate["n.mha.in_proj.weight"], qkvg)
+    fused = get_tri_attn_node_weights(state, "p", "n", bias_in_norm=False)
+    assert "n.pair_bias_proj.weight" not in fused
+    assert fused["n.mha.in_proj.weight"].shape[0] == qkvg.shape[0] + pair_bias_rows(heads)
+
+
+def test_split_pair_bias_proj_moves_the_bias_segment() -> None:
+    """Only triangle-attention nodes' last in_proj segment moves, once."""
+    segments = [{"weight": torch.full((2, 4), float(i))} for i in range(5)]
+    weights = {
+        "layers.0.tri_attn_start.mha.in_proj": list(segments),
+        "layers.0.tri_attn_end.mha.in_proj": list(segments),
+        "blocks.0.msa_att_row.mha.in_proj": list(segments),
+    }
+    unchanged = split_pair_bias_proj(dict(weights), bias_in_norm=False)
+    assert all(len(value) == 5 for value in unchanged.values()) and unchanged.keys() == weights.keys()
+    split = split_pair_bias_proj(split_pair_bias_proj(weights))
+    for node in ("layers.0.tri_attn_start", "layers.0.tri_attn_end"):
+        assert split[f"{node}.mha.in_proj"] == segments[:4]
+        assert torch.equal(split[f"{node}.pair_bias_proj"][0]["weight"], segments[4]["weight"])
+    assert split["blocks.0.msa_att_row.mha.in_proj"] == segments

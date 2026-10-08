@@ -58,6 +58,7 @@ class MSAModuleBlock(EvoformerBlock):
         tri_attn_start_bias: dict | None = None,
         tri_attn_end_bias: dict | None = None,
         tri_attn_transposed_bias: bool = False,
+        tri_attn_bias_in_norm: bool = True,
         last_block: bool = False,
         **kwargs,
     ):
@@ -87,6 +88,7 @@ class MSAModuleBlock(EvoformerBlock):
             tri_attn_start_bias=tri_attn_start_bias,
             tri_attn_end_bias=tri_attn_end_bias,
             tri_attn_transposed_bias=tri_attn_transposed_bias,
+            tri_attn_bias_in_norm=tri_attn_bias_in_norm,
         )
 
         if not last_block:
@@ -236,6 +238,7 @@ class MSAModuleStack(nn.Module):
                     tri_attn_start_bias={"q": False, "k": False, "v": False, "g": False, "z": False, "o": False},
                     tri_attn_end_bias={"q": False, "k": False, "v": False, "g": False, "z": False, "o": False},
                     tri_attn_transposed_bias=config.tri_attn_transposed_bias,
+                    tri_attn_bias_in_norm=config.tri_attn_bias_in_norm,
                     last_block=True if i == self.num_blocks - 1 else False,
                 )
             )

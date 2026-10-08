@@ -41,6 +41,8 @@ class PairformerConfig(BaseConfig):
     # OpenFold-3 v0.5.0 builds the ending node's triangle bias from the
     # transposed pair representation; AlphaFold-2, Boltz and Protenix do not.
     tri_attn_transposed_bias: bool = False
+    # TriangleAttentionNode's bias_in_norm.
+    tri_attn_bias_in_norm: bool = True
     # Pad s/z/mask token dims to a multiple of 8 once before the owning
     # trunk's recycling/layer loop (bionemo_ir._torch.layers.token_padding).
     # TriangleMultiplicationNode's fused residual epilogue
@@ -107,3 +109,4 @@ class EvoformerStackConfig(BaseConfig):
     n_seq: int = 516
     trimul_high_precision: bool = False
     tri_attn_transposed_bias: bool = False
+    tri_attn_bias_in_norm: bool = True

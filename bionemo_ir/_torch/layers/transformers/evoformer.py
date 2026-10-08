@@ -64,6 +64,7 @@ class EvoformerBlock(nn.Module):
         inf: float = 1e9,
         skip_create_weights: bool = False,
         tri_attn_transposed_bias: bool = False,
+        tri_attn_bias_in_norm: bool = True,
         **kwargs,
     ):
         super().__init__()
@@ -165,6 +166,7 @@ class EvoformerBlock(nn.Module):
             dtype=dtype,
             skip_create_weights=skip_create_weights,
             pair_mask_left_aligned=pair_mask_left_aligned,
+            bias_in_norm=tri_attn_bias_in_norm,
         )
         self.tri_attn_end = TriangleAttentionEndingNode(
             c_z,
@@ -180,6 +182,7 @@ class EvoformerBlock(nn.Module):
             skip_create_weights=skip_create_weights,
             pair_mask_left_aligned=pair_mask_left_aligned,
             transposed_bias=tri_attn_transposed_bias,
+            bias_in_norm=tri_attn_bias_in_norm,
         )
 
         self.pair_transition = PairTransition(c_z=c_z, n=transition_n, dtype=dtype, eps=eps)
@@ -300,6 +303,7 @@ class EvoformerStack(nn.Module):
                     skip_create_weights=config.skip_create_weights,
                     trimul_high_precision=config.trimul_high_precision,
                     tri_attn_transposed_bias=config.tri_attn_transposed_bias,
+                    tri_attn_bias_in_norm=config.tri_attn_bias_in_norm,
                 )
             )
         self.pair_mask_left_aligned = self.blocks[0].pair_mask_left_aligned

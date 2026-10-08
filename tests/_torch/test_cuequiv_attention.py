@@ -116,16 +116,17 @@ def test_triangle_node_forwards_mask_contract(pair_mask_left_aligned: bool):
         c_hidden=4,
         num_heads=2,
         dtype=torch.float32,
-        skip_create_weights=True,
+        skip_create_weights=False,
         pair_mask_left_aligned=pair_mask_left_aligned,
-    )
+    ).cuda()
     spy = _AttentionSpy()
     node.mha = spy
-    mask_bias = torch.zeros(1, 2, 1, 1, 3)
-    node(torch.zeros(1, 2, 3, 8), mask_bias=mask_bias)
+    mask_bias = torch.zeros(1, 2, 1, 1, 3, device="cuda")
+    node(torch.zeros(1, 2, 3, 8, device="cuda"), mask_bias=mask_bias)
 
     assert spy.mask_bias is mask_bias
     assert spy.kwargs["use_kv_lengths"] is pair_mask_left_aligned
+    assert spy.kwargs["triangle_bias"].shape == (1, 2, 2, 3)
 
 
 @pytest.mark.skipif(

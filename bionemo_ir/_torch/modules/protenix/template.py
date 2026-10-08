@@ -96,6 +96,7 @@ class ProtenixTemplateEmbedder(nn.Module):
             triangle_attn_backend=config.triangle_attention_backend,
             trimul_high_precision=config.trimul_high_precision,
             skip_create_weights=config.skip_create_weights,
+            tri_attn_bias_in_norm=config.tri_attn_bias_in_norm,
         )
         self.layernorm_v = nn.LayerNorm(self.c, eps=config.norm_epsilon, dtype=self.dtype)
         self.linear_no_bias_u = Linear(

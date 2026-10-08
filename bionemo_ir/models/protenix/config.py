@@ -160,6 +160,7 @@ class TemplateEmbedderConfig(BaseConfig):
     # bf16 stack precision (not fp32 tri-mul accum) — matches trunk/MSA; fp32
     # would double tri-mul activation and block fused kernels.
     trimul_high_precision: bool = False
+    tri_attn_bias_in_norm: bool = True
 
 
 class ConstraintEmbedderConfig(BaseConfig):
@@ -353,6 +354,7 @@ class ProtenixMSAModuleConfig(MSAModuleStackConfig):
     c_hidden_pair_att: int = _Default.pairwise_head_width
     no_heads_msa: int = 8
     no_heads_pair: int = _Default.c_z // _Default.pairwise_head_width
+    tri_attn_bias_in_norm: bool = True
     transition_n: int = 4
     no_blocks: int = _Default.msa_n_blocks
     opm_first: bool = True

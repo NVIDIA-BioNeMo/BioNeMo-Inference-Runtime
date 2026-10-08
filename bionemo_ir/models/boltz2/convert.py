@@ -12,6 +12,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+from bionemo_ir._torch.layers.triangle_nodes import split_pair_bias_proj
 from bionemo_ir.configs import BaseConfig
 from bionemo_ir.hubs import load_weights
 from bionemo_ir.models.boltz1.convert import (
@@ -303,7 +304,7 @@ def convert_hf_affinity_module_torch(
             "bias": module_state_dict["affinity_heads.to_affinity_logits_binary.bias"],
         }
     ]
-    return bioir_state_dict
+    return split_pair_bias_proj(bioir_state_dict)
 
 
 def convert_hf_msa_module_torch(
@@ -504,7 +505,7 @@ def convert_hf_msa_module_torch(
                 "bias": module_state_dict[f"layers.{i}.outer_product_mean.proj_o.bias"],
             }
         ]
-    return bioir_state_dict
+    return split_pair_bias_proj(bioir_state_dict)
 
 
 def _convert_pairformer_no_seq_block_torch(
@@ -633,7 +634,7 @@ def convert_hf_template_module_torch(
             bioir_prefix=f"pairformer.layers.{i}",
             out_dict=bioir_state_dict,
         )
-    return bioir_state_dict
+    return split_pair_bias_proj(bioir_state_dict)
 
 
 def convert_hf_input_embedder_torch(

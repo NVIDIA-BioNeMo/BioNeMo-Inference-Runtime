@@ -52,6 +52,7 @@ class TemplatePairBlock(nn.Module):
         triangle_attn_backend: str = "VANILLA",
         skip_create_weights: bool = False,
         tri_attn_transposed_bias: bool = False,
+        tri_attn_bias_in_norm: bool = True,
         **kwargs,
     ):
         super().__init__()
@@ -122,6 +123,7 @@ class TemplatePairBlock(nn.Module):
             attn_backend=triangle_attn_backend,
             dtype=dtype,
             skip_create_weights=skip_create_weights,
+            bias_in_norm=tri_attn_bias_in_norm,
         )
         self.tri_attn_end = TriangleAttentionEndingNode(
             c_t,
@@ -134,6 +136,7 @@ class TemplatePairBlock(nn.Module):
             dtype=dtype,
             skip_create_weights=skip_create_weights,
             transposed_bias=tri_attn_transposed_bias,
+            bias_in_norm=tri_attn_bias_in_norm,
         )
 
         if transition_type == "relu":
@@ -236,6 +239,7 @@ class TemplatePairStack(nn.Module):
         dtype: torch.dtype = torch.float32,
         skip_create_weights: bool = False,
         tri_attn_transposed_bias: bool = False,
+        tri_attn_bias_in_norm: bool = True,
     ):
         """
         Args:
@@ -274,6 +278,7 @@ class TemplatePairStack(nn.Module):
                 tri_attn_start_bias=tri_attn_start_bias,
                 tri_attn_end_bias=tri_attn_end_bias,
                 tri_attn_transposed_bias=tri_attn_transposed_bias,
+                tri_attn_bias_in_norm=tri_attn_bias_in_norm,
             )
             self.blocks.append(block)
 

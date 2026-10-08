@@ -550,7 +550,11 @@ def load_triangle_attention_node_weights_torch(module, weights_and_biases, dtype
     layer_norm_weight, layer_norm_bias = weights_and_biases["layer_norm"]
     linear_weight = weights_and_biases["linear"]
     mha_weights_and_biases = weights_and_biases["mha"]
-    load_triangle_attention_weights_torch(module.mha, mha_weights_and_biases, dtype, pair_bias_weight=linear_weight)
+    if module.bias_in_norm:
+        load_triangle_attention_weights_torch(module.mha, mha_weights_and_biases, dtype)
+        module.pair_bias_proj.load_weights([{"weight": linear_weight.to(dtype).to("cuda")}])
+    else:
+        load_triangle_attention_weights_torch(module.mha, mha_weights_and_biases, dtype, pair_bias_weight=linear_weight)
     module.layer_norm.weight.data.copy_(layer_norm_weight.to(dtype).to("cuda"))
     module.layer_norm.bias.data.copy_(layer_norm_bias.to(dtype).to("cuda"))
 

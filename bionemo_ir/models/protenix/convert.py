@@ -300,6 +300,7 @@ def _convert_pair_path(
     dtype_str: str,
     transition_dim: int,
     transition_name: str = "transition_z",
+    tri_attn_bias_in_norm: bool = True,
 ) -> None:
     """OpenFold-style pair block -> BioIR keys via shared Boltz1 helpers.
 
@@ -310,8 +311,12 @@ def _convert_pair_path(
     _openfold_pairformer_block_intermediate(weights, src_pair, "b", pf_sd)
     out.update(get_tri_mul_node_weights(pf_sd, "b.tri_mul_out", f"{tgt_layer}.tri_mul_out", dtype=dtype_str))
     out.update(get_tri_mul_node_weights(pf_sd, "b.tri_mul_in", f"{tgt_layer}.tri_mul_in", dtype=dtype_str))
-    out.update(get_tri_attn_node_weights(pf_sd, "b.tri_att_start", f"{tgt_layer}.tri_attn_start", dtype=dtype_str))
-    out.update(get_tri_attn_node_weights(pf_sd, "b.tri_att_end", f"{tgt_layer}.tri_attn_end", dtype=dtype_str))
+    for src, dst in (("tri_att_start", "tri_attn_start"), ("tri_att_end", "tri_attn_end")):
+        out.update(
+            get_tri_attn_node_weights(
+                pf_sd, f"b.{src}", f"{tgt_layer}.{dst}", dtype=dtype_str, bias_in_norm=tri_attn_bias_in_norm
+            )
+        )
     out.update(
         get_transition_weights(
             pf_sd, "b.transition_z", f"{tgt_layer}.{transition_name}", dim=transition_dim, dtype=dtype_str
@@ -345,6 +350,7 @@ def convert_template_embedder_torch(config: BaseConfig, weights: dict, prefix: s
             out,
             pf_dtype_str,
             transition_dim=config.c * config.num_intermediate_factor,
+            tri_attn_bias_in_norm=config.tri_attn_bias_in_norm,
         )
     return out
 
@@ -396,7 +402,15 @@ def convert_pairformer_stack_torch(config: BaseConfig, weights: dict, prefix: st
     for i in range(config.num_blocks):
         src_blk = _join(prefix, f"blocks.{i}")
         layer = f"layers.{i}"
-        _convert_pair_path(weights, src_blk, layer, out, dtype_str, config.token_z * 4)
+        _convert_pair_path(
+            weights,
+            src_blk,
+            layer,
+            out,
+            dtype_str,
+            config.token_z * 4,
+            tri_attn_bias_in_norm=config.tri_attn_bias_in_norm,
+        )
         _convert_pairformer_single_path(weights, src_blk, layer, out, dtype)
     return out
 
@@ -529,6 +543,7 @@ def convert_msa_module_torch(config: BaseConfig, weights: dict, prefix: str = "m
             dtype_str,
             config.c_z * config.transition_n,
             transition_name="pair_transition",
+            tri_attn_bias_in_norm=config.tri_attn_bias_in_norm,
         )
     return out
 

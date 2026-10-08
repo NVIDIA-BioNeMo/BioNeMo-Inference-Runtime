@@ -73,6 +73,7 @@ class PairformerLayerV1(nn.Module):
         pair_mask_left_aligned: bool = True,
         pair_transition_factor: int = 4,
         tri_attn_transposed_bias: bool = False,
+        tri_attn_bias_in_norm: bool = True,
         **kwargs,
     ):
         """Pairformer layer.
@@ -85,6 +86,7 @@ class PairformerLayerV1(nn.Module):
                 ``False`` for bipartite masks with interior zeros.
             tri_attn_transposed_bias: Build the ending node's triangle bias
                 from the transposed pair representation. OpenFold-3 only.
+            tri_attn_bias_in_norm: ``TriangleAttentionNode``'s ``bias_in_norm``.
         """
         super().__init__()
         self.dtype = dtype
@@ -147,6 +149,7 @@ class PairformerLayerV1(nn.Module):
             skip_create_weights=skip_create_weights,
             attn_backend=triangle_attn_backend,
             pair_mask_left_aligned=pair_mask_left_aligned,
+            bias_in_norm=tri_attn_bias_in_norm,
         )
         self.tri_attn_end = TriangleAttentionEndingNode(
             token_z,
@@ -159,6 +162,7 @@ class PairformerLayerV1(nn.Module):
             attn_backend=triangle_attn_backend,
             pair_mask_left_aligned=pair_mask_left_aligned,
             transposed_bias=tri_attn_transposed_bias,
+            bias_in_norm=tri_attn_bias_in_norm,
         )
         if not self.no_update_s:
             self.transition_s = Transition(
@@ -494,6 +498,7 @@ class PairformerModule(nn.Module):
                     trimul_mean_normalization=getattr(config, "trimul_mean_normalization", False),
                     s_path_dtype=config.s_path_dtype,
                     tri_attn_transposed_bias=config.tri_attn_transposed_bias,
+                    tri_attn_bias_in_norm=config.tri_attn_bias_in_norm,
                 )
             )
         self.pair_mask_left_aligned = self.layers[0].pair_mask_left_aligned

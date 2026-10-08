@@ -336,9 +336,9 @@ Every difference between the lists falls into one of four kinds.
 matrix multiply replaces several. Concatenate along dimension 0 in the
 following order:
 
-- Triangle attention: query, key, value, gate, and pair-bias projections into
-  `mha.in_proj`. Zero-pad the pair-bias projection to `pair_bias_rows(H)`
-  rows, which is 32 for up to 32 heads.
+- Triangle attention: query, key, value, and gate projections into
+  `mha.in_proj`. The pair-bias projection goes, unpadded, to the node's
+  `pair_bias_proj`.
 - Attention with pair bias: query, gate, key, and value into `in_proj`. Its
   bias spans all four, so fill zeros where your model has none.
 - Transition: the plain projection, then the SiLU-activated gate projection,
@@ -687,10 +687,10 @@ shows how BioIR's own models bound activation memory.
 
 **The output is wrong, but nothing crashed.** Check the fusion order first.
 The SiLU-activated gate projection goes second in `fused_fc2_fc1`, and query,
-key, value, gate, and pair bias go in that order in `mha.in_proj`. Then
-compare the code path that your model runs with the BioIR layer, such as a
-bias computed before a transpose, and check mask polarity. An inverted mask
-attends to padding and ignores real tokens.
+key, value, and gate go in that order in `mha.in_proj`. Then compare the code
+path that your model runs with the BioIR layer, such as a bias computed before
+a transpose, and check mask polarity. An inverted mask attends to padding and
+ignores real tokens.
 
 **The output contains NaN.** Check that every parameter was loaded. BioIR
 allocates parameters without initializing them, so a missed tensor holds

@@ -17,12 +17,16 @@ import torch
 import torch.nn.functional as F
 
 from bionemo_ir._torch.layers.attention import pair_bias_rows
+from bionemo_ir._torch.layers.triangle_nodes import split_pair_bias_proj
 from bionemo_ir.configs import BaseConfig
 from bionemo_ir.hubs import load_weights
 from bionemo_ir.utils import str_dtype_to_torch
 
 
-def get_tri_attn_node_weights(state_dict: dict, prefix: str, bioir_prefix: str, dtype: str = "float32"):
+def get_tri_attn_node_weights(
+    state_dict: dict, prefix: str, bioir_prefix: str, dtype: str = "float32", bias_in_norm: bool = True
+):
+    """A triangle-attention node's weights; ``bias_in_norm`` as the node's."""
     torch_dtype = str_dtype_to_torch(dtype)
     layer_norm_weight = state_dict[f"{prefix}.layer_norm.weight"]
     layer_norm_bias = state_dict[f"{prefix}.layer_norm.bias"]
@@ -34,16 +38,18 @@ def get_tri_attn_node_weights(state_dict: dict, prefix: str, bioir_prefix: str, 
     mha_o_weight = state_dict[f"{prefix}.mha.linear_o.weight"]
     mha_g_weight = state_dict[f"{prefix}.mha.linear_g.weight"]
 
-    num_heads = linear_weight.shape[0]
-    pair_bias_weight = F.pad(linear_weight, (0, 0, 0, pair_bias_rows(num_heads) - num_heads))
-    mha_in_proj_weight = torch.cat([mha_q_weight, mha_k_weight, mha_v_weight, mha_g_weight, pair_bias_weight], dim=0)
-
+    in_proj_weights = [mha_q_weight, mha_k_weight, mha_v_weight, mha_g_weight]
     ret = {
         f"{bioir_prefix}.layer_norm.weight": layer_norm_weight.to(torch_dtype),
         f"{bioir_prefix}.layer_norm.bias": layer_norm_bias.to(torch_dtype),
-        f"{bioir_prefix}.mha.in_proj.weight": mha_in_proj_weight.to(torch_dtype),
         f"{bioir_prefix}.mha.o_proj.weight": mha_o_weight.to(torch_dtype),
     }
+    if bias_in_norm:
+        ret[f"{bioir_prefix}.pair_bias_proj.weight"] = linear_weight.to(torch_dtype)
+    else:
+        num_heads = linear_weight.shape[0]
+        in_proj_weights.append(F.pad(linear_weight, (0, 0, 0, pair_bias_rows(num_heads) - num_heads)))
+    ret[f"{bioir_prefix}.mha.in_proj.weight"] = torch.cat(in_proj_weights, dim=0).to(torch_dtype)
     return ret
 
 
@@ -257,7 +263,7 @@ def convert_hf_pairformer_torch(
                     "weight": module_state_dict[f"layers.{i}.transition_{name}.fc3.weight"],
                 }
             ]
-    return bioir_state_dict
+    return split_pair_bias_proj(bioir_state_dict, config.tri_attn_bias_in_norm)
 
 
 def convert_hf_diffusion_transformer_torch(
@@ -589,7 +595,7 @@ def convert_hf_msa_module_torch(
                 "bias": module_state_dict[f"layers.{i}.outer_product_mean.proj_o.bias"],
             }
         ]
-    return bioir_state_dict
+    return split_pair_bias_proj(bioir_state_dict)
 
 
 def convert_hf_input_embedder_torch(

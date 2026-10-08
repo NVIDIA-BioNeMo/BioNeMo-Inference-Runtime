@@ -14,6 +14,7 @@
 # limitations under the License.
 
 
+from bionemo_ir._torch.layers.triangle_nodes import split_pair_bias_proj
 from bionemo_ir.configs import BaseConfig
 from bionemo_ir.hubs import load_weights
 from bionemo_ir.utils import str_dtype_to_torch
@@ -286,7 +287,7 @@ def convert_hf_evoformer_torch(
                 "bias": module_state_dict[f"blocks.{i}.pair_transition.linear_2.bias"],
             }
         ]
-    return bioir_state_dict
+    return split_pair_bias_proj(bioir_state_dict, config.tri_attn_bias_in_norm)
 
 
 def convert_hf_extra_msa_stack_torch(
@@ -447,7 +448,7 @@ def convert_hf_extra_msa_stack_torch(
                 "bias": module_state_dict[f"blocks.{i}.pair_transition.linear_2.bias"],
             }
         ]
-    return bioir_state_dict
+    return split_pair_bias_proj(bioir_state_dict)
 
 
 def convert_hf_input_embedder_torch(
@@ -672,7 +673,7 @@ def convert_hf_template_embedder_torch(
         }
     ]
 
-    return bioir_state_dict
+    return split_pair_bias_proj(bioir_state_dict)
 
 
 def convert_hf_template_embedder_multimer_torch(
@@ -778,7 +779,7 @@ def convert_hf_template_embedder_multimer_torch(
         }
     ]
 
-    return bioir_state_dict
+    return split_pair_bias_proj(bioir_state_dict)
 
 
 def convert_hf_confidence_module_torch(

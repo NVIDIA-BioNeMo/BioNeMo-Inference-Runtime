@@ -18,14 +18,16 @@ from enum import IntEnum
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 from bionemo_ir._torch.layers.linear import Linear, WeightMode, WeightsLoadingConfig
 from bionemo_ir._torch.utils import CHUNK_REGISTRY, TRIANGLE_ATTENTION, ChunkPolicy
 from bionemo_ir.dsl_kernels.triton.fused_layer_norm_transpose import layer_norm_transpose
+from bionemo_ir.dsl_kernels.triton.ln_pair_bias import LNPairBias
 from bionemo_ir.runtime.buffers import PreallocatedBuffers
 
 from ..attention_backend import AttentionMetadata
-from ..attention_backend.utils import precompute_pair_masks
+from ..attention_backend.utils import precompute_pair_masks, triangle_bias_pad_multiple
 from ..custom_ops.dual_gemm_x0_x1 import get_cute_dual_gemm_x0_x1_residual_op, get_dual_gemm_x0_x1_op
 from ..custom_ops.dual_gemm_x_x import get_cute_dual_gemm_x_x_op, get_dual_gemm_x_x_op
 from ..custom_ops.trimul_kf_k1 import TrimulKFInputFold, TrimulKFK1Op, fold_input_weights, get_trimul_kf_k1_op
@@ -128,6 +130,7 @@ class TriangleAttentionNode(nn.Module):
         mha_bias_flags: dict[str, bool] | None = None,
         pair_mask_left_aligned: bool = True,
         transposed_bias: bool = False,
+        bias_in_norm: bool = True,
     ):
         """
         Args:
@@ -147,6 +150,8 @@ class TriangleAttentionNode(nn.Module):
                 pair representation. OpenFold-3 v0.5.0 adopted this for the
                 ending node; AlphaFold-2, Boltz and Protenix do not.
                 See https://github.com/aqlaboratory/openfold-3/commit/1baf2c71.
+            bias_in_norm: Project the triangle-bias heads with ``pair_bias_proj`` in the LayerNorm
+                pass; ``in_proj`` then projects q, k, v and the gate only.
         """
         super().__init__()
         if mha_bias_flags is None:
@@ -160,6 +165,20 @@ class TriangleAttentionNode(nn.Module):
         self.attn_backend = attn_backend
         self.pair_mask_left_aligned = pair_mask_left_aligned
         self.layer_norm = nn.LayerNorm(self.c_in, dtype=dtype)
+        self.bias_in_norm = bias_in_norm
+        self.transposed_bias = transposed_bias
+        if bias_in_norm:
+            self.pair_bias_proj = Linear(
+                self.c_in, num_heads, bias=False, dtype=dtype, skip_create_weights=skip_create_weights
+            )
+            self._bias_pad_multiple = triangle_bias_pad_multiple(attn_backend)
+            self._ln_pair_bias = LNPairBias(
+                c_in,
+                num_heads,
+                swap_ij=node_type == TriangleAttentionNodeType.ENDING,
+                transposed=transposed_bias,
+                dtype=dtype,
+            )
         self.mha = TriangleAttention(
             layer_idx=layer_idx,
             hidden_size=self.c_in,
@@ -168,7 +187,7 @@ class TriangleAttentionNode(nn.Module):
             num_key_value_heads=self.num_heads,
             gating=True,
             bias_flags=mha_bias_flags,
-            bias_proj=True,
+            bias_proj=not bias_in_norm,
             transposed_bias=transposed_bias,
             # Row chunks bound the [chunk, J, H, ...] attention temporaries at large N.
             chunk_policy=chunk_policy if chunk_policy is not None else CHUNK_REGISTRY.get(TRIANGLE_ATTENTION),
@@ -207,13 +226,16 @@ class TriangleAttentionNode(nn.Module):
         """
         if x.dtype != self.dtype:
             x = x.to(self.dtype)
-        normed = None
-        if self.node_type == TriangleAttentionNodeType.ENDING:
-            if isinstance(self.layer_norm, FusedLayerNorm):
-                normed = self.layer_norm.forward_swap_ij(x)
+        ending = self.node_type == TriangleAttentionNodeType.ENDING
+        triangle_bias = None
+        if self.bias_in_norm:
+            normed, triangle_bias = self._norm_and_bias(x, ending)
+        elif ending and isinstance(self.layer_norm, FusedLayerNorm):
+            normed = self.layer_norm.forward_swap_ij(x)
+        else:
+            normed = self.layer_norm(x.transpose(1, 2) if ending else x)
+        if ending:
             x = x.transpose(1, 2)
-        if normed is None:
-            normed = self.layer_norm(x)
 
         if mask_bias is None:
             if mask is None:
@@ -226,6 +248,7 @@ class TriangleAttentionNode(nn.Module):
         output = self.mha(
             normed,
             mask_bias,
+            triangle_bias=triangle_bias,
             attn_metadata=attn_metadata,
             buffers=buffers,
             use_kv_lengths=self.pair_mask_left_aligned,
@@ -235,6 +258,38 @@ class TriangleAttentionNode(nn.Module):
         if self.node_type == TriangleAttentionNodeType.ENDING:
             output = output.transpose(2, 1)
         return output
+
+    def _norm_and_bias(self, x: torch.Tensor, ending: bool) -> tuple[torch.Tensor, torch.Tensor]:
+        """``(LayerNorm(x), triangle bias)`` from :class:`LNPairBias`, or from PyTorch without a kernel."""
+        norm, weight = self.layer_norm, self.pair_bias_proj.weight
+        fused = self._ln_pair_bias(x, norm.weight, norm.bias, norm.eps, weight, pad_multiple=self._bias_pad_multiple)
+        if fused is not None:
+            return fused
+        if ending and isinstance(norm, FusedLayerNorm):
+            normed = norm.forward_swap_ij(x)
+        else:
+            normed = norm(x.transpose(1, 2) if ending else x)
+        bias = F.linear(normed, weight)
+        bias = (bias.transpose(1, 2) if self.transposed_bias else bias).permute(0, 3, 1, 2)
+        pad = -bias.shape[-1] % self._bias_pad_multiple if self._bias_pad_multiple > 0 else 0
+        return normed, F.pad(bias, (0, pad)).contiguous()
+
+
+_TRI_ATTN_IN_PROJ_KEYS = ("tri_attn_start.mha.in_proj", "tri_attn_end.mha.in_proj")
+
+
+def split_pair_bias_proj(weights: dict, bias_in_norm: bool = True) -> dict:
+    """Move the bias-head segment ending each triangle-attention node's ``mha.in_proj`` to ``pair_bias_proj``."""
+    if not bias_in_norm:
+        return weights
+    for key in [key for key in weights if key.endswith(_TRI_ATTN_IN_PROJ_KEYS)]:
+        node = key.removesuffix(".mha.in_proj")
+        if f"{node}.pair_bias_proj" in weights:
+            continue
+        *in_proj, bias = weights[key]
+        weights[key] = in_proj
+        weights[f"{node}.pair_bias_proj"] = [{"weight": bias["weight"]}]
+    return weights
 
 
 class TriangleAttentionStartingNode(TriangleAttentionNode):

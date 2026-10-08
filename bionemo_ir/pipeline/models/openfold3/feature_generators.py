@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Sequence
-from functools import cache
+from functools import cache, lru_cache
 from typing import Any
 
 import numpy as np
@@ -871,7 +871,12 @@ class TemplateFeatureGenerator(FeatureGeneratorBase):
         if not templates_per_chain:
             return self._no_template_feats(n_tokens)
 
-        from .common import create_template_distogram, create_template_restype, create_template_unit_vector
+        from .common import (
+            _DISTOGRAM_MIN_TOKENS,
+            create_template_distogram,
+            create_template_restype,
+            create_template_unit_vector,
+        )
         from .const import (
             MOL_TYPE_PROTEIN,
             TEMPLATE_CIF_DIRECT_MIN_SCORE,
@@ -881,7 +886,14 @@ class TemplateFeatureGenerator(FeatureGeneratorBase):
             TEMPLATE_MIN_TOKENS_PER_CHAIN,
             TEMPLATE_TAKE_TOP_K,
         )
-        from .template_logic import fill_precursor_for_chain, resolve_template_idx_map, select_template_for_cif
+        from .template_logic import (
+            ChainTemplateData,
+            SelectedTemplate,
+            extract_template_chains,
+            fill_precursor_for_chain,
+            resolve_template_idx_map,
+            select_template_for_cif,
+        )
 
         struct = row["structure"]
         token_chain_ids = struct["token_chain_ids"]
@@ -893,6 +905,21 @@ class TemplateFeatureGenerator(FeatureGeneratorBase):
         res_names = np.full((n_templ, n_tokens), "GAP", dtype=np.dtype("U3"))
         pb_coords = np.full((n_templ, n_tokens, 3), np.nan, dtype=np.float64)
         frame_coords = np.full((n_templ, n_tokens, 3, 3), np.nan, dtype=np.float64)
+
+        @lru_cache(maxsize=DEFAULT_N_TEMPLATES)
+        def parse_template(content: str, fmt: str) -> dict[str, ChainTemplateData]:
+            return extract_template_chains(content, fmt)
+
+        @lru_cache(maxsize=DEFAULT_N_TEMPLATES)
+        def select_template(query_seq: str, content: str, fmt: str, chain_id: str | None) -> SelectedTemplate | None:
+            return select_template_for_cif(
+                query_seq=query_seq,
+                content=content,
+                fmt=fmt,
+                specified_chain_id=chain_id,
+                min_score=TEMPLATE_CIF_DIRECT_MIN_SCORE,
+                chains=parse_template(content, fmt),
+            )
 
         # Group protein tokens by their original chain_id, preserving order.
         for cid in dict.fromkeys(token_chain_ids):
@@ -912,13 +939,9 @@ class TemplateFeatureGenerator(FeatureGeneratorBase):
                 content = tmpl.get("content")
                 if content is None:
                     continue
-                sel = select_template_for_cif(
-                    query_seq=query_seq,
-                    content=content,
-                    fmt=tmpl.get("format", "cif"),
-                    specified_chain_id=tmpl.get("chain_id"),
-                    min_score=TEMPLATE_CIF_DIRECT_MIN_SCORE,
-                )
+                fmt = tmpl.get("format", "cif")
+                specified_chain = tmpl.get("chain_id")
+                sel = select_template(query_seq, content, fmt, specified_chain)
                 if sel is not None:
                     selected.append(sel)
 
@@ -963,14 +986,36 @@ class TemplateFeatureGenerator(FeatureGeneratorBase):
         )
         feats["template_pseudo_beta_mask"] = pb_mask
         feats["template_backbone_frame_mask"] = bb_mask
-        feats["template_distogram"] = create_template_distogram(
-            pb_coords,
-            pb_mask,
-            mc_pair,
-            TEMPLATE_DISTOGRAM_MIN_BIN,
-            TEMPLATE_DISTOGRAM_MAX_BIN,
-            TEMPLATE_DISTOGRAM_N_BINS,
-            TEMPLATE_DISTOGRAM_INF_VALUE,
+        active_pb = np.flatnonzero(~np.isnan(pb_coords).all(axis=(1, 2)))
+        active_bb = np.flatnonzero(~np.isnan(frame_coords).all(axis=(1, 2, 3)))
+        dist_slots = np.arange(n_templ) if n_tokens >= _DISTOGRAM_MIN_TOKENS else active_pb
+        distogram = (
+            create_template_distogram(
+                pb_coords[dist_slots],
+                pb_mask[dist_slots],
+                mc_pair,
+                TEMPLATE_DISTOGRAM_MIN_BIN,
+                TEMPLATE_DISTOGRAM_MAX_BIN,
+                TEMPLATE_DISTOGRAM_N_BINS,
+                TEMPLATE_DISTOGRAM_INF_VALUE,
+            )
+            if dist_slots.size
+            else torch.empty((0, n_tokens, n_tokens, TEMPLATE_DISTOGRAM_N_BINS), dtype=torch.float32)
         )
-        feats["template_unit_vector"] = create_template_unit_vector(frame_coords, bb_mask, mc_pair)
+        unit_vector = (
+            create_template_unit_vector(frame_coords[active_bb], bb_mask[active_bb], mc_pair)
+            if active_bb.size
+            else torch.empty((0, n_tokens, n_tokens, 3), dtype=torch.float32)
+        )
+        feats["template_distogram"] = _pad_template_slots(distogram, dist_slots, n_templ)
+        feats["template_unit_vector"] = _pad_template_slots(unit_vector, active_bb, n_templ)
         return feats
+
+
+def _pad_template_slots(features: torch.Tensor, active: np.ndarray, n_templ: int) -> torch.Tensor:
+    if active.size == n_templ:
+        return features
+    # Untouched slots retain lazy zero pages.
+    output = np.zeros((n_templ, *features.shape[1:]), dtype=np.float32)
+    output[active] = features.numpy()
+    return torch.from_numpy(output)

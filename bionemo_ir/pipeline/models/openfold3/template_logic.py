@@ -256,14 +256,17 @@ def select_template_for_cif(
     fmt: str,
     specified_chain_id: str | None,
     min_score: float = TEMPLATE_CIF_DIRECT_MIN_SCORE,
+    *,
+    chains: dict[str, ChainTemplateData] | None = None,
 ) -> SelectedTemplate | None:
     """Pick the best-aligning chain of one template CIF for a query sequence.
 
     Mirrors OSS ``CifDirectParser``: align each candidate chain to the query,
     score by seq_id * q_cov, and keep the best chain scoring >= ``min_score``.
     If ``specified_chain_id`` is given, only that chain is considered.
+    Supplied ``chains`` reuse request-local CIF extraction.
     """
-    chains = extract_template_chains(content, fmt)
+    chains = extract_template_chains(content, fmt) if chains is None else chains
     if specified_chain_id is not None:
         candidates = {specified_chain_id: chains[specified_chain_id]} if specified_chain_id in chains else {}
         if not candidates:

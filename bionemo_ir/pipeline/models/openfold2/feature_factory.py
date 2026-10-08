@@ -55,7 +55,6 @@ from .feature_generators import (
     MakeTemplatePseudoBeta,
     MultimerCreateTargetFeatures,
     MultimerMakeMsaProfile,
-    UseClampedFape,
 )
 
 _MONOMER_FEATURE_KEYS = [
@@ -72,7 +71,6 @@ _MONOMER_FEATURE_KEYS = [
     "atom37_atom_exists",
     "backbone_rigid_mask",
     "backbone_rigid_tensor",
-    "bert_mask",
     "chi_angles_sin_cos",
     "chi_mask",
     "extra_deletion_value",
@@ -111,8 +109,6 @@ _MONOMER_FEATURE_KEYS = [
     "template_sum_probs",
     "template_torsion_angles_mask",
     "template_torsion_angles_sin_cos",
-    "true_msa",
-    "use_clamped_fape",
     "is_template_present",
 ]
 
@@ -127,7 +123,6 @@ _MULTIMER_FEATURE_KEYS = [
     "asym_id",
     "atom14_atom_exists",
     "atom37_atom_exists",
-    "bert_mask",
     "cluster_bias_mask",
     "cluster_profile",
     "cluster_deletion_mean",
@@ -155,7 +150,6 @@ _MULTIMER_FEATURE_KEYS = [
     "template_aatype",
     "template_all_atom_mask",
     "template_all_atom_positions",
-    "true_msa",
     "is_template_present",
 ]
 
@@ -243,7 +237,6 @@ def create_ensemble_feature_collator() -> list[FeatureCollatorSpec]:
 class FeatureFactory(FeatureFactoryBase):
     pre_init: Callable = pre_init
     feature_generator_specs: list[FeatureGeneratorSpec] = [
-        FeatureGeneratorSpec(name="use_clamped_fape", functor=UseClampedFape, kwargs={}),
         FeatureGeneratorSpec(name="make_sequence_mask", functor=MakeSequenceMask, kwargs={}),
         FeatureGeneratorSpec(name="make_msa_mask", functor=MakeMsaMask, kwargs={}),
         FeatureGeneratorSpec(name="make_hhblits_profile", functor=MakeHhblitsProfile, kwargs={}),

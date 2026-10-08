@@ -19,6 +19,7 @@ from typing import Any
 from pydantic import Field
 
 from bionemo_ir.data.utils import get_all_atom_types, get_all_residue_types
+from bionemo_ir.models.openfold2.config import OpenFold2Config
 from bionemo_ir.pipeline.processor.base import Processor, ProcessorConfig, _ProcessorBase
 from bionemo_ir.pipeline.processor.pipelined import PipelinedSerialProcessor
 from bionemo_ir.pipeline.processor.utils import build_cpu_stage_map_kwargs, get_available_gpu_count
@@ -245,6 +246,15 @@ def _build_tokenizer_stage(config: EngineProcessorConfig, processor_defaults: di
 
 def _build_feature_generator_stage(config: EngineProcessorConfig, processor_defaults: dict[str, Any]) -> StatefulStage:
     model_pretrained_config = config.get_model_pretrained_config()
+    steps = config.runtime_args.get("recycling_steps")
+    if isinstance(model_pretrained_config, OpenFold2Config) and steps is not None:
+        if not isinstance(steps, int) or isinstance(steps, bool):
+            raise ValueError("OpenFold2 recycling_steps must be an integer")
+        if steps < 1:
+            raise ValueError("OpenFold2 recycling_steps must be positive")
+        model_pretrained_config = model_pretrained_config.model_copy(
+            update={"max_recycling_iters": min(model_pretrained_config.max_recycling_iters, steps - 1)}
+        )
     feature_generator_stage_cfg = resolve_stage_config(
         config.feature_generator_stage, FeatureGeneratorStageConfig, processor_defaults
     )

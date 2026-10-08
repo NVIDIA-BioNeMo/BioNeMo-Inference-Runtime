@@ -411,3 +411,53 @@ class TestMakeFixedSize:
         result = collator(sample_features, context)
 
         assert result["template_mask"].shape[0] == mock_config.max_templates
+
+
+def test_fixed_size_preserves_already_sized_tensors(mock_config: MockConfig, context: dict) -> None:
+    msa_mask = torch.ones(mock_config.max_msa_clusters, 7)
+    features = {"msa_mask": msa_mask}
+    result = MakeFixedSize(config=mock_config)(features, context)
+    assert result["msa_mask"] is msa_mask
+
+
+@pytest.mark.parametrize("seed", [0, 42, 20260720])
+def test_masked_categorical_preserves_seeded_samples(seed: int) -> None:
+    from bionemo_ir.pipeline.models.openfold2.common import shaped_categorical
+    from bionemo_ir.pipeline.utils._rng import _feature_rng, _RequestRNG
+
+    probs = torch.tensor([0.05] * 20 + [0.0, 0.0, 0.7]).expand(2, 7, 23)
+    rng = _RequestRNG(seed)
+    distribution = torch.distributions.Categorical((probs + 1e-10).reshape(-1, 23))
+    expected = torch.multinomial(distribution.probs, 1, replacement=True, generator=rng.torch).reshape(2, 7)
+    next_draw = torch.rand(7, generator=rng.torch)
+    with _feature_rng(_RequestRNG(seed)):
+        actual = shaped_categorical(probs)
+        from bionemo_ir.pipeline.utils._rng import _torch_generator
+
+        actual_draw = torch.rand(7, generator=_torch_generator())
+    torch.testing.assert_close(actual, expected, rtol=0, atol=0)
+    torch.testing.assert_close(actual_draw, next_draw, rtol=0, atol=0)
+
+
+@pytest.mark.parametrize("probs", [[-0.1, 1.1], [-1.0, -1.0], [float("nan"), 1.0], [float("inf"), 1.0]])
+def test_masked_categorical_rejects_invalid_probabilities(probs: list[float]) -> None:
+    from bionemo_ir.pipeline.models.openfold2.common import shaped_categorical
+
+    with pytest.raises(ValueError, match="non-negative|Simplex"):
+        shaped_categorical(torch.tensor(probs))
+
+
+@pytest.mark.parametrize("seed", [0, 42, 20260720])
+def test_gumbel_indices_preserve_samples_and_rng(seed: int) -> None:
+    from bionemo_ir.pipeline.models.openfold2.common import gumbel_max_sample_indices, gumbel_noise
+
+    logits = torch.linspace(-5, 5, 23).expand(2, 7, 23)
+    generator = torch.Generator().manual_seed(seed)
+    noise = gumbel_noise(logits.shape, logits.device, generator=generator)
+    one_hot = torch.nn.functional.one_hot(torch.argmax(logits + noise, dim=-1), 23)
+    expected = torch.argmax(one_hot, dim=-1)
+    next_draw = torch.rand(7, generator=generator)
+    generator.manual_seed(seed)
+    actual = gumbel_max_sample_indices(logits, generator=generator)
+    torch.testing.assert_close(actual, expected, rtol=0, atol=0)
+    torch.testing.assert_close(torch.rand(7, generator=generator), next_draw, rtol=0, atol=0)

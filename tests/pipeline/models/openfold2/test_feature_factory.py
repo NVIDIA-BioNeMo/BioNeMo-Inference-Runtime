@@ -16,6 +16,7 @@
 import random
 
 import numpy as np
+import pytest
 import torch
 
 from bionemo_ir.pipeline.models.openfold2.feature_factory import pre_init
@@ -62,3 +63,54 @@ def test_pre_init_generated_seed_preserves_python_worker_rng_state():
         assert 0 <= result["ensemble_seed"] <= torch.iinfo(torch.int32).max
     finally:
         random.setstate(original_python_state)
+
+
+@pytest.mark.parametrize("multimer", [False, True])
+@pytest.mark.parametrize("steps", [None, 1, 3, 30])
+def test_feature_repeats_match_forward_limit(
+    multimer: bool, steps: int | None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from bionemo_ir.models.openfold2.config import OpenFold2Config, OpenFold2MultimerConfig
+    from bionemo_ir.pipeline.processor.engine_proc import EngineProcessorConfig, _build_feature_generator_stage
+
+    original = OpenFold2MultimerConfig() if multimer else OpenFold2Config()
+    monkeypatch.setattr(EngineProcessorConfig, "get_model_pretrained_config", lambda self: original)
+    config = EngineProcessorConfig(
+        model_source="alphafold2_multimer_1" if multimer else "alphafold2_1",
+        executor_backend=None,
+        runtime_args={"recycling_steps": steps},
+    )
+    stage = _build_feature_generator_stage(config, {"batch_size": 1, "concurrency": None, "runtime_env": None})
+    expected = original.max_recycling_iters + 1
+    if steps is not None:
+        expected = min(expected, steps)
+    assert stage.fn_constructor_kwargs["feature_collators"][0].n_iter == expected
+    assert original.max_recycling_iters == (20 if multimer else 3)
+
+
+@pytest.mark.parametrize("steps", [0, -1])
+def test_feature_repeats_reject_nonpositive_limit(steps: int, monkeypatch: pytest.MonkeyPatch) -> None:
+    from bionemo_ir.models.openfold2.config import OpenFold2Config
+    from bionemo_ir.pipeline.processor.engine_proc import EngineProcessorConfig, _build_feature_generator_stage
+
+    monkeypatch.setattr(EngineProcessorConfig, "get_model_pretrained_config", lambda self: OpenFold2Config())
+    config = EngineProcessorConfig(model_source="alphafold2_1", runtime_args={"recycling_steps": steps})
+    with pytest.raises(ValueError, match="recycling_steps must be positive"):
+        _build_feature_generator_stage(config, {})
+
+
+@pytest.mark.parametrize("multimer", [False, True])
+@pytest.mark.parametrize("steps", [True, False, 1.5, 3.0, "3", float("nan"), float("inf")])
+def test_feature_repeats_reject_nonintegers(multimer: bool, steps: object, monkeypatch: pytest.MonkeyPatch) -> None:
+    from bionemo_ir.models.openfold2.config import OpenFold2Config, OpenFold2MultimerConfig
+    from bionemo_ir.pipeline.processor.engine_proc import EngineProcessorConfig, _build_feature_generator_stage
+
+    original = OpenFold2MultimerConfig() if multimer else OpenFold2Config()
+    monkeypatch.setattr(EngineProcessorConfig, "get_model_pretrained_config", lambda self: original)
+    config = EngineProcessorConfig(
+        model_source="alphafold2_multimer_1" if multimer else "alphafold2_1",
+        runtime_args={"recycling_steps": steps},
+    )
+    with pytest.raises(ValueError, match="recycling_steps must be an integer"):
+        _build_feature_generator_stage(config, {})
+    assert original.max_recycling_iters == (20 if multimer else 3)

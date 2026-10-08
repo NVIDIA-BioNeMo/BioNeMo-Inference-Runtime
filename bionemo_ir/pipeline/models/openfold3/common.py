@@ -15,9 +15,16 @@
 """OpenFold3 shared utilities: one-hot encoding, atom name encoding, etc."""
 
 import math
-from collections.abc import Sequence
+import os
+from collections.abc import Callable, Sequence
+from concurrent.futures import ThreadPoolExecutor
+from threading import Lock
+from typing import TYPE_CHECKING
 
 import torch
+
+if TYPE_CHECKING:
+    import numpy as np
 
 from bionemo_ir._torch.layers.random_augmentation import _quaternion_components_to_matrix
 from bionemo_ir.pipeline.utils._rng import _torch_generator
@@ -166,6 +173,9 @@ def create_template_restype(
     return one_hot.to(torch.int32)
 
 
+_DISTOGRAM_MIN_TOKENS = 512
+
+
 def create_template_distogram(
     pseudo_beta_atom_coords,
     pseudo_beta_mask: torch.Tensor,
@@ -183,6 +193,26 @@ def create_template_distogram(
     import numpy as np
 
     coords = np.asarray(pseudo_beta_atom_coords)
+    if (
+        coords.ndim == 3
+        and coords.shape[-1] == 3
+        and coords.shape[1] >= _DISTOGRAM_MIN_TOKENS
+        and coords.dtype in (np.float32, np.float64)
+        and pseudo_beta_mask.shape == coords.shape[:2]
+        and multichain_pair_mask.shape == (1, coords.shape[1], coords.shape[1], 1)
+        and n_bins > 0
+        and pseudo_beta_mask.device.type == multichain_pair_mask.device.type == "cpu"
+        and pseudo_beta_mask.dtype == multichain_pair_mask.dtype == torch.float32
+        and not pseudo_beta_mask.requires_grad
+        and not multichain_pair_mask.requires_grad
+        and torch.all((pseudo_beta_mask == 0) | (pseudo_beta_mask == 1))
+        and torch.all((multichain_pair_mask == 0) | (multichain_pair_mask == 1))
+        and not torch.any(torch.signbit(pseudo_beta_mask))
+        and not torch.any(torch.signbit(multichain_pair_mask))
+    ):
+        lower = np.linspace(min_bin, max_bin, n_bins) ** 2
+        if np.all(np.isfinite(lower)) and np.all(lower[1:] > lower[:-1]):
+            return _distogram_rows(coords, pseudo_beta_mask, multichain_pair_mask, lower, inf_value)
     if coords.dtype in (np.float32, np.float64):
         # Same left-to-right sum as ``np.sum`` over the last axis, without the
         # [..., N, N, 3] temporaries. Other dtypes may accumulate wider.
@@ -193,11 +223,28 @@ def create_template_distogram(
         distances = np.sum((coords[..., None, :] - coords[..., None, :, :]) ** 2, axis=-1)
     lower = np.linspace(min_bin, max_bin, n_bins) ** 2
     upper = np.concatenate([lower[1:], np.array([inf_value], dtype=lower.dtype)], axis=-1)
+    pb = pseudo_beta_mask
+    pair = (pb[..., None] * pb[..., None, :])[..., None]
     if n_bins and np.all(np.isfinite(lower)) and np.all(lower[1:] > lower[:-1]):
         indices = np.searchsorted(lower, distances, side="left") - 1
         valid = (indices >= 0) & (distances < upper[np.clip(indices, 0, n_bins - 1)])
         binned = np.zeros((*distances.shape, n_bins), dtype=np.float32)
         rows = np.flatnonzero(valid.ravel())
+        if (
+            pair.device.type == multichain_pair_mask.device.type == "cpu"
+            and pair.dtype == multichain_pair_mask.dtype == torch.float32
+            and torch.broadcast_shapes(pair.shape, multichain_pair_mask.shape) == (*distances.shape, 1)
+            and not pair.requires_grad
+            and not multichain_pair_mask.requires_grad
+            and not torch.any(torch.signbit(pair))
+            and not torch.any(torch.signbit(multichain_pair_mask))
+            and torch.all((pair == 0) | (pair == 1))
+            and torch.all((multichain_pair_mask == 0) | (multichain_pair_mask == 1))
+        ):
+            # Mask sparse entries before dense materialization.
+            weights = (pair * multichain_pair_mask).numpy().reshape(-1)
+            binned.reshape(-1, n_bins)[rows, indices.ravel()[rows]] = weights[rows]
+            return torch.as_tensor(binned)
         binned.reshape(-1, n_bins)[rows, indices.ravel()[rows]] = 1.0
     else:
         # Nonmonotone edges can describe overlapping bins.
@@ -205,14 +252,87 @@ def create_template_distogram(
         binned = ((distogram > lower) * (distogram < upper)).astype(np.float32)
     template_distogram = torch.as_tensor(binned)
 
-    pb = pseudo_beta_mask
-    pair = (pb[..., None] * pb[..., None, :])[..., None]
     shape = torch.broadcast_shapes(template_distogram.shape, pair.shape, multichain_pair_mask.shape)
     same_layout = shape == template_distogram.shape and template_distogram.numel()
     if same_layout and pair.dtype == multichain_pair_mask.dtype == torch.float32:
         # Same float32 products in place; skips two dense temporaries.
         return template_distogram.mul_(pair).mul_(multichain_pair_mask)
     return template_distogram * pair * multichain_pair_mask
+
+
+_DISTOGRAM_LOCK = Lock()
+_DISTOGRAM_POOL: tuple[int, ThreadPoolExecutor] | None = None
+
+
+def _run_distogram_batch(fill_rows: Callable[[tuple[int, int]], None], bounds: list[tuple[int, int]]) -> None:
+    global _DISTOGRAM_POOL
+    with _DISTOGRAM_LOCK:
+        pid = os.getpid()
+        if _DISTOGRAM_POOL is None or _DISTOGRAM_POOL[0] != pid:
+            cores = len(os.sched_getaffinity(0)) if hasattr(os, "sched_getaffinity") else os.cpu_count() or 1
+            _DISTOGRAM_POOL = pid, ThreadPoolExecutor(max_workers=min(8, cores), thread_name_prefix="bioir-distogram")
+        list(_DISTOGRAM_POOL[1].map(fill_rows, bounds))
+
+
+def _reset_distogram_pool() -> None:
+    """Reset inherited state only in the forked child.
+
+    Parent locks and in-flight work remain unchanged. External C forks must
+    invoke Python's at-fork hooks; other libraries retain their fork limits.
+    """
+    global _DISTOGRAM_LOCK, _DISTOGRAM_POOL
+    _DISTOGRAM_LOCK = Lock()
+    _DISTOGRAM_POOL = None
+
+
+def _lock_distogram_pool() -> None:
+    _DISTOGRAM_LOCK.acquire()
+
+
+def _unlock_distogram_pool() -> None:
+    _DISTOGRAM_LOCK.release()
+
+
+if hasattr(os, "register_at_fork"):
+    os.register_at_fork(
+        before=_lock_distogram_pool,
+        after_in_parent=_unlock_distogram_pool,
+        after_in_child=_reset_distogram_pool,
+    )
+
+
+def _distogram_rows(
+    coords: "np.ndarray", pb: torch.Tensor, mc: torch.Tensor, lower: "np.ndarray", inf_value: float
+) -> torch.Tensor:
+    import numpy as np
+
+    n_templ, n_tokens, _ = coords.shape
+    n_bins = lower.size
+    upper = np.concatenate([lower[1:], np.array([inf_value], dtype=lower.dtype)])
+    masks, pair_mask = pb.numpy(), mc.numpy()[0, ..., 0]
+    output = np.zeros((n_templ, n_tokens, n_tokens, n_bins), dtype=np.float32)
+    active = np.flatnonzero(masks.any(axis=1))
+    if not active.size:
+        return torch.from_numpy(output)
+    coords, masks = coords[active], masks[active]
+
+    def fill_rows(bounds: tuple[int, int]) -> None:
+        start, end = bounds
+        allowed = (masks[:, start:end, None] != 0) & (masks[:, None, :] != 0)
+        allowed &= pair_mask[start:end] != 0
+        ti, ii, ji = np.nonzero(allowed)
+        squares = [(coords[ti, ii + start, k] - coords[ti, ji, k]) ** 2 for k in range(3)]
+        distances = squares[0] + squares[1] + squares[2]
+        del squares
+        indices = np.searchsorted(lower, distances, side="left") - 1
+        valid = (indices >= 0) & (distances < upper[np.clip(indices, 0, n_bins - 1)])
+        output[active[ti[valid]], ii[valid] + start, ji[valid], indices[valid]] = 1.0
+
+    workers = min(8, max(1, n_tokens // 64))
+    edges = np.linspace(0, n_tokens, workers + 1, dtype=int)
+    bounds = [(int(start), int(end)) for start, end in zip(edges[:-1], edges[1:], strict=True)]
+    _run_distogram_batch(fill_rows, bounds)
+    return torch.from_numpy(output)
 
 
 def _rot3_from_two_vectors(e0: torch.Tensor, e1: torch.Tensor) -> torch.Tensor:
@@ -264,4 +384,9 @@ def create_template_unit_vector(
 
     bb = backbone_frame_mask
     pair = (bb[..., None] * bb[..., None, :])[..., None]
+    if (
+        pair.dtype == multichain_pair_mask.dtype == torch.float32
+        and torch.broadcast_shapes(unit_vector.shape, pair.shape, multichain_pair_mask.shape) == unit_vector.shape
+    ):
+        return unit_vector.mul_(pair).mul_(multichain_pair_mask)
     return unit_vector * pair * multichain_pair_mask

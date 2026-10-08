@@ -26,7 +26,13 @@ from bionemo_ir.configs.base import BaseConfig
 from bionemo_ir.pipeline.base import FeatureCollatorBase
 from bionemo_ir.pipeline.utils._rng import _torch_generator
 
-from .common import gumbel_argsort_sample_idx, gumbel_max_sample, make_one_hot, shaped_categorical, unsorted_segment_sum
+from .common import (
+    gumbel_argsort_sample_idx,
+    gumbel_max_sample_indices,
+    make_one_hot,
+    shaped_categorical,
+    unsorted_segment_sum,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -480,7 +486,7 @@ class MakeFixedSize(FeatureCollatorBase):
             padding = [(0, p - v.shape[i]) for i, p in enumerate(pad_size)]
             padding.reverse()
             padding = list(itertools.chain(*padding))
-            if padding:
+            if any(padding):
                 features[k] = torch.nn.functional.pad(v, padding)
                 features[k] = torch.reshape(features[k], pad_size)
 
@@ -563,9 +569,9 @@ class MultimerMakeMaskedMsa(MakeMaskedMsa):
             g = torch.Generator(device=features["msa"].device)
             g.manual_seed(seed)
 
-        bert_msa = gumbel_max_sample(logits, generator=g)
+        bert_msa = gumbel_max_sample_indices(logits, generator=g)
 
-        bert_msa = torch.where(mask_position, torch.argmax(bert_msa, dim=-1), features["msa"])
+        bert_msa = torch.where(mask_position, bert_msa, features["msa"])
         bert_msa *= features["msa_mask"].to(bert_msa.dtype)
 
         # Mix real and masked MSA.

@@ -190,6 +190,52 @@ def test_no_template_placeholder_uses_one_equivalent_slot() -> None:
         assert torch.count_nonzero(features[name]).item() == 0
 
 
+@pytest.mark.parametrize("distinct", [None, "query", "content", "chain"])
+def test_template_selection_cache_is_request_local(distinct: str | None, monkeypatch: pytest.MonkeyPatch) -> None:
+    from bionemo_ir.pipeline.models.openfold3 import template_logic
+    from bionemo_ir.pipeline.models.openfold3.const import MOL_TYPE_PROTEIN
+    from bionemo_ir.pipeline.models.openfold3.feature_generators import TemplateFeatureGenerator
+
+    calls = []
+    parses = []
+
+    def select(**kwargs: object) -> None:
+        calls.append(kwargs)
+
+    def extract(content: str, fmt: str) -> dict[str, template_logic.ChainTemplateData]:
+        parses.append((content, fmt))
+        return {}
+
+    monkeypatch.setattr(template_logic, "select_template_for_cif", select)
+    monkeypatch.setattr(template_logic, "extract_template_chains", extract)
+    template_a = {"content": "first", "chain_id": "X"}
+    template_b = {
+        "content": "second" if distinct == "content" else "first",
+        "chain_id": "Y" if distinct == "chain" else "X",
+    }
+    row = {
+        "templates_per_chain": {"A": [template_a], "B": [template_b]},
+        "template_query_seq": {"A": "AAAAA", "B": "GGGGG" if distinct == "query" else "AAAAA"},
+        "structure": {
+            "token_chain_ids": ["A"] * 5 + ["B"] * 5,
+            "token_res_ids": list(range(1, 6)) * 2,
+            "token_mol_types": [MOL_TYPE_PROTEIN] * 10,
+        },
+    }
+    generator = TemplateFeatureGenerator(config=None, name="t")
+    batch = {"token_index": torch.arange(10)}
+    first = generator(batch, {"_row": row})
+    expected_calls = 1 if distinct is None else 2
+    assert len(calls) == expected_calls
+    expected_parses = 2 if distinct == "content" else 1
+    assert len(parses) == expected_parses
+    second = generator(batch, {"_row": row})
+    assert len(calls) == expected_calls * 2
+    assert len(parses) == expected_parses * 2
+    for key in first:
+        assert torch.equal(first[key], second[key])
+
+
 def _regen_golden() -> None:
     golden = {}
     for t in TARGETS:
@@ -212,3 +258,21 @@ if __name__ == "__main__":
         _regen_golden()
     else:
         print(__doc__)
+
+
+@pytest.mark.parametrize("active", [[], [0], [0, 2], [0, 1, 2, 3]])
+def test_empty_template_slots(active: list[int]) -> None:
+    import numpy as np
+
+    from bionemo_ir.pipeline.models.openfold3.feature_generators import _pad_template_slots
+
+    values = torch.arange(len(active) * 6, dtype=torch.float32).reshape(len(active), 2, 3)
+    before = values.clone()
+    result = _pad_template_slots(values, np.asarray(active, dtype=int), 4)
+    assert result.shape == (4, 2, 3)
+    assert torch.equal(values, before)
+    assert torch.equal(result[active], values)
+    missing = sorted(set(range(4)) - set(active))
+    assert torch.count_nonzero(result[missing]) == 0
+    assert not torch.signbit(result[missing]).any()
+    assert result.device.type == "cpu" and not result.requires_grad

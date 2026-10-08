@@ -31,6 +31,8 @@ def make_one_hot(x: torch.Tensor, num_classes: int) -> torch.Tensor:
 def shaped_categorical(probs: torch.Tensor, epsilon: float = 1e-10) -> torch.Tensor:
     ds = probs.shape
     num_classes = ds[-1]
+    if torch.any(probs < 0):
+        raise ValueError("Categorical probabilities must be non-negative")
     distribution = torch.distributions.categorical.Categorical(torch.reshape(probs + epsilon, [-1, num_classes]))
     counts = torch.multinomial(distribution.probs, 1, replacement=True, generator=_torch_generator()).squeeze(-1)
     return torch.reshape(counts, ds[:-1])
@@ -271,6 +273,12 @@ def gumbel_noise(
     return gumbel
 
 
+def gumbel_max_sample_indices(logits: torch.Tensor, generator: torch.Generator | None = None) -> torch.Tensor:
+    """Sample category indices from unnormalized log probabilities."""
+    z = gumbel_noise(logits.shape, device=logits.device, generator=generator)
+    return torch.argmax(logits + z, dim=-1)
+
+
 def gumbel_max_sample(logits: torch.Tensor, generator=None) -> torch.Tensor:
     """Samples from a probability distribution given by 'logits'.
 
@@ -283,9 +291,8 @@ def gumbel_max_sample(logits: torch.Tensor, generator=None) -> torch.Tensor:
     Returns:
         Sample from logprobs in one-hot form.
     """
-    z = gumbel_noise(logits.shape, device=logits.device, generator=generator)
     return torch.nn.functional.one_hot(
-        torch.argmax(logits + z, dim=-1),
+        gumbel_max_sample_indices(logits, generator=generator),
         logits.shape[-1],
     )
 

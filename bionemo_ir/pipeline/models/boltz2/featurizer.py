@@ -499,11 +499,12 @@ def process_atom_features(
     ref_space_uid_t = torch.from_numpy(ref_space_uid).long()
     coords = torch.from_numpy(coord_data).float()
     # OSS featurizerv2: apply center_random_augmentation per ref_space (deterministic under seed).
-    ref_space_max = int(ref_space_uid_t.max().item())
-    if ref_space_max >= 0:
-        for i in range(ref_space_max + 1):
-            included = ref_space_uid_t == i
-            if included.sum() > 0 and resolved_mask[included].any():
+    order = np.argsort(ref_space_uid, kind="stable")
+    boundaries = np.flatnonzero(np.diff(ref_space_uid[order])) + 1
+    for group in np.split(order, boundaries):
+        if group.size and ref_space_uid[group[0]] >= 0:
+            included = torch.from_numpy(group)
+            if resolved_mask[included].any():
                 ref_pos[included] = _center_random_augmentation(
                     ref_pos[included].unsqueeze(0),
                     resolved_mask[included].unsqueeze(0),

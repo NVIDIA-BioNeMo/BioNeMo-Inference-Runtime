@@ -54,6 +54,8 @@ from ..optimize_module_setter import AcceleratedConfig, DiscoveredModuleRegistry
 from .config import PRETRAINED_CONFIG_REGISTRY
 from .convert import (
     convert_confidence_head_torch,
+    drop_zero_update_nodes,
+    zero_update_nodes,
     convert_constraint_embedder_torch,
     convert_diffusion_module_torch,
     convert_distogram_head_torch,
@@ -63,6 +65,58 @@ from .convert import (
     convert_trunk_torch,
 )
 # isort: on
+
+
+class _ZeroUpdate(nn.Module):
+    """A truncated attention node of a pairformer layer: its update is zero."""
+
+    def forward(self, s: torch.Tensor, *args, **kwargs) -> torch.Tensor:
+        return s.new_zeros(())
+
+
+class _Passthrough(nn.Module):
+    """A truncated residual node of a pairformer layer: ``x + 0``. With ``copy``, a new tensor, so a later
+    in-place node of the layer never writes the caller's tensor."""
+
+    def __init__(self, copy: bool = False) -> None:
+        super().__init__()
+        self.copy = copy
+
+    def forward(self, x: torch.Tensor, *args, **kwargs) -> torch.Tensor:
+        return x.clone() if self.copy else x
+
+
+# PairformerLayerV1's pair-path nodes in call order; the last one updates ``z`` in place.
+_PAIR_NODES = ("tri_mul_out", "tri_mul_in", "tri_attn_start", "tri_attn_end", "transition_z")
+
+
+def _truncate_zero_update_nodes(
+    stack: nn.Module, dead: dict[int, frozenset[str]]
+) -> list[tuple[nn.Module, str, object]]:
+    """Replace the ``dead`` nodes of ``stack``'s layers by parameter-free stubs; return what to restore."""
+    replaced: list[tuple[nn.Module, str, object]] = []
+    for index, nodes in dead.items():
+        layer = stack.layers[index]
+        replaced += [(layer, name, getattr(layer, name)) for name in sorted(nodes)]
+        if {"attention", "transition_s"} <= nodes:
+            replaced.append((layer, "no_update_s", layer.no_update_s))
+            layer.no_update_s = True
+        if "attention" in nodes:
+            layer.attention = _ZeroUpdate()
+        if "transition_s" in nodes:
+            layer.transition_s = _Passthrough()
+        # The pair transition updates ``z`` in place: when no live node before it built a new ``z``, the first
+        # stub copies, as the first node did. A layer without live pair nodes also returns a new tensor.
+        first_live = next((name for name in _PAIR_NODES if name not in nodes), None)
+        for name in _PAIR_NODES:
+            if name in nodes:
+                setattr(layer, name, _Passthrough(copy=name == "tri_mul_out" and first_live in ("transition_z", None)))
+    return replaced
+
+
+def _restore(replaced: list[tuple[nn.Module, str, object]]) -> None:
+    for owner, name, value in reversed(replaced):
+        setattr(owner, name, value)
 
 
 def _unbatch(x: torch.Tensor, ndim: int) -> torch.Tensor:
@@ -203,12 +257,35 @@ class Protenix(nn.Module, OptimizedModuleSetterMixin):
         """
         return build_local_attn_metadata(self.n_queries, self.n_keys, bias_cache={})
 
+    def _apply(self, fn, recurse: bool = True):
+        # Truncated nodes are kept outside the module tree for a reload; move and cast them with the model.
+        for _, _, value in getattr(self, "_truncated_nodes", []):
+            if isinstance(value, nn.Module):
+                value._apply(fn, recurse)
+        return super()._apply(fn, recurse)
+
     def load_weights(self, weights: dict = None) -> None:
         """Load ported-module weights from a protenix-v2 checkpoint (or hub)."""
         if weights is None:
             weights = load_weights_from_hubs(name=self.model_name)
 
+        # Pairformer nodes whose checkpoint parameters are all ~0 are truncated: stubs replace them and their
+        # weights are not converted (convert.zero_update_nodes). A reload restores them first.
+        _restore(getattr(self, "_truncated_nodes", []))
+        self._truncated_nodes: list[tuple[nn.Module, str, object]] = []
+        dead = {}
+        if getattr(self.config, "skip_zero_update_nodes", True):
+            for owner, prefix in (
+                (self.trunk, "pairformer_stack"),
+                (self.confidence_head, "confidence_head.pairformer_stack"),
+            ):
+                stack = owner.pairformer_stack
+                dead[id(owner)] = zero_update_nodes(weights, prefix, len(stack.layers))
+                self._truncated_nodes += _truncate_zero_update_nodes(stack, dead[id(owner)])
+
         def _strict(module: nn.Module, state: dict) -> None:
+            if dead.get(id(module)):
+                state = drop_zero_update_nodes(state, "pairformer_stack", dead[id(module)])
             module.load_state_dict(state, strict=True)
 
         _strict(

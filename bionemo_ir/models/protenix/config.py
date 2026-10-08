@@ -419,6 +419,13 @@ class ProtenixConfig(BaseConfig):
     """Top-level protenix-v2 model config."""
 
     compact_output: bool = Field(default=False, description="Return confidence summaries without trunk archives.")
+    skip_zero_update_nodes: bool = Field(
+        default=True,
+        description=(
+            "Truncate pairformer nodes whose checkpoint parameters are all below 1e-30 in magnitude; the model's"
+            " state_dict then omits their parameters. Turn off to train or to export a full state_dict."
+        ),
+    )
     c_s: int = _Default.c_s
     c_z: int = _Default.c_z
     c_s_inputs: int = _Default.c_s_inputs

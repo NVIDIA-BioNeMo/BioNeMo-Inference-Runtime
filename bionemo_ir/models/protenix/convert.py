@@ -23,6 +23,8 @@ concatenations); atom feature projections are fused along their input channels.
 
 from __future__ import annotations
 
+import math
+
 import torch
 
 from bionemo_ir.configs import BaseConfig
@@ -397,6 +399,53 @@ def convert_pairformer_stack_torch(config: BaseConfig, weights: dict, prefix: st
         _convert_pair_path(weights, src_blk, layer, out, dtype_str, config.token_z * 4)
         _convert_pairformer_single_path(weights, src_blk, layer, out, dtype)
     return out
+
+
+# A pairformer node whose every parameter is below this magnitude adds at most its output bias (< 1e-30) to a
+# residual: products of two such parameters underflow to zero, and a bf16 or fp32 residual above about 1e-20
+# cannot represent the sum. A CPU scan of the released protenix-v2.pt (2026-10-07) found 41 such nodes: 18
+# attention-pair-bias and 13 single-transition nodes of the trunk, and 10 pair nodes of the confidence
+# pairformer. Another checkpoint may hold none.
+ZERO_UPDATE_WEIGHT_MAX = 1e-30
+
+# OSS pairformer block child -> PairformerLayerV1 node.
+PAIRFORMER_NODES = {
+    "attention_pair_bias": "attention",
+    "single_transition": "transition_s",
+    "tri_mul_out": "tri_mul_out",
+    "tri_mul_in": "tri_mul_in",
+    "tri_att_start": "tri_attn_start",
+    "tri_att_end": "tri_attn_end",
+    "pair_transition": "transition_z",
+}
+
+
+def zero_update_nodes(weights: dict, prefix: str, num_blocks: int) -> dict[int, frozenset[str]]:
+    """Per block of the OSS pairformer stack under ``prefix``, the ``PairformerLayerV1`` nodes whose every
+    checkpoint parameter is below :data:`ZERO_UPDATE_WEIGHT_MAX` in magnitude."""
+    peaks: dict[tuple[int, str], float] = {}
+    head = _join(prefix, "blocks.")
+    for key, value in weights.items():
+        if not key.startswith(head) or not torch.is_tensor(value) or not value.is_floating_point():
+            continue
+        block, _, rest = key[len(head) :].partition(".")
+        child = rest.partition(".")[0]
+        if block.isdigit() and int(block) < num_blocks and child in PAIRFORMER_NODES:
+            node = (int(block), PAIRFORMER_NODES[child])
+            peak = float(value.detach().abs().max())
+            # A NaN never compares below the bound: it keeps its node live.
+            peaks[node] = max(peaks.get(node, 0.0), math.inf if math.isnan(peak) else peak)
+    dead: dict[int, set[str]] = {}
+    for (block, node), peak in peaks.items():
+        if peak < ZERO_UPDATE_WEIGHT_MAX:
+            dead.setdefault(block, set()).add(node)
+    return {block: frozenset(nodes) for block, nodes in sorted(dead.items())}
+
+
+def drop_zero_update_nodes(state: dict, stack: str, dead: dict[int, frozenset[str]]) -> dict:
+    """``state`` without the converted keys of the ``dead`` nodes of the pairformer stack under ``stack``."""
+    prefixes = tuple(_join(stack, f"layers.{block}.{node}.") for block, nodes in dead.items() for node in nodes)
+    return {key: value for key, value in state.items() if not key.startswith(prefixes)} if prefixes else state
 
 
 def _convert_opm(weights: dict, src: str, tgt: str, out: dict, dtype: torch.dtype) -> None:

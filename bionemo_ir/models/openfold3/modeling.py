@@ -21,6 +21,7 @@ from bionemo_ir._torch.attention_backend import (
     auto_select_pairwise_attention_backend,
     auto_select_triangle_attention_backend,
 )
+from bionemo_ir._torch.graph_optimization import GraphRegion
 from bionemo_ir._torch.graph_optimization.cuda_graph.runtime import CUDAGraphOptimizationTracker
 from bionemo_ir._torch.layers.linear import Linear
 from bionemo_ir._torch.layers.normalization import (
@@ -72,7 +73,11 @@ class OpenFold3(nn.Module, OptimizedModuleSetterMixin):
     GRAPH_OPT_ENABLED_MODULES = {
         "structure_pairformer": "pairformer_stack",
         "token_transformer": "diffusion_sampler.diffusion_module.diffusion_transformer",
-        "diffusion_module": "diffusion_sampler.diffusion_module",
+    }
+    GRAPH_REGIONS = {
+        "trunk": "trunk_graph",
+        "diffusion_module": "diffusion_sampler.graph",
+        "confidence_pairformer": "aux_heads.pairformer_embedding.pairformer_graph",
     }
 
     def get_optimized_modules(self, accelerated_configs: dict[str, AcceleratedConfig]) -> DiscoveredModuleRegistry:
@@ -139,6 +144,7 @@ class OpenFold3(nn.Module, OptimizedModuleSetterMixin):
             config=self.config.edm_sampling_config, diffusion_module=diffusion_module
         )
         self.aux_heads = AuxiliaryHeadsAllAtom(config=self.config.auxiliary_heads_config)
+        self.trunk_graph = GraphRegion(self, "_recycle_step", self.config.trunk.graph_optimization_config)
 
         # fp32 LayerNorm → cast to trunk dtype; leave fused triangle/PWA LNs as-is.
         if self.config.trunk_ln_high_precision and trunk_dtype != torch.float32:
@@ -224,6 +230,9 @@ class OpenFold3(nn.Module, OptimizedModuleSetterMixin):
         self.diffusion_module.load_weights(openfold3_weights["diffusion_module"])
         self.pairformer_stack.load_weights(openfold3_weights["pairformer_stack"])
         self.aux_heads.load_weights(openfold3_weights["auxiliary_heads"])
+        # The component loaders above do not reach these regions; drop graphs over the old weights.
+        self.trunk_graph.reset()
+        self.diffusion_sampler.graph.reset()
 
     def _update_recycle_pair(self, z_init: torch.Tensor, z: torch.Tensor) -> torch.Tensor:
         """Apply pair recycling in owned row blocks for long eager inference."""
@@ -308,29 +317,22 @@ class OpenFold3(nn.Module, OptimizedModuleSetterMixin):
         if sampling_seed is not None:
             msa_generator = torch.Generator(device=s_input.device).manual_seed(sampling_seed)
 
-        msa_kwargs = {} if msa_generator is None else {"generator": msa_generator}
+        template_batch = {
+            name: value for name, value in batch.items() if name.startswith("template_") or name == "asym_id"
+        }
         for cycle_index in range(num_cycles):
-            # [*, N_token, N_token, C_z]
-            z = self._update_recycle_pair(z_init, z)
-
-            z = z + self.template_embedder(batch=batch, z=z, pair_mask=pair_mask).to(dtype=z.dtype)
-
-            m, msa_mask = self.msa_module_embedder(batch=batch, s_input=s_input, **msa_kwargs)
-
-            # Run MSA + pair embeddings through the MsaModule
-            # m: [*, N_seq, N_token, C_m]
-            # z: [*, N_token, N_token, C_z]
-
-            z = self.msa_module(m, z, msa_mask=msa_mask.to(dtype=m.dtype), pair_mask=pair_mask.to(dtype=z.dtype))
-
-            s = s_init + self.linear_s(self.layer_norm_s(s))
-
-            s, z = self.pairformer_stack(
+            msa_feat, msa_mask = self.msa_module_embedder.prepare_msa(batch, generator=msa_generator)
+            s, z = self.trunk_graph(
                 s=s,
                 z=z,
-                mask=token_mask.to(dtype=pairformer_dtype),
-                pair_mask=pair_mask.to(dtype=pairformer_dtype),
-                inplace_safe=True,
+                s_init=s_init,
+                z_init=z_init,
+                s_input=s_input,
+                template_batch=template_batch,
+                msa_feat=msa_feat,
+                msa_mask=msa_mask,
+                token_mask=token_mask,
+                pair_mask=pair_mask,
             )
 
             if reclaim_recycle_cache and cycle_index + 1 < num_cycles:
@@ -338,6 +340,35 @@ class OpenFold3(nn.Module, OptimizedModuleSetterMixin):
 
         s_input, s, z = unpad_trunk_tokens(s_input, s, z, n_true=n_true, kinds=("single", "single", "pair"))
         return s_input, s, z
+
+    def _recycle_step(
+        self,
+        *,
+        s: torch.Tensor,
+        z: torch.Tensor,
+        s_init: torch.Tensor,
+        z_init: torch.Tensor,
+        s_input: torch.Tensor,
+        template_batch: dict[str, torch.Tensor],
+        msa_feat: torch.Tensor,
+        msa_mask: torch.Tensor,
+        token_mask: torch.Tensor,
+        pair_mask: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Run deterministic GPU compute for one prepared recycle."""
+        z = self._update_recycle_pair(z_init, z)
+        z = z + self.template_embedder(batch=template_batch, z=z, pair_mask=pair_mask).to(dtype=z.dtype)
+        m = self.msa_module_embedder.embed_prepared_msa(msa_feat, s_input)
+        z = self.msa_module(m, z, msa_mask=msa_mask.to(dtype=m.dtype), pair_mask=pair_mask.to(dtype=z.dtype))
+        s = s_init + self.linear_s(self.layer_norm_s(s))
+        dtype = self.config.trunk.pairformer.torch_dtype
+        return self.pairformer_stack(
+            s=s,
+            z=z,
+            mask=token_mask.to(dtype=dtype),
+            pair_mask=pair_mask.to(dtype=dtype),
+            inplace_safe=True,
+        )
 
     def prediction(
         self,

@@ -233,6 +233,21 @@ class SerialProcessor(_ProcessorBase):
             self._udf_instances[name] = build_stage_udf(stage)
         return self._udf_instances[name]
 
+    def get_stage_udf(self, name: str) -> StatefulStageUDF:
+        """Create or return a serial stage's live execution object.
+
+        Use this to reach the stage's live model, for example to inspect or
+        reconfigure its graph regions. The same object processes subsequent
+        requests.
+
+        Args:
+            name: Stage name from :meth:`list_stage_names`.
+
+        Returns:
+            The cached stage UDF. Unknown names raise ``ValueError``.
+        """
+        return self._get_or_create_udf(name, self.get_stage_by_name(name))
+
     def __call__(self, records: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Run all stages serially on the given records.
 

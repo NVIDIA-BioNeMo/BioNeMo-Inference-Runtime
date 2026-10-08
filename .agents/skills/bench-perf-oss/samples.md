@@ -254,7 +254,7 @@ Each `sample_manifest.json` entry must include:
   Template-bearing items are in scope; see
   [templates](#templates-are-in)
 
-## Load path (Path A)
+## Load path (processor)
 
 Do **not** call `examples/folding/run_demo.py:load_requests` on
 `spec_full.json` (wrong wrapper: `items` + `id`, not a demo JSON).

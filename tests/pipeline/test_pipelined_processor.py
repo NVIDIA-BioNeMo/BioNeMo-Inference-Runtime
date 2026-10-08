@@ -149,6 +149,20 @@ def _reset_device_calls() -> None:
 
 
 @pytest.mark.parametrize("workers", WORKERS)
+def test_live_device_stage_configuration_is_used(workers: str) -> None:
+    with PipelinedSerialProcessor(ProcessorConfig(model_source="test"), _stages(), workers=workers) as processor:
+        prologue, device, epilogue = processor.list_stage_names()
+        udf = processor.get_stage_udf(device)
+        assert processor.get_stage_udf(device) is udf
+        for name in (prologue, epilogue):
+            with pytest.raises(ValueError, match="executes in a worker"):
+                processor.get_stage_udf(name)
+        udf.raise_on = 1
+        with pytest.raises(RuntimeError, match="engine failure"):
+            processor(_records(1))
+
+
+@pytest.mark.parametrize("workers", WORKERS)
 def test_matches_serial_and_keeps_order(workers: str) -> None:
     records = _records(5)
     expected = SerialProcessor(ProcessorConfig(model_source="test"), _stages())(records)

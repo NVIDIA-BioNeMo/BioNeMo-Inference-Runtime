@@ -75,7 +75,11 @@ class Boltz2(nn.Module, OptimizedModuleSetterMixin):
     # Whitelist gating modules discovered via ``@support_graph_optimization``.
     GRAPH_OPT_ENABLED_MODULES = {
         "token_transformer": "diffusion_sampler.diffusion_module.token_transformer",
-        "diffusion_module": "diffusion_sampler.diffusion_module",
+    }
+    GRAPH_REGIONS = {
+        "trunk": "trunk.graph",
+        "diffusion_module": "diffusion_sampler.graph",
+        "confidence_pairformer": "confidence_module.pairformer_graph",
     }
 
     def __init__(self, config: BaseConfig = None, model_name: str | None = None, include_load_weights: bool = True):

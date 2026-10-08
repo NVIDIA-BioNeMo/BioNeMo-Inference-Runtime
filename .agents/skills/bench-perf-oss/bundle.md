@@ -89,7 +89,7 @@ bioir-perf/
   bench.py                 # container: scorers, weights, per-model loop
   install_scorers.sh       # isolated ost + DockQ (+ kalign if missing)
   README.md                # operator usage from this directory
-  lib/                     # dataset, scoring, telemetry, Path A,
+  lib/                     # dataset, scoring, telemetry, processor path,
                            # report, patches.sh
   models/
     boltz2/
@@ -104,13 +104,13 @@ Every supported folding key in this skill gets its own directory:
 
 - `install_deps.sh` — clone the pin, overlay venv, kernels, extra
   weights (AF2 JAX→PT, Protenix CCD)
-- `run_bioir.py` — timed BioIR column (Path A or Path B)
+- `run_bioir.py` — timed BioIR column (processor or OSS feature path)
 - `run_oss.py` — timed OSS eager column; `--compile` only where the
   profile allows it
 - `report.py` — required `speedup.json` +
   `comparison_report.md`; optional PNG charts
 
-Add extra files only when the model needs them (`stage.py`, Path B
+Add extra files only when the model needs them (`stage.py`, OSS feature path
 `dump_features.py`, OF3 `runner.yaml`, `patches/`). Do not dump the
 whole `$WORKDIR` tree into `bioir-perf/`.
 
@@ -313,10 +313,9 @@ Keep one copy of:
 - OpenStructure lDDT + DockQ
 - GPU inventory and in-forward NVIDIA-SMI sampling
 - CUDA Event `model.forward()` timing
-- Path A `build_processor` serial runner
-- CUDA-graph audit (`diffusion_module` only; empty cache is not a
-  capture failure; above the 1024-token limit is
-  `eager_out_of_range`)
+- `build_processor` serial runner
+- CUDA-graph region audit
+  ([measurement.md](measurement.md#audit-cuda-graph-routing-not-cache-emptiness))
 - speedup geomean/median, Markdown table; optional PNG charts
 
 Smoke IDs stay locked with [samples.md](samples.md) and the model
@@ -335,29 +334,30 @@ profiles. Do not pick a new five-sample set while packing.
 
 Copy the **locked** pin, not `main`. Follow the matching profile:
 
-- Boltz-2 — [models/boltz2.md](models/boltz2.md). Path A. Tag
+- Boltz-2 — [models/boltz2.md](models/boltz2.md). Processor path. Tag
   `v2.2.1`. `recycling_steps=3`, `num_sampling_steps=200`,
   `diffusion_samples=5`. `trunk.use_templates_v2=True`. MSA cap
-  8192. `use_kernels=True`. CUDA graph on `diffusion_module`.
-- OpenFold3 — [models/of3.md](models/of3.md). Path A. Tag `0.4.3`
+  8192. `use_kernels=True`.
+- OpenFold3 — [models/of3.md](models/of3.md). Processor path. Tag `0.4.3`
   commit `0bb17be5199846e806b6347b6e17c6249c88ff1b`. Ship the two
   input-only template patches. Predict preset **without** `low_mem`.
-  cuEq + DeepSpeed evoformer. CUDA graph on `diffusion_module`.
+  cuEq + DeepSpeed evoformer.
 - Protenix-v2 — [models/protenix.md](models/protenix.md),
-  [no-pipeline.md](no-pipeline.md). Path B. Pin
+  [no-pipeline.md](no-pipeline.md). OSS feature path. Pin
   `2475421477ab414b571149ad4a875c390ff8a35d`. Dump OSS features once;
   both forwards load the `.pt`. BioIR `recycling_steps=5` → OSS
   `model.N_cycle=6`. Seed 101. `LAYERNORM_TYPE=torch`. Never
-  `torch.compile`. CUDA graph on `diffusion_module`.
-- OpenFold2 / AF2 model-1 — [models/of2.md](models/of2.md). Path A.
+  `torch.compile`.
+- OpenFold2 / AF2 model-1 — [models/of2.md](models/of2.md). Processor path.
   `aqlaboratory/openfold` `v2.2.0` commit
   `e938c184a291bf053af3b14c1e3e8bb29aee57e2`. Protein-only (monomer
   spec + protein-protein). `max_recycling_iters=2`,
-  `recycle_early_stop_tolerance=-1`. No CUDA graphs. BF16 ExtraMSA +
+  `recycle_early_stop_tolerance=-1`. BF16 ExtraMSA +
   Evoformer wrapper. NumPy `np.string_ = np.bytes_` alias.
 
 Shared still applies: serial one-sample, GPU-sync only, warmup 1 /
-measure 1, both scorers isolated, CUDA 12 extras remapped to CUDA 13,
+measure 1, BioIR graph regions on by default, both scorers
+isolated, CUDA 12 extras remapped to CUDA 13,
 DeepSpeed evoformer from source with CUTLASS 3.6.0 (not BioIR
 CUTLASS 4), never `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True`.
 See [environment.md](environment.md) and
@@ -481,14 +481,13 @@ rediscovering the same failures.
   it. Boltz / OF2 / Protenix keep their production autocast
   **inside** the callable.
 
-### Path A BioIR
+### Processor path, BioIR side
 
-Serial `EngineProcessor` UDFs are lazy. `lib.path_a.engine_model`
-must `_get_or_create_udf` the `FoldingEngineUDF` before the
-CUDA-graph audit binds. Instantiating the processor is not enough.
-Path A times `model_inference_time` inside the engine, and still
-runs `GpuSampler` around the processor call so BioIR rows get the
-same in-forward power/clocks as OSS.
+Serial engine UDFs are lazy. Before inference, get the live model through
+`processor.get_stage_udf("FoldingEngineStage").folding.engine.model` and
+bind the graph audit to it. The processor
+reports `model_inference_time` from inside the engine. Sample power and
+clocks only while its model forward executes, as on the OSS side.
 
 ### Boltz-2
 

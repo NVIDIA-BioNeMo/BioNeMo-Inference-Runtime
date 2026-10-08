@@ -28,6 +28,7 @@ import torch.nn as nn
 
 import bionemo_ir._torch.modules.protenix as protenix_modules
 import bionemo_ir.models.protenix as protenix_models
+from bionemo_ir._torch.graph_optimization import GraphRegion
 from bionemo_ir.hubs import FoldingSupportMatrix as SupMat
 from bionemo_ir.models.protenix.config import DiffusionModuleConfig, ProtenixConfig, TemplateEmbedderConfig
 from bionemo_ir.models.protenix.convert import (
@@ -286,6 +287,7 @@ def test_protenix_template_pair_path_keys():
 class _StubTrunk(nn.Module):
     def __init__(self, pair_state_dtype=torch.float32):
         super().__init__()
+        self.graph = GraphRegion(self, "forward", None)
         self.pair_state_dtype = pair_state_dtype
 
     def forward(self, batch, s_inputs, s_init, z_init, num_cycles=1):
@@ -320,6 +322,7 @@ class _StubDistogram(nn.Module):
 class _StubSampler(nn.Module):
     def __init__(self):
         super().__init__()
+        self.graph = GraphRegion(self, "sample_coords", None)
         self.last_kwargs: dict[str, Any] = {}
 
     def sample_coords(self, batch, *args, **kwargs):

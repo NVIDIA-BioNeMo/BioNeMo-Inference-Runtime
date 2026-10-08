@@ -79,7 +79,7 @@ def _capture(tracker, x, cond, scale) -> None:
     for _ in range(NUM_CALLS_TO_CAPTURE):
         tracker(x, cond=cond, scale=scale)
     state = tracker.graph_state_by_key[tracker.input_key_for_this_call(x, cond=cond, scale=scale)]
-    assert state.preparation_state is CUDAGraphPreparationState.GRAPH_VERIFIED
+    assert state.preparation_state is CUDAGraphPreparationState.GRAPH_CAPTURED
 
 
 def test_unchanged_stable_kwarg_skips_replay_copy(copied):

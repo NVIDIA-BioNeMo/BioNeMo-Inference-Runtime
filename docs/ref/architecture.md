@@ -307,35 +307,47 @@ packaged path, reproducing what a released artifact executes.
 
 ### What `optimize()` Actually Does
 
-`optimize()` selects nothing about kernels — it is the **CUDA-graph path**. It
-swaps each requested submodule for a `CUDAGraphOptimizationTracker` that keeps
+`optimize()` selects nothing about kernels — it is the **CUDA-graph path**.
+A `GraphRegion` captures one repeated call in place, so the model keeps its
+modules and state-dict keys; a region whose config carries a policy captures
+by default. `optimize()` re-enables regions (every region when called without
+configs) and can replace a region's policy. For other keys, it swaps each
+requested decorated submodule for a `CUDAGraphOptimizationTracker` that keeps
 the original as its eager `inner_module` and fallback.
 
 ```mermaid
 flowchart TB
     CFG["engine_kwargs['accelerated_configs']<br/>dict[str, AcceleratedConfig]"]
     CFG --> OPT["model.optimize(configs)"]
-    OPT --> REG["get_optimized_modules()<br/>DiscoveredModuleRegistry"]
+    OPT --> ROLE{"key names a GraphRegion<br/>role or path?"}
+    ROLE -->|yes| ENABLE["enable the region"]
+    ROLE -->|no| REG["get_optimized_modules()<br/>DiscoveredModuleRegistry"]
     REG --> WALK["walk the module tree for<br/>@support_graph_optimization"]
     WALK --> MATCH{"config key matches a<br/>qualified path or role alias?"}
     MATCH -->|no| ERR["raise — a typo is never<br/>read as 'nothing to do'"]
     MATCH -->|yes| WRAP["wrap in CUDAGraphOptimizationTracker"]
-    WRAP --> RUN["replay the captured graph"]
+    ENABLE --> RUN["replay the captured graph"]
+    WRAP --> RUN
     WRAP -.->|"need_fallback"| EAGER["run the eager inner_module"]
 ```
 
 Three things follow:
 
-- **Targets are discovered, not hand-listed.** Candidates are submodules
-  carrying the decorator, keyed by qualified path; a model's
+- **Regions are declared; decorated targets are discovered.** A model names
+  its regions in `GRAPH_REGIONS` (`"trunk"`, `"diffusion_module"`,
+  `"confidence_pairformer"`); `config.disable_cuda_graphs()` or a `None`
+  policy keeps them eager. Decorated candidates are submodules carrying
+  the decorator, keyed by qualified path; a model's
   `GRAPH_OPT_ENABLED_MODULES` adds friendly aliases (`"token_transformer"`,
-  `"diffusion_module"`, …) and, when declared, acts as a whitelist.
+  …) and, when declared, acts as a whitelist.
 - **Opting out is per key.** `AcceleratedConfig` carries `checkpoint`,
   `backend`, `default`, `warmup`, `compile`, and `need_fallback`, so one
   submodule can skip the path without a global switch.
-- **Not every model uses it.** OpenFold2 / AlphaFold2 have no CUDA-graph
-  modules; the big win is capturing the diffusion token transformer across
-  sampling steps on Boltz-1/2, OpenFold3, and Protenix.
+- **Capture follows repeated compute.** Boltz-1/2, OpenFold3, and Protenix
+  capture diffusion across sampling steps. Boltz-2, OpenFold3, and Protenix
+  also capture recycle trunks and repeated confidence Pairformers. OpenFold2
+  / AlphaFold2 capture the recycle trunk, including extra-MSA and Evoformer;
+  structure generation stays outside.
 
 ### Where the Memory Savings Come From
 

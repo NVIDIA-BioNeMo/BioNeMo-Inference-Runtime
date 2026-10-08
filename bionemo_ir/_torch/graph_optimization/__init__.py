@@ -13,6 +13,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from .cuda_graph.runtime import eager_graphs
+from .region import GraphRegion
 from .rewrite import rewrite_modules
 
-__all__ = ["rewrite_modules"]
+__all__ = ["GraphRegion", "eager_graphs", "rewrite_modules"]

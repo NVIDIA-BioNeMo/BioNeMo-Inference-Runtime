@@ -22,12 +22,7 @@ import torch
 import torch.nn as nn
 
 from bionemo_ir._torch.attention_backend import AttentionMetadata
-from bionemo_ir._torch.graph_optimization.config import (
-    GraphOptimizationMode,
-    InputAcceptanceDimSpec,
-    InputKeyMethod,
-)
-from bionemo_ir._torch.graph_optimization.decorator import NamedDimTies, support_graph_optimization
+from bionemo_ir._torch.graph_optimization.region import GraphRegion
 from bionemo_ir._torch.layers.linear import Linear
 from bionemo_ir._torch.layers.position_encoders import FourierEmbedding, RelativePositionEncoder
 from bionemo_ir._torch.layers.transformers.diffusion_transformer import ProtenixDiffusionTransformer
@@ -198,29 +193,6 @@ class ProtenixDiffusionConditioning(nn.Module):
         return single_s
 
 
-@support_graph_optimization(
-    # s_inputs/s_trunk (-2) and z_trunk (-2 and -3) carry ``num_tokens``.
-    # x_noisy is atoms and the mask lives inside input_feature_dict (not tied);
-    # the output is atom coordinates, so there is no output tie.
-    named_dims=(
-        NamedDimTies(
-            name="num_tokens",
-            input_dims=(
-                ("s_inputs", (-2,)),
-                ("s_trunk", (-2,)),
-                ("z_trunk", (-2, -3)),
-            ),
-        ),
-    ),
-    graph_optimization_mode=GraphOptimizationMode.CUDA_GRAPH_VIA_TORCH,
-    input_key_method=InputKeyMethod.EXACT,
-    # Default input management: accept up to 1024 tokens before falling back to
-    # eager.
-    input_acceptance_dim_spec=InputAcceptanceDimSpec(name="num_tokens", dim_len_max=1024),
-    # Only x_noisy and t_hat_noise_level change between denoising steps; the
-    # sampler passes the same features, trunk outputs and rollout cache.
-    stable_kwargs=("input_feature_dict", "s_inputs", "s_trunk", "z_trunk", "cache"),
-)
 class ProtenixDiffusionModule(nn.Module):
     """AF3 Algorithm 20 diffusion module (Protenix): one EDM denoise step.
 
@@ -230,6 +202,7 @@ class ProtenixDiffusionModule(nn.Module):
 
     def __init__(self, config: BaseConfig) -> None:
         super().__init__()
+        self.config = config
         dtype = config.torch_dtype
         skip = config.skip_create_weights
         eps = config.norm_epsilon
@@ -457,6 +430,7 @@ class ProtenixDiffusionSampler(nn.Module):
     ) -> None:
         super().__init__()
         self.diffusion_module = diffusion_module
+        self.graph = GraphRegion(self, "diffusion_module", diffusion_module.config.graph_optimization_config)
         self.integrator = AF3EDMIntegrator(
             EDMIntegratorConfig(gamma0=gamma0, gamma_min=gamma_min, noise_scale=noise_scale, step_scale=step_scale)
         )
@@ -484,7 +458,7 @@ class ProtenixDiffusionSampler(nn.Module):
         cache: dict[str, Any] | None,
     ) -> torch.Tensor:
         t_hat = sigma_hat.reshape((1,) * (len(batch_shape) + 1)).expand(*batch_shape, n_sample).to(x_noisy.dtype)
-        return self.diffusion_module(
+        return self.graph(
             x_noisy=x_noisy,
             t_hat_noise_level=t_hat,
             input_feature_dict=input_feature_dict,

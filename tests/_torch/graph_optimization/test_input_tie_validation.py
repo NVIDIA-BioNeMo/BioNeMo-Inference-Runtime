@@ -12,9 +12,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""The tracker validates input tie points against the first representative
-call — a tie to an absent tensor or out-of-range axis is a configuration
-error, not a silently-ignored rule."""
+"""Every new signature must resolve tied axes with consistent lengths."""
 
 import pytest
 import torch.nn as nn
@@ -50,12 +48,22 @@ def _shape(*dims: int) -> tuple[int, ...]:
     return dims
 
 
-def test_valid_ties_pass_and_run_once():
+def test_new_signatures_are_validated():
     tracker = _tracker(_acceptance_factory())
     tracker.validate_input_ties({"s_shape": _shape(1, 50, 64)})  # 3-D, axis -2 ok
-    assert tracker._input_ties_validated is True
-    # Guarded: a later bad call is not re-validated (hot-path one-shot).
-    tracker.validate_input_ties({"x_shape": _shape(1, 2)})
+    with pytest.raises(ValueError, match="no such tensor is present"):
+        tracker.validate_input_ties({"x_shape": _shape(1, 2)})
+
+
+def test_tied_lengths_must_match_across_inputs_and_pair_axes():
+    factory = _acceptance_factory()
+    factory.set_named_dim_ties([NamedDimTies(name="num_tokens", input_dims=(("s", (-2,)), ("z", (-2, -3))))])
+    tracker = _tracker(factory)
+    tracker.validate_input_ties({"s_shape": _shape(1, 8, 64), "z_shape": _shape(1, 8, 8, 32)})
+    with pytest.raises(ValueError, match="unequal lengths"):
+        tracker.validate_input_ties({"s_shape": _shape(1, 8, 64), "z_shape": _shape(1, 9, 8, 32)})
+    with pytest.raises(ValueError, match="unequal lengths"):
+        tracker.validate_input_ties({"s_shape": _shape(1, 8, 64), "z_shape": _shape(1, 9, 9, 32)})
 
 
 def test_tie_to_absent_tensor_raises():

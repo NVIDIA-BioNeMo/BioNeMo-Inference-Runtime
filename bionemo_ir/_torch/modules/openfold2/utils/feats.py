@@ -110,7 +110,7 @@ def dgram_from_positions(
 ):
     dgram = torch.sum((pos[..., None, :] - pos[..., None, :, :]) ** 2, dim=-1, keepdim=True)
     lower = torch.linspace(min_bin, max_bin, no_bins, device=pos.device) ** 2
-    upper = torch.cat([lower[1:], lower.new_tensor([inf])], dim=-1)
+    upper = torch.cat([lower[1:], lower.new_full((1,), inf)], dim=-1)
     dgram = ((dgram > lower) * (dgram < upper)).type(dgram.dtype)
 
     return dgram

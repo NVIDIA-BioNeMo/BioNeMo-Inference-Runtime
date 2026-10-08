@@ -24,6 +24,7 @@ import torch.nn.functional as F
 
 from bionemo_ir._torch.attention_backend import AttentionMetadata
 from bionemo_ir._torch.attention_backend.utils import PrecomputedPairMasks, precompute_pair_masks
+from bionemo_ir._torch.graph_optimization.region import GraphRegion
 from bionemo_ir._torch.layers.linear import Linear
 from bionemo_ir._torch.layers.token_padding import pad_trunk_tokens, unpad_trunk_tokens
 from bionemo_ir._torch.layers.transformers.pairformer import PairformerModule
@@ -160,6 +161,7 @@ class ProtenixTrunk(nn.Module):
         )
         # forward() pads the tokens before any stack runs.
         set_trimul_token_padding(self, self.enable_token_pad)
+        self.graph = GraphRegion(self, "_recycle_step", config.graph_optimization_config)
 
     def forward(
         self,
@@ -224,27 +226,67 @@ class ProtenixTrunk(nn.Module):
             self.template_embedder.template_representatives(input_feature_dict) if use_template else None
         )
 
+        msa_mask_tensors = (
+            (msa_precomputed.pair_mask, msa_precomputed.mask_bias, msa_precomputed.mask_bias_transposed)
+            if msa_precomputed is not None
+            else None
+        )
+        cycle_features = {
+            name: value
+            for name, value in input_feature_dict.items()
+            if name in ("msa", "has_deletion", "deletion_value", "asym_id") or name.startswith("template_")
+        }
+
         n_cycle = self.n_cycle if num_cycles is None else num_cycles
         for _ in range(n_cycle):
-            # Projection result is freshly owned — safe in-place accumulator.
-            z = self.linear_no_bias_z_cycle(self.layernorm_z_cycle(z.to(self.dtype)))
-            z.add_(z_init)
-            if use_template:
-                z.add_(self.template_embedder(input_feature_dict, z, pair_mask, template_representatives))
-            z = self.msa_module(
-                input_feature_dict,
-                z.to(self.pair_state_dtype),
-                s_inputs,
+            s, z = self.graph(
+                s=s,
+                z=z,
+                s_init=s_init,
+                z_init=z_init,
+                s_inputs=s_inputs,
+                input_feature_dict=cycle_features,
                 pair_mask=pair_mask,
+                token_mask=token_mask,
                 attn_metadata=attn_metadata,
-                precomputed_masks=msa_precomputed,
+                msa_mask_tensors=msa_mask_tensors,
+                template_representatives=template_representatives,
             )
-            s = self.linear_no_bias_s(self.layernorm_s(s))
-            s.add_(s_init)
-            s_pf, z_pf = self.pairformer_stack(
-                s.to(self.pairformer_dtype), z.to(self.pairformer_dtype), token_mask, pair_mask
-            )
-            s = s_pf.to(self.dtype)
-            z = z_pf.to(self.pair_state_dtype)
         s, z = unpad_trunk_tokens(s, z, n_true=n_true)
         return s, z
+
+    def _recycle_step(
+        self,
+        *,
+        s: torch.Tensor,
+        z: torch.Tensor,
+        s_init: torch.Tensor,
+        z_init: torch.Tensor,
+        s_inputs: torch.Tensor,
+        input_feature_dict: dict[str, torch.Tensor],
+        pair_mask: torch.Tensor,
+        token_mask: torch.Tensor,
+        attn_metadata: AttentionMetadata | None,
+        msa_mask_tensors: tuple[torch.Tensor, torch.Tensor, torch.Tensor] | None,
+        template_representatives: list[int] | None,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Run a recycle using tensor-only precomputed masks that replay refreshes."""
+        precomputed = PrecomputedPairMasks(*msa_mask_tensors) if msa_mask_tensors is not None else None
+        z = self.linear_no_bias_z_cycle(self.layernorm_z_cycle(z.to(self.dtype)))
+        z.add_(z_init)
+        if template_representatives is not None:
+            z.add_(self.template_embedder(input_feature_dict, z, pair_mask, template_representatives))
+        z = self.msa_module(
+            input_feature_dict,
+            z.to(self.pair_state_dtype),
+            s_inputs,
+            pair_mask=pair_mask,
+            attn_metadata=attn_metadata,
+            precomputed_masks=precomputed,
+        )
+        s = self.linear_no_bias_s(self.layernorm_s(s))
+        s.add_(s_init)
+        s_pf, z_pf = self.pairformer_stack(
+            s.to(self.pairformer_dtype), z.to(self.pairformer_dtype), token_mask, pair_mask
+        )
+        return s_pf.to(self.dtype), z_pf.to(self.pair_state_dtype)

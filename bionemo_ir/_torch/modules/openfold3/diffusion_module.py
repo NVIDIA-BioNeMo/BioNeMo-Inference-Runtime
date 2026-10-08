@@ -23,12 +23,7 @@ import torch
 import torch.nn as nn
 
 from bionemo_ir._torch.attention_backend import AttentionMetadata
-from bionemo_ir._torch.graph_optimization.config import (
-    GraphOptimizationMode,
-    InputAcceptanceDimSpec,
-    InputKeyMethod,
-)
-from bionemo_ir._torch.graph_optimization.decorator import NamedDimTies, support_graph_optimization
+from bionemo_ir._torch.graph_optimization.region import GraphRegion
 from bionemo_ir._torch.layers.conditioning import DiffusionConditioning
 from bionemo_ir._torch.layers.linear import Linear
 from bionemo_ir._torch.layers.random_augmentation import broadcast_atom_mask
@@ -51,46 +46,6 @@ from bionemo_ir._torch.utils import recursive_calling_load_weights
 from bionemo_ir.configs import BaseConfig
 
 
-@support_graph_optimization(
-    # si_input/si_trunk (-2), zij_trunk (-2 and -3), and token_mask (-1) carry
-    # ``num_tokens``. The output is denoised atom coordinates ([*, N_atom, 3]),
-    # whose axes are atoms/coords (no token axis), so there is no output tie.
-    named_dims=(
-        NamedDimTies(
-            name="num_tokens",
-            input_dims=(
-                ("si_input", (-2,)),
-                ("si_trunk", (-2,)),
-                ("zij_trunk", (-2, -3)),
-                ("token_mask", (-1,)),
-            ),
-        ),
-    ),
-    graph_optimization_mode=GraphOptimizationMode.CUDA_GRAPH_VIA_TORCH,
-    verify_capture=False,
-    input_key_method=InputKeyMethod.EXACT,
-    input_acceptance_dim_spec=InputAcceptanceDimSpec(
-        name="num_tokens",
-        dim_len_max=1024,
-    ),
-    # Only xl_noisy and t change between denoising steps; the sampler passes the
-    # same tensors for everything else throughout a rollout.
-    stable_kwargs=(
-        "batch",
-        "token_mask",
-        "atom_mask",
-        "si_input",
-        "si_trunk",
-        "zij_trunk",
-        "prepared_zij",
-        "prepared_si",
-        "prepared_atom_cl",
-        "prepared_atom_plm",
-        "prepared_atom_encoder_pair_biases",
-        "prepared_atom_decoder_pair_biases",
-        "prepared_token_pair_biases",
-    ),
-)
 class DiffusionModule(nn.Module):
     """
     Implements AF3 Algorithm 20.
@@ -103,6 +58,7 @@ class DiffusionModule(nn.Module):
                 Configuration dictionary for diffusion module
         """
         super().__init__()
+        self.config = config
         self.c_s = config.c_s
         self.c_token = config.c_token
         self.sigma_data = config.sigma_data
@@ -363,6 +319,7 @@ class OpenFold3DiffusionSampler(nn.Module):
         """
         super().__init__()
         self.diffusion_module = diffusion_module
+        self.graph = GraphRegion(self, "diffusion_module", diffusion_module.config.graph_optimization_config)
         self.use_conditioning = config.use_conditioning
         self.integrator = AF3EDMIntegrator(
             EDMIntegratorConfig(
@@ -419,7 +376,7 @@ class OpenFold3DiffusionSampler(nn.Module):
                 diffusion_kwargs["prepared_atom_encoder_pair_biases"] = prepared_atom_encoder_pair_biases
             if prepared_atom_decoder_pair_biases is not None:
                 diffusion_kwargs["prepared_atom_decoder_pair_biases"] = prepared_atom_decoder_pair_biases
-        return self.diffusion_module(**diffusion_kwargs)
+        return self.graph(**diffusion_kwargs)
 
     def forward(
         self,

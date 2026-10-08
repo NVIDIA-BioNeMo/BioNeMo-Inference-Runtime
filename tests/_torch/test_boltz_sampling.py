@@ -141,7 +141,7 @@ def _sampler_config() -> SimpleNamespace:
         synchronize_sigmas=False,
         accumulate_token_repr=False,
     )
-    score_model = SimpleNamespace(dim_fourier=256, token_s=384)
+    score_model = SimpleNamespace(dim_fourier=256, token_s=384, graph_optimization_config=None)
     return SimpleNamespace(atom_diffusion=atom_diffusion, score_model=score_model)
 
 
@@ -176,7 +176,7 @@ def test_boltz_discovery_aliases_target_sampler_diffusion_module():
     for model_cls in (Boltz1, Boltz2):
         aliases = model_cls.GRAPH_OPT_ENABLED_MODULES
         assert aliases["token_transformer"] == ("diffusion_sampler.diffusion_module.token_transformer")
-        assert aliases["diffusion_module"] == "diffusion_sampler.diffusion_module"
+        assert model_cls.GRAPH_REGIONS["diffusion_module"] == "diffusion_sampler.graph"
 
 
 def _network_condition() -> dict[str, torch.Tensor]:

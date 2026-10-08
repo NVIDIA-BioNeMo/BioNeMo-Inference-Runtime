@@ -82,6 +82,41 @@ classDiagram
 `profile_inference`). CUDA-graph wrap is
 [architecture — acceleration][accel].
 
+Folding configs hold each graph region's CUDA-graph policy in a
+`graph_optimization_config` field, such as `trunk.graph_optimization_config`.
+A region with a policy captures by default.
+`config.disable_cuda_graphs()` clears every policy in the tree; setting one
+field to `None` keeps that region eager. Both apply to models constructed from
+the config afterwards; refer to [API — CUDA graphs][cuda-graphs].
+
+## Boltz-2 Graph Caches
+
+Each Boltz-2 region keeps a bounded number of exact input shapes, so traffic
+that rotates through more shapes recaptures graphs.
+`Boltz2Config.with_graph_cache` returns a copy of the config with new limits:
+
+```python
+from bionemo_ir.models.boltz2 import Boltz2
+from bionemo_ir.models.boltz2.config import Boltz2GraphCacheConfig
+
+config = Boltz2.get_pretrained_config("boltz-2")
+config = config.with_graph_cache(
+    Boltz2GraphCacheConfig(
+        max_tokens=2048,
+        max_graphs=4,
+        budget_bytes=16 << 30,
+    )
+)
+```
+
+The limits apply to each of the `trunk`, `diffusion_module`, and
+`confidence_pairformer` regions: `max_tokens` is the inclusive token limit for
+exact shapes without padding, `max_graphs` the maximum number of cached shapes,
+and `budget_bytes` the estimated graph memory budget. Retained graphs consume
+GPU memory alongside model weights and activations; choose limits for the device
+and workload. Pass the returned config when constructing the model or as
+`engine_kwargs["config"]`.
+
 ## Pipeline Configs
 
 `ProcessorConfig` is the executor (batch size, Ray vs serial).
@@ -130,4 +165,5 @@ EngineProcessorConfig
 [api]: api.md
 [architecture]: architecture.md
 [build-processor]: api.md#build_processor
+[cuda-graphs]: api.md#cuda-graphs
 [support-matrix]: support-matrix.md

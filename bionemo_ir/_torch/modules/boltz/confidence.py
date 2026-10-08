@@ -20,6 +20,7 @@ import torch
 from torch import nn
 
 from bionemo_ir._torch.attention_backend import AttentionMetadata
+from bionemo_ir._torch.graph_optimization import GraphRegion, eager_graphs
 from bionemo_ir._torch.layers.conditioning import ContactConditioning
 from bionemo_ir._torch.layers.linear import Linear
 from bionemo_ir._torch.layers.position_encoders import RelativePositionEncoder
@@ -417,6 +418,7 @@ class Boltz2ConfidenceModule(nn.Module):
             )
 
         self.pairformer_stack = PairformerModule(config=config.pairformer)
+        self.pairformer_graph = GraphRegion(self, "pairformer_stack", config.graph_optimization_config)
         self.enable_token_pad = config.pairformer.enable_token_pad
         self.token_pad_spec = config.token_pad_spec
 
@@ -597,7 +599,8 @@ class Boltz2ConfidenceModule(nn.Module):
                     {"s": s_t, "z": z_t, "mask": mask, "pair_mask": pair_mask}, n_true, self.token_pad_spec
                 )
                 s_t, z_t, mask, pair_mask = padded["s"], padded["z"], padded["mask"], padded["pair_mask"]
-            s_t, z_t = self.pairformer_stack(s_t, z_t, mask=mask, pair_mask=pair_mask, attn_metadata=attn_metadata)
+            with eager_graphs(niter == 1):
+                s_t, z_t = self.pairformer_graph(s_t, z_t, mask=mask, pair_mask=pair_mask, attn_metadata=attn_metadata)
             s_t, z_t = unpad_trunk_tokens(s_t, z_t, n_true=n_true, kinds=("single", "pair"))
             s_t = s_t.unflatten(0, (batch_size, -1)).to(self.dtype)
             z_t = z_t.unflatten(0, (batch_size, -1)).to(self.dtype)

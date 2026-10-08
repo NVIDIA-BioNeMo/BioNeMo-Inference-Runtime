@@ -19,6 +19,7 @@ import pytest
 import torch
 from torch import nn
 
+from bionemo_ir._torch.graph_optimization import GraphRegion
 from bionemo_ir._torch.layers.normalization import replace_with_fused_layernorm
 from bionemo_ir._torch.modules.openfold3.confidence import (
     AuxiliaryHeadsAllAtom,
@@ -58,6 +59,7 @@ class _FakePairformerEmbedding(PairformerEmbedding):
     def __init__(self) -> None:
         nn.Module.__init__(self)
         self.pairformer_stack = _FakePairformer()
+        self.pairformer_graph = GraphRegion(self, "pairformer_stack", None)
         self.token_pad_spec = None
 
     def embed_zij(

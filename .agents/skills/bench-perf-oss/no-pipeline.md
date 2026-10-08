@@ -16,7 +16,7 @@
 {}
 ---
 
-# Path B — no BioIR data pipeline
+# OSS feature path — no BioIR data pipeline
 
 Use this when `docs/ref/support-matrix.md` says Pipeline = **No**
 **and** the model is still a folding compute path. Today that is
@@ -39,8 +39,8 @@ OSS data pipeline  ──untimed──►  feature dict
         └─► adapt keys ──► BioIR model.forward    timed   (bioir_python)
 ```
 
-One feature dict for both forwards means template parity is free on
-Path B: whatever the OSS pipeline built, both sides see. Verify the
+One feature dict for both forwards gives equal templates:
+whatever the OSS pipeline built, both sides see. Verify the
 template features are non-empty once, on that shared batch.
 
 Do not invent a BioIR tokenizer / feature factory for the bench.
@@ -51,23 +51,16 @@ Protenix is not registered. `include_load_weights` defaults to
 `False` — pass `True` (`docs/ref/model-weights.md`).
 
 ```python
-from bionemo_ir.configs import AcceleratedConfig
 from bionemo_ir.models.protenix import Protenix
 
 # Default constructor: config=None → get_pretrained_config.
 # Do not pass a handmade BaseConfig.
 model = Protenix(model_name="protenix-v2", include_load_weights=True)
 model = model.cuda().eval()
-# Select the diffusion module without overriding its safe graph routine.
-model.optimize({
-    "diffusion_module": AcceleratedConfig(backend="torch"),
-})
 ```
 
-Omit `default=`. Protenix's module-declared routine uses exact-shape
-keys, accepts at most 1024 tokens, and falls back to eager above that
-limit. Passing an explicit graph-optimization config replaces the
-routine and removes its guard.
+Its graph regions capture by default; keep their policies
+([CUDA graphs](measurement.md#cuda-graphs)).
 
 `forward` takes Boltz-style `runtime_args`: `recycling_steps`,
 `num_sampling_steps`, `diffusion_samples` (`docs/ref/api.md`).
@@ -91,7 +84,7 @@ MSA paths used to build it. Write a provenance line
 (`source=oss`, OSS commit, command). A dump that came from BioIR is
 invalid.
 
-Reuse the OSS inference script's featurizer (same as Path A).
+Reuse the OSS inference script's featurizer, as in the processor path.
 Do not write a second feature builder from OSS internals.
 
 ```python

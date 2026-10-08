@@ -30,7 +30,8 @@ from bionemo_ir._torch.attention_backend import (
     auto_select_pairwise_attention_backend,
     auto_select_triangle_attention_backend,
 )
-from bionemo_ir._torch.graph_optimization.cuda_graph.runtime import CUDAGraphOptimizationTracker
+from bionemo_ir._torch.graph_optimization.cuda_graph.runtime import CUDAGraphOptimizationTracker, eager_graphs
+from bionemo_ir._torch.graph_optimization.graph_policy import _release_unused_graphs
 from bionemo_ir._torch.layers.linear import Linear
 from bionemo_ir._torch.layers.normalization import replace_with_fused_layernorm
 from bionemo_ir._torch.layers.position_encoders import RelativePositionEncoder
@@ -104,10 +105,16 @@ class Protenix(nn.Module, OptimizedModuleSetterMixin):
     # generic discovery *sees* it as a candidate by qualified path; it is left
     # out of the aliases below on purpose and must never be given an
     # ``accelerated_configs`` entry (by role or by the ``trunk.pairformer_stack``
-    # path). The same applies to ``confidence_head.pairformer_stack``.
+    # path). The same applies to ``confidence_head.pairformer_stack``. The
+    # ``trunk`` and ``confidence_pairformer`` graph regions capture these stacks
+    # instead, inside a verified exact policy.
     GRAPH_OPT_ENABLED_MODULES = {
         "token_transformer": "diffusion_sampler.diffusion_module.diffusion_transformer",
-        "diffusion_module": "diffusion_sampler.diffusion_module",
+    }
+    GRAPH_REGIONS = {
+        "trunk": "trunk.graph",
+        "diffusion_module": "diffusion_sampler.graph",
+        "confidence_pairformer": "confidence_head.pairformer_graph",
     }
 
     def get_optimized_modules(self, accelerated_configs: dict[str, AcceleratedConfig]) -> DiscoveredModuleRegistry:
@@ -235,6 +242,8 @@ class Protenix(nn.Module, OptimizedModuleSetterMixin):
             self.confidence_head,
             convert_confidence_head_torch(self.config.confidence_head_config, weights, prefix="confidence_head"),
         )
+        # Loading the denoiser does not reach its sampler's region; drop graphs over the old weights.
+        self.diffusion_sampler.graph.reset()
 
     def _relative_position_encoding(self, batch: dict[str, torch.Tensor]) -> torch.Tensor:
         """Project precomputed or generated ``relp`` into pair channels."""
@@ -329,7 +338,8 @@ class Protenix(nn.Module, OptimizedModuleSetterMixin):
         summary_list = []
         full_list = [] if return_full_data else None
         for i in range(coordinate_ub.shape[0]):
-            plddt_i, pae_i, pde_i, _resolved_i = head.per_sample_logits(ctx, coordinate[..., i, :, :])
+            with eager_graphs(coordinate_ub.shape[0] == 1):
+                plddt_i, pae_i, pde_i, _resolved_i = head.per_sample_logits(ctx, coordinate[..., i, :, :])
             summary_i, full_i = summ.summary_one_sample(
                 contact_probs,
                 _unbatch(plddt_i, 2),
@@ -444,6 +454,11 @@ class Protenix(nn.Module, OptimizedModuleSetterMixin):
         if compact_output is None:
             compact_output = self.config.compact_output
         num_cycles = recycling_steps + 1
+        if "asym_id" in batch:
+            _release_unused_graphs(
+                (self.trunk.graph, self.diffusion_sampler.graph, self.confidence_head.pairformer_graph),
+                num_tokens=batch["asym_id"].shape[-1],
+            )
 
         # Precompute relp once (shared by trunk RPE and diffusion conditioning).
         # Destructive mode takes ownership; otherwise shallow-copy the shell.

@@ -20,7 +20,7 @@
 
 Use this profile with [`../SKILL.md`](../SKILL.md). Protenix-v2 is a
 folding model with a BioIR compute module but no BioIR data-pipeline
-factory, so it always uses **Path B** from
+factory, so it always uses the **OSS feature path** from
 [`../no-pipeline.md`](../no-pipeline.md):
 
 ```text
@@ -314,21 +314,10 @@ BioIR adaptation is layout-only:
 - do not recompute MSA, template, chemistry, or structure features;
 - reject a missing required key instead of filling zeros.
 
-Construct BioIR with the default pretrained config and select the
-parent `diffusion_module` through `model.optimize()` using
-`AcceleratedConfig(backend="torch")` with no `default=`. This preserves
-the module-declared exact-shape CUDA-graph routine and its inclusive
-1024-token acceptance limit; larger inputs intentionally fall back to
-eager. An explicit graph-optimization config replaces that safe
-routine, so do not supply one or raise the limit. Do not also graph the
-nested token transformer. Pass `compact_output=True`, preserve
-`full_data` for the writer, and use the three locked runtime arguments
-above.
-
-The tracker rejects an input above 1024 tokens before allocating a graph
-state or adding a capture-fallback key. Audit such a zero-state call as
-`eager_out_of_range` when the configured acceptance limit rejects its
-`N_token`; only treat zero states as unclassified for an accepted input.
+Construct BioIR with the default pretrained config; its graph regions
+capture by default ([CUDA graphs](../measurement.md#cuda-graphs)). Pass
+`compact_output=True`, preserve `full_data` for the pinned OSS writer, and
+use the locked runtime arguments above.
 
 For large pair representations, lock and serialize the benchmark's
 semantic-preserving chunk policy: pair transition, diffusion pair

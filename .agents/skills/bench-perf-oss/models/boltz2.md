@@ -147,9 +147,9 @@ BioIR currently has no inference-time MSA subsampling in its Boltz-2
 MSA module. For feature-row parity, pass `subsample_msa=False` to OSS
 rather than using the OSS CLI default of `True`.
 
-## BioIR Path A and CUDA graph
+## BioIR processor path and CUDA graphs
 
-Boltz-2 folding is Path A:
+Boltz-2 folding uses the processor path:
 
 ```python
 EngineProcessorConfig(
@@ -167,19 +167,10 @@ EngineProcessorConfig(
 Use one `InputRequest` in each `processor([record])` call. Read
 `model_inference_time` for the headline forward latency.
 
-Graph the parent `diffusion_module`; do not separately graph the nested
-`token_transformer`. Activate it with
-`AcceleratedConfig(backend="torch")` and omit `default=` so the
-module-declared safe routine remains intact. Its acceptance profile
-covers at most 1024 tokens, so larger samples legitimately fall back
-to eager. An explicit graph-optimization config replaces that profile;
-do not supply one or raise the limit. Record graph use or fallback per
-row rather than claiming every sample was captured.
-
-Use the policy-first
-[CUDA-graph audit](../measurement.md#audit-cuda-graph-routing-not-cache-emptiness).
-Above the acceptance limit, an empty graph-state map and empty
-capture-fallback map are the expected `eager_out_of_range` result.
+Graph regions capture by default; audit every row as in
+[CUDA graphs](../measurement.md#cuda-graphs). Samples above
+1024 tokens run eagerly; record that per row rather than claiming every
+sample was captured.
 
 ## Templates must be enabled, not merely featurized
 

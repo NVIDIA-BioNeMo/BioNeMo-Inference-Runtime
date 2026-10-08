@@ -266,13 +266,13 @@ runs no HHsearch / HMMsearch — pass hits you already have
 (`docs/ref/support-matrix.md`, "Templates (caller-supplied CIF)").
 `chain_id=None` auto-selects the best-aligning chain, matching the
 spec's `null`. The parser stage loads file content, so a path is
-enough. Snippet: [samples.md](samples.md#load-path-path-a).
+enough. Snippet: [samples.md](samples.md#load-path-processor).
 
 **OpenFold3.** Follow the pinned variant's complete CIF mapping,
 selection-floor, cache, patch, and populated-slot contract in
 [models/of3.md](models/of3.md#templates).
 
-**Path B (OSS pipeline + BioIR module).** One OSS-featurized batch
+**OSS feature path (OSS pipeline + BioIR module).** One OSS-featurized batch
 feeds both forwards, so template parity is structural; verify once on
 the shared batch ([no-pipeline.md](no-pipeline.md)).
 

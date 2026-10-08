@@ -301,6 +301,25 @@ class PipelinedSerialProcessor(SerialProcessor):
             return items, [], []
         return items[: device[0]], items[device[0] : device[-1] + 1], items[device[-1] + 1 :]
 
+    def get_stage_udf(self, name: str) -> StatefulStageUDF:
+        """Return a live UDF on the calling thread, such as the engine stage.
+
+        Worker-owned CPU stages cannot be configured through this accessor.
+        Without a device stage, every stage executes on the calling thread.
+
+        Args:
+            name: Stage name from :meth:`list_stage_names`.
+
+        Returns:
+            The cached stage UDF. Unknown or worker-owned names raise
+            ``ValueError``.
+        """
+        self.get_stage_by_name(name)
+        _, device_stages, _ = self._stage_groups()
+        if device_stages and name not in dict(device_stages):
+            raise ValueError(f"Stage {name} executes in a worker; its live UDF is unavailable")
+        return super().get_stage_udf(name)
+
     def _spawn(self, stages: StageGroup) -> _StageGroupWorker | None:
         if not stages:
             return None

@@ -55,7 +55,7 @@ from bionemo_ir.data.schemas import InputRequest, MSARecord, Polymer
 from bionemo_ir.pipeline.processor.engine_proc import EngineProcessorConfig, build_processor
 from bionemo_ir.pipeline.stages.configs import WriterStageConfig
 from bionemo_ir.pipeline.stages.engine_stage import FoldingPredictionError
-from tests._torch.model_forwards.test_model_forward_with_cuda_graph import _default_of3_model_config
+from tests._torch.model_forwards.test_model_forward_with_cuda_graph import _eager_model_config
 from tests.common.test_utils.basic import path_for_package_in_repo
 from tests.common.test_utils.seeding import seed_everything
 
@@ -180,12 +180,9 @@ def _load_request(sample_id: str) -> InputRequest:
 def _build_processor_config(model_source: str, output_dir: Path) -> EngineProcessorConfig:
     """Build a serial-backend, eager ``EngineProcessorConfig`` for the model.
 
-    No ``accelerated_configs`` — the diffusion (token) transformer runs eager.
+    The config clears every default graph-region policy and no ``accelerated_configs`` is given, so the run is eager.
     """
-    engine_kwargs: dict = {"profile_inference": True}
-    model_cfg = _default_of3_model_config(model_source)
-    if model_cfg is not None:
-        engine_kwargs["config"] = model_cfg
+    engine_kwargs: dict = {"profile_inference": True, "config": _eager_model_config(model_source)}
 
     return EngineProcessorConfig(
         model_source=model_source,

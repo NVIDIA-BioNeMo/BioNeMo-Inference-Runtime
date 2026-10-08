@@ -146,6 +146,14 @@ class BaseConfig(BaseModel):
 
         self._recursive_set(setter)
 
+    def disable_cuda_graphs(self) -> None:
+        """Clear every CUDA-graph policy in this tree, so a model built from it runs its graph regions eagerly."""
+
+        def setter(x):
+            x.graph_optimization_config = None
+
+        self._recursive_set(setter)
+
     def set_max_batch_size(self, value: int):
 
         def setter(x):

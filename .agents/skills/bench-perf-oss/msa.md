@@ -166,9 +166,9 @@ latency number.
 
 ## Worked mappings
 
-**BioIR (Path A).** `MSARecord(path=..., format="a3m")` on
+**BioIR processor path.** `MSARecord(path=..., format="a3m")` on
 `Polymer.msas` / `Polymer.paired_msas`; see
-[samples.md](samples.md#load-path-path-a). Protein unpaired MSA is
+[samples.md](samples.md#load-path-processor). Protein unpaired MSA is
 required for Boltz-1/2 and OpenFold3 and for every AF2 / OF2 key
 (`docs/ref/support-matrix.md`); paired is optional and used when the
 spec lists it.
@@ -185,7 +185,7 @@ point at `examples/boltz2/...` or `examples/data/samples/`.
 often additionally require a paired A3M on **every** chain — check
 before assuming the monomer mapping transfers.
 
-**Path B (OSS pipeline + BioIR module).** The OSS featurizer loads
+**OSS feature path (OSS pipeline + BioIR module).** The OSS featurizer loads
 the alignments and both forwards consume that one feature dict, so
 MSA parity is structural rather than something to re-verify per side
 ([no-pipeline.md](no-pipeline.md)). Verify once on the shared batch.

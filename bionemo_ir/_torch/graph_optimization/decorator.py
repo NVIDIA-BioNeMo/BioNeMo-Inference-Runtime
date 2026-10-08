@@ -115,12 +115,18 @@ def validate_spec_against_forward(cls_or_instance: type | object) -> None:
     if not isinstance(config, GraphOptimizationConfig):
         target = getattr(cls_or_instance, "__name__", type(cls_or_instance).__name__)
         raise ValueError(f"{target!r} is not decorated with @support_graph_optimization (no graph_opt_default found)")
-    routing = config.input_routing_config
-    forward = cls_or_instance.forward
-    sig = inspect.signature(forward)
+    owner = getattr(cls_or_instance, "__name__", type(cls_or_instance).__name__)
+    _validate_routing_against_signature(
+        inspect.signature(cls_or_instance.forward),
+        config.input_routing_config,
+        f"@support_graph_optimization on {owner}",
+    )
+
+
+def _validate_routing_against_signature(sig: inspect.Signature, routing: InputRoutingConfig | None, owner: str) -> None:
+    """Share routing-name checks between decorators and explicit regions."""
     param_names = set(sig.parameters)
     has_var_keyword = any(p.kind is inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values())
-    owner = getattr(cls_or_instance, "__name__", type(cls_or_instance).__name__)
 
     def _check(name: str, kind: str) -> None:
         if _POSITIONAL_NAME.match(name):
@@ -128,9 +134,7 @@ def validate_spec_against_forward(cls_or_instance: type | object) -> None:
         if name in param_names or has_var_keyword:
             return
         raise ValueError(
-            f"@support_graph_optimization on {owner}: {kind} {name!r} is not a "
-            f"parameter of forward "
-            f"{tuple(n for n in param_names if n != 'self')}"
+            f"{owner}: {kind} {name!r} is not a parameter of forward {tuple(n for n in param_names if n != 'self')}"
         )
 
     named_dim_ties = routing.named_dim_ties if routing is not None else ()

@@ -179,6 +179,8 @@ def test_msa_rng_isolation(device: str) -> None:
 
     class _MsaProbe:
         forward = MSAModuleEmbedder.forward
+        prepare_msa = MSAModuleEmbedder.prepare_msa
+        embed_prepared_msa = MSAModuleEmbedder.embed_prepared_msa
         _subsample_all_msa = staticmethod(MSAModuleEmbedder._subsample_all_msa)
         subsample_main_msa = False
         subsample_all_msa = True

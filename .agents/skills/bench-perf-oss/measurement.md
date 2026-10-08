@@ -27,9 +27,10 @@ The only dataset is the one `rebuild_dataset.py` builds
 ([samples.md](samples.md#build)). Local root: `benchmarks/dataset/`. See
 [samples.md](samples.md) for fetch, specs, and the catalog.
 
-- Convert each in-scope spec item to an `InputRequest` (Path A) or to
-  the OSS script input (OSS / Path B). Resolve paths against
-  `$DATASET_ROOT`. Do not call `load_requests` on `spec_*.json`.
+- Convert each in-scope spec item to an `InputRequest` (BioIR on the
+  processor path) and to the OSS script input (OSS side and feature
+  dumps). Resolve paths against `$DATASET_ROOT`. Do not call
+  `load_requests` on `spec_*.json`.
 - Attach every unpaired and paired A3M the spec lists (and Boltz CSV
   when present). A protein forward without those files is invalid even
   if it is faster.
@@ -82,14 +83,14 @@ def time_model_forward(model, device_batch, runtime_args):
     return output, elapsed_s, peak_alloc_gb, peak_reserved_gb
 ```
 
-**Path A.** Do not re-wrap `model.forward`. Set
+**Processor path.** Do not re-wrap `model.forward`. Set
 `engine_kwargs={"profile_inference": True}` and read
 `row["model_inference_time"]`. That field is already this window.
 Still call `torch.cuda.reset_peak_memory_stats()` immediately before
 `processor([row])` and read peak memory after it returns — the engine
 does not record GPU bytes.
 
-**Path B** (`protenix-v2` and any model with Pipeline = No). There is
+**OSS feature path** (`protenix-v2` and any model with Pipeline = No). There is
 no engine. Call `time_model_forward` on the BioIR module after
 adapting the dumped OSS batch ([no-pipeline.md](no-pipeline.md)).
 
@@ -122,8 +123,8 @@ self.config = config or self.get_pretrained_config(self.model_name)
 ```
 
 So `ModelCls(model_name=..., config=None)` (omit `config=`) is
-`get_pretrained_config`. Path A: omit `engine_kwargs["config"]`
-so `FoldingEngine` constructs the same way. Path B: omit
+`get_pretrained_config`. Processor path: omit `engine_kwargs["config"]`
+so `FoldingEngine` constructs the same way. OSS feature path: omit
 `config=` on `Protenix(...)`.
 
 Do **not**:
@@ -133,108 +134,99 @@ Do **not**:
 - Pass `engine_kwargs["config"]` or `config=` unless it is
   exactly that constructor default
 
-CUDA-graph `accelerated_configs` are an add-on after this, not a
-replacement.
+That default config carries the CUDA-graph policies ([below](#cuda-graphs)).
+An eager arm's `disable_cuda_graphs()` is the one permitted graph change.
 
 ## CUDA graphs
 
-BioIR default for `boltz-1`, `boltz-2`, `openfold3`, `protenix-v2`:
-select `diffusion_module` with
-`AcceleratedConfig(backend="torch")`. Omit `default=`. Each diffusion
-module declares its own safe CUDA-graph routine: exact-shape keys,
-an inclusive `num_tokens <= 1024` acceptance limit, and eager fallback
-for larger inputs.
+The default BioIR model captures every graph region for inputs up to 1024
+tokens; it needs no `optimize()` call. `docs/ref/api.md` (CUDA Graphs) lists
+each model's regions and policy.
 
-- Path A: `engine_kwargs["accelerated_configs"]` (engine calls
-  `optimize`).
-- Path B: `model.optimize({...})` on the live `Protenix`.
-- Do **not** pass `BaseConfig(graph_optimization_config=...)` or an
-  explicit `CUDAGraphOptimizationConfig`. Model configs replace the
-  module-declared routine rather than merging with it, which removes
-  the input routing and 1024-token guard.
-- Do not raise or bypass the limit for benchmark coverage. A row above
-  1024 tokens is intentionally eager; record that fallback per row.
-- Do **not** also graph `token_transformer` — it is nested; the parent
-  wins and the child is dropped.
-- OpenFold2 / AlphaFold2: omit `accelerated_configs` (no-op).
-The first forward of a shape stays eager (compile + allocator warmup)
-and then captures. That is the **one** warmup. The next forward is the
-**one** measured sample. For an accepted input, a capture failure
-falls back to eager — record that separately from an out-of-range
-fallback in `implementation-notes.md` and still report the measured
-time.
+- The BioIR column uses the default model and locks
+  `graph_activation="default"`.
+- An eager arm derives the pretrained config, calls
+  `config.disable_cuda_graphs()`, and passes the config as
+  `engine_kwargs["config"]` (processor path) or `config=` (OSS feature
+  path). It locks `graph_activation="disable_cuda_graphs()"`.
+- Keep the model's policies. Do not replace one through
+  `accelerated_configs`, call `with_graph_cache`, or raise the 1024-token
+  limit for coverage. Inputs above the limit run eagerly; record them per
+  row.
+- Keep graph caches between samples. Do not reset trackers or reload
+  weights to clean up; a new shape captures during its own warmup forward.
+
+The audit reads the live model. On the processor path, get it before the
+first request:
+
+```python
+model = processor.get_stage_udf("FoldingEngineStage").folding.engine.model
+```
 
 ### Audit CUDA-graph routing, not cache emptiness
 
-The graph cache cannot by itself tell whether a call ran eagerly.
-`CUDAGraphOptimizationTracker.forward()` checks the module-declared
-input-acceptance policy **before** creating a graph state or a
-`fallback_to_eager_by_key` entry. An out-of-range call therefore
-legitimately leaves both collections empty. In particular, zero graph
-states plus zero fallback keys is expected for `num_tokens > 1024`; it
-is not an unclassified capture failure.
-
-Classify each measured row from the declared policy first, then the
-tracker state:
+A cached graph does not show that the current call replayed: earlier
+shapes stay resident while an out-of-range input runs eagerly. Snapshot
+each region's `execution_counts` before and after every forward:
 
 ```python
-from bionemo_ir._torch.graph_optimization.config import (
-    acceptance_max_by_name,
-)
+from collections import Counter
+
+from bionemo_ir._torch.graph_optimization import GraphRegion
+
+GRAPH_COUNTERS = ("warmup", "capture", "replay", "eviction", "fallback", "out_of_range")
 
 
-def classify_cuda_graph(tracker, semantic_dims: dict[str, int]) -> dict:
-    """Classify one row after warmup + measure and before tracker reset."""
-    routing = tracker.graph_optimization_config.input_routing_config
-    limits = acceptance_max_by_name(routing) if routing is not None else {}
-    rejected = {
-        name: {"value": semantic_dims[name], "max": limit}
-        for name, limit in limits.items()
-        if name in semantic_dims and semantic_dims[name] > limit
-    }
-    states = getattr(tracker, "graph_state_by_key", {})
-    fallback = getattr(tracker, "fallback_to_eager_by_key", {})
-    failed_keys = sum(bool(value) for value in fallback.values())
-    failed_states = sum(
-        bool(getattr(state, "fallback_to_eager", False))
-        for state in states.values()
-    )
-
-    if rejected:
-        if states or failed_keys:
-            raise RuntimeError(
-                "out-of-range input unexpectedly entered graph cache"
-            )
-        execution_path = "eager_out_of_range"
-    elif failed_keys or failed_states:
-        execution_path = "eager_capture_fallback"
-    elif states:
-        execution_path = "cuda_graph"
-    else:
-        raise RuntimeError("accepted input has no graph or fallback state")
-
+def graph_counts(model) -> dict[str, Counter]:
+    """Every graph region's execution counters, keyed by module path."""
     return {
-        "execution_path": execution_path,
-        "acceptance_limits": limits,
-        "rejected_dims": rejected,
-        "state_count": len(states),
-        "fallback_key_count": failed_keys,
-        "state_fallback_count": failed_states,
+        path: Counter(region.tracker.execution_counts if region.tracker is not None else {})
+        for path, region in model.named_modules()
+        if isinstance(region, GraphRegion)
     }
+
+
+def graph_audit(before: dict[str, Counter], after: dict[str, Counter]) -> dict[str, dict]:
+    """Per-region counter deltas of one forward and its execution path."""
+    audit = {}
+    for path, counts in after.items():
+        delta = {name: counts[name] - before[path][name] for name in GRAPH_COUNTERS}
+        if delta["out_of_range"]:
+            execution_path = "eager_out_of_range"
+        elif delta["fallback"]:
+            execution_path = "eager_capture_fallback"
+        elif delta["replay"]:
+            execution_path = "cuda_graph"
+        else:
+            execution_path = "eager"
+        audit[path] = {**delta, "execution_path": execution_path}
+    return audit
 ```
 
-Pass semantic dimensions under the names declared by that module's
-routing config (currently `{"num_tokens": N_token}` for the supported
-AF3-style diffusion modules). Do not infer acceptance from a hard-coded
-cache count, and do not raise the limit to make a row graphable.
+Store the warmup and measured audits on every row. `eager` means the
+region did not run or bypassed its cache: it is not enabled, or it is the
+confidence Pairformer of a single-sample request. A region that captured
+during the warmup forward must replay on the measured forward with zero
+`warmup` and `capture`; a capture there is a recapture, so record it.
 
-Audit before cleanup. Then call `tracker.reset()` after each sample to
-release its private graph pool and permanent-eager keys before the next
-shape. This keeps the one-warmup/one-measure contract: each accepted
-shape may capture during its own warmup, while its measured repeat must
-reuse that graph. If a tracker lacks `reset()`, release/clear both state
-and fallback maps explicitly, synchronize, collect, and empty the CUDA
-cache; record that compatibility path.
+## Compare BioIR graph policies
+
+A comparison of BioIR graph policies or revisions is BioIR against BioIR,
+not an OSS speedup. Keep the dataset, features, locked knobs, and GPU fixed,
+and run each arm in its own process:
+
+- `eager` — `config.disable_cuda_graphs()` before construction;
+- a role subset — set the other regions' `graph_optimization_config` to
+  `None` before construction;
+- `default` — the default model.
+
+For two revisions, give each process an explicit source root and record its
+commit plus source, native-library, checkpoint, and kernel-pack hashes.
+Record each sample's cold first forward separately from its warm repeat.
+Then run one forward per request over a mixed-size stream with caches
+retained, so the result includes cache reuse, eviction, recapture, and
+eager inputs above the token limit. Compare raw output tensors as well as
+written-CIF quality.
 
 ## OSS `torch.compile`
 
@@ -729,7 +721,7 @@ measured-forward delta must be zero.
 **BioIR CUDA graphs:** an accepted shape (`num_tokens <= 1024`) may
 recapture on that sample's warmup (static CUDA graph). That is
 expected; record it as a diagnostic if you see it. Larger shapes use
-the module-declared eager fallback and must not be forced into capture.
+the eager fallback and must not be forced into capture.
 This does not apply to the OSS compile column.
 
 ## GPU inventory
@@ -1240,7 +1232,7 @@ flag that silently overrides a locked key is a bug.
 Required keys:
 
 - `model_source` — `FoldingSupportMatrix` key
-- `path` — `A` (`build_processor`) or `B` (OSS pipeline + BioIR module)
+- `feature_path` — `processor` (`build_processor`) or `oss` (OSS features)
 - `oss_root`, `oss_url`, `oss_ref`, `oss_commit` — pin from
   [environment.md](environment.md#oss-checkout-pins)
   (`3rdparty/` gitlink, `v2.2.1`, or `v2.2.0`)
@@ -1262,9 +1254,9 @@ Required keys:
   retries: [...], measurement_stable: true|false,
   n_later_warmup_recompiles: int, warmup_recompile_ids: [...]}`
 - `bioir_config` — `"get_pretrained_config"` (required)
-- `accelerated_configs` (or `null`). For Boltz-1/2, OpenFold3, and
-  Protenix-v2, record `diffusion_module.backend="torch"`,
-  `graph_config="module_default"`, and `num_tokens_max=1024`; never
+- `graph_activation` — `"default"`, or `"disable_cuda_graphs()"` for eager.
+  Record enabled roles, `graph_config="model_default"`, and
+  `num_tokens_max=1024`; never
   serialize a model-level graph-config override
 - `cuda_visible_devices`
 - `gpu_name`, `sm`, `driver`

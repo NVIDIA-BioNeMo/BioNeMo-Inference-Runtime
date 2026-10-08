@@ -363,3 +363,12 @@ class CUDAGraphOptimizationConfig(GraphOptimizationConfig):
     num_calls_for_kernel_compilation: int = 1
     num_calls_for_memory_allocator: int = 3
     verify_capture: bool = False
+    capture_on_first_call: bool = Field(
+        default=False,
+        description="Prepare a new signature internally before capturing its first eligible call.",
+    )
+    graph_cache_budget_bytes: int | None = Field(
+        default=None,
+        gt=0,
+        description="Per-module estimated graph residency budget; a single graph still uses the free-memory guard.",
+    )

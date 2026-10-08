@@ -42,6 +42,85 @@ pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA-grap
 NUM_CALLS_TO_CAPTURE = 4  # warmup thresholds (1, 3) + capture on the next call
 
 
+class _InplaceRegion(nn.Module):
+    def forward(self, value: torch.Tensor) -> torch.Tensor:
+        return value.add_(2.0)
+
+
+class _RandomRegion(nn.Module):
+    def forward(self, value: torch.Tensor) -> torch.Tensor:
+        return value + torch.rand_like(value)
+
+
+def _early_config(**kwargs: object) -> CUDAGraphOptimizationConfig:
+    return CUDAGraphOptimizationConfig(
+        num_calls_for_kernel_compilation=1,
+        num_calls_for_memory_allocator=1,
+        capture_on_first_call=True,
+        num_graphs_max_for_this_module=4,
+        **kwargs,
+    )
+
+
+@pytest.mark.parametrize("verify", [False, True])
+def test_first_capture_restores_mutated_static_inputs(verify: bool) -> None:
+    tracker = CUDAGraphOptimizationTracker(_early_config(verify_capture=verify), _InplaceRegion().cuda()).eval()
+    value = torch.randn(2, 8, device="cuda")
+    original = value.clone()
+    with torch.inference_mode():
+        first = tracker(value)
+        second = tracker(value + 3.0)
+    torch.testing.assert_close(first, original + 2.0, rtol=0, atol=0)
+    torch.testing.assert_close(second, (original + 3.0) + 2.0, rtol=0, atol=0)
+    torch.testing.assert_close(value, original, rtol=0, atol=0)
+    assert tracker.execution_counts["capture"] == 1
+    assert tracker.execution_counts["replay"] == 1
+    assert not tracker.fallback_to_eager_by_key
+
+
+def test_first_capture_preparation_preserves_rng() -> None:
+    raw = _RandomRegion().cuda().eval()
+    tracker = CUDAGraphOptimizationTracker(_early_config(verify_capture=True), raw).eval()
+    value = torch.zeros(2, 8, device="cuda")
+    with torch.inference_mode():
+        torch.manual_seed(42)
+        expected = raw(value)
+        expected_rng = torch.cuda.get_rng_state()
+        torch.manual_seed(42)
+        actual = tracker(value)
+        actual_rng = torch.cuda.get_rng_state()
+    torch.testing.assert_close(actual, expected, rtol=0, atol=0)
+    assert torch.equal(actual_rng, expected_rng)
+    assert tracker.execution_counts["capture"] == 1
+    assert not tracker.fallback_to_eager_by_key
+
+
+def test_precision_contexts_have_independent_graph_keys() -> None:
+    tracker = CUDAGraphOptimizationTracker(_early_config(), nn.Linear(8, 8).cuda()).eval()
+    value = torch.randn(2, 8, device="cuda")
+    with torch.inference_mode():
+        ordinary = tracker(value)
+        with torch.autocast("cuda", dtype=torch.bfloat16):
+            reduced = tracker(value)
+            torch.testing.assert_close(reduced, tracker.inner_module(value), rtol=0, atol=0)
+        torch.testing.assert_close(tracker(value), ordinary, rtol=0, atol=0)
+    assert ordinary.dtype == torch.float32
+    assert reduced.dtype == torch.bfloat16
+    assert tracker.execution_counts["capture"] == 2
+
+
+def test_graph_budget_evicts_old_states_but_keeps_one_graph() -> None:
+    tracker = CUDAGraphOptimizationTracker(_early_config(graph_cache_budget_bytes=1), nn.ReLU().cuda()).eval()
+    with torch.inference_mode():
+        first = tracker(torch.randn(2, 8, device="cuda"))
+        held = first.clone()
+        tracker(torch.randn(3, 8, device="cuda"))
+    torch.testing.assert_close(first, held, rtol=0, atol=0)
+    assert len(tracker.graph_state_by_key) == 1
+    assert tracker.execution_counts["capture"] == 2
+    assert tracker.execution_counts["eviction"] == 1
+
+
 def _make():
     """Return (tracker over a fresh net, an independent eager clone)."""
     torch.manual_seed(0)
@@ -49,7 +128,7 @@ def _make():
     raw = nn.Sequential(nn.Linear(8, 8), nn.ReLU(), nn.Linear(8, 8))
     raw.load_state_dict(net.state_dict())
     raw = raw.cuda().eval()
-    tracker = CUDAGraphOptimizationTracker(CUDAGraphOptimizationConfig(), inner_module=net).eval()
+    tracker = CUDAGraphOptimizationTracker(CUDAGraphOptimizationConfig(verify_capture=True), inner_module=net).eval()
     return tracker, raw
 
 
@@ -61,6 +140,7 @@ def _make_bucketed_tracker():
     config = CUDAGraphOptimizationConfig(
         input_key_method=InputKeyMethod.BUCKETED_SHAPES,
         input_routing_config=factory.export_config(),
+        verify_capture=True,
     )
     return CUDAGraphOptimizationTracker(config, inner_module=nn.ReLU().cuda()).eval()
 
@@ -77,9 +157,7 @@ def test_capture_then_replay_matches_eager():
         for _ in range(6):
             out = m(x)
     state = m.graph_state_by_key[_key(m, x)]
-    # After a successful capture the key advances through GRAPH_CAPTURED to its
-    # resting state GRAPH_VERIFIED (GRAPH_CAPTURED is only a transient value set
-    # mid-capture, before the verify step).
+    # Verification is enabled: the eager/replay output check must have passed.
     assert state.preparation_state == CUDAGraphPreparationState.GRAPH_VERIFIED
     assert _key(m, x) not in m.fallback_to_eager_by_key
     assert state.working_set_bytes > 0

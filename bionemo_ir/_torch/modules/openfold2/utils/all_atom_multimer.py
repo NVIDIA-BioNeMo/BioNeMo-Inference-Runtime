@@ -26,7 +26,7 @@ from bionemo_ir._torch.modules.openfold2.utils import geometry
 from bionemo_ir._torch.utils import batched_gather
 
 
-def get_chi_atom_indices(device: torch.device):
+def get_chi_atom_indices(device: torch.device) -> torch.Tensor:
     """Returns atom indices needed to compute chi angles for all residue types.
 
     Returns:
@@ -50,7 +50,13 @@ def get_chi_atom_indices(device: torch.device):
     return torch.tensor(chi_atom_indices, device=device)
 
 
-def compute_chi_angles(positions: geometry.Vec3Array, mask: torch.Tensor, aatype: torch.Tensor):
+def compute_chi_angles(
+    positions: geometry.Vec3Array,
+    mask: torch.Tensor,
+    aatype: torch.Tensor,
+    chi_atom_indices: torch.Tensor | None = None,
+    chi_angles_mask: torch.Tensor | None = None,
+) -> tuple[torch.Tensor, torch.Tensor]:
     """Computes the chi angles given all atom positions and the amino acid type.
 
     Args:
@@ -67,6 +73,8 @@ def compute_chi_angles(positions: geometry.Vec3Array, mask: torch.Tensor, aatype
             it were set will be ignored.
         aatype: A tensor of shape [num_res] with amino acid type integer
             code (0 to 21). Supports up to 1 batch dimension.
+        chi_atom_indices: Optional preloaded index table on the input device.
+        chi_angles_mask: Optional preloaded chi mask on the input device.
 
     Returns:
         A tuple of tensors (chi_angles, mask), where both have shape
@@ -81,7 +89,8 @@ def compute_chi_angles(positions: geometry.Vec3Array, mask: torch.Tensor, aatype
     no_batch_dims = len(aatype.shape) - 1
 
     # Compute the table of chi angle indices. Shape: [restypes, chis=4, atoms=4].
-    chi_atom_indices = get_chi_atom_indices(aatype.device)
+    if chi_atom_indices is None:
+        chi_atom_indices = get_chi_atom_indices(aatype.device)
 
     # DISCREPANCY: DeepMind doesn't remove the gaps here. I don't know why
     # theirs works.
@@ -99,9 +108,9 @@ def compute_chi_angles(positions: geometry.Vec3Array, mask: torch.Tensor, aatype
     chi_angles = geometry.dihedral_angle(a, b, c, d)
 
     # Copy the chi angle mask, add the UNKNOWN residue. Shape: [restypes, 4].
-    chi_angles_mask = list(rc.chi_angles_mask)
-    chi_angles_mask.append([0.0, 0.0, 0.0, 0.0])
-    chi_angles_mask = torch.tensor(chi_angles_mask, device=aatype.device)
+    if chi_angles_mask is None:
+        mask_values = [*rc.chi_angles_mask, [0.0, 0.0, 0.0, 0.0]]
+        chi_angles_mask = torch.tensor(mask_values, device=aatype.device)
     # Compute the chi angle mask. Shape [num_res, chis=4].
     chi_mask = chi_angles_mask[aatype_gapless]
 

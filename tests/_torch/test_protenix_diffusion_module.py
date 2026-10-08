@@ -673,6 +673,8 @@ def test_token_transformer_cudagraph_parity(real_case):
     torch.backends.cudnn.allow_tf32 = False
     sc = Scenario(dtype="float32", token_dtype="bfloat16", enc_dtype="bfloat16", dec_dtype="bfloat16")
     model, batch, s_inputs, s_trunk, z_trunk, _ = _real_bioir_module(sc, real_case)
+    # Keep the denoising-step region eager: the decorated token transformer is under test.
+    model.config.graph_optimization_config = None
     n_sample = Scenario().n_sample
 
     def _roll(m, steps=12):
@@ -727,7 +729,7 @@ def test_diffusion_module_cudagraph_skips_stable_copies(real_case, monkeypatch):
     sc = Scenario(dtype="float32", token_dtype="bfloat16")
     model, batch, s_inputs, s_trunk, z_trunk, _ = _real_bioir_module(sc, real_case)
     n_sample = Scenario().n_sample
-    stable = ProtenixDiffusionModule.graph_opt_default.input_routing_config.stable_input_kwargs
+    stable = model.config.graph_optimization_config.input_routing_config.stable_input_kwargs
     assert stable
 
     copied_bytes = []
@@ -740,17 +742,18 @@ def test_diffusion_module_cudagraph_skips_stable_copies(real_case, monkeypatch):
     monkeypatch.setattr(graph_runtime, "_copy_tensors_into", counting)
 
     def _roll(skip: bool):
-        config = copy.deepcopy(ProtenixDiffusionModule.graph_opt_default)
-        tracker = CUDAGraphOptimizationTracker(config=config, inner_module=model)
-        tracker.set_fallback_module(model)
+        policy = copy.deepcopy(model.config.graph_optimization_config)
+        policy.verify_capture = True
         if not skip:
-            monkeypatch.setattr(tracker, "_stable_input_kwargs", lambda: frozenset())
-        sampler = ProtenixDiffusionSampler(tracker, use_cache=True).eval()
+            policy.input_routing_config.stable_input_kwargs = []
+        sampler = ProtenixDiffusionSampler(model, use_cache=True).eval()
+        sampler.graph.enable(policy)
         copied_bytes.clear()
         with torch.inference_mode():
             x = sampler.sample_coords(
                 batch, s_inputs, s_trunk, z_trunk, num_sampling_steps=12, N_sample=n_sample, seed=1234
             )
+        tracker = sampler.graph.tracker
         states = [
             (s.preparation_state, tracker.fallback_to_eager_by_key.get(k, False))
             for k, s in tracker.graph_state_by_key.items()

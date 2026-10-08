@@ -101,8 +101,6 @@ class GraphOptimizationTracker(BackendBase):
         """
         super().__init__(graph_optimization_config)
         self.inner_module = inner_module
-        # Validate ties once, outside the hot path.
-        self._input_ties_validated = False
         # Lazily cached positional parameter names.
         self._forward_positional_names: list[str] | None = None
 
@@ -142,29 +140,35 @@ class GraphOptimizationTracker(BackendBase):
         return True
 
     def validate_input_ties(self, tensor_container_shapes: TensorContainerHostShapes) -> None:
-        """Validate that configured ties resolve on the first call."""
-        if self._input_ties_validated:
-            return
+        """Check configured names, axes and equal lengths for a new signature."""
         cfg = self.graph_optimization_config.input_routing_config
         if cfg is not None:
             available = sorted(name[: -len("_shape")] for name in tensor_container_shapes if name.endswith("_shape"))
-            ties = input_acceptance_assignments(cfg) + input_padded_assignments(cfg)
-            for tensor_name, dim_idx, dim_name in ties:
-                shape = tensor_container_shapes.get(f"{tensor_name}_shape")
-                if shape is None:
-                    raise ValueError(
-                        f"input routing ties dim {dim_name!r} to input "
-                        f"{tensor_name!r} (axis {dim_idx}), but no such tensor is "
-                        f"present in the call; available inputs: {available}"
-                    )
-                ndim = len(shape)
-                if not (-ndim <= dim_idx < ndim):
-                    raise ValueError(
-                        f"input routing ties dim {dim_name!r} to axis {dim_idx} "
-                        f"of input {tensor_name!r}, but that tensor has only "
-                        f"{ndim} dimension(s)"
-                    )
-        self._input_ties_validated = True
+            for tie in cfg.named_dim_ties:
+                expected_length = None
+                for tensor_name, axes in tie.input_dims:
+                    shape = tensor_container_shapes.get(f"{tensor_name}_shape")
+                    for dim_idx in axes:
+                        if shape is None:
+                            raise ValueError(
+                                f"input routing ties dim {tie.name!r} to input "
+                                f"{tensor_name!r} (axis {dim_idx}), but no such tensor is "
+                                f"present in the call; available inputs: {available}"
+                            )
+                        ndim = len(shape)
+                        if not (-ndim <= dim_idx < ndim):
+                            raise ValueError(
+                                f"input routing ties dim {tie.name!r} to axis {dim_idx} "
+                                f"of input {tensor_name!r}, but that tensor has only "
+                                f"{ndim} dimension(s)"
+                            )
+                        length = shape[dim_idx]
+                        if expected_length is not None and length != expected_length:
+                            raise ValueError(
+                                f"input routing ties dim {tie.name!r} to unequal lengths: "
+                                f"expected {expected_length}, got {length} at {tensor_name!r} axis {dim_idx}"
+                            )
+                        expected_length = length
 
     def input_key_for_this_call(self, *args, **kwargs) -> str:
         """Return a cache key from tensor metadata and non-tensor values/types."""
@@ -211,6 +215,17 @@ class GraphOptimizationTracker(BackendBase):
         self._walk_call(args, kwargs, on_leaf)
         return shapes_device, shapes_host
 
+    def _extract_host_shapes(self, args: tuple, kwargs: dict) -> TensorContainerHostShapes:
+        """Read routing dimensions without allocating device shape tensors."""
+        shapes: TensorContainerHostShapes = {}
+
+        def on_leaf(path: str, leaf: object) -> None:
+            if isinstance(leaf, Tensor):
+                shapes[f"{path}_shape"] = tuple(leaf.shape)
+
+        self._walk_call(args, kwargs, on_leaf)
+        return shapes
+
     def _extract_tensor_container_shapes(self, args: tuple, kwargs: dict) -> TensorContainerShapes:
         """Map tensor paths to shape tensors on the input devices."""
         shapes_device, _ = self._extract_tensor_container_shape_maps(args, kwargs)
@@ -223,7 +238,10 @@ class GraphOptimizationTracker(BackendBase):
         def on_leaf(path: str, leaf: Any) -> None:
             if isinstance(leaf, torch.Tensor):
                 dims = self.SEP_FOR_DIMS.join(str(d) for d in leaf.shape)
-                parts.append(f"{path}{self.SEP_BW_NAME_AND_SHAPE}{leaf.dtype}{self.SEP_BW_NAME_AND_SHAPE}{dims}")
+                parts.append(
+                    f"{path}{self.SEP_BW_NAME_AND_SHAPE}{leaf.dtype}:{leaf.device}:{leaf.stride()}"
+                    f"{self.SEP_BW_NAME_AND_SHAPE}{dims}"
+                )
 
         self._walk_call(args, kwargs, on_leaf)
         return self.SEP_FOR_ARGS.join(parts)

@@ -231,8 +231,7 @@ Pass `--use_deepspeed_evoformer_attention` when wrapping
 
 OpenFold `v2.2.0` does not integrate cuEquivariance. Record
 `cueq_triangle: false`. BioIR uses its default CuTeDSL / auto
-triangle backends under `CUTEDSL_FORCE_CUBIN=1`. No CUDA-graph
-`accelerated_configs` — OpenFold2 has no graphable module.
+triangle backends under `CUTEDSL_FORCE_CUBIN=1`.
 
 kalign is required on the OSS template path. Prefer the distro
 `kalign` package. If apt is blocked, bioconda `kalign2` is the
@@ -365,7 +364,7 @@ writes unrelaxed ModelCIF. Revert the patch after the run if the
 checkout must return to a clean pin; record the patch path in
 `bench_config.json`.
 
-## Path A — BioIR
+## Processor path — BioIR
 
 ```python
 config = OpenFold2.get_pretrained_config(model_name)  # alphafold2_1 or alphafold2_multimer_1
@@ -382,7 +381,9 @@ EngineProcessorConfig(
 
 One `InputRequest` per `processor([record])`. Headline latency is
 `row["model_inference_time"]`. Seed via
-`feature_generator_stage.init_context.random_seed`.
+`feature_generator_stage.init_context.random_seed`. The OF2 `trunk`
+region captures by default from recycle 1
+([CUDA graphs](../measurement.md#cuda-graphs)).
 
 ## OSS entry
 

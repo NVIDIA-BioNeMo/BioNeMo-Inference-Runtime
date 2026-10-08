@@ -15,6 +15,12 @@
 
 from pydantic import Field
 
+from bionemo_ir._torch.graph_optimization.config import CUDAGraphOptimizationConfig, NamedDimTies
+from bionemo_ir._torch.graph_optimization.graph_policy import (
+    exact_graph_config,
+    pairformer_graph_config,
+    trunk_graph_config,
+)
 from bionemo_ir.configs import (
     BaseConfig,
     DiffusionTransformerConfig,
@@ -24,6 +30,33 @@ from bionemo_ir.configs import (
     TrunkPadSpec,
 )
 from bionemo_ir.registry import SupMat
+
+
+def _diffusion_graph_config() -> CUDAGraphOptimizationConfig:
+    return exact_graph_config(
+        named_dims=(
+            NamedDimTies(
+                name="num_tokens",
+                input_dims=(("si_input", (-2,)), ("si_trunk", (-2,)), ("zij_trunk", (-2, -3)), ("token_mask", (-1,))),
+            ),
+        ),
+        max_tokens=1024,
+        stable_kwargs=(
+            "batch",
+            "token_mask",
+            "atom_mask",
+            "si_input",
+            "si_trunk",
+            "zij_trunk",
+            "prepared_zij",
+            "prepared_si",
+            "prepared_atom_cl",
+            "prepared_atom_plm",
+            "prepared_atom_encoder_pair_biases",
+            "prepared_atom_decoder_pair_biases",
+            "prepared_token_pair_biases",
+        ),
+    )
 
 
 class _Default:
@@ -126,6 +159,9 @@ class MSAModuleEmbedderConfig(BaseConfig):
 
 
 class DiffusionModuleConfig(BaseConfig):
+    graph_optimization_config: CUDAGraphOptimizationConfig | None = Field(
+        default_factory=_diffusion_graph_config, description="CUDA-graph policy for one denoising step."
+    )
     c_s_input: int = _Default.c_s_input
     c_atom_ref_element: int = 119
     c_atom_ref_name_chars: int = 256
@@ -207,6 +243,9 @@ class EDMSamplingConfig(BaseConfig):
 
 
 class AuxiliaryHeadsConfig(BaseConfig):
+    graph_optimization_config: CUDAGraphOptimizationConfig | None = Field(
+        default_factory=pairformer_graph_config, description="CUDA-graph policy for the per-sample Pairformer stack."
+    )
     c_s_input: int = 449
     c_z: int = 128
     min_bin: float = 3.25
@@ -278,6 +317,9 @@ class AuxiliaryHeadsConfig(BaseConfig):
 
 
 class TrunkConfig(BaseConfig):
+    graph_optimization_config: CUDAGraphOptimizationConfig | None = Field(
+        default_factory=trunk_graph_config, description="CUDA-graph policy for one trunk recycle."
+    )
     pairformer: PairformerConfig = PairformerConfig()
     # Tensors padded to a multiple of 8 tokens before the trunk; feature_dict covers the batch keys.
     token_pad_spec: TrunkPadSpec = TrunkPadSpec(

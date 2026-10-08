@@ -19,6 +19,7 @@ import torch.nn as nn
 
 from bionemo_ir._torch.attention_backend import AttentionMetadata
 from bionemo_ir._torch.attention_backend.utils import PrecomputedPairMasks, precompute_pair_masks
+from bionemo_ir._torch.graph_optimization.region import GraphRegion
 from bionemo_ir._torch.layers.linear import Linear
 from bionemo_ir._torch.layers.outer_product_mean import OuterProductMean
 from bionemo_ir._torch.layers.pair_averaging import PairWeightedAveraging
@@ -312,6 +313,8 @@ class Trunk(nn.Module):
         # forward() pads the tokens before any stack runs.
         set_trimul_token_padding(self, self.enable_token_pad)
 
+        self.graph = GraphRegion(self, "_recycle_step", config.graph_optimization_config)
+
     def load_weights(self, weights: dict):
         """Load weights for the Trunk module
         Args:
@@ -418,27 +421,58 @@ class Trunk(nn.Module):
         s = torch.zeros_like(s_init)
         z = torch.zeros_like(z_init)
 
-        run_template = self.template_module is not None and template_feats is not None
-
         for _ in range(1 + recycling_steps):
-            s = s_init + self.s_recycle(self.s_norm(s))
-            z = z_init + self.z_recycle(self.z_norm(z))
-
-            if run_template:
-                z = z + self.template_module(z, template_feats, pair_mask, attn_metadata=attn_metadata).to(self.dtype)
-
-            z = z + self.msa_module(
-                z,
-                s_inputs,
-                msa,
-                has_deletion,
-                deletion_value,
-                msa_paired,
+            s, z = self.graph(
+                s=s,
+                z=z,
+                s_init=s_init,
+                z_init=z_init,
+                s_inputs=s_inputs,
+                msa=msa,
+                has_deletion=has_deletion,
+                deletion_value=deletion_value,
+                msa_paired=msa_paired,
                 msa_mask=msa_mask,
-                token_pad_mask=pair_mask,
+                mask=mask,
+                pair_mask=pair_mask,
                 attn_metadata=attn_metadata,
+                template_feats=template_feats,
             )
-
-            s, z = self.pairformer_module(s, z, mask=mask, pair_mask=pair_mask, attn_metadata=attn_metadata)
         s, z = unpad_trunk_tokens(s, z, n_true=n_true)
         return s, z
+
+    def _recycle_step(
+        self,
+        *,
+        s: torch.Tensor,
+        z: torch.Tensor,
+        s_init: torch.Tensor,
+        z_init: torch.Tensor,
+        s_inputs: torch.Tensor,
+        msa: torch.Tensor,
+        has_deletion: torch.Tensor,
+        deletion_value: torch.Tensor,
+        msa_paired: torch.Tensor,
+        msa_mask: torch.Tensor,
+        mask: torch.Tensor,
+        pair_mask: torch.Tensor,
+        attn_metadata: AttentionMetadata | None,
+        template_feats: dict[str, torch.Tensor] | None,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Compute one recycle while retaining the trunk's original parameter paths."""
+        s = s_init + self.s_recycle(self.s_norm(s))
+        z = z_init + self.z_recycle(self.z_norm(z))
+        if self.template_module is not None and template_feats is not None:
+            z = z + self.template_module(z, template_feats, pair_mask, attn_metadata=attn_metadata).to(self.dtype)
+        z = z + self.msa_module(
+            z,
+            s_inputs,
+            msa,
+            has_deletion,
+            deletion_value,
+            msa_paired,
+            msa_mask=msa_mask,
+            token_pad_mask=pair_mask,
+            attn_metadata=attn_metadata,
+        )
+        return self.pairformer_module(s, z, mask=mask, pair_mask=pair_mask, attn_metadata=attn_metadata)

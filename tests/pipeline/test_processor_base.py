@@ -91,3 +91,23 @@ def test_processors_accept_flat_input() -> None:
 
     assert serial_processor(records) == records
     assert ray_processor(dataset) is dataset
+
+
+def test_live_serial_stage_is_created_once_and_used_for_requests() -> None:
+    from bionemo_ir.pipeline.stages.base import StatefulStage, StatefulStageUDF
+
+    class StageUDF(StatefulStageUDF):
+        pack_output = False
+
+        async def udf_for_item(self, row):
+            return {**row, "value": row["value"] + self.offset}
+
+    stage = StatefulStage(fn=StageUDF)
+    processor = SerialProcessor(_config(), [stage])
+    name = processor.list_stage_names()[0]
+    udf = processor.get_stage_udf(name)
+    udf.offset = 7
+    assert processor.get_stage_udf(name) is udf
+    assert processor([{"value": 2, "__record_id": "test"}])[0]["value"] == 9
+    with pytest.raises(ValueError, match="Stage missing not found"):
+        processor.get_stage_udf("missing")

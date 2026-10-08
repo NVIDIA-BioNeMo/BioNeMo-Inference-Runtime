@@ -106,12 +106,12 @@ python -c 'import torch; print(torch.cuda.get_device_capability())'
 `(10, 0)` is B200 / SM100, `(10, 3)` is B300 / SM103, `(12, 0)` is SM120,
 `(12, 1)` is DGX Spark / SM121.
 
-On Boltz-1, Boltz-2, OpenFold3, and Protenix (`protenix-v2`) the diffusion
-**module** (including the token transformer) can be captured as a CUDA graph
-and replayed across sampling steps (largest win on short sequences).
-OpenFold2 / AlphaFold2 have no CUDA-graph module.
-How to enable it:
-[`api.md` CUDA graphs](api.md#cuda-graphs-boltz-12-openfold3-protenix).
+By default, for inputs up to 1024 tokens, Boltz-2, OpenFold3, and Protenix
+(`protenix-v2`) capture one trunk recycle, one diffusion step, and the
+confidence Pairformer as CUDA graphs; Boltz-1 captures the diffusion step;
+OpenFold2 / AlphaFold2 capture one trunk recycle. Replays skip per-kernel
+launch overhead (largest win on short sequences). Limits and opt-out:
+[`api.md` CUDA graphs](api.md#cuda-graphs).
 
 ## Fused Kernels
 

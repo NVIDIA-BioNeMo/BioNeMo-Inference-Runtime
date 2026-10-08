@@ -156,7 +156,9 @@ def test_boltz2_trunk_pads_template_features_and_matches_the_unpadded_trunk() ->
         attention_initial_norm=False,
         version="v2",
     )
+    # The probes record every trunk call, which a capture's warmup and verification would add to.
     config = TrunkConfig(
+        graph_optimization_config=None,
         use_templates_v2=True,
         msa_module=MSAModuleConfig(
             msa_s=16,

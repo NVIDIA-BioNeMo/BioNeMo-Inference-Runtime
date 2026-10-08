@@ -20,6 +20,12 @@ Defaults track the ``protenix-v2`` checkpoint (ByteDance OSS
 
 from pydantic import Field
 
+from bionemo_ir._torch.graph_optimization.config import CUDAGraphOptimizationConfig, NamedDimTies
+from bionemo_ir._torch.graph_optimization.graph_policy import (
+    exact_graph_config,
+    pairformer_graph_config,
+    trunk_graph_config,
+)
 from bionemo_ir.configs import (
     BaseConfig,
     DiffusionTransformerConfig,
@@ -29,6 +35,19 @@ from bionemo_ir.configs import (
 )
 from bionemo_ir.hubs import FoldingSupportMatrix as SupMat
 from bionemo_ir.models.openfold3.config import MSAModuleStackConfig
+
+
+def _diffusion_graph_config() -> CUDAGraphOptimizationConfig:
+    return exact_graph_config(
+        named_dims=(
+            NamedDimTies(
+                name="num_tokens",
+                input_dims=(("s_inputs", (-2,)), ("s_trunk", (-2,)), ("z_trunk", (-2, -3))),
+            ),
+        ),
+        max_tokens=1024,
+        stable_kwargs=("input_feature_dict", "s_inputs", "s_trunk", "z_trunk", "cache"),
+    )
 
 
 class _Default:
@@ -254,6 +273,9 @@ class EDMSamplingConfig(BaseConfig):
 class DiffusionModuleConfig(BaseConfig):
     """Diffusion module; runs in fp32 (OSS upcasts token path / EDM math)."""
 
+    graph_optimization_config: CUDAGraphOptimizationConfig | None = Field(
+        default_factory=_diffusion_graph_config, description="CUDA-graph policy for one denoising step."
+    )
     c_s: int = _Default.c_s
     c_z: int = _Default.c_z
     c_token: int = _Default.diffusion_c_token
@@ -294,6 +316,9 @@ def _pairformer_config(num_blocks: int = _Default.pairformer_n_blocks) -> Pairfo
 class ConfidenceHeadConfig(BaseConfig):
     """Confidence head: projections/readouts fp32, inner pairformer bf16."""
 
+    graph_optimization_config: CUDAGraphOptimizationConfig | None = Field(
+        default_factory=pairformer_graph_config, description="CUDA-graph policy for the per-sample Pairformer stack."
+    )
     c_s: int = _Default.c_s
     c_z: int = _Default.c_z
     c_s_inputs: int = _Default.c_s_inputs
@@ -348,6 +373,9 @@ class TrunkConfig(BaseConfig):
     ``n_blocks > 0``; the OSS flag only controls the featurizer).
     """
 
+    graph_optimization_config: CUDAGraphOptimizationConfig | None = Field(
+        default_factory=trunk_graph_config, description="CUDA-graph policy for one trunk recycle."
+    )
     c_s: int = _Default.c_s
     c_z: int = _Default.c_z
     n_cycle: int = _Default.n_cycle

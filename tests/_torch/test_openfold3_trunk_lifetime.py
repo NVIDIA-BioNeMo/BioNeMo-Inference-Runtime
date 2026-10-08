@@ -19,6 +19,7 @@ from types import SimpleNamespace
 import pytest
 import torch
 
+from bionemo_ir._torch.graph_optimization import GraphRegion
 from bionemo_ir._torch.layers.transformers.pairformer import PairformerLayerV1
 from bionemo_ir._torch.layers.triangle_nodes import TriangleMultiplicationMetadata
 from bionemo_ir._torch.utils import ChunkPolicy
@@ -291,6 +292,7 @@ def test_recycle_pair_update_keeps_dense_fallbacks(
 
 class _FeatureExtractionCacheProbe:
     feature_extraction = OpenFold3.feature_extraction
+    _recycle_step = OpenFold3._recycle_step
     _update_recycle_pair = OpenFold3._update_recycle_pair
 
     def __init__(self, device: torch.device, *, min_size: int = 1) -> None:
@@ -310,14 +312,18 @@ class _FeatureExtractionCacheProbe:
         self.layer_norm_z = lambda value: value
         self.linear_z = lambda value: value
         self.template_embedder = lambda **kwargs: torch.zeros_like(kwargs["z"])
-        self.msa_module_embedder = lambda **_kwargs: (
-            torch.zeros(1, 1, tokens, channels, device=device),
-            torch.ones(1, 1, tokens, device=device),
+        self.msa_module_embedder = SimpleNamespace(
+            prepare_msa=lambda _batch, **_kwargs: (
+                torch.zeros(1, 1, tokens, channels, device=device),
+                torch.ones(1, 1, tokens, device=device),
+            ),
+            embed_prepared_msa=lambda msa_feat, _s_input: msa_feat,
         )
         self.msa_module = lambda _m, z, **_kwargs: z
         self.layer_norm_s = lambda value: value
         self.linear_s = lambda value: value
         self.pairformer_stack = lambda *, s, z, **_kwargs: (s, z)
+        self.trunk_graph = GraphRegion(self, "_recycle_step", None)
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
@@ -359,16 +365,14 @@ def test_request_msa_stream(device: str) -> None:
     if device == "cuda" and not torch.cuda.is_available():
         pytest.skip("CUDA is required")
     probe = _FeatureExtractionCacheProbe(torch.device(device), min_size=8)
-    original = probe.msa_module_embedder
+    original = probe.msa_module_embedder.prepare_msa
     draws: list[torch.Tensor] = []
 
-    def record_msa(
-        *, batch: dict[str, torch.Tensor], s_input: torch.Tensor, generator: torch.Generator
-    ) -> tuple[torch.Tensor, torch.Tensor]:
+    def record_msa(batch: dict[str, torch.Tensor], *, generator: torch.Generator) -> tuple[torch.Tensor, torch.Tensor]:
         draws.append(torch.rand(2, device=device, generator=generator))
-        return original(batch=batch, s_input=s_input)
+        return original(batch)
 
-    probe.msa_module_embedder = record_msa
+    probe.msa_module_embedder.prepare_msa = record_msa
     state = torch.cuda.get_rng_state() if device == "cuda" else torch.get_rng_state()
     with torch.inference_mode():
         probe.feature_extraction(batch={"token_mask": torch.ones(1, 4, device=device)}, num_cycles=4, sampling_seed=17)

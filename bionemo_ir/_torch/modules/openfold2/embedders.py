@@ -24,6 +24,7 @@ from bionemo_ir._torch.utils import dict_multimap, dist_one_hot, recursive_calli
 from bionemo_ir.configs import BaseConfig
 from bionemo_ir.dsl_kernels.triton.distance_embedding import project_distance_bins
 from bionemo_ir.dsl_kernels.triton.fused_relpos_embed import fused_relpos_embed
+from bionemo_ir.pipeline.models.openfold2 import const as rc
 
 from .template import TemplatePairStack, TemplatePointwiseAttention
 from .utils import all_atom_multimer, geometry
@@ -568,9 +569,8 @@ class TemplateEmbedder(nn.Module):
         n_templ = batch["template_aatype"].shape[templ_dim]
 
         for i in range(n_templ):
-            idx = batch["template_aatype"].new_tensor(i)
             single_template_feats = tensor_tree_map(
-                lambda t, idx=idx: torch.index_select(t, templ_dim, idx).squeeze(templ_dim),
+                lambda t, i=i: t.select(templ_dim, i).clone(memory_format=torch.contiguous_format),
                 batch,
             )
 
@@ -755,6 +755,14 @@ class TemplateSingleEmbedderMultimer(nn.Module):
         skip_create_weights: bool = False,
     ):
         super().__init__()
+        self.register_buffer(
+            "chi_atom_indices", all_atom_multimer.get_chi_atom_indices(torch.device("cpu")), persistent=False
+        )
+        self.register_buffer(
+            "chi_angles_mask",
+            torch.tensor([*rc.chi_angles_mask, [0.0, 0.0, 0.0, 0.0]], device="cpu"),
+            persistent=False,
+        )
         self.template_single_embedder = Linear(
             c_in,
             c_out,
@@ -784,6 +792,8 @@ class TemplateSingleEmbedderMultimer(nn.Module):
             atom_pos,
             batch["template_all_atom_mask"],
             batch["template_aatype"],
+            chi_atom_indices=self.chi_atom_indices,
+            chi_angles_mask=self.chi_angles_mask,
         )
 
         template_features = torch.cat(
@@ -878,9 +888,8 @@ class TemplateEmbedderMultimer(nn.Module):
         template_embeds = []
         n_templ = batch["template_aatype"].shape[templ_dim]
         for i in range(n_templ):
-            idx = batch["template_aatype"].new_tensor(i)
             single_template_feats = tensor_tree_map(
-                lambda t, idx=idx: torch.index_select(t, templ_dim, idx),
+                lambda t, i=i: t.narrow(templ_dim, i, 1).clone(memory_format=torch.contiguous_format),
                 batch,
             )
 

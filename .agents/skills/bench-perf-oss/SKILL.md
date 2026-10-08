@@ -77,10 +77,10 @@ verify attachment on the featurized batch on both sides before timing. See
 Choose a path from the support matrix
 (`docs/ref/support-matrix.md`, Pipeline column):
 
-- **Path A — `build_processor`.** The model has a factory (Boltz-1/2,
+- **Processor path — `build_processor`.** The model has a factory (Boltz-1/2,
   OpenFold2 / AlphaFold2, OpenFold3). BioIR uses serial
   `build_processor`; OSS uses its own e2e. Each side featurizes itself.
-- **Path B — OSS pipeline + BioIR module.** The folding model has a
+- **OSS feature path — OSS pipeline + BioIR module.** The folding model has a
   compute path and no factory (`protenix-v2`). Use the OSS data
   pipeline for features, then replace the OSS `nn.Module` with the
   BioIR module. See [no-pipeline.md](no-pipeline.md).
@@ -163,20 +163,17 @@ claim a complete bench.
 1. **Config parity is locked first.** Write
    `$WORKDIR/ref_data/bench_config.json` before Phase 4. Recycling,
    sampling, diffusion samples, precision, seed, and GPU id must match.
-1. **BioIR uses the default model constructor.** Every class
-   does `self.config = config or self.get_pretrained_config(
-   self.model_name)`. That is the default optimized config
+1. **BioIR uses the default model constructor.** With no config,
+   each class uses `get_pretrained_config(self.model_name)`.
+   That is the default optimized config
    (dtypes, triangle / pairwise backends). Construct with
-   `config=None` (omit the kwarg). Path A: omit
+   `config=None` (omit the kwarg). Processor path: omit
    `engine_kwargs["config"]` so the engine takes the same
-   constructor path. For Boltz-1/2, OpenFold3, and Protenix, select
-   the diffusion module with `AcceleratedConfig(backend="torch")`
-   **without** `default=`. The module-declared safe CUDA-graph routine
-   accepts at most 1024 tokens and falls back to eager above that
-   limit. An explicit `CUDAGraphOptimizationConfig` replaces that
-   routine instead of merging with it, removing the safety limit.
-   Never pass a handmade `BaseConfig` or override the module's graph
-   config. Do not copy OSS layer configs onto BioIR. A model profile
+   constructor path. That model captures CUDA graphs by default; an
+   eager arm derives the pretrained config and calls
+   `disable_cuda_graphs()` ([measurement.md](measurement.md#cuda-graphs)).
+   Never pass a handmade `BaseConfig` or override a graph policy.
+   Do not copy OSS layer configs onto BioIR. A model profile
    may require one feature enable on top of the official pretrained
    config—for example Boltz-2 custom templates require
    `trunk.use_templates_v2=True`. In that case call
@@ -250,26 +247,26 @@ a tree may need a query→template alignment rather than the structure
 the dataset ships, and a fixed slot layout hides a partial drop
 ([templates.md](templates.md#verification)).
 
-**Load path (Path A).** Convert each in-scope spec item to an
+**BioIR load (processor path).** Convert each in-scope spec item to an
 `InputRequest` with paths resolved against
 `benchmarks/dataset/`
-([samples.md](samples.md#load-path-path-a)). Do not call
+([samples.md](samples.md#load-path-processor)). Do not call
 `load_requests` on `spec_*.json`. Attach every listed A3M and
 template.
 
-**Load path (Path B / OSS).** Map the same spec item to the OSS
+**OSS load (both paths).** Map the same spec item to the OSS
 inference script. Boltz: `boltz_yaml` + `boltz_msa_csv`, rewriting
 stale absolute `msa:` paths to `$DATASET_ROOT/casp15/msa/`. Other
 OSS trees: spec polymers + resolved A3Ms. Do not call
-`build_processor` on Path B.
+`build_processor` on the OSS feature path.
 
 **After load, before any forward, assert all of:**
 
 1. Every spec `msas` / `paired_msas` (and Boltz CSV) path exists on
    disk under `$DATASET_ROOT`.
 1. Every protein polymer whose spec lists MSAs has a non-empty
-   `MSARecord` list on the `InputRequest` (Path A) or the OSS
-   featurizer input (Path B / OSS).
+   `MSARecord` list on the BioIR `InputRequest` (processor path) and
+   non-empty alignments on the OSS featurizer input.
 1. Every A3M the spec lists for that item is attached (unpaired and
    paired). A listed file that is skipped is a hard failure.
 1. The OSS adapter consumes those same alignments. No ColabFold /
@@ -303,8 +300,8 @@ guess, and do not clone `main`.
 - OpenFold2 / AlphaFold2: follow the protein-only AF2 model-1
   checkpoint, recycle, MSA/template, and Evoformer-compile profile in
   [models/of2.md](models/of2.md). WORKDIR default `/tmp/openfold2`.
-- Protenix-v2: follow the Path B source, checkpoint, recycle mapping,
-  and input profile in [models/protenix.md](models/protenix.md).
+- Protenix-v2 (OSS feature path): follow the source, checkpoint, recycle
+  mapping, and input profile in [models/protenix.md](models/protenix.md).
   WORKDIR default `/tmp/protenix`.
 - Boltz-1/2: [jwohlwend/boltz](https://github.com/jwohlwend/boltz) `v2.2.1`
 - OpenFold2:
@@ -387,8 +384,8 @@ harness because "python is already there".
    (`dist/bionemo_ir-*.whl`) or `pip install bionemo-ir`.
    See [environment.md](environment.md#container-and-bioir-install).
 1. **Probe BioIR** — `import bionemo_ir`, CUDA, `_cutedsl_kernels`
-   under `CUTEDSL_FORCE_CUBIN=1`. Path A also imports
-   `build_processor`. Path B imports the module class
+   under `CUTEDSL_FORCE_CUBIN=1`. The processor path also imports
+   `build_processor`; the OSS feature path imports the module class
    (`from bionemo_ir.models.protenix import Protenix`).
 1. **Probe OSS** — `$OSS_ROOT` is the pin
    ([environment.md](environment.md#oss-checkout-pins)). Verify
@@ -471,10 +468,10 @@ MHz. Harnesses sample power and SM / graphics / memory clocks
 ([measurement.md](measurement.md#gpu-inventory)).
 
 Look up `model_source` in `docs/ref/support-matrix.md`. Set
-`path` in `bench_config.json`:
+`feature_path` in `bench_config.json`:
 
-- Pipeline **Yes** → Path A (folding factory)
-- Pipeline **No** and folding (`protenix-v2`) → Path B
+- Pipeline **Yes** → `processor` (folding factory)
+- Pipeline **No** and folding (`protenix-v2`) → `oss`
   ([no-pipeline.md](no-pipeline.md)). Do not call `build_processor`.
 - Pipeline **No** and not folding (`boltz-2-affinity`) → stop.
   Extend the skill first
@@ -567,7 +564,7 @@ Filter to what the model can run
 - AF2 multimer — `protein-protein` items from `spec_full.json`
   whose polymers are all protein (no RNA / DNA / ligand). See
   [models/of2.md](models/of2.md#protein-only).
-- Boltz-1/2, OpenFold3, Path B (`protenix-v2`) — `spec_full.json`
+- Boltz-1/2, OpenFold3, `protenix-v2` — `spec_full.json`
 
 Every filter is about model capability, never about templates. Attach
 each item's listed A3Ms / Boltz CSVs and templates.
@@ -647,11 +644,12 @@ Also lock `dataset_root`, `dataset_spec`, `dataset_manifest_sha256` and
 `dataset_build_sha256` (BUILD.json — a built tree is not identified by a version
 string; see [samples.md](samples.md#provenance--record-the-build-not-a-tag)),
 precision, seed, `CUDA_VISIBLE_DEVICES`, warmup/repeats, checkpoint ids,
-`bioir_config="get_pretrained_config"`, `accelerated_configs`
-(or `null`), `path` (`A` | `B`), `ost_cmd`, `dockq_cmd`, and
-`dockq_args`. Path A seeds via
-`init_context.random_seed` on the **feature-generator** stage. Path B
-seeds the OSS featurizer the way the OSS e2e script does.
+`bioir_config="get_pretrained_config"`, `graph_activation="default"`
+(or `"disable_cuda_graphs()"` for eager), enabled roles, `feature_path`
+(`processor` | `oss`),
+`ost_cmd`, `dockq_cmd`, and `dockq_args`. The processor path seeds via
+`init_context.random_seed` on the **feature-generator** stage; the OSS
+feature path seeds the OSS featurizer the way the OSS e2e script does.
 
 OpenFold2 / AlphaFold2 use the same `recycling_steps=3` lock as a
 fixed trunk-iteration count (not `+ 1`, not early stop). Details
@@ -665,36 +663,21 @@ between BioIR and OSS.
 `self.config` from `get_pretrained_config(model_name)` — the
 default optimized stack (bf16 where the class sets it, auto
 triangle / pairwise backends,
-`docs/ref/support-matrix.md`). Path A omits
+`docs/ref/support-matrix.md`). The processor path omits
 `engine_kwargs["config"]` so `FoldingEngine` does the same.
 Do not construct a `BaseConfig` by hand. Do not pass OSS
-dtypes or attention backends into BioIR. The only exception is a
+dtypes or attention backends into BioIR. The only exceptions are a
 minimal feature flag explicitly required by a model profile for input
-parity: derive the official pretrained config, change only that flag,
-and serialize the delta. Boltz-2's custom-template case is documented
-in [models/boltz2.md](models/boltz2.md).
+parity and an eager arm's `disable_cuda_graphs()`: derive the official
+pretrained config, change only that, and serialize the delta. Boltz-2's
+custom-template case is documented in [models/boltz2.md](models/boltz2.md).
 
-**BioIR CUDA graphs (default on).** After that pretrained config,
-for `boltz-1`, `boltz-2`, `openfold3`, and `protenix-v2`, enable a
-CUDA graph on `diffusion_module` by selecting only
-`AcceleratedConfig(backend="torch")`. Omit `default=` so the
-module's safe, exact-shape routine remains active: it accepts
-`num_tokens <= 1024` and routes larger inputs to eager. Do not pass
-an explicit `CUDAGraphOptimizationConfig`; it replaces rather than
-merges with the module default and would erase the routing metadata
-and 1024-token guard. Graph that parent only — `token_transformer`
-is nested and cannot have its own graph. OpenFold2 / AlphaFold2 have
-no graphable module; leave `accelerated_configs` unset.
-
-Audit graph execution from the declared input-routing policy before
-reading tracker caches. An out-of-range call bypasses cache-state and
-fallback-key creation, so both counters are expected to stay zero; call
-that `eager_out_of_range`, not a capture failure. Accepted inputs with a
-failed key are `eager_capture_fallback`, and accepted inputs with a graph
-state are `cuda_graph`. Audit and serialize the classification before
-calling `tracker.reset()` after each sample. Use the reusable procedure
-in
-[measurement.md](measurement.md#audit-cuda-graph-routing-not-cache-emptiness).
+**BioIR CUDA graphs.** Every graph region captures by default: lock
+`graph_activation="default"` for the BioIR column, or
+`"disable_cuda_graphs()"` for an eager arm. Follow
+[measurement.md](measurement.md#cuda-graphs) for the eager config, caches,
+and the audit; [`docs/ref/api.md`](../../../docs/ref/api.md#cuda-graphs)
+lists each model's regions and policy.
 
 **OSS scenarios.** Always run **eager**. Protenix-v2 is an explicit
 compile exception: its pinned combined child compile was prohibitively
@@ -773,7 +756,8 @@ exactly like a fast model.
 ## Phase 3 — Write the harnesses
 
 Read [measurement.md](measurement.md) and copy the timer verbatim.
-Write **one** of the two blocks below, matching `path` from Phase 0.
+Write the harnesses for `feature_path` from Phase 0: both processor-path
+blocks, or the OSS feature-path block.
 
 Both harnesses have to turn spec items into their side's input. That
 mapping — field names, enable flags, files to synthesize, and the
@@ -781,11 +765,10 @@ assertions that prove an alignment or template actually attached — is
 in [msa.md](msa.md) and [templates.md](templates.md). Do that work
 here, not after the first suspiciously fast row.
 
-### Path A — `$WORKDIR/bench/run_bioir.py`
+### Processor path, BioIR side — `$WORKDIR/bench/run_bioir.py`
 
 ```python
 from bionemo_ir.data.schemas import InputRequest, MSARecord, Polymer, Template
-from bionemo_ir.configs import AcceleratedConfig
 from bionemo_ir.pipeline.processor.engine_proc import (
     EngineProcessorConfig,
     build_processor,
@@ -796,14 +779,10 @@ from bionemo_ir.pipeline.stages.configs import (
 )
 
 # Omit engine_kwargs["config"] unless the model profile documents one
-# minimal input-parity feature flag. In that case derive the official
-# pretrained config and record only that delta.
+# minimal input-parity feature flag or this is the eager arm
+# (disable_cuda_graphs()). Then derive the official pretrained config and
+# record only that delta.
 engine_kwargs = {"profile_inference": True}
-if locked["model_source"] in {"boltz-1", "boltz-2", "openfold3"}:
-    engine_kwargs["accelerated_configs"] = {
-        # Omit default=: preserve the module's <=1024-token safe routine.
-        "diffusion_module": AcceleratedConfig(backend="torch"),
-    }
 
 config = EngineProcessorConfig(
     model_source="<model_source>",
@@ -816,6 +795,8 @@ config = EngineProcessorConfig(
     writer_stage=WriterStageConfig(output_path=str(out_dir), format="cif"),
 )
 processor = build_processor(config)
+# Live model for the CUDA-graph audit (measurement.md).
+model = processor.get_stage_udf("FoldingEngineStage").folding.engine.model
 
 # sample.request = spec_item_to_request(item, DATASET_ROOT)  # samples.md
 for sample in in_scope_manifest:
@@ -853,7 +834,7 @@ for sample in in_scope_manifest:
   `dockq: null, dockq_status: "single_chain"`, never `0.0`
   ([measurement.md](measurement.md#quality-lddt-and-dockq)).
 
-### Path A — `$WORKDIR/bench/run_oss.py`
+### Processor path, OSS side — `$WORKDIR/bench/run_oss.py`
 
 **Base this on the OSS inference script**, not a from-scratch
 forward. Copy it into `$WORKDIR/debug/` (or import its
@@ -915,7 +896,7 @@ is a failure.
 If OSS must be monkey-patched to expose `forward`, copy the entry
 script into `$WORKDIR/debug/`, patch the copy, revert nothing upstream.
 
-### Path B — OSS features, swap the module
+### OSS feature path — OSS features, swap the module
 
 Follow [no-pipeline.md](no-pipeline.md). Write three scripts:
 
@@ -928,10 +909,7 @@ Follow [no-pipeline.md](no-pipeline.md). Write three scripts:
    compiled model on every in-scope dump.
 1. `$WORKDIR/bench/run_bioir.py` (`bioir_python`) — load the **same**
    dump, `adapt_oss_batch_to_bioir`, construct BioIR `Protenix`
-   (`include_load_weights=True`), select `diffusion_module` with
-   `AcceleratedConfig(backend="torch")` and no `default=`, then time
-   `model.forward`. This preserves the same 1024-token safe routine as
-   Path A.
+   (`include_load_weights=True`), then time `model.forward`.
 
 Do not call `build_processor`. Do not re-featurize on the BioIR side.
 
@@ -1053,7 +1031,7 @@ the handoff.
 
 The full run requires user approval after the five-sample smoke gate.
 
-Path B first:
+On the OSS feature path, dump features first:
 
 ```bash
 cd "$WORKDIR" && "$OSS_PYTHON" bench/dump_oss_features.py
@@ -1079,8 +1057,8 @@ successful BioIR smoke.
 cd "$WORKDIR" && "$OSS_PYTHON" bench/run_oss.py
 ```
 
-Same manifest, same locked knobs, same GPU. Path B must load the
-dumps from Phase 4, not featurize a second time.
+Same manifest, same locked knobs, same GPU. On the OSS feature path,
+`run_oss.py` must load the dumps from Phase 4, not featurize a second time.
 
 Always write `$WORKDIR/results/oss_eager.json`. Write
 `oss_compile.json` only after a passing compile probe **or a
@@ -1095,15 +1073,16 @@ disable the kernel and still label the row `oss_e2e`.
 
 Print (not only file):
 
-1. **Setup** — model key, path A or B, OSS url / ref / commit
+1. **Setup** — model key, `feature_path`, OSS url / ref / commit
    (must match the pin), both checkpoint
    hashes, GPU name / SM / driver, **power limit (W)**, **max SM
    clock and observed SM clock (MHz)**, `bioir_python` / `oss_python`,
    both torch versions, `isolation`, `ost_cmd`, `dockq_cmd`
    and `dockq_args`, locked
    `runtime_args`, warmup=1 / measure=1, BioIR graph config
-   (`module_default`, 1024-token limit, captured and eager-fallback
-   sample ids), OSS compile probe pass/fail (two-sample warmup compile
+   (`graph_activation`, enabled roles, `model_default`, 1024-token
+   limit, per-region execution paths), OSS compile probe pass/fail
+   (two-sample warmup compile
    deltas, targets if pass), `compile_stats.measurement_stable`
 1. **Dataset** — `dataset_root`, spec file, MANIFEST digest,
    BUILD.json digest, in-scope count, per-sample MSA
@@ -1249,7 +1228,7 @@ Phase 4):
   polymer chains). Pick the
   quantity that drives compute (tokens, atoms, pocket+ligand
   size, …) and plot latency against it
-- **Path A vs B** — factory (`build_processor`) or OSS features
+- **Feature loading** — factory (`build_processor`) or OSS features
   - BioIR module (`docs/ref/support-matrix.md` Pipeline column)
 - **MSA / template rules** — only if that task uses them
 
@@ -1257,8 +1236,8 @@ Phase 4):
 Pipeline = No, `docs/ref/support-matrix.md`). Ligand *structure*
 on Boltz-1/2 / OpenFold3 is already in v1. Affinity is a
 different head: no CIF writer, no `ost`, no folding GT under
-`ground_truth/`. When someone benches it, add a Path B dump of OSS
-affinity features, time `model.forward()`, score with the
+`ground_truth/`. When someone benches it, dump OSS affinity features
+on the OSS feature path, time `model.forward()`, score with the
 affinity metric the OSS paper uses, and chart vs a ligand /
 complex size — do not reuse this folding manifest.
 
@@ -1276,7 +1255,8 @@ affinity with lDDT or fold-shaped `runtime_args`.
 - The demo tree `examples/data/samples/` as a substitute dataset
 - DockQ / feature-tensor equivalence (`make-data-pipeline`)
 - Isolated same-features microbench of a single stack (`module-onboard`)
-  — Path B is e2e `model.forward` on OSS features, not a layer bench
+  — the OSS feature path is e2e `model.forward` on OSS features, not a
+  layer bench
 - Non-folding heads (`boltz-2-affinity`, embeddings, design, …)
   until this skill (or a sibling) is extended
 
@@ -1317,7 +1297,7 @@ Those are separate skills or a later revision.
   and ground-truth CIFs often disagree about chain names
   (mmCIF chains come from `label_asym_id`), and the mapping search
   is what handles that. Same flags on both sides, always.
-- **Path A: `profile_inference` already isolates `model.forward`.**
+- **Processor path: `profile_inference` already isolates `model.forward`.**
   Do not time `processor()` wall clock and call it the model.
 - **This skill is folding-only.** Affinity / embeddings / design
   need a new dataset, metric, and size axis before any harness.
@@ -1325,17 +1305,12 @@ Those are separate skills or a later revision.
   `get_pretrained_config`). Never a handmade `BaseConfig`.
   A model-profile input-parity flag may be changed only on the
   official pretrained config and must be recorded (Boltz-2 templates).
-  CUDA-graph `accelerated_configs` only after that, and only on
-  families that support it.
-- **Path B: do not call `build_processor`.** OSS featurizer + BioIR
+- **OSS feature path: do not call `build_processor`.** OSS featurizer + BioIR
   `Protenix(...)`. Dump features once; both forwards load that `.pt`.
-- **Graph the BioIR diffusion module by default** on Boltz-1/2, OF3,
-  and Protenix with `AcceleratedConfig(backend="torch")` only. Never
-  supply `default=` or an explicit graph config: the module-declared
-  exact-shape routine includes the `num_tokens <= 1024` safety guard,
-  and an override replaces it. Larger inputs intentionally run eager.
-  The one warmup forward is the capture; the one measured forward is
-  the headline.
+- **BioIR graphs are on by default.** The default model needs no
+  `optimize()` call; an eager arm uses `disable_cuda_graphs()`. Keep the
+  policies and caches, and audit each forward
+  ([measurement.md](measurement.md#cuda-graphs)).
 - **Base OSS on its inference script.** Find `predict` /
   `infer` / the CLI entry first. Wrap that. Do not reimplement
   OSS featurize + `forward` from internals unless the script

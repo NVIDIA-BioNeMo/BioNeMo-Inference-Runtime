@@ -14,6 +14,7 @@
 # limitations under the License.
 from pydantic import Field, model_validator
 
+from bionemo_ir._torch.graph_optimization.config import CUDAGraphOptimizationConfig
 from bionemo_ir.configs import (
     BaseConfig,
     DiffusionTransformerConfig,
@@ -22,7 +23,7 @@ from bionemo_ir.configs import (
     TrunkPadSpec,
 )
 from bionemo_ir.hubs import FoldingSupportMatrix as SupMat
-from bionemo_ir.models.boltz2.config import MSAModuleConfig
+from bionemo_ir.models.boltz2.config import MSAModuleConfig, diffusion_graph_config
 from bionemo_ir.pipeline.models.boltz2.const import num_tokens
 
 
@@ -111,6 +112,9 @@ class AtomDiffusionConfig(BaseConfig):
 
 
 class ScoreModelConfig(BaseConfig):
+    graph_optimization_config: CUDAGraphOptimizationConfig | None = Field(
+        default_factory=diffusion_graph_config, description="CUDA-graph policy for one denoising step."
+    )
     atom_s: int = _Default.atom_s
     atom_z: int = _Default.atom_z
     token_s: int = _Default.token_s

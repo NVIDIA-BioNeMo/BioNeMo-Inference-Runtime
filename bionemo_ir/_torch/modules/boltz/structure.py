@@ -22,12 +22,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from einops import rearrange
 
-from bionemo_ir._torch.graph_optimization.config import (
-    GraphOptimizationMode,
-    InputAcceptanceDimSpec,
-    InputKeyMethod,
-)
-from bionemo_ir._torch.graph_optimization.decorator import NamedDimTies, support_graph_optimization
+from bionemo_ir._torch.graph_optimization.region import GraphRegion
 from bionemo_ir._torch.layers.attention import AttentionMetadata
 from bionemo_ir._torch.layers.conditioning import PairwiseConditioning, SingleConditioning
 from bionemo_ir._torch.layers.linear import Linear
@@ -235,36 +230,6 @@ class DiffusionConditioning(nn.Module):
         return q, c, atom_enc_bias, atom_dec_bias, token_trans_bias
 
 
-@support_graph_optimization(
-    # s_inputs/s_trunk (-2) and token_pad_mask (-1) carry ``num_tokens``. The
-    # pair rep is nested inside diffusion_conditioning_kwargs (not tied) and the
-    # output is atom coordinates (no token axis, so no output tie).
-    named_dims=(
-        NamedDimTies(
-            name="num_tokens",
-            input_dims=(
-                ("s_inputs", (-2,)),
-                ("s_trunk", (-2,)),
-                ("token_pad_mask", (-1,)),
-            ),
-        ),
-    ),
-    graph_optimization_mode=GraphOptimizationMode.CUDA_GRAPH_VIA_TORCH,
-    input_key_method=InputKeyMethod.EXACT,
-    # Default input management: accept up to 1024 tokens before falling back to
-    # eager.
-    input_acceptance_dim_spec=InputAcceptanceDimSpec(name="num_tokens", dim_len_max=1024),
-    # Only r_noisy and times change between denoising steps; the sampler passes
-    # the same features, trunk outputs and conditioning throughout a rollout.
-    stable_kwargs=(
-        "atom_to_token",
-        "atom_pad_mask",
-        "token_pad_mask",
-        "s_inputs",
-        "s_trunk",
-        "diffusion_conditioning_kwargs",
-    ),
-)
 class DiffusionModule(nn.Module):
     """Diffusion module"""
 
@@ -1091,6 +1056,7 @@ class BoltzDiffusionSampler(nn.Module):
         self.step_scale = atom_diffusion_config.step_scale
         score_model_config = config.score_model
         self.diffusion_module = diffusion_module
+        self.graph = GraphRegion(self, "diffusion_module", score_model_config.graph_optimization_config)
         self.runner = GenerativeRunner()
         self.edm_integrator_config = edm_sampling.EDMIntegratorConfig(
             gamma0=self.gamma0,
@@ -1182,7 +1148,7 @@ class BoltzDiffusionSampler(nn.Module):
         r_noisy = self.c_in(padded_sigma) * noised_atom_coords
 
         # [B, mult, N_atoms, 3]
-        r_update, token_a = self.diffusion_module(
+        r_update, token_a = self.graph(
             s_trunk=s_trunk,
             s_inputs=s_inputs,
             r_noisy=r_noisy,

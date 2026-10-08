@@ -21,9 +21,9 @@ optimizer produces the *same* predicted structures as the unoptimized
 Both runs go through the public ``build_processor`` API (the same entry point
 an application driving the pipeline uses) on the in-process
 **serial** backend, over two bundled sample targets from
-``examples/data/samples`` (the CASP14 monomers T1038 and T1047s1). The only
-difference between the two runs is the ``accelerated_configs`` passed to the
-engine:
+``examples/data/samples`` (the CASP14 monomers T1038 and T1047s1). Both runs
+clear the model's default graph-region policies; the only difference between
+them is the ``accelerated_configs`` passed to the engine:
 
   * **original** — no acceleration; the diffusion transformer runs eager.
   * **cuda-graph** — ``token_transformer`` is wrapped in a
@@ -35,6 +35,10 @@ shape across all rollout steps, so a single graph is captured per target and
 replayed for the remaining steps (capture-once / replay-many). RNG is seeded
 identically per request, so a correct graph yields structures that match the
 eager run.
+
+The model's graph regions (``trunk``, ``diffusion_module`` and
+``confidence_pairformer``) are checked the same way: the cuda-graph run enables
+one region by role, while the original run never enables any.
 
 The test asserts, per model:
   1. the graph engaged and self-verified for every captured key
@@ -69,11 +73,11 @@ from bionemo_ir._torch.layers.transformers.diffusion_transformer import (
     ProtenixDiffusionTransformer,
 )
 from bionemo_ir._torch.layers.transformers.pairformer import PairformerModule
-from bionemo_ir._torch.modules.boltz.structure import DiffusionModule as BoltzDiffusionModule
-from bionemo_ir._torch.modules.openfold3.diffusion_module import DiffusionModule as OF3DiffusionModule
-from bionemo_ir._torch.modules.protenix.diffusion import ProtenixDiffusionModule
 from bionemo_ir.configs import AcceleratedConfig, BackendType, BaseConfig
 from bionemo_ir.data.schemas import InputRequest
+from bionemo_ir.models.boltz2 import config as boltz2_config
+from bionemo_ir.models.openfold3 import config as of3_config
+from bionemo_ir.models.protenix import config as protenix_config
 from bionemo_ir.pipeline.processor.engine_proc import EngineProcessorConfig
 from bionemo_ir.pipeline.stages.configs import WriterStageConfig
 from tests.common.test_utils.basic import path_for_package_in_repo
@@ -274,6 +278,17 @@ def _routing_from_decorator(cls, *, bucket: bool):
     return factory.export_config()
 
 
+def _eager_model_config(model_source: str) -> BaseConfig:
+    """Pretrained config with every default graph-region policy cleared, so only the selected module captures."""
+    config = _default_of3_model_config(model_source)
+    if config is None:
+        from bionemo_ir.registry import get_model_class
+
+        config = get_model_class(model_source).get_pretrained_config(model_source)
+    config.disable_cuda_graphs()
+    return config
+
+
 def _module_graph_optimization_config(
     cls,
     module_name: str,
@@ -314,14 +329,13 @@ def _openfold3_graph_optimization_config(
 ) -> CUDAGraphOptimizationConfig:
     """Build the CUDA-graph optimization config for an OpenFold3 ``module_name``.
 
-    ``token_transformer`` / ``diffusion_module`` are production-keyed ``EXACT``
-    and ``structure_pairformer`` (the shared ``PairformerModule``) is
+    ``token_transformer`` is production-keyed ``EXACT`` and
+    ``structure_pairformer`` (the shared ``PairformerModule``) is
     ``BUCKETED_SHAPES``; the non-prod key is an experimental override. Raises for
     an unknown module.
     """
     cls_by_module = {
         "token_transformer": OpenFold3DiffusionTransformer,
-        "diffusion_module": OF3DiffusionModule,
         "structure_pairformer": PairformerModule,
     }
     if module_name not in cls_by_module:
@@ -346,21 +360,15 @@ def _boltz2_graph_optimization_config(
       *positionally*, so the tracker names them ``arg0``/``arg1`` (not
       ``s``/``z`` as in OpenFold3); ``mask``/``pair_mask`` are keyword and keep
       their names.
-    * ``diffusion_module`` — boltz-2's ``DiffusionModule.forward`` carries the
-      token axis on ``token_pad_mask`` (-1) and ``s_inputs``/``s_trunk`` (-2);
-      its pair representation is nested inside ``diffusion_conditioning_kwargs``
-      (so it is not tied here) and its output is atom coordinates (no output
-      tie).
 
-    ``token_transformer`` / ``diffusion_module`` are production-keyed ``EXACT``
-    and ``structure_pairformer`` (the shared ``PairformerModule``, called with
+    ``token_transformer`` is production-keyed ``EXACT`` and
+    ``structure_pairformer`` (the shared ``PairformerModule``, called with
     ``s``/``z`` positional but normalized to ``s``/``z`` by ``Signature.bind``)
     is ``BUCKETED_SHAPES``; the non-prod key is an experimental override. Raises
     for an unknown module.
     """
     cls_by_module = {
         "token_transformer": BoltzDiffusionTransformer,
-        "diffusion_module": BoltzDiffusionModule,
         "structure_pairformer": PairformerModule,
     }
     if module_name not in cls_by_module:
@@ -377,19 +385,16 @@ def _protenix_graph_optimization_config(
     """Build the CUDA-graph optimization config for a Protenix ``module_name``.
 
     Protenix graph-optimizes ``token_transformer`` (``a``/``s``/``z``/``mask``,
-    z carries the token axis on -2/-3) and ``diffusion_module``
-    (``s_inputs``/``s_trunk`` at -2, ``z_trunk`` at -2/-3; the mask lives inside
-    ``input_feature_dict`` and the output is atom coordinates, so neither is
-    tied). Its recycling-trunk pairformer is intentionally *not* graph-optimized
-    (replay produces NaN), so ``structure_pairformer`` is unsupported.
+    z carries the token axis on -2/-3). Its recycling-trunk pairformer is
+    intentionally *not* graph-optimized on its own (replay produces NaN), so
+    ``structure_pairformer`` is unsupported.
     """
     cls_by_module = {
         "token_transformer": ProtenixDiffusionTransformer,
-        "diffusion_module": ProtenixDiffusionModule,
     }
     if module_name not in cls_by_module:
         raise NotImplementedError(
-            f"module {module_name!r} is not graph-optimized for protenix (only token_transformer and diffusion_module)"
+            f"module {module_name!r} is not graph-optimized for protenix (only token_transformer and graph regions)"
         )
     # The production setting is EXACT (acceptance only); BUCKETED adds padding.
     return _module_graph_optimization_config(
@@ -399,6 +404,45 @@ def _protenix_graph_optimization_config(
         sample_ids,
         prod_key=InputKeyMethod.EXACT,
         verify_capture=verify_capture,
+    )
+
+
+# Config class whose ``graph_optimization_config`` each model gives a graph
+# region, by region role.
+_REGION_POLICY_OWNERS = {
+    "openfold3": {
+        "trunk": of3_config.TrunkConfig,
+        "diffusion_module": of3_config.DiffusionModuleConfig,
+        "confidence_pairformer": of3_config.AuxiliaryHeadsConfig,
+    },
+    "boltz-2": {
+        "trunk": boltz2_config.TrunkConfig,
+        "diffusion_module": boltz2_config.ScoreModelConfig,
+        "confidence_pairformer": boltz2_config.ConfidenceModuleConfig,
+    },
+    "protenix-v2": {
+        "trunk": protenix_config.TrunkConfig,
+        "diffusion_module": protenix_config.DiffusionModuleConfig,
+        "confidence_pairformer": protenix_config.ConfidenceHeadConfig,
+    },
+}
+
+
+def _region_graph_optimization_config(
+    owner_config: type[BaseConfig], sample_ids: tuple[str, ...]
+) -> CUDAGraphOptimizationConfig:
+    """Copy a graph region's model-owned policy for a parity run.
+
+    The copy keeps the policy's exact routing and first-call capture, verifies
+    every capture, and keeps one graph per target with no residency budget, so
+    no target's graph is evicted before the assertions read it.
+    """
+    return owner_config().graph_optimization_config.model_copy(
+        update={
+            "verify_capture": True,
+            "num_graphs_max_for_this_module": len(sample_ids),
+            "graph_cache_budget_bytes": None,
+        }
     )
 
 
@@ -412,7 +456,9 @@ def _build_graph_optimization_config(
     """Build the CUDA-graph optimization config for ``module_name``.
 
     Returns ``None`` when ``use_cuda_graph`` is False (eager, no acceleration).
-    Otherwise sets up an ``InputRoutingConfigFactory`` with the module's
+    A graph region role gets its model-owned policy (see
+    :func:`_region_graph_optimization_config`). Otherwise sets up an
+    ``InputRoutingConfigFactory`` with the module's
     input-acceptance dims (and, for ``BUCKETED_SHAPES``, its padded/bucketed
     dims plus output ties), then returns the ``CUDAGraphOptimizationConfig``
     (with ``num_graphs_max_for_this_module`` sized to ``len(sample_ids)``).
@@ -420,6 +466,9 @@ def _build_graph_optimization_config(
     """
     if not use_cuda_graph:
         return None
+    region_owner = _REGION_POLICY_OWNERS.get(model_source, {}).get(module_name)
+    if region_owner is not None:
+        return _region_graph_optimization_config(region_owner, sample_ids)
     if model_source == "openfold3":
         return _openfold3_graph_optimization_config(module_name, input_key_method, sample_ids)
     elif model_source == "boltz-2":
@@ -446,8 +495,9 @@ def _build_processor_config(
     engine applies this via ``model.optimize(...)`` at construction time. The
     ``module_name`` module key is shared by OpenFold3 and boltz-2.
 
-    When it is not set the engine gets an **empty** ``accelerated_configs``, so no
-    module is wrapped and the run is genuinely eager. Passing
+    Both runs clear the model's default graph-region policies first. When it is
+    not set the engine gets an **empty** ``accelerated_configs``, so no module is
+    wrapped and the run is genuinely eager. Passing
     ``{module_name: AcceleratedConfig(default=BaseConfig(graph_optimization_config=None))}``
     would NOT be eager: ``OptimizedModuleSetterMixin.optimize`` treats a ``None``
     graph config as "no explicit config" and falls back to the module's
@@ -462,9 +512,7 @@ def _build_processor_config(
     """
 
     engine_kwargs: dict = {"profile_inference": True}
-    default_model_cfg = _default_of3_model_config(model_source)
-    if default_model_cfg is not None:
-        engine_kwargs["config"] = default_model_cfg
+    engine_kwargs["config"] = _eager_model_config(model_source)
 
     # overwrite default graph_optimization_config with a CUDAGraphOptimizationConfig if use_cuda_graph is True
     graph_optimization_config = _build_graph_optimization_config(
@@ -854,6 +902,32 @@ def test_cuda_graph_diffusion_module_parity(model_source, input_key_method, samp
     _assert_cuda_graph_parity(
         model_source,
         "diffusion_module",
+        sample_ids=sample_id_tuple,
+        eager_baseline_cache=_eager_baseline_cache,
+        input_key_method=input_key_method,
+    )
+
+
+@_cuda_graph_parity_marks_exact_only
+@pytest.mark.parametrize("sample_id_tuple", _SAMPLE_ID_TUPLE_PARAMS_MULTI)
+def test_cuda_graph_trunk_parity(model_source, input_key_method, sample_id_tuple, _eager_baseline_cache):
+    _assert_cuda_graph_parity(
+        model_source,
+        "trunk",
+        sample_ids=sample_id_tuple,
+        eager_baseline_cache=_eager_baseline_cache,
+        input_key_method=input_key_method,
+    )
+
+
+@_cuda_graph_parity_marks_exact_only
+@pytest.mark.parametrize("sample_id_tuple", _SAMPLE_ID_TUPLE_PARAMS_MULTI)
+def test_cuda_graph_confidence_pairformer_parity(
+    model_source, input_key_method, sample_id_tuple, _eager_baseline_cache
+):
+    _assert_cuda_graph_parity(
+        model_source,
+        "confidence_pairformer",
         sample_ids=sample_id_tuple,
         eager_baseline_cache=_eager_baseline_cache,
         input_key_method=input_key_method,

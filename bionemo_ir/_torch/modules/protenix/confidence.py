@@ -19,6 +19,7 @@ from typing import Any
 import torch
 import torch.nn as nn
 
+from bionemo_ir._torch.graph_optimization import GraphRegion, eager_graphs
 from bionemo_ir._torch.layers.linear import Linear
 from bionemo_ir._torch.layers.token_padding import pad_trunk_tokens, unpad_trunk_tokens
 from bionemo_ir._torch.layers.transformers.pairformer import PairformerModule
@@ -71,6 +72,7 @@ class ProtenixConfidenceHead(nn.Module):
         self.linear_no_bias_d_wo_onehot = Linear(1, self.c_z, bias=False, dtype=self.dtype, skip_create_weights=skip)
 
         self.pairformer_stack = PairformerModule(config.pairformer_config)
+        self.pairformer_graph = GraphRegion(self, "pairformer_stack", config.graph_optimization_config)
         self.pairformer_dtype = config.pairformer_config.torch_dtype
         self.enable_token_pad = config.pairformer_config.enable_token_pad
         self.token_pad_spec = config.token_pad_spec
@@ -126,7 +128,7 @@ class ProtenixConfidenceHead(nn.Module):
             )
             s_single, z_pair = padded["s"], padded["z"]
             single_mask, pair_mask = padded["mask"], padded["pair_mask"]
-        s_single, z_pair = self.pairformer_stack(s_single, z_pair, single_mask, pair_mask)
+        s_single, z_pair = self.pairformer_graph(s_single, z_pair, single_mask, pair_mask)
         s_single, z_pair = unpad_trunk_tokens(s_single, z_pair, n_true=n_true, kinds=("single", "pair"))
         z_pair = z_pair.to(self.dtype)
         s_single = s_single.to(self.dtype)
@@ -254,7 +256,8 @@ class ProtenixConfidenceHead(nn.Module):
 
         plddt, pae, pde, resolved = [], [], [], []
         for i in range(n_sample):
-            p, a, d, r = self.per_sample_logits(ctx, x_pred_coords[..., i, :, :])
+            with eager_graphs(n_sample == 1):
+                p, a, d, r = self.per_sample_logits(ctx, x_pred_coords[..., i, :, :])
             plddt.append(p)
             pae.append(a)
             pde.append(d)

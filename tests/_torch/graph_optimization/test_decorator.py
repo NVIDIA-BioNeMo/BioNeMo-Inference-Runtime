@@ -55,9 +55,6 @@ from bionemo_ir._torch.layers.transformers.diffusion_transformer import (
     ProtenixDiffusionTransformer,
 )
 from bionemo_ir._torch.layers.transformers.pairformer import PairformerModule
-from bionemo_ir._torch.modules.boltz.structure import DiffusionModule as BoltzDiffusionModule
-from bionemo_ir._torch.modules.openfold3.diffusion_module import DiffusionModule as OF3DiffusionModule
-from bionemo_ir._torch.modules.protenix.diffusion import ProtenixDiffusionModule
 from tests.common.test_utils.model_forwards import _CKPT_ENV, _HF_CKPT, _model_weights_available
 
 _SAMPLE_IDS = ("T1047s1",)
@@ -68,11 +65,8 @@ _SAMPLE_IDS = ("T1047s1",)
 _MODULE_CASES = [
     pytest.param(PairformerModule, ["buffers"], ["mask", "pair_mask"], id="of3_pairformer"),
     pytest.param(OpenFold3DiffusionTransformer, ["buffers"], [], id="of3_token_transformer"),
-    pytest.param(OF3DiffusionModule, [], [], id="of3_diffusion_module"),
     pytest.param(BoltzDiffusionTransformer, ["buffers"], [], id="boltz2_token_transformer"),
-    pytest.param(BoltzDiffusionModule, [], [], id="boltz2_diffusion_module"),
     pytest.param(ProtenixDiffusionTransformer, ["buffers"], [], id="protenix_token_transformer"),
-    pytest.param(ProtenixDiffusionModule, [], [], id="protenix_diffusion_module"),
 ]
 
 

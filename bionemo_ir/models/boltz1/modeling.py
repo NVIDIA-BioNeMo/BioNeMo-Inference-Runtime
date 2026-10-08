@@ -62,8 +62,8 @@ class Boltz1(nn.Module, OptimizedModuleSetterMixin):
     # via ``@support_graph_optimization``.
     GRAPH_OPT_ENABLED_MODULES = {
         "token_transformer": "diffusion_sampler.diffusion_module.token_transformer",
-        "diffusion_module": "diffusion_sampler.diffusion_module",
     }
+    GRAPH_REGIONS = {"diffusion_module": "diffusion_sampler.graph"}
 
     def get_optimized_modules(self, accelerated_configs: dict[str, AcceleratedConfig]) -> DiscoveredModuleRegistry:
         return DiscoveredModuleRegistry(

@@ -573,6 +573,13 @@ class MSAModuleEmbedder(nn.Module):
             msa_mask:
                 [*, N_seq, N_token] MSA mask
         """
+        msa_feat, msa_mask = self.prepare_msa(batch, generator=generator)
+        return self.embed_prepared_msa(msa_feat, s_input), msa_mask
+
+    def prepare_msa(
+        self, batch: dict[str, torch.Tensor], generator: torch.Generator | None = None
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Select MSA rows outside capture, preserving the original random draws."""
         batch_dims = batch["msa"].shape[:-3]
 
         # [*, N_msa, N_token, 34]
@@ -641,11 +648,13 @@ class MSAModuleEmbedder(nn.Module):
             # Match legacy default-generator progression.
             commit_graph_safe_generator(generator, msa_feat.device)
 
-        # [*, N_seq, N_token, C_m]
+        return msa_feat, msa_mask
+
+    def embed_prepared_msa(self, msa_feat: torch.Tensor, s_input: torch.Tensor) -> torch.Tensor:
+        """Project prepared MSA rows and single inputs inside the recycle graph."""
         m = self.linear_m(msa_feat)
         m = m + self.linear_s_input(s_input).unsqueeze(-3)
-
-        return m, msa_mask
+        return m
 
 
 class TemplatePairEmbedderAllAtom(nn.Module):

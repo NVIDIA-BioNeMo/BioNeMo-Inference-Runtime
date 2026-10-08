@@ -315,28 +315,65 @@ class DiscoveredModuleRegistry(ModuleRegistry):
 
 
 class OptimizedModuleSetterMixin(ABC):
+    #: Roles of the model's graph regions (:class:`GraphRegion`): role name -> region path.
+    GRAPH_REGIONS: dict[str, str] = {}
+
     @abstractmethod
     def get_optimized_modules(self, accelerated_configs: dict[str, AcceleratedConfig]) -> ModuleRegistry:
         raise NotImplementedError("Subclass must implement this method")
 
-    def optimize(self, accelerated_configs: dict[str, AcceleratedConfig], **kwargs) -> nn.Module:
+    def _enable_graph_regions(
+        self, accelerated_configs: dict[str, AcceleratedConfig] | None
+    ) -> dict[str, AcceleratedConfig]:
+        """Enable the graph regions ``accelerated_configs`` selects and return its other entries."""
+        from bionemo_ir._torch.graph_optimization.region import GraphRegion
+
+        if accelerated_configs is None:
+            for module in self.modules():
+                if isinstance(module, GraphRegion) and module.policy is not None:
+                    module.enable()
+            return {}
+        remaining = {}
+        for name, acc_config in accelerated_configs.items():
+            try:
+                region = self.get_submodule(self.GRAPH_REGIONS.get(name, name))
+            except AttributeError:
+                region = None
+            if not isinstance(region, GraphRegion):
+                remaining[name] = acc_config
+                continue
+            if isinstance(acc_config, dict):
+                acc_config = AcceleratedConfig(**acc_config)
+            if acc_config.backend != BackendType.TORCH:
+                raise ValueError(f"Graph region {name!r} needs the torch backend")
+            region.enable(getattr(acc_config.default, "graph_optimization_config", None))
+        return remaining
+
+    def optimize(self, accelerated_configs: dict[str, AcceleratedConfig] | None = None, **kwargs) -> nn.Module:
         """Build the optimized version of the model from the original.
 
-        Supports torch backends (optionally with ``torch.compile`` when
-        ``compile=True``). For the CUDA-graph path, each matched module's tracker
-        is configured from ``acc_config.default.graph_optimization_config`` when
-        the model provides one, else from the module's decorator-declared
-        ``graph_opt_default`` (set by ``@support_graph_optimization``).
+        Graph regions capture the model's own loops without replacing modules; a region with a
+        policy captures by default. Without ``accelerated_configs`` every region with a policy is
+        enabled again. A key naming a region role (``GRAPH_REGIONS``) or path enables that region,
+        under ``acc_config.default.graph_optimization_config`` when set.
+
+        Other keys select decorated modules. Supports torch backends (optionally with
+        ``torch.compile`` when ``compile=True``). For the CUDA-graph path, each matched module's
+        tracker is configured from ``acc_config.default.graph_optimization_config`` when the
+        model provides one, else from the module's decorator-declared ``graph_opt_default`` (set
+        by ``@support_graph_optimization``).
 
         Args:
             accelerated_configs: A dictionary of modules to be accelerated.
-                Each key is a module name (e.g. ``"evoformer"``) and the value
-                is an :class:`AcceleratedConfig` whose ``backend`` field
-                selects ``"torch"``.  Set ``compile=True`` on torch-backend
-                configs to enable ``torch.compile``.
+                Each key is a region role or path, or a module name (e.g. ``"evoformer"``), and the
+                value is an :class:`AcceleratedConfig` whose ``backend`` field selects ``"torch"``.
+                Set ``compile=True`` on torch-backend configs to enable ``torch.compile``.
         Returns:
             The optimized model (self, modified in-place).
         """
+        accelerated_configs = self._enable_graph_regions(accelerated_configs)
+        if not accelerated_configs:
+            return self
         optimized_modules = self.get_optimized_modules(accelerated_configs)
         module_specs = optimized_modules.get_accelerated_modules()
 
@@ -369,6 +406,7 @@ class OptimizedModuleSetterMixin(ABC):
                     graph_mode = getattr(graph_config, "graph_optimization_mode", None)
                     if graph_mode != GraphOptimizationMode.NO_OPTIMIZATION:
                         opt_m = spec.graph_optimization_cls(config=graph_config, inner_module=org)
+                        opt_m.train(org.training)
                         spec.setter(self, opt_m)
 
         return self

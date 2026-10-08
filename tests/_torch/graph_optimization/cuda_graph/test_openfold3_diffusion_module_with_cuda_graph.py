@@ -29,14 +29,13 @@ import torch
 
 from bionemo_ir._torch.graph_optimization.config import (
     CUDAGraphOptimizationConfig,
-    GraphOptimizationMode,
-    InputKeyMethod,
 )
 from bionemo_ir._torch.graph_optimization.cuda_graph.runtime import (
     CUDAGraphOptimizationTracker,
     CUDAGraphPreparationState,
 )
 from bionemo_ir._torch.modules.openfold3.diffusion_module import DiffusionModule
+from bionemo_ir.models.openfold3.config import DiffusionModuleConfig
 from tests.common.test_utils.openfold3.batched_input_tools import (
     AVAILABILITY_EXC,
     capture_and_assemble,
@@ -44,8 +43,8 @@ from tests.common.test_utils.openfold3.batched_input_tools import (
     harness_skip_reason,
 )
 
-# warmup are calls 1,2,3.  On call 4 is capture, verify, replay. Call 4
-# output is used in production
+# The model policy warms up on input copies, then captures, verifies and
+# replays on call 1; calls 2-4 replay that graph.
 _NUM_DRIVE_CALLS = 4
 
 # All three tests below need real trunk-derived DiffusionModule inputs for this
@@ -94,16 +93,11 @@ def _free_captured_cuda_graphs():
 def _diffusion_graph_config() -> CUDAGraphOptimizationConfig:
     """EXACT-keyed CUDA-graph config for the OF3 DiffusionModule.
 
-    Mirrors what the model builds for the ``diffusion_module`` role: the routing
-    config comes straight from the class ``@support_graph_optimization`` default
-    (``graph_opt_default``), whose ``num_tokens`` acceptance max (1024) accepts
-    the sample's token count.
+    Use the model-owned routing policy, with verification enabled for this test.
     """
-    return CUDAGraphOptimizationConfig(
-        graph_optimization_mode=GraphOptimizationMode.CUDA_GRAPH_VIA_TORCH,
-        input_key_method=InputKeyMethod.EXACT,
-        input_routing_config=DiffusionModule.graph_opt_default.input_routing_config,
-    )
+    policy = DiffusionModuleConfig().graph_optimization_config
+    policy.verify_capture = True
+    return policy
 
 
 def test_of3_diffusion_module_eager_batched_matches_separate(_of3_diffusion_capture):

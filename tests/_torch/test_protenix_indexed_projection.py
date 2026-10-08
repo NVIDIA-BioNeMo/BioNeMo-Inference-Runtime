@@ -70,7 +70,8 @@ def test_confidence_integration(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         "bionemo_ir._torch.modules.protenix.confidence.PairformerModule", lambda config: IdentityPairformer()
     )
-    config = ConfidenceHeadConfig()
+    # The stub Pairformer's signature does not match the confidence graph policy.
+    config = ConfidenceHeadConfig(graph_optimization_config=None)
     head = ProtenixConfidenceHead(config).cuda().eval()
     for parameter in head.parameters():
         parameter.normal_(std=0.05)

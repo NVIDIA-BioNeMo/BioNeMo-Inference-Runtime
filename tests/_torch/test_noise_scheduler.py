@@ -39,6 +39,7 @@ from bionemo_ir._torch.layers.random_augmentation import (
 )
 from bionemo_ir._torch.layers.transformers.diffusion_transformer import OpenFold3DiffusionTransformer
 from bionemo_ir._torch.modules.openfold3.diffusion_module import OpenFold3DiffusionSampler
+from bionemo_ir.configs import BaseConfig
 
 _SD, _SMAX, _SMIN, _RHO = 16.0, 160.0, 4e-4, 7.0
 
@@ -325,6 +326,7 @@ def test_openfold3_sampler_composes_shared_edm_runtime(use_conditioning: bool, u
     class _Denoiser(nn.Module):
         def __init__(self):
             super().__init__()
+            self.config = BaseConfig()
             self.calls = 0
             # The encoder and decoder prepare their biases with the atom key mask.
             self.atom_attn_enc = SimpleNamespace(
@@ -406,6 +408,10 @@ def test_openfold3_rollout_uses_schedule_dtype_when_atom_mask_is_bool():
     """AF3EDMIntegrator.initialize() calls torch.randn with plan.dtype."""
 
     class _Denoiser(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.config = BaseConfig()
+
         def forward(self, *, xl_noisy, **_kwargs):
             return 0.7 * xl_noisy
 

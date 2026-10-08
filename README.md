@@ -176,8 +176,10 @@ every listed template.
 - Time only GPU-synchronized `model.forward()`. Featurization, transfers,
   postprocessing, writing, and scoring stay outside the window.
 - Discard one warmup forward, then report one measured forward per sample.
-- BioIR runs its default optimized config, with a CUDA graph on the diffusion
-  module where supported.
+- BioIR runs its default optimized config, which captures CUDA graphs of each
+  model's trunk recycle, diffusion step, and confidence Pairformer for inputs
+  up to 1024 tokens. The results below, measured 2026-09-08, used a CUDA graph
+  on the diffusion module only.
 - OSS runs its own inference script: eager always, plus `torch.compile` when it
   passes a dynamic-shape probe.
 - Runtime knobs match on both sides — 200 sampling steps, 3 or 5 diffusion

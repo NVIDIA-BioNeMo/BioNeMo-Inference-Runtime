@@ -540,53 +540,59 @@ If `recycling_steps` is omitted, the recycle count is the last axis of
 `runtime_args={"recycling_steps": N}` to cap it. Do not pass Boltz sampling
 keys to OpenFold2.
 
-### CUDA Graphs (Boltz-1/2, OpenFold3, Protenix)
+### CUDA Graphs
 
-On Boltz-1/2, OpenFold3, and Protenix (`protenix-v2`) the diffusion
-**module** (including the token transformer) runs once per sampling step
-with a fixed shape. Capturing a CUDA graph of that module and replaying it
-removes per-kernel launch overhead — largest win on short sequences.
-OpenFold2 / AlphaFold2 have no CUDA-graph module; the same
-`accelerated_configs` entry is a no-op there. Protenix has no data pipeline;
-enable graphs with [`optimize()`](#optimize-on-a-live-module) on the live
-module.
+Folding models capture the computation they repeat as CUDA graph regions
+and replay it, removing per-kernel launch overhead (largest win on short
+sequences). Each model's `GRAPH_REGIONS` maps region roles to module paths:
 
-Wire it through `engine_kwargs` (this is what the engine's `optimize()` call
-consumes):
+- Boltz-2, OpenFold3, and Protenix (`protenix-v2`): `trunk` (one trunk
+  recycle), `diffusion_module` (one denoising step), and
+  `confidence_pairformer` (the confidence head's Pairformer, once per
+  sample).
+- Boltz-1: `diffusion_module`.
+- OpenFold2 / AlphaFold2: `trunk` (embeddings, templates, extra MSA, and
+  Evoformer of one recycle), from recycle 1; recycle 0 runs eagerly.
 
-```python
-from bionemo_ir.configs import AcceleratedConfig, BaseConfig
-from bionemo_ir._torch.graph_optimization.config import (
-    CUDAGraphOptimizationConfig,
-    GraphOptimizationMode,
-)
+Pretrained configs carry a `graph_optimization_config` policy for every
+listed region, so each region captures by default for inputs up to 1024
+tokens, in pipelines and in direct model use. To run eagerly instead:
 
-engine_kwargs = {
-    "accelerated_configs": {
-        "diffusion_module": AcceleratedConfig(
-            backend="torch",
-            default=BaseConfig(
-                graph_optimization_config=CUDAGraphOptimizationConfig(
-                    graph_optimization_mode=GraphOptimizationMode.CUDA_GRAPH_VIA_TORCH,
-                )
-            ),
-        ),
-    }
-}
-```
-
-Use module defaults to enable graphs without overriding capture settings:
+- Whole model: call `config.disable_cuda_graphs()` before constructing the
+  model; a pipeline takes that config as `engine_kwargs["config"]`.
+- One region: before construction, set `graph_optimization_config = None` on
+  the config that holds its policy, for example Boltz-2's `config.trunk`.
+- One call: run it inside `with eager_graphs():`, imported from
+  `bionemo_ir._torch.graph_optimization`.
+- Live model: set `model.get_submodule(model.GRAPH_REGIONS[role]).enabled`
+  to `False`. A serial processor exposes its live model as
+  `processor.get_stage_udf("FoldingEngineStage").folding.engine.model`.
 
 ```python
-engine_kwargs = {"accelerated_configs": {"diffusion_module": AcceleratedConfig(backend="torch")}}
+from bionemo_ir.models.boltz2 import Boltz2
+
+config = Boltz2.get_pretrained_config("boltz-2")
+config.disable_cuda_graphs()
+engine_kwargs = {"config": config}
 ```
 
-The string form of the mode is `"cuda_graph_via_torch"`. The first few calls
-for a given input shape run eager (kernel compile + allocator warmup); then
-the graph is captured. A shape mismatch or capture failure falls back to
-eager. `token_transformer` is nested inside `diffusion_module`; CUDA graphs
-cannot nest, so requesting both keeps the parent and drops the child. Refer to
-[`optimize()`](#optimize-on-a-live-module).
+Regions key graphs by exact input shape, up to 1024 tokens inclusive; larger
+inputs run eagerly. Token padding keeps trunk and confidence graphs few: those
+regions see the token count after [token padding](token-padding.md) to a
+multiple of 8, so token counts in the same 8-token window share a graph when
+their other input shapes, such as MSA depth, match. The diffusion region sees
+the true count, as does OpenFold2's trunk region, which pads inside the
+recycle. A region captures on its first eligible call, which takes extra time,
+and replays on later calls with the same shape.
+Trunk and confidence regions check each capture against eager output and keep up
+to four shapes within an estimated 4 GiB per region; the diffusion region keeps
+one. A shape whose capture fails, fails that check, or lacks free GPU memory
+runs eagerly. The confidence Pairformer runs eagerly for a single-sample request
+and when OpenFold3's `auxiliary_heads_config.memory_efficient_mode` is off.
+Regions also run eagerly with gradients enabled or inputs off CUDA. Loading a
+state dict or moving the model with `.to()` drops its graphs. Protenix releases
+cached graphs that cannot serve a request's token count before allocating that
+request's activations.
 
 ### Outputs
 
@@ -767,39 +773,29 @@ writer.write(folding_output)
 
 ### `optimize()` on a Live Module
 
-Same CUDA-graph config as in the processor, applied yourself:
+Graph regions need no `optimize()` call. `optimize` mutates the module in
+place and returns `self`; a pipeline engine passes
+`engine_kwargs["accelerated_configs"]`, when set, to it.
 
 ```python
-from bionemo_ir.configs import AcceleratedConfig, BaseConfig
 from bionemo_ir.models.boltz2 import Boltz2
-from bionemo_ir._torch.graph_optimization.config import (
-    CUDAGraphOptimizationConfig,
-    GraphOptimizationMode,
-)
 
 model = Boltz2(model_name="boltz-2").cuda().eval()
-model.optimize({
-    "diffusion_module": AcceleratedConfig(
-        backend="torch",
-        default=BaseConfig(
-            graph_optimization_config=CUDAGraphOptimizationConfig(
-                graph_optimization_mode=GraphOptimizationMode.CUDA_GRAPH_VIA_TORCH,
-            )
-        ),
-    ),
-})
+model.get_submodule(model.GRAPH_REGIONS["trunk"]).enabled = False
+model.optimize()  # enables the trunk region again
 ```
 
-`optimize` mutates the module in place and returns `self`. Unknown module
-names are warned and skipped. OpenFold2 has no graph-optimization modules, so
-this is a no-op.
+Without an argument, `optimize` re-enables every graph region that has a policy.
+A mapping such as `{"trunk": AcceleratedConfig(backend="torch")}` enables the
+regions it names, by role or region path; `{}` does nothing. To replace a
+region's policy, pass `default=BaseConfig(graph_optimization_config=...)`. Other
+keys select modules decorated with `@support_graph_optimization` and wrap each
+in a CUDA-graph tracker. A key that matches neither raises `ValueError`.
 
-`token_transformer` lives inside `diffusion_module`. CUDA graphs cannot be
-nested: if both are requested, `optimize()` keeps the parent and skips the
-child (`Module 'token_transformer' is nested inside another requested
-module`). Graph `token_transformer` alone if you only want that submodule
-captured. Unrelated modules (for example OpenFold3 `structure_pairformer`)
-are not nested and can be requested together.
+A decorated module inside an enabled region, such as `token_transformer`
+inside `diffusion_module` or OpenFold3 `structure_pairformer` inside
+`trunk`, runs eagerly while the region captures and uses its own graph only
+when the region runs eagerly.
 
 ## Custom Architectures
 

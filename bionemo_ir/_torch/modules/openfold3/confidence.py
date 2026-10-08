@@ -24,6 +24,7 @@ from typing import TYPE_CHECKING
 import torch
 import torch.nn as nn
 
+from bionemo_ir._torch.graph_optimization import GraphRegion, eager_graphs
 from bionemo_ir._torch.layers.linear import Linear
 from bionemo_ir._torch.layers.token_padding import pad_trunk_tokens, unpad_trunk_tokens
 from bionemo_ir._torch.layers.transformers.pairformer import PairformerModule
@@ -46,6 +47,7 @@ from bionemo_ir._torch.utils import (
 from bionemo_ir.dsl_kernels.triton.distance_embedding import project_distance_bins
 
 if TYPE_CHECKING:
+    from bionemo_ir._torch.graph_optimization.config import CUDAGraphOptimizationConfig
     from bionemo_ir.configs import TrunkPadSpec
     from bionemo_ir.models.openfold3.config import PairformerConfig
 
@@ -161,6 +163,7 @@ class PairformerEmbedding(nn.Module):
         dtype: torch.dtype = torch.float32,
         skip_create_weights: bool = False,
         token_pad_spec: TrunkPadSpec | None = None,
+        graph_policy: CUDAGraphOptimizationConfig | None = None,
     ):
         """
         Args:
@@ -181,6 +184,8 @@ class PairformerEmbedding(nn.Module):
             token_pad_spec:
                 Pairformer inputs to pad to a multiple of 8 tokens when
                 ``pairformer.enable_token_pad``; ``None`` never pads.
+            graph_policy:
+                CUDA-graph policy for the per-sample Pairformer stack; ``None`` keeps it eager.
         """
         super().__init__()
         self.min_bin = min_bin
@@ -210,6 +215,7 @@ class PairformerEmbedding(nn.Module):
         self.register_buffer("upper", upper, persistent=False)
         self.pair_embedding_chunk_policy = CHUNK_REGISTRY.get(CONFIDENCE_PAIR_EMBEDDING)
         self.pairformer_stack = PairformerModule(config=pairformer)
+        self.pairformer_graph = GraphRegion(self, "pairformer_stack", graph_policy)
         self.token_pad_spec = token_pad_spec if pairformer.enable_token_pad else None
         triangle_attention_chunk_policy = CHUNK_REGISTRY[CONFIDENCE_TRIANGLE_ATTENTION]
         for layer in self.pairformer_stack.layers:
@@ -233,7 +239,7 @@ class PairformerEmbedding(nn.Module):
             )
             si, zij = padded["s"], padded["z"]
             single_mask, pair_mask = padded["mask"], padded["pair_mask"]
-        si, zij = self.pairformer_stack(si, zij, single_mask, pair_mask, inplace_safe=True)
+        si, zij = self.pairformer_graph(si, zij, single_mask, pair_mask, inplace_safe=True)
         return unpad_trunk_tokens(si, zij, n_true=n_true, kinds=("single", "pair"))
 
     def _embed_distances(self, rows: torch.Tensor, coordinates: torch.Tensor) -> torch.Tensor:
@@ -339,12 +345,13 @@ class PairformerEmbedding(nn.Module):
             )
             si_chunk = select_sample(si, 2, i)
 
-            si_chunk, zij_chunk = self._run_pairformer(
-                si_chunk,
-                zij_chunk,
-                select_sample(single_mask, 1, i),
-                select_sample(pair_mask, 2, i),
-            )
+            with eager_graphs(no_samples == 1):
+                si_chunk, zij_chunk = self._run_pairformer(
+                    si_chunk,
+                    zij_chunk,
+                    select_sample(single_mask, 1, i),
+                    select_sample(pair_mask, 2, i),
+                )
             yield i, si_chunk, zij_chunk
             # A suspended generator retains its locals. Release the completed
             # sample before constructing the next sample's pair embedding.
@@ -440,7 +447,8 @@ class PairformerEmbedding(nn.Module):
         zij = reshape_inputs(x=zij, feat_dims=zij.shape[-3:])
         single_mask = reshape_inputs(x=single_mask, feat_dims=single_mask.shape[-1:])
         pair_mask = reshape_inputs(x=pair_mask, feat_dims=pair_mask.shape[-2:])
-        si, zij = self._run_pairformer(si, zij, single_mask, pair_mask)
+        with eager_graphs():
+            si, zij = self._run_pairformer(si, zij, single_mask, pair_mask)
 
         si = reshape_outputs(x=si, feat_dims=si.shape[-2:])
         zij = reshape_outputs(x=zij, feat_dims=zij.shape[-3:])
@@ -861,6 +869,7 @@ class AuxiliaryHeadsAllAtom(nn.Module):
             dtype=self.dtype,
             skip_create_weights=self.skip_create_weights,
             token_pad_spec=config.token_pad_spec,
+            graph_policy=config.graph_optimization_config,
         )
 
         self.pde = PredictedDistanceErrorHead(

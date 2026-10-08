@@ -21,6 +21,7 @@ from bionemo_ir.logger import logger
 
 # isort: off
 import bionemo_ir.pipeline.models.openfold2.const as residue_constants
+from bionemo_ir._torch.graph_optimization import GraphRegion, eager_graphs
 from bionemo_ir._torch.attention_backend import auto_select_triangle_attention_backend, get_attention_backend
 from bionemo_ir._torch.layers.normalization import replace_with_fused_layernorm
 from bionemo_ir._torch.layers.token_padding import pad_trunk_tokens, unpad_trunk_tokens
@@ -63,6 +64,8 @@ from .convert import (
 
 
 class OpenFold2(nn.Module, OptimizedModuleSetterMixin):
+    GRAPH_REGIONS = {"trunk": "trunk_graph"}
+
     def __init__(self, config: BaseConfig = None, include_load_weights: bool = True, model_name: str | None = None):
         super().__init__()
         self.model_name = model_name or SupMat.OpenFold2_PTM1
@@ -98,14 +101,15 @@ class OpenFold2(nn.Module, OptimizedModuleSetterMixin):
                 set_trimul_token_padding(stack, self.enable_token_pad)
         self.structure_module = StructureModule(self.config.structure_module)
         self.aux_heads = AuxiliaryHeads(self.config.confidence_module)
+        self.trunk_graph = GraphRegion(self, "_recycle_step", self.config.trunk.graph_optimization_config)
 
         if include_load_weights:
             self.load_weights()
         replace_with_fused_layernorm(self)
 
     def get_optimized_modules(self, accelerated_configs: dict[str, AcceleratedConfig]) -> DiscoveredModuleRegistry:
-        # OpenFold2 has no ``@support_graph_optimization`` modules, so discovery
-        # finds nothing and ``optimize()`` is a no-op.
+        # OpenFold2 has no ``@support_graph_optimization`` modules; ``optimize()``
+        # only enables its trunk graph region.
         return DiscoveredModuleRegistry(self, accelerated_configs)
 
     def load_weights(self, weights: dict = None):
@@ -159,6 +163,8 @@ class OpenFold2(nn.Module, OptimizedModuleSetterMixin):
             self.config.confidence_module, weights=weights, model_name=self.model_name
         )
         self.aux_heads.load_weights(aux_heads_weights)
+        # The component loaders above do not reach this region; drop graphs over the old weights.
+        self.trunk_graph.reset()
 
     @staticmethod
     def get_pretrained_config(model_name: str = SupMat.OpenFold2_PTM1) -> BaseConfig:
@@ -222,12 +228,16 @@ class OpenFold2(nn.Module, OptimizedModuleSetterMixin):
             raise ValueError(f"Module name {module_name} not supported")
 
     def embed_templates(
-        self, feats: dict[str, torch.Tensor], z: torch.Tensor, pair_mask: torch.Tensor, templ_dim: int
+        self,
+        feats: dict[str, torch.Tensor],
+        z: torch.Tensor,
+        pair_mask: torch.Tensor,
+        templ_dim: int,
+        is_template_present: bool | None = None,
     ) -> dict[str, torch.Tensor]:
 
-        is_template_present = True
         skip_template_pair_stack = self.config.skip_template_pair_stack
-        if "is_template_present" in feats:
+        if is_template_present is None and "is_template_present" in feats:
             val = feats["is_template_present"]
             # Tensor may be 0-D or [B] depending on executor (Ray batches);
             # ``not tensor`` raises on multi-element tensors. Reduce to bool:
@@ -236,6 +246,8 @@ class OpenFold2(nn.Module, OptimizedModuleSetterMixin):
                 is_template_present = bool(val.any().item()) if val.numel() else False
             else:
                 is_template_present = bool(val)
+        elif is_template_present is None:
+            is_template_present = True
         if not is_template_present:
             # Force to skip the template pair stack for multimer if no template is present.
             skip_template_pair_stack = True
@@ -292,22 +304,24 @@ class OpenFold2(nn.Module, OptimizedModuleSetterMixin):
         diff = torch.sqrt(sq_diff + eps).item()
         return diff <= self.config.recycle_early_stop_tolerance
 
-    def iteration(self, feats: dict[str, torch.Tensor], prevs: list[torch.Tensor]) -> tuple[torch.Tensor, torch.Tensor]:
-        """
-        Args:
-            batch: dict[str, torch.Tensor]
-            prevs: list[torch.Tensor]
-        Returns:
-            tuple[torch.Tensor, torch.Tensor]
-        """
+    def _recycle_step(
+        self,
+        feats: dict[str, torch.Tensor],
+        m_1_prev: torch.Tensor,
+        z_prev: torch.Tensor,
+        x_prev: torch.Tensor,
+        seq_mask: torch.Tensor,
+        template_present: bool,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Run the recycle trunk; structure generation and host checks stay outside."""
+        # Resolve the template flag before capture and keep template mutations local.
+        feats = dict(feats)
         # Prep some features
         batch_dims = feats["target_feat"].shape[:-2]
         no_batch_dims = len(batch_dims)
-        seq_mask = feats["seq_mask"]
         pair_mask = seq_mask[..., None] * seq_mask[..., None, :]
         msa_mask = feats["msa_mask"]
 
-        m_1_prev, z_prev, x_prev = reversed([prevs.pop() for _ in range(3)])
         m, z = self.input_embedder(**self.get_module_feed_dict(feats, "input_embedder"))
 
         pseudo_beta_x_prev = pseudo_beta_fn(feats["aatype"], x_prev, None).to(z)
@@ -326,6 +340,7 @@ class OpenFold2(nn.Module, OptimizedModuleSetterMixin):
                 z,
                 pair_mask.to(z),
                 no_batch_dims,
+                is_template_present=template_present,
             )
             z = z + template_embeds.pop("template_pair_embedding")
 
@@ -384,6 +399,28 @@ class OpenFold2(nn.Module, OptimizedModuleSetterMixin):
         )
         m, z, s = unpad_trunk_tokens(m, z, s, n_true=n_true, kinds=("single_channel", "pair_channel", "single_channel"))
 
+        return m, z, s
+
+    def iteration(self, feats: dict[str, torch.Tensor], prevs: list[torch.Tensor]) -> tuple[torch.Tensor, torch.Tensor]:
+        """Run one trunk and structure iteration with caller-owned recycle state."""
+        m_1_prev, z_prev, x_prev = reversed([prevs.pop() for _ in range(3)])
+        template_present = feats.get("is_template_present", True)
+        if torch.is_tensor(template_present):
+            template_present = bool(template_present.any().item()) if template_present.numel() else False
+        else:
+            template_present = bool(template_present)
+        # Pipeline timings and record metadata vary per request but are not
+        # trunk inputs. Preserve tensor order and exclude those host values.
+        trunk_feats = {key: value for key, value in feats.items() if torch.is_tensor(value)}
+        m, z, s = self.trunk_graph(
+            feats=trunk_feats,
+            m_1_prev=m_1_prev.contiguous(),
+            z_prev=z_prev.contiguous(),
+            x_prev=x_prev.contiguous(),
+            seq_mask=feats["seq_mask"],
+            template_present=template_present,
+        )
+
         structure_output = {}
         structure_output = self.structure_module(s, z, feats["aatype"], mask=feats["seq_mask"].to(dtype=s.dtype))
 
@@ -441,7 +478,9 @@ class OpenFold2(nn.Module, OptimizedModuleSetterMixin):
         model_prediction = {}
         for cycle_no in range(num_iters):
             batch = self.get_current_batch(feed_dict, cycle_no)
-            structure_output, m_1_prev, z_prev, x_prev, early_stop = self.iteration(batch, prevs)
+            # Cycle 0 runs a different state dtype, so capture starts at recycle 1.
+            with eager_graphs(cycle_no == 0):
+                structure_output, m_1_prev, z_prev, x_prev, early_stop = self.iteration(batch, prevs)
             prevs = [m_1_prev, z_prev, x_prev]
             num_recycles += 1
             if early_stop:

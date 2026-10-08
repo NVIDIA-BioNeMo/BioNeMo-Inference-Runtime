@@ -14,8 +14,19 @@
 # limitations under the License.
 
 
-from pydantic import Field
+from pydantic import BaseModel, ConfigDict, Field, PositiveInt
 
+from bionemo_ir._torch.graph_optimization.config import (
+    CUDAGraphOptimizationConfig,
+    InputAcceptanceDimSpec,
+    InputKeyMethod,
+    NamedDimTies,
+)
+from bionemo_ir._torch.graph_optimization.graph_policy import (
+    exact_graph_config,
+    pairformer_graph_config,
+    trunk_graph_config,
+)
 from bionemo_ir.configs import (
     BaseConfig,
     DiffusionTransformerConfig,
@@ -25,6 +36,27 @@ from bionemo_ir.configs import (
 )
 from bionemo_ir.hubs import FoldingSupportMatrix as SupMat
 from bionemo_ir.pipeline.models.boltz2.const import num_tokens
+
+
+def diffusion_graph_config() -> CUDAGraphOptimizationConfig:
+    """Exact policy for one Boltz denoising step; Boltz-1 shares it."""
+    return exact_graph_config(
+        named_dims=(
+            NamedDimTies(
+                name="num_tokens",
+                input_dims=(("s_inputs", (-2,)), ("s_trunk", (-2,)), ("token_pad_mask", (-1,))),
+            ),
+        ),
+        max_tokens=1024,
+        stable_kwargs=(
+            "atom_to_token",
+            "atom_pad_mask",
+            "token_pad_mask",
+            "s_inputs",
+            "s_trunk",
+            "diffusion_conditioning_kwargs",
+        ),
+    )
 
 
 class _Default:
@@ -115,6 +147,9 @@ class MSAModuleConfig(BaseConfig):
 
 
 class TrunkConfig(BaseConfig):
+    graph_optimization_config: CUDAGraphOptimizationConfig | None = Field(
+        default_factory=trunk_graph_config, description="CUDA-graph policy for one trunk recycle."
+    )
     use_templates_v2: bool = False
     msa_module: MSAModuleConfig = MSAModuleConfig(
         msa_s=64,
@@ -175,6 +210,9 @@ class AtomDiffusionConfig(BaseConfig):
 
 
 class ScoreModelConfig(BaseConfig):
+    graph_optimization_config: CUDAGraphOptimizationConfig | None = Field(
+        default_factory=diffusion_graph_config, description="CUDA-graph policy for one denoising step."
+    )
     atom_s: int = _Default.atom_s
     atom_z: int = _Default.atom_z
     token_s: int = _Default.token_s
@@ -244,6 +282,9 @@ class ConfidenceHeadsConfig(BaseConfig):
 
 
 class ConfidenceModuleConfig(BaseConfig):
+    graph_optimization_config: CUDAGraphOptimizationConfig | None = Field(
+        default_factory=pairformer_graph_config, description="CUDA-graph policy for the per-sample Pairformer stack."
+    )
     token_s: int = _Default.token_s
     token_z: int = _Default.token_z
     num_dist_bins: int = 64
@@ -280,6 +321,16 @@ class ConfidenceModuleConfig(BaseConfig):
         single_last=("mask",),
         pair_last=("pair_mask",),
     )
+
+
+class Boltz2GraphCacheConfig(BaseModel):
+    """Limits for Boltz2's exact graph caches."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    max_tokens: PositiveInt = Field(description="Inclusive token limit without graph padding.")
+    max_graphs: PositiveInt = Field(description="Maximum cached signatures per region.")
+    budget_bytes: PositiveInt = Field(description="Estimated graph residency budget per region.")
 
 
 class Boltz2Config(BaseConfig):
@@ -320,6 +371,38 @@ class Boltz2Config(BaseConfig):
     structure_module: StructureModuleConfig = StructureModuleConfig()
 
     confidence_module: ConfidenceModuleConfig = ConfidenceModuleConfig()
+
+    def with_graph_cache(self, cache: Boltz2GraphCacheConfig) -> "Boltz2Config":
+        """Copy this config with ``cache``'s limits on the trunk, diffusion and confidence graph policies.
+
+        Configure the cache before constructing the model; ``model.optimize()`` still enables capture.
+
+        Args:
+            cache: Per-region limits chosen for the device's memory.
+        """
+        config = self.model_copy(deep=True)
+        for region in (config.trunk, config.structure_module.score_model, config.confidence_module):
+            policy = region.graph_optimization_config
+            if policy is None:
+                continue
+            routing = policy.input_routing_config
+            if (
+                routing is None
+                or policy.input_key_method != InputKeyMethod.EXACT
+                or routing.padded_dims
+                or not any(tie.name == "num_tokens" for tie in routing.named_dim_ties)
+            ):
+                raise ValueError("Graph cache requires exact unpadded routing")
+            routing.input_acceptance_dims = [
+                spec for spec in routing.input_acceptance_dims if spec.name != "num_tokens"
+            ] + [InputAcceptanceDimSpec(name="num_tokens", dim_len_max=cache.max_tokens)]
+            region.graph_optimization_config = policy.model_copy(
+                update={
+                    "num_graphs_max_for_this_module": cache.max_graphs,
+                    "graph_cache_budget_bytes": cache.budget_bytes,
+                }
+            )
+        return config
 
 
 class AffinityModuleConfig(BaseConfig):

@@ -15,8 +15,24 @@
 
 from pydantic import Field, model_validator
 
+from bionemo_ir._torch.graph_optimization.config import CUDAGraphOptimizationConfig, NamedDimTies
+from bionemo_ir._torch.graph_optimization.graph_policy import exact_graph_config
 from bionemo_ir.configs import BaseConfig, EvoformerStackConfig, FeatureDictPadSpec, TrunkPadSpec
 from bionemo_ir.hubs import FoldingSupportMatrix as SupMat
+
+
+def _trunk_graph_config() -> CUDAGraphOptimizationConfig:
+    return exact_graph_config(
+        named_dims=(
+            NamedDimTies(
+                name="num_tokens",
+                input_dims=(("m_1_prev", (-2,)), ("z_prev", (-2, -3)), ("x_prev", (-3,)), ("seq_mask", (-1,))),
+                output_dims=((0, (-2,)), (1, (-2, -3)), (2, (-2,))),
+            ),
+        ),
+        max_tokens=1024,
+        repeated=True,
+    )
 
 
 class _Default:
@@ -163,6 +179,9 @@ class ExtraMSAStackConfig(BaseConfig):
 
 
 class TrunkConfig(BaseConfig):
+    graph_optimization_config: CUDAGraphOptimizationConfig | None = Field(
+        default_factory=_trunk_graph_config, description="CUDA-graph policy for one trunk recycle."
+    )
     evoformer_stack: EvoformerStackConfig = EvoformerStackConfig(
         c_m=_Default.c_m,
         c_z=_Default.c_z,

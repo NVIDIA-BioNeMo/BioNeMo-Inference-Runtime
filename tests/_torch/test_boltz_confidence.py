@@ -57,6 +57,8 @@ def _tiny_module(device):
         pairwise_head_width=8,
     )
     config.confidence_heads = config.confidence_heads.copy_and_validate(token_s=TOKEN_S, token_z=TOKEN_Z)
+    # These tests count Pairformer calls, which a capture's warmup and verification would add to.
+    config.graph_optimization_config = None
     # Linear builds its weights on CUDA already; the norms need moving explicitly.
     return _initialize_unloaded_weights(Boltz2ConfidenceModule(config, dtype=torch.float32).eval().to(device))
 

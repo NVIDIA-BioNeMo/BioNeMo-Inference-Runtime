@@ -343,7 +343,7 @@ class AtomAttentionEncoder(nn.Module):
                 # the 7 trailing feature channels for the v1 structure
                 # path.
                 r_input = torch.cat(
-                    [r, torch.zeros((B, multiplicity, N, 7)).to(r)],
+                    [r, r.new_zeros((B, multiplicity, N, 7))],
                     dim=-1,
                 )
             r_to_q = self.r_to_q_trans(r_input)

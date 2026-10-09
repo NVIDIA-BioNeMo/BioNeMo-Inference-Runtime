@@ -17,6 +17,7 @@ from pydantic import Field
 
 from bionemo_ir._torch.graph_optimization.config import CUDAGraphOptimizationConfig, NamedDimTies
 from bionemo_ir._torch.graph_optimization.graph_policy import (
+    diffusion_graph_max_tokens,
     exact_graph_config,
     pairformer_graph_config,
     trunk_graph_config,
@@ -40,7 +41,7 @@ def _diffusion_graph_config() -> CUDAGraphOptimizationConfig:
                 input_dims=(("si_input", (-2,)), ("si_trunk", (-2,)), ("zij_trunk", (-2, -3)), ("token_mask", (-1,))),
             ),
         ),
-        max_tokens=1024,
+        max_tokens=diffusion_graph_max_tokens(),
         stable_kwargs=(
             "batch",
             "token_mask",

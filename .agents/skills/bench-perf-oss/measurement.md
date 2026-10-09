@@ -139,9 +139,10 @@ An eager arm's `disable_cuda_graphs()` is the one permitted graph change.
 
 ## CUDA graphs
 
-The default BioIR model captures every graph region for inputs up to 1024
-tokens; it needs no `optimize()` call. `docs/ref/api.md` (CUDA Graphs) lists
-each model's regions and policy.
+The default BioIR model captures every graph region up to its token limit:
+1024, or 2048 for a diffusion region on a device with at least 64 GiB. It
+needs no `optimize()` call. `docs/ref/api.md` (CUDA Graphs) lists each model's
+regions and policy.
 
 - The BioIR column uses the default model and locks
   `graph_activation="default"`.
@@ -150,7 +151,7 @@ each model's regions and policy.
   `engine_kwargs["config"]` (processor path) or `config=` (OSS feature
   path). It locks `graph_activation="disable_cuda_graphs()"`.
 - Keep the model's policies. Do not replace one through
-  `accelerated_configs`, call `with_graph_cache`, or raise the 1024-token
+  `accelerated_configs`, call `with_graph_cache`, or raise a region's token
   limit for coverage. Inputs above the limit run eagerly; record them per
   row.
 - Keep graph caches between samples. Do not reset trackers or reload

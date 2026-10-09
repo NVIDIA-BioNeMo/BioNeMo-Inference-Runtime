@@ -555,8 +555,8 @@ sequences). Each model's `GRAPH_REGIONS` maps region roles to module paths:
   Evoformer of one recycle), from recycle 1; recycle 0 runs eagerly.
 
 Pretrained configs carry a `graph_optimization_config` policy for every
-listed region, so each region captures by default for inputs up to 1024
-tokens, in pipelines and in direct model use. To run eagerly instead:
+listed region, so each region captures by default, in pipelines and in direct
+model use. To run eagerly instead:
 
 - Whole model: call `config.disable_cuda_graphs()` before constructing the
   model; a pipeline takes that config as `engine_kwargs["config"]`.
@@ -576,14 +576,16 @@ config.disable_cuda_graphs()
 engine_kwargs = {"config": config}
 ```
 
-Regions key graphs by exact input shape, up to 1024 tokens inclusive; larger
-inputs run eagerly. Token padding keeps trunk and confidence graphs few: those
-regions see the token count after [token padding](token-padding.md) to a
-multiple of 8, so token counts in the same 8-token window share a graph when
-their other input shapes, such as MSA depth, match. The diffusion region sees
-the true count, as does OpenFold2's trunk region, which pads inside the
-recycle. A region captures on its first eligible call, which takes extra time,
-and replays on later calls with the same shape.
+Regions key graphs by exact input shape, up to a token limit; larger inputs
+run eagerly. The limit is 1024 tokens, except for a diffusion region on a
+device with at least 64 GiB, where it is 2048. Token padding keeps trunk and
+confidence graphs few: those regions see the token count after
+[token padding](token-padding.md) to a multiple of 8, so token counts in the
+same 8-token window share a graph when their other input shapes, such as MSA
+depth, match. The diffusion region sees the true count, as does OpenFold2's
+trunk region, which pads inside the recycle. A region captures on its first
+eligible call, which takes extra time, and replays on later calls with the
+same shape.
 Trunk and confidence regions check each capture against eager output and keep up
 to four shapes within an estimated 4 GiB per region; the diffusion region keeps
 one. A shape whose capture fails, fails that check, or lacks free GPU memory

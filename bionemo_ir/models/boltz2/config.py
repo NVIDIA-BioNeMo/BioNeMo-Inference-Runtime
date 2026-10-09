@@ -23,6 +23,7 @@ from bionemo_ir._torch.graph_optimization.config import (
     NamedDimTies,
 )
 from bionemo_ir._torch.graph_optimization.graph_policy import (
+    diffusion_graph_max_tokens,
     exact_graph_config,
     pairformer_graph_config,
     trunk_graph_config,
@@ -47,7 +48,7 @@ def diffusion_graph_config() -> CUDAGraphOptimizationConfig:
                 input_dims=(("s_inputs", (-2,)), ("s_trunk", (-2,)), ("token_pad_mask", (-1,))),
             ),
         ),
-        max_tokens=1024,
+        max_tokens=diffusion_graph_max_tokens(),
         stable_kwargs=(
             "atom_to_token",
             "atom_pad_mask",

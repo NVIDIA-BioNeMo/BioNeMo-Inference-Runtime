@@ -1080,8 +1080,8 @@ Print (not only file):
    both torch versions, `isolation`, `ost_cmd`, `dockq_cmd`
    and `dockq_args`, locked
    `runtime_args`, warmup=1 / measure=1, BioIR graph config
-   (`graph_activation`, enabled roles, `model_default`, 1024-token
-   limit, per-region execution paths), OSS compile probe pass/fail
+   (`graph_activation`, enabled roles, `model_default`, per-region
+   token limits and execution paths), OSS compile probe pass/fail
    (two-sample warmup compile
    deltas, targets if pass), `compile_stats.measurement_stable`
 1. **Dataset** — `dataset_root`, spec file, MANIFEST digest,

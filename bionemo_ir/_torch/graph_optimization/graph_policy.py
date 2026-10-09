@@ -63,6 +63,13 @@ def _release_unused_graphs(regions: Sequence[GraphRegion], *, num_tokens: int) -
         torch.cuda.empty_cache()
 
 
+def diffusion_graph_max_tokens() -> int:
+    """Token cap of a denoising-step graph: 2048 on a current device with at least 64 GiB, else 1024."""
+    if not torch.cuda.is_available():
+        return 1024
+    return 2048 if torch.cuda.get_device_properties(torch.cuda.current_device()).total_memory >= 64 << 30 else 1024
+
+
 def exact_graph_config(
     *,
     named_dims: Sequence[NamedDimTies],

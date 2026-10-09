@@ -6,7 +6,7 @@
       "tile_m": 32,
       "tile_k": 32,
       "num_stages": 3,
-      "atom_layout_mnk": [2, 1, 2],
+      "atom_layout_mnk": [2, 2, 1],
       "tile_n": 64
     },
     "R=4096": {
@@ -54,7 +54,7 @@
     "R=262144": {
       "tile_m": 32,
       "tile_k": 32,
-      "num_stages": 2,
+      "num_stages": 3,
       "atom_layout_mnk": [2, 2, 1],
       "tile_n": 256
     },
@@ -68,7 +68,7 @@
     "R=1048576": {
       "tile_m": 32,
       "tile_k": 32,
-      "num_stages": 2,
+      "num_stages": 3,
       "atom_layout_mnk": [2, 2, 1],
       "tile_n": 256
     },

@@ -99,7 +99,8 @@ void validate_operand_devices(LaunchParams const& params, KernelSpec const& spec
   check(params.g.device, "g");
   check(params.w.device, "w");
   check(params.d.device, "d");
-  check(params.z.device, "z");
+  if (spec.has_residual)
+    check(params.z.device, "z");
   if (spec.has_bias)
     check(params.b.device, "b");
   if (spec.has_output_gate)
@@ -136,7 +137,8 @@ void validate_launch(KernelConfig const& config, LaunchParams const& params)
   validate_tensor(params.g, "g", 16);
   validate_tensor(params.w, "w", 16);
   validate_tensor(params.d, "d", 16);
-  validate_tensor(params.z, "z", 16);
+  if (config.spec.has_residual)
+    validate_tensor(params.z, "z", 16);
 
   std::int32_t const folded = params.o.shape[0];
   std::int32_t const columns = params.o.shape[1];
@@ -154,11 +156,12 @@ void validate_launch(KernelConfig const& config, LaunchParams const& params)
     throw std::invalid_argument("g must be [B*I, J, heads*head_dim] matching o");
   if (params.w.shape[0] != channels || params.w.shape[1] != width || params.w.strides[0] != width)
     throw std::invalid_argument("w must be a row-major [channels, heads*head_dim] weight");
-  for (Tensor3View const* pair : {&params.d, &params.z})
-  {
-    if (pair->shape[0] != folded || pair->shape[1] != columns || pair->shape[2] != channels)
-      throw std::invalid_argument("d and z must be [B*I, J, channels] matching o");
-  }
+  auto const matches_rows = [&](Tensor3View const& pair)
+  { return pair.shape[0] == folded && pair.shape[1] == columns && pair.shape[2] == channels; };
+  if (!matches_rows(params.d))
+    throw std::invalid_argument("d must be [B*I, J, channels] matching o");
+  if (config.spec.has_residual && !matches_rows(params.z))
+    throw std::invalid_argument("z must be [B*I, J, channels] matching o");
   if (config.spec.has_bias)
   {
     validate_tensor(params.b, "b", 16);
@@ -230,19 +233,21 @@ void launch_sm90(cubin_kernel_t loaded, KernelConfig const& config, LaunchParams
     encode_tma_descriptor(atom, info, dtype, source, name);
     finalize_tma_atom(atom, source, info.rank);
   };
-  encode(device_params.o_tma, metadata.o, attention_source(params.o, config.spec), "o");
-  encode(device_params.g_tma, metadata.g, pair_source(params.g), "g");
-  encode(device_params.w_tma, metadata.w, make_tma_tensor2_source(params.w, false), "w");
-  encode(device_params.z_tma, metadata.z, pair_source(params.z), "z");
-  encode(device_params.d_tma, metadata.d, pair_source(params.d), "d");
-
   std::int32_t const folded = params.o.shape[0];
   std::int32_t const columns = params.o.shape[1];
   CoordTensorS2 const coord{{columns, folded}};
+  encode(device_params.o_tma, metadata.o, attention_source(params.o, config.spec), "o");
+  encode(device_params.g_tma, metadata.g, pair_source(params.g), "g");
+  encode(device_params.w_tma, metadata.w, make_tma_tensor2_source(params.w, false), "w");
+  encode(device_params.d_tma, metadata.d, pair_source(params.d), "d");
   device_params.o_coord = coord;
   device_params.g_coord = coord;
-  device_params.z_coord = coord;
   device_params.d_coord = coord;
+  if (config.spec.has_residual)
+  {
+    encode(device_params.z_tma, metadata.z, pair_source(params.z), "z");
+    device_params.z_coord = coord;
+  }
   if (config.spec.has_output_gate)
   {
     encode(device_params.y_tma, metadata.y, pair_source(params.y), "y");
@@ -260,10 +265,11 @@ void launch_sm90(cubin_kernel_t loaded, KernelConfig const& config, LaunchParams
   if (config.spec.has_bias)
     device_params.bias.data = static_cast<CUdeviceptr>(params.b.data);
 
+  KernelSpec const& spec = config.spec;
   void* kernel_params[abi::kSM90MaxParameterCount]{};
   if (
-    abi::pack_sm90_kernel_params(&device_params, config.spec.has_bias, config.spec.has_output_gate, kernel_params)
-    != abi::sm90_parameter_count(config.spec.has_bias, config.spec.has_output_gate))
+    abi::pack_sm90_kernel_params(&device_params, spec.has_bias, spec.has_output_gate, spec.has_residual, kernel_params)
+    != abi::sm90_parameter_count(spec.has_bias, spec.has_output_gate, spec.has_residual))
     throw std::logic_error("attention epilogue SM90 parameter packer produced the wrong ABI count");
 
   std::int32_t const multiprocessor_count = cuda_multiprocessor_count_for_context(context);
@@ -310,14 +316,16 @@ void launch_sm80(cubin_kernel_t loaded, KernelConfig const& config, LaunchParams
   if (config.spec.has_bias)
     device_params.bias.data = static_cast<CUdeviceptr>(params.b.data);
   device_params.d = pair_descriptor(params.d);
-  device_params.z = pair_descriptor(params.z);
+  if (config.spec.has_residual)
+    device_params.z = pair_descriptor(params.z);
   if (config.spec.has_output_gate)
     device_params.y = pair_descriptor(params.y);
 
+  KernelSpec const& spec = config.spec;
   void* kernel_params[abi::kSM80MaxParameterCount]{};
   if (
-    abi::pack_sm80_kernel_params(&device_params, config.spec.has_bias, config.spec.has_output_gate, kernel_params)
-    != abi::sm80_parameter_count(config.spec.has_bias, config.spec.has_output_gate))
+    abi::pack_sm80_kernel_params(&device_params, spec.has_bias, spec.has_output_gate, spec.has_residual, kernel_params)
+    != abi::sm80_parameter_count(spec.has_bias, spec.has_output_gate, spec.has_residual))
     throw std::logic_error("attention epilogue SM80 parameter packer produced the wrong ABI count");
 
   std::uint32_t const folded = static_cast<std::uint32_t>(params.o.shape[0]);
@@ -347,6 +355,7 @@ KernelSpec make_kernel_spec(embedded::CubinImage const& image)
     image.channels,
     image.has_bias,
     image.has_output_gate,
+    image.has_residual,
     image.tile_j,
     image.tile_n,
     image.num_threads,
@@ -361,6 +370,7 @@ embedded::CubinImage const& find_embedded_cubin(
   std::int32_t channels,
   bool has_bias,
   bool has_output_gate,
+  bool has_residual,
   std::int32_t rows)
 {
   if (rows < 0)
@@ -375,7 +385,7 @@ embedded::CubinImage const& find_embedded_cubin(
     if (
       !cubin_supports_sm(image.cubin, target_sm) || image.heads != heads || image.head_dim != head_dim
       || image.channels != channels || !image.is_bfloat16 || image.has_bias != has_bias
-      || image.has_output_gate != has_output_gate)
+      || image.has_output_gate != has_output_gate || image.has_residual != has_residual)
       continue;
 
     std::int64_t const delta = static_cast<std::int64_t>(image.bucket) - static_cast<std::int64_t>(rows);
@@ -395,7 +405,7 @@ embedded::CubinImage const& find_embedded_cubin(
     "No embedded attention epilogue CUBIN for SM" + std::to_string(target_sm) + ", heads=" + std::to_string(heads)
     + ", head_dim=" + std::to_string(head_dim) + ", channels=" + std::to_string(channels)
     + ", has_bias=" + (has_bias ? "true" : "false") + ", has_output_gate=" + (has_output_gate ? "true" : "false")
-    + ", rows=" + std::to_string(rows));
+    + ", has_residual=" + (has_residual ? "true" : "false") + ", rows=" + std::to_string(rows));
 }
 
 std::size_t preload_kernels(CUcontext context, std::int32_t device_sm)
@@ -422,10 +432,11 @@ KernelConfig make_kernel_config(
   std::int32_t channels,
   bool has_bias,
   bool has_output_gate,
-  std::int32_t rows)
+  std::int32_t rows,
+  bool has_residual)
 {
   embedded::CubinImage const& image
-    = find_embedded_cubin(target_sm, heads, head_dim, channels, has_bias, has_output_gate, rows);
+    = find_embedded_cubin(target_sm, heads, head_dim, channels, has_bias, has_output_gate, has_residual, rows);
   return KernelConfig{make_kernel_spec(image), image.cubin, &image};
 }
 

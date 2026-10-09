@@ -41,6 +41,7 @@ void bind(nb::module_& parent)
     .def_ro("channels", &KernelSpec::channels)
     .def_ro("has_bias", &KernelSpec::has_bias)
     .def_ro("has_output_gate", &KernelSpec::has_output_gate)
+    .def_ro("has_residual", &KernelSpec::has_residual)
     .def_ro("tile_j", &KernelSpec::tile_j)
     .def_ro("tile_n", &KernelSpec::tile_n)
     .def_ro("num_threads", &KernelSpec::num_threads)
@@ -74,7 +75,8 @@ void bind(nb::module_& parent)
     "channels"_a,
     "has_bias"_a = false,
     "has_output_gate"_a = false,
-    "rows"_a = 0);
+    "rows"_a = 0,
+    "has_residual"_a = true);
   module.def(
     "launch",
     [](KernelConfig const& config, LaunchParams const& params)

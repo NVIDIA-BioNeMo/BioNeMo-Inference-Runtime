@@ -59,6 +59,9 @@ struct CubinImage;
  * y_coord follow z_coord as ords 7 and 8, and every later parameter moves
  * down two ordinals.
  *
+ * Without the residual, z_tma and z_coord are absent and every later
+ * parameter moves up two ordinals. Such a kernel has no output gate.
+ *
  * The weight's extents are static, so its coordinate tensor lowers to nothing.
  * Every 0x80 atom slot carries CuTe's 0x40-byte non-executable CopyAtom payload
  * followed by zero padding.
@@ -89,16 +92,20 @@ struct SM90Params
   std::uint8_t tiled_mma;
 };
 
-constexpr std::size_t sm90_parameter_count(bool has_bias, bool has_output_gate)
+constexpr std::size_t sm90_parameter_count(bool has_bias, bool has_output_gate, bool has_residual)
 {
-  return 12U + (has_bias ? 1U : 0U) + (has_output_gate ? 2U : 0U);
+  return 10U + (has_residual ? 2U : 0U) + (has_bias ? 1U : 0U) + (has_output_gate ? 2U : 0U);
 }
 
-inline constexpr std::size_t kSM90MaxParameterCount = sm90_parameter_count(true, true);
+inline constexpr std::size_t kSM90MaxParameterCount = sm90_parameter_count(true, true, true);
 
 /* Returns the number of packed parameters. */
 inline std::size_t pack_sm90_kernel_params(
-  SM90Params* params, bool has_bias, bool has_output_gate, void* kernel_params[kSM90MaxParameterCount])
+  SM90Params* params,
+  bool has_bias,
+  bool has_output_gate,
+  bool has_residual,
+  void* kernel_params[kSM90MaxParameterCount])
 {
   std::size_t count = 0;
   kernel_params[count++] = &params->o_tma;
@@ -106,8 +113,11 @@ inline std::size_t pack_sm90_kernel_params(
   kernel_params[count++] = &params->g_tma;
   kernel_params[count++] = &params->g_coord;
   kernel_params[count++] = &params->w_tma;
-  kernel_params[count++] = &params->z_tma;
-  kernel_params[count++] = &params->z_coord;
+  if (has_residual)
+  {
+    kernel_params[count++] = &params->z_tma;
+    kernel_params[count++] = &params->z_coord;
+  }
   if (has_output_gate)
   {
     kernel_params[count++] = &params->y_tma;
@@ -135,7 +145,8 @@ inline std::size_t pack_sm90_kernel_params(
  *   ord 6  0x88  0x20  y     cute_tensor_s2_d2_t  extents {J, B*I / mult} (output-gated CUBINs only)
  *
  * o's J stride is the static H*D. Without the bias, d, z and y move up one
- * ordinal. The launch grid is (ceil(J / tile_j), B*I, 1).
+ * ordinal. Without the residual, z is absent; such a kernel has no output
+ * gate. The launch grid is (ceil(J / tile_j), B*I, 1).
  *
  * Launch ABI attn_epilogue_sm80_tiled_v1 shares this bank. Its kernel splits
  * the C channels over grid.z, so the grid is (ceil(J / tile_j), B*I,
@@ -152,16 +163,20 @@ struct SM80Params
   cute_tensor_s2_d2_t y;
 };
 
-constexpr std::size_t sm80_parameter_count(bool has_bias, bool has_output_gate)
+constexpr std::size_t sm80_parameter_count(bool has_bias, bool has_output_gate, bool has_residual)
 {
-  return 5U + (has_bias ? 1U : 0U) + (has_output_gate ? 1U : 0U);
+  return 4U + (has_bias ? 1U : 0U) + (has_residual ? 1U : 0U) + (has_output_gate ? 1U : 0U);
 }
 
-inline constexpr std::size_t kSM80MaxParameterCount = sm80_parameter_count(true, true);
+inline constexpr std::size_t kSM80MaxParameterCount = sm80_parameter_count(true, true, true);
 
 /* Returns the number of packed parameters. */
 inline std::size_t pack_sm80_kernel_params(
-  SM80Params* params, bool has_bias, bool has_output_gate, void* kernel_params[kSM80MaxParameterCount])
+  SM80Params* params,
+  bool has_bias,
+  bool has_output_gate,
+  bool has_residual,
+  void* kernel_params[kSM80MaxParameterCount])
 {
   std::size_t count = 0;
   kernel_params[count++] = &params->o;
@@ -170,7 +185,8 @@ inline std::size_t pack_sm80_kernel_params(
   if (has_bias)
     kernel_params[count++] = &params->bias;
   kernel_params[count++] = &params->d;
-  kernel_params[count++] = &params->z;
+  if (has_residual)
+    kernel_params[count++] = &params->z;
   if (has_output_gate)
     kernel_params[count++] = &params->y;
   return count;
@@ -205,6 +221,9 @@ struct KernelSpec
   std::int32_t channels;
   bool has_bias;
   bool has_output_gate;
+  /* Accumulates into z. Without it the kernel writes the bare projection and
+   * has no output gate. */
+  bool has_residual;
   std::uint32_t tile_j;
   /* Output channels per tile; divides channels. Layers wider than 128
    * channels stream Wo (SM90) or split the channels over grid.z (SM80) in
@@ -224,8 +243,9 @@ struct KernelConfig
 
 /* Operands with the pair rows folded, each with a unit-stride last mode:
  * o [B*I, J, H, D], g [B*I, J, H*D], w [C, H*D], b [C] for a biased CUBIN,
- * d and z [B*I, J, C], and y [B*I / mult, J, C] for an output-gated CUBIN,
- * whose row bi serves rows bi * mult to bi * mult + mult - 1. d may alias z.
+ * d [B*I, J, C], z like d for a CUBIN with the residual, and
+ * y [B*I / mult, J, C] for an output-gated CUBIN, whose row bi serves rows
+ * bi * mult to bi * mult + mult - 1. d may alias z.
  */
 struct LaunchParams
 {
@@ -249,7 +269,8 @@ KernelConfig make_kernel_config(
   std::int32_t channels,
   bool has_bias,
   bool has_output_gate,
-  std::int32_t rows = 0);
+  std::int32_t rows = 0,
+  bool has_residual = true);
 
 void launch(KernelConfig const& config, LaunchParams const& params);
 

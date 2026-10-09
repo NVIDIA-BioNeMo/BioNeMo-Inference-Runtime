@@ -410,6 +410,93 @@ def test_output_gate_declines_what_the_kernel_cannot_take() -> None:
     assert get_attn_epilogue_op(torch.bfloat16, 4, 128, 128, has_output_gate=True) is None
 
 
+# A token transformer's epilogue, 12 heads of 64 projecting to 768 channels: a width in NO_RESIDUAL_WIDTHS.
+NO_RESIDUAL_SHAPE = (12, 64, 768)
+
+
+def _no_residual_operands(batch: int, rows: int, columns: int, bias: bool) -> tuple:
+    heads, head_dim, channels = NO_RESIDUAL_SHAPE
+    width = heads * head_dim
+    torch.manual_seed(batch * rows + columns)
+    mha_o = torch.randn(batch * rows, columns, heads, head_dim, device="cuda", dtype=torch.bfloat16)
+    # The gate is a column slice of a fused projection, as the attention layers leave it.
+    gate = torch.randn(batch, rows, columns, 2 * width, device="cuda", dtype=torch.bfloat16)[..., width:]
+    weight = (torch.randn(channels, width, device="cuda") * width**-0.5).to(torch.bfloat16)
+    o_bias = (torch.randn(channels, device="cuda") * 0.1).to(torch.bfloat16) if bias else None
+    return mha_o, gate, weight, o_bias
+
+
+def _no_residual_reference(mha_o, gate, weight, o_bias) -> torch.Tensor:
+    return torch.nn.functional.linear(mha_o.reshape(gate.shape) * gate.sigmoid(), weight, o_bias)
+
+
+def _nan_destination(gate: torch.Tensor) -> torch.Tensor:
+    """A destination that poisons any read of it, so an accumulating kernel fails rather than passes."""
+    return gate.new_full((*gate.shape[:-1], NO_RESIDUAL_SHAPE[2]), float("nan"))
+
+
+@pytest.mark.parametrize("mode", MODES)
+@pytest.mark.parametrize("bias", [False, True], ids=["nobias", "bias"])
+@pytest.mark.parametrize(("batch", "rows", "columns"), [(2, 1, 136), (1, 3, 77)], ids=["tokens", "pairs"])
+def test_residual_free_epilogue_writes_the_bare_projection(
+    mode: str, monkeypatch: pytest.MonkeyPatch, bias: bool, batch: int, rows: int, columns: int
+) -> None:
+    _require_mode(mode)
+    op = get_attn_epilogue_op(torch.bfloat16, *NO_RESIDUAL_SHAPE, has_bias=bias, has_residual=False)
+    if op is None:
+        pytest.skip("the fused epilogue needs SM80+ and the CuTeDSL sources or CUBINs")
+    operands = _no_residual_operands(batch, rows, columns, bias)
+    mha_o, gate, weight, o_bias = operands
+    destination = _nan_destination(gate)
+    with torch.inference_mode():
+        allocated = run_cutedsl_test_mode(
+            mode,
+            monkeypatch,
+            epilogue_cutedsl.AttnEpilogueCuTe,
+            epilogue_cutedsl,
+            lambda: op(mha_o, gate, weight, None, bias=o_bias),
+        )
+        written = op(mha_o, gate, weight, None, destination, bias=o_bias)
+
+    expected = _no_residual_reference(*operands)
+    torch.testing.assert_close(allocated, expected, atol=1e-2, rtol=1.6e-2)
+    assert written is destination
+    torch.testing.assert_close(written, expected, atol=1e-2, rtol=1.6e-2)
+
+
+@pytest.mark.parametrize("bias", [False, True], ids=["nobias", "bias"])
+def test_sm80_residual_free_epilogue_writes_the_bare_projection(bias: bool) -> None:
+    if "source" not in MODES:
+        pytest.skip("SM80 CUBINs do not run on SM90; only the source path can target this device")
+    heads, head_dim, channels = NO_RESIDUAL_SHAPE
+    backend = epilogue_cutedsl.AttnEpilogueCuTe(heads, head_dim, channels, has_bias=bias, has_residual=False)
+    backend._sm_version = 80
+    skip_if_epilogue_tile_exceeds_smem(backend)
+    op = AttnEpilogue(backend, heads, head_dim, channels, has_bias=bias, has_residual=False)
+    mha_o, gate, weight, o_bias = operands = _no_residual_operands(2, 1, 136, bias)
+    destination = _nan_destination(gate)
+    with torch.inference_mode():
+        actual = op(mha_o, gate, weight, None, destination, bias=o_bias)
+
+    assert actual is destination
+    torch.testing.assert_close(actual, _no_residual_reference(*operands), atol=1e-2, rtol=1.6e-2)
+
+
+def test_residual_free_epilogue_declines_what_it_cannot_take() -> None:
+    # The output gate scales the update inside the residual add, so it needs one.
+    assert get_attn_epilogue_op(torch.bfloat16, *NO_RESIDUAL_SHAPE, has_output_gate=True, has_residual=False) is None
+    bare = get_attn_epilogue_op(torch.bfloat16, *NO_RESIDUAL_SHAPE, has_residual=False)
+    accumulating = get_attn_epilogue_op(torch.bfloat16, *NO_RESIDUAL_SHAPE)
+    if bare is None or accumulating is None:
+        pytest.skip("the fused epilogue needs SM80+ and the CuTeDSL sources or CUBINs")
+    mha_o, gate, weight, _ = _no_residual_operands(1, 1, 40, bias=False)
+    residual = gate.new_zeros((*gate.shape[:-1], NO_RESIDUAL_SHAPE[2]))
+    with torch.inference_mode():
+        # Each op serves only the residual state it was built for.
+        assert bare(mha_o, gate, weight, residual) is None
+        assert accumulating(mha_o, gate, weight, None) is None
+
+
 @pytest.mark.parametrize(
     ("node_type", "fused"),
     [(TriangleAttentionNodeType.STARTING, True), (TriangleAttentionNodeType.ENDING, False)],

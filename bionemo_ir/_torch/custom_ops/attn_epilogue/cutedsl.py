@@ -50,12 +50,14 @@ class AttnEpilogueCuTe(CuteKernelCache):
         has_bias: bool = False,
         has_output_gate: bool = False,
         anchor: int | None = None,
+        has_residual: bool = True,
     ) -> None:
         major, minor = torch.cuda.get_device_capability()
         self._sm_version = major * 10 + minor
         self._shape = (heads, head_dim, channels)
         self._has_bias = has_bias
         self._has_output_gate = has_output_gate
+        self._has_residual = has_residual
         # The ``R=<rows>`` tuning this backend serves; None takes the lowest.
         self._anchor = anchor
 
@@ -76,7 +78,8 @@ class AttnEpilogueCuTe(CuteKernelCache):
         heads, head_dim, channels = self._shape
         return (
             f"SM{self._sm_version}, heads={heads}, head_dim={head_dim}, channels={channels}, "
-            f"has_bias={self._has_bias}, has_output_gate={self._has_output_gate}, rows={self._rows()}"
+            f"has_bias={self._has_bias}, has_output_gate={self._has_output_gate}, "
+            f"has_residual={self._has_residual}, rows={self._rows()}"
         )
 
     def _load_cubin_executable(self, key: tuple, source_error: Exception | None = None) -> Any:
@@ -93,6 +96,7 @@ class AttnEpilogueCuTe(CuteKernelCache):
                     self._has_bias,
                     self._has_output_gate,
                     self._rows() or 0,
+                    has_residual=self._has_residual,
                 ),
             )
         except CuTeDSLKernelLibraryError as library_error:
@@ -114,11 +118,12 @@ class AttnEpilogueCuTe(CuteKernelCache):
         # Bump the tag when the call ABI changes. The anchor stays out, so
         # anchors that share a tuning share one compiled kernel.
         disk_key = (
-            "attn_epilogue_cute_v2",
+            "attn_epilogue_cute_v3",
             self._sm_version,
             *self._shape,
             self._has_bias,
             self._has_output_gate,
+            self._has_residual,
             device_index,
             kernel_abi,
             kernel_variant,
@@ -137,6 +142,7 @@ class AttnEpilogueCuTe(CuteKernelCache):
                     has_output_gate=self._has_output_gate,
                     channels=self._shape[2],
                     kernel_variant=kernel_variant,
+                    residual=self._has_residual,
                 )
                 executable = source.compile_attn_epilogue_source(
                     self.compile, kernel, make_fake_stream(use_tvm_ffi_env_stream=True)
@@ -147,7 +153,15 @@ class AttnEpilogueCuTe(CuteKernelCache):
 
     def executable(self, device_index: int) -> Any:
         """Return the executable for ``device_index``, compiling or loading it once."""
-        key = (self._sm_version, *self._shape, self._has_bias, self._has_output_gate, self._rows(), device_index)
+        key = (
+            self._sm_version,
+            *self._shape,
+            self._has_bias,
+            self._has_output_gate,
+            self._has_residual,
+            self._rows(),
+            device_index,
+        )
         executable = AttnEpilogueCuTe._compiled_cache.get(key)
         force_cubin = self.force_cubin()
         if executable is not None and (not force_cubin or isinstance(executable, CuTeDSLKernelLibraryExecutable)):

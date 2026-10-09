@@ -145,9 +145,9 @@ def test_gated_sigmoid_force_cubin_ignores_warmed_source(monkeypatch):
 @pytest.mark.parametrize("has_residual", [False, True], ids=["nores", "res"])
 @pytest.mark.parametrize(
     "K,N",
-    # (384, 768) and (768, 768) run the SM90 kernel on Hopper; (128, 128) the SM80 one everywhere.
-    [(384, 768), (768, 768), (128, 128)],
-    ids=["K384_N768", "K768_N768", "K128_N128"],
+    # Every tuned shape runs the SM90 kernel on Hopper and the SM80 one elsewhere.
+    [(384, 768), (256, 768), (768, 768), (128, 128)],
+    ids=["K384_N768", "K256_N768", "K768_N768", "K128_N128"],
 )
 @pytest.mark.parametrize(
     "outer,mult,inner",
@@ -488,6 +488,8 @@ def test_get_gated_sigmoid_op_selector():
 
     assert op_fp32 is _invoke_vanilla_gated_sigmoid
     assert get_gated_sigmoid_op(torch.bfloat16, N=128, K=64) is _invoke_vanilla_gated_sigmoid
+    # A 768-wide output gated from a 256-wide input ships tuned tiles.
+    assert get_gated_sigmoid_op(torch.bfloat16, N=768, K=256) is op_bf16
 
 
 def test_get_gated_sigmoid_op_runs():

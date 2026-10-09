@@ -401,6 +401,8 @@ _FAMILY_SPECS: dict[str, _FamilySpec] = {
             _Field("is_bfloat16", _BOOL, "bool is_bfloat16;"),
             _Field("has_bias", _BOOL, "bool has_bias;"),
             _Field("has_output_gate", _BOOL, "bool has_output_gate;"),
+            # Every image published before the residual-free kernel accumulated into z.
+            _Field("has_residual", _BOOL, "bool has_residual;", default=True),
             _Field("tile_j", _POSITIVE, "std::uint32_t tile_j;", suffix="U"),
             # Every image published before streamed Wo covered all 128 channels in one tile.
             _Field("tile_n", _POSITIVE, "std::uint32_t tile_n;", suffix="U", default=128),
@@ -409,8 +411,18 @@ _FAMILY_SPECS: dict[str, _FamilySpec] = {
             # anchors existed served all rows from a single tuning.
             _Field("bucket", _INDEX, "std::int32_t bucket;", default=0),
         ),
-        runtime_key=("heads", "head_dim", "channels", "is_bfloat16", "has_bias", "has_output_gate", "bucket"),
-        # Every Hopper image records the output gate's y map; only a gated one encodes it.
+        runtime_key=(
+            "heads",
+            "head_dim",
+            "channels",
+            "is_bfloat16",
+            "has_bias",
+            "has_output_gate",
+            "has_residual",
+            "bucket",
+        ),
+        # Every Hopper image records the residual's z map and the output gate's
+        # y map; only an image with the residual encodes z, and only a gated one y.
         sm90=_Sm90Spec("is_native", ("o", "g", "w", "z", "y", "d"), ranks=(4, 3, 2, 3, 3, 3)),
     ),
     "trimul_kf_k1": _FamilySpec(

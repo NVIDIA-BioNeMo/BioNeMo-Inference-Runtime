@@ -51,11 +51,12 @@ class AttnEpilogueCubinExecutable(CuTeDSLKernelLibraryExecutable):
 
     Both take the kernel views ``(o, g, Wo, bias, destination, residual,
     output_gate)`` shaped ``(J, D, H, B*I)``, ``(J, H*D, B*I)``, ``(C, H*D)``,
-    ``(C,)`` or ``None``, ``(J, C, B*I)`` twice and ``(J, C, B*I / mult)`` or
-    ``None``; the launcher receives them reordered to ``(B*I, J, H, D)``,
-    ``(B*I, J, H*D)``, ``(C, H*D)``, ``(C,)``, ``(B*I, J, C)`` and
-    ``(B*I / mult, J, C)``. :meth:`launch` takes the same operands as sizes
-    and strides, sparing the views on a call path that is otherwise host-bound.
+    ``(C,)`` or ``None``, ``(J, C, B*I)``, ``(J, C, B*I)`` or ``None``, and
+    ``(J, C, B*I / mult)`` or ``None``; the launcher receives them reordered to
+    ``(B*I, J, H, D)``, ``(B*I, J, H*D)``, ``(C, H*D)``, ``(C,)``,
+    ``(B*I, J, C)`` and ``(B*I / mult, J, C)``. :meth:`launch` takes the same
+    operands as sizes and strides, sparing the views on a call path that is
+    otherwise host-bound.
     """
 
     def __init__(
@@ -69,14 +70,18 @@ class AttnEpilogueCubinExecutable(CuTeDSLKernelLibraryExecutable):
         has_bias: bool = False,
         has_output_gate: bool = False,
         rows: int = 0,
+        has_residual: bool = True,
     ):
         try:
             # The launcher takes the image whose row anchor is nearest ``rows``.
-            config = launcher.make_kernel_config(target_sm, heads, head_dim, channels, has_bias, has_output_gate, rows)
+            config = launcher.make_kernel_config(
+                target_sm, heads, head_dim, channels, has_bias, has_output_gate, rows, has_residual=has_residual
+            )
         except (RuntimeError, TypeError, ValueError) as error:
             raise CuTeDSLKernelVariantUnavailable(
                 f"No attention epilogue CUBIN for SM{target_sm}, heads={heads}, head_dim={head_dim}, "
-                f"channels={channels}, has_bias={has_bias}, has_output_gate={has_output_gate}, rows={rows}"
+                f"channels={channels}, has_bias={has_bias}, has_output_gate={has_output_gate}, "
+                f"has_residual={has_residual}, rows={rows}"
             ) from error
         self._kernel_library = kernel_library
         self._launcher = launcher
@@ -89,7 +94,7 @@ class AttnEpilogueCubinExecutable(CuTeDSLKernelLibraryExecutable):
         weight: torch.Tensor,
         bias: torch.Tensor | None,
         destination: torch.Tensor,
-        residual: torch.Tensor,
+        residual: torch.Tensor | None,
         output_gate: torch.Tensor | None = None,
     ) -> None:
         if weight.stride(1) != 1:
@@ -100,7 +105,7 @@ class AttnEpilogueCubinExecutable(CuTeDSLKernelLibraryExecutable):
             weight,
             bias,
             _operand(destination),
-            _operand(residual),
+            None if residual is None else _operand(residual),
             None if output_gate is None else _operand(output_gate),
         )
 
@@ -111,7 +116,7 @@ class AttnEpilogueCubinExecutable(CuTeDSLKernelLibraryExecutable):
         weight: torch.Tensor,
         bias: torch.Tensor | None,
         destination: KernelOperand,
-        residual: KernelOperand,
+        residual: KernelOperand | None,
         output_gate: KernelOperand | None = None,
     ) -> None:
         """Launch on the current stream of the attention output's device.
@@ -122,7 +127,8 @@ class AttnEpilogueCubinExecutable(CuTeDSLKernelLibraryExecutable):
             weight: ``Wo`` as ``(C, H*D)`` with a unit inner stride.
             bias: The contiguous ``(C,)`` output bias, or ``None``.
             destination: The output as ``(J, C, B*I)``.
-            residual: The residual as ``(J, C, B*I)``.
+            residual: The residual as ``(J, C, B*I)``, or ``None`` for an
+                image without one.
             output_gate: ``y`` as ``(J, C, B*I / mult)``, or ``None``.
         """
         library = self._kernel_library
@@ -139,7 +145,8 @@ class AttnEpilogueCubinExecutable(CuTeDSLKernelLibraryExecutable):
         if bias is not None:
             params.b = library.Tensor1View(bias.data_ptr(), (bias.shape[0],), (), bias.get_device())
         params.d = _pair(library, destination)
-        params.z = _pair(library, residual)
+        if residual is not None:
+            params.z = _pair(library, residual)
         if output_gate is not None:
             params.y = _pair(library, output_gate)
         params.stream = current_stream_handle(tensor)

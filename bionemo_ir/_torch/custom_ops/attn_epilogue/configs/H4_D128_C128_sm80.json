@@ -9,7 +9,7 @@
     },
     "R=4096": {
       "tile_m": 64,
-      "tile_k": 64,
+      "tile_k": 32,
       "num_stages": 3,
       "atom_layout_mnk": [4, 1, 1]
     },
@@ -50,16 +50,16 @@
       "atom_layout_mnk": [4, 1, 1]
     },
     "R=1048576": {
-      "tile_m": 64,
+      "tile_m": 128,
       "tile_k": 32,
       "num_stages": 4,
-      "atom_layout_mnk": [4, 1, 1]
+      "atom_layout_mnk": [8, 1, 1]
     },
     "R=2359296": {
-      "tile_m": 64,
+      "tile_m": 128,
       "tile_k": 32,
       "num_stages": 4,
-      "atom_layout_mnk": [4, 1, 1]
+      "atom_layout_mnk": [8, 1, 1]
     }
   }
 }

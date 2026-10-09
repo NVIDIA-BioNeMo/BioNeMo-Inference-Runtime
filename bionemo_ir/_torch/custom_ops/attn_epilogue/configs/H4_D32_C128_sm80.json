@@ -14,10 +14,10 @@
       "atom_layout_mnk": [2, 2, 1]
     },
     "R=16384": {
-      "tile_m": 32,
+      "tile_m": 64,
       "tile_k": 32,
       "num_stages": 3,
-      "atom_layout_mnk": [2, 2, 1]
+      "atom_layout_mnk": [4, 1, 1]
     },
     "R=36864": {
       "tile_m": 32,
@@ -26,40 +26,40 @@
       "atom_layout_mnk": [2, 2, 1]
     },
     "R=65536": {
-      "tile_m": 32,
+      "tile_m": 64,
       "tile_k": 32,
       "num_stages": 3,
-      "atom_layout_mnk": [2, 2, 1]
+      "atom_layout_mnk": [4, 2, 1]
     },
     "R=147456": {
-      "tile_m": 32,
+      "tile_m": 64,
       "tile_k": 32,
       "num_stages": 3,
-      "atom_layout_mnk": [2, 2, 1]
+      "atom_layout_mnk": [4, 2, 1]
     },
     "R=262144": {
-      "tile_m": 32,
+      "tile_m": 64,
       "tile_k": 32,
       "num_stages": 3,
-      "atom_layout_mnk": [2, 2, 1]
+      "atom_layout_mnk": [4, 2, 1]
     },
     "R=589824": {
-      "tile_m": 32,
+      "tile_m": 64,
       "tile_k": 32,
       "num_stages": 3,
-      "atom_layout_mnk": [2, 2, 1]
+      "atom_layout_mnk": [4, 2, 1]
     },
     "R=1048576": {
-      "tile_m": 32,
+      "tile_m": 64,
       "tile_k": 32,
       "num_stages": 3,
-      "atom_layout_mnk": [2, 2, 1]
+      "atom_layout_mnk": [4, 2, 1]
     },
     "R=2359296": {
-      "tile_m": 32,
+      "tile_m": 64,
       "tile_k": 32,
       "num_stages": 3,
-      "atom_layout_mnk": [2, 2, 1]
+      "atom_layout_mnk": [4, 2, 1]
     }
   }
 }

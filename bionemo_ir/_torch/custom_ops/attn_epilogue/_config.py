@@ -37,7 +37,8 @@ ANCHOR_KEY_RE = re.compile(r"^R=(?P<rows>\d+)$")
 ENTRY_KERNEL_ABIS = ("sm80", "sm90")
 
 # The CUBIN builder ships output-gate variants at OUTPUT_GATE_WIDTHS and
-# STREAMED_WIDTHS, so both live in this fingerprinted module.
+# STREAMED_WIDTHS, and residual-free variants at NO_RESIDUAL_WIDTHS, so all
+# three live in this fingerprinted module.
 #
 # The output gate's tile doubles the residual stages, which leaves no room
 # beside the 128 KB resident weight of H*D == 512.
@@ -48,6 +49,9 @@ OUTPUT_GATE_WIDTHS = (128, 256)
 # of these H*D. SM80, SM86 and SM89 take the channel-tiled kernel at every
 # size.
 STREAMED_WIDTHS = (256, 768)
+# Token transformers that add the residual themselves, after a gate of their
+# own, take an epilogue that writes the bare projection.
+NO_RESIDUAL_WIDTHS = (768,)
 
 
 @dataclass(frozen=True)

@@ -103,7 +103,7 @@ def _as_view(operand: KernelOperand) -> torch.Tensor:
 
 
 class AttnEpilogue:
-    """Gate, output projection and residual add as one kernel."""
+    """Gate, output projection and optional residual add as one kernel."""
 
     def __init__(
         self,
@@ -115,6 +115,7 @@ class AttnEpilogue:
         has_output_gate: bool = False,
         layer_heads: int | None = None,
         layer_head_dim: int | None = None,
+        has_residual: bool = True,
     ) -> None:
         # One backend per tuning anchor; a call takes the anchor nearest its
         # folded rows. A lone backend serves every call.
@@ -129,33 +130,35 @@ class AttnEpilogue:
         self._channels = channels
         self._has_bias = has_bias
         self._has_output_gate = has_output_gate
+        self._has_residual = has_residual
 
     def _shapes_supported(
         self,
         mha_o: torch.Tensor,
         gate: torch.Tensor,
         weight: torch.Tensor,
-        residual: torch.Tensor,
+        residual: torch.Tensor | None,
         output: torch.Tensor | None,
         bias: torch.Tensor | None,
         output_gate: torch.Tensor | None,
     ) -> bool:
         if (bias is not None) != self._has_bias or (output_gate is not None) != self._has_output_gate:
             return False
-        optional = (output, bias, output_gate)
-        operands = [mha_o, gate, weight, residual] + [tensor for tensor in optional if tensor is not None]
+        if (residual is not None) != self._has_residual:
+            return False
+        optional = (residual, output, bias, output_gate)
+        operands = [mha_o, gate, weight] + [tensor for tensor in optional if tensor is not None]
         if any(operand.dtype != torch.bfloat16 or not operand.is_cuda for operand in operands):
             return False
-        if residual.ndim != 4 or residual.shape[-1] != self._channels:
+        if gate.ndim != 4 or gate.shape[-1] != self._width:
             return False
-        batch, rows, columns, _ = residual.shape
+        batch, rows, columns, _ = gate.shape
         # One pair row leaves the J and B*I modes both at extent 1, which
         # builds a TMA descriptor the kernel traps on.
         if batch * rows * columns <= 1:
             return False
-        if output is not None and output.shape != residual.shape:
-            return False
-        if gate.shape != (batch, rows, columns, self._width):
+        pair_shape = (batch, rows, columns, self._channels)
+        if any(tensor is not None and tuple(tensor.shape) != pair_shape for tensor in (residual, output)):
             return False
         # Checked rather than assumed: a heads-outer buffer would otherwise be
         # read as heads-inner.
@@ -182,19 +185,20 @@ class AttnEpilogue:
         mha_o: torch.Tensor,
         gate: torch.Tensor,
         weight: torch.Tensor,
-        residual: torch.Tensor,
+        residual: torch.Tensor | None,
         output: torch.Tensor | None = None,
         bias: torch.Tensor | None = None,
         output_gate: torch.Tensor | None = None,
     ) -> torch.Tensor | None:
-        """Write ``residual + o_proj(mha_o * sigmoid(gate))`` to ``output``.
+        """Write ``o_proj(mha_o * sigmoid(gate))``, plus ``residual`` when this op has one.
 
         Args:
             mha_o: Attention output ``[..., J, H, D]``, heads-inner.
             gate: Unactivated gate projection ``[B, I, J, H*D]``.
             weight: Output projection weight ``[C, H*D]``.
-            residual: Residual ``[B, I, J, C]``.
-            output: Destination like ``residual``, possibly ``residual``
+            residual: Residual ``[B, I, J, C]``, exactly when the op was built
+                for one.
+            output: Destination ``[B, I, J, C]``, possibly ``residual``
                 itself; ``None`` allocates one.
             bias: Output projection bias ``[C]``, exactly when the op was
                 built for one.
@@ -209,26 +213,33 @@ class AttnEpilogue:
         """
         if not self._shapes_supported(mha_o, gate, weight, residual, output, bias, output_gate):
             return None
-        operands = [
-            _attention_layout(mha_o, self._heads, self._head_dim),
-            _pair_layout(gate),
-            (weight, tuple(weight.shape), weight.stride()),
-            _pair_layout(residual),
-        ]
+        layouts = {
+            "o": _attention_layout(mha_o, self._heads, self._head_dim),
+            "g": _pair_layout(gate),
+            "w": (weight, tuple(weight.shape), weight.stride()),
+        }
+        if residual is not None:
+            layouts["z"] = _pair_layout(residual)
         if output_gate is not None:
-            operands.append(_pair_layout(output_gate))
-        if any(operand is None or not _tma_ready(operand) for operand in operands):
+            layouts["y"] = _pair_layout(output_gate)
+        if any(layout is None or not _tma_ready(layout) for layout in layouts.values()):
             return None
         if output is None:
-            output = torch.empty_like(residual)
-        destination = operands[3] if output is residual else _pair_layout(output)
+            output = (
+                torch.empty_like(residual)
+                if residual is not None
+                else gate.new_empty((*gate.shape[:-1], self._channels))
+            )
+        destination = layouts["z"] if output is residual else _pair_layout(output)
         if destination is None or not _tma_ready(destination):
             return None
-        attention, gate_layout, _, source, *gate_logits = (_untie(operand) for operand in operands)
+        layouts = {name: _untie(layout) for name, layout in layouts.items()}
         destination = _untie(destination)
-        logits = gate_logits[0] if gate_logits else None
-        backend = self._backends[nearest_anchor(self._anchors, residual.numel() // self._channels)]
-        device_index = residual.get_device()
+        attention, gate_layout = layouts["o"], layouts["g"]
+        source, logits = layouts.get("z"), layouts.get("y")
+        # The gate has one H*D row per folded pair row, residual or not.
+        backend = self._backends[nearest_anchor(self._anchors, gate.numel() // self._width)]
+        device_index = gate.get_device()
         executable = backend.executable(device_index)
         if isinstance(executable, AttnEpilogueCubinExecutable):
             executable.launch(attention, gate_layout, weight, bias, destination, source, logits)
@@ -245,7 +256,7 @@ class AttnEpilogue:
                     weight,
                     bias,
                     _as_view(destination),
-                    _as_view(source),
+                    None if source is None else _as_view(source),
                     None if logits is None else _as_view(logits),
                 )
         return output
@@ -258,6 +269,7 @@ def get_attn_epilogue_op(
     channels: int,
     has_bias: bool = False,
     has_output_gate: bool = False,
+    has_residual: bool = True,
 ) -> AttnEpilogue | None:
     """Return the fused epilogue for a layer, or ``None`` when it cannot serve it.
 
@@ -269,9 +281,13 @@ def get_attn_epilogue_op(
     transformers, take any head split, output gate included: on SM90 the streamed kernel or the channel-tiled SM80 one,
     and on SM80, SM86 and SM89 the channel-tiled one. Each call takes the
     tuning whose ``R=<rows>`` anchor is nearest its folded rows.
+
+    With ``has_residual=False`` the op writes the bare projection and takes no
+    output gate; packaged CUBINs cover such layers at ``H*D`` in
+    ``NO_RESIDUAL_WIDTHS``, and a source checkout compiles the rest.
     """
     width = num_heads * head_dim
-    if not torch.cuda.is_available() or dtype != torch.bfloat16:
+    if not torch.cuda.is_available() or dtype != torch.bfloat16 or (has_output_gate and not has_residual):
         return None
     device = torch.cuda.current_device()
     major, minor = torch.cuda.get_device_capability(device)
@@ -291,7 +307,9 @@ def get_attn_epilogue_op(
         return None
     backends = {}
     for tuning in tuned_configs(sm, heads, dim, channels):
-        backend = AttnEpilogueCuTe(heads, dim, channels, has_bias, has_output_gate, anchor=tuning.rows)
+        backend = AttnEpilogueCuTe(
+            heads, dim, channels, has_bias, has_output_gate, anchor=tuning.rows, has_residual=has_residual
+        )
         try:
             # Resolving here keeps JIT compilation out of the forward pass and
             # of any CUDA graph capture.
@@ -303,4 +321,4 @@ def get_attn_epilogue_op(
         backends[tuning.rows] = backend
     if not backends:
         return None
-    return AttnEpilogue(backends, heads, dim, channels, has_bias, has_output_gate, num_heads, head_dim)
+    return AttnEpilogue(backends, heads, dim, channels, has_bias, has_output_gate, num_heads, head_dim, has_residual)

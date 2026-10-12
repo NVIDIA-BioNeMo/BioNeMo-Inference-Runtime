@@ -16,12 +16,16 @@ import logging
 import pickle
 from functools import lru_cache
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import torch
 import torch.nn.functional as F
 
 from .schemas import AtomType, AtomTypes, ResType, ResTypes
+
+if TYPE_CHECKING:
+    import gemmi
+    from biotite.structure.io.pdbx import CIFFile
 
 logger = logging.getLogger(__name__)
 
@@ -148,6 +152,86 @@ def read_gemmi_structure(source: str, fmt: str, from_content: bool):
     if fmt == "pdb":
         return gemmi.read_pdb_string(source) if from_content else gemmi.read_pdb(str(source))
     raise ValueError(f"Unsupported template format: {fmt!r}")
+
+
+def pdb_to_cif(content: str) -> str:
+    """Convert template PDB content while retaining canonical sequence positions.
+
+    Args:
+        content: PDB text, including SEQRES records when available.
+
+    Returns:
+        CIF text with label sequence IDs and a polymer sequence scheme.
+    """
+    return _pdb_to_document(content).as_string()
+
+
+def pdb_to_cif_file(content: str) -> "CIFFile":
+    """Convert PDB templates without serializing and reparsing CIF text.
+
+    Args:
+        content: PDB text, including SEQRES records when available.
+
+    Returns:
+        Biotite CIF file retaining canonical positions and missing-value masks.
+    """
+    import numpy as np
+    from biotite.structure.io.pdbx import CIFBlock, CIFCategory, CIFColumn, CIFData, CIFFile
+
+    source = _pdb_to_document(content)[0]
+    block = CIFBlock()
+    for name in source.get_mmcif_category_names():
+        # Gemmi decodes unquoted nulls as False/None.
+        columns = {}
+        for key, values in source.get_mmcif_category(name).items():
+            if not values:
+                continue
+            values = ["." if value is False else "?" if value is None else value for value in values]
+            # Avoid dtype inference and redundant string copies.
+            width = max(1, max(map(len, values)))
+            data = np.fromiter(values, dtype=f"U{width}", count=len(values))
+            columns[key] = CIFColumn(CIFData(data))
+        if columns:
+            block[name[1:-1]] = CIFCategory(columns)
+    return CIFFile({source.name: block})
+
+
+def _pdb_to_document(content: str) -> "gemmi.cif.Document":
+    try:
+        structure = read_gemmi_structure(content, "pdb", from_content=True)
+    except (ValueError, RuntimeError) as error:
+        raise ValueError("Could not parse template PDB content") from error
+    if len(structure) == 0:
+        raise ValueError("Template PDB contains no models")
+    structure.merge_chain_parts()
+    structure.setup_entities()
+    columns: list[list[str]] = [[] for _ in range(5)]
+    for chain in structure[0]:
+        polymer = chain.get_polymer()
+        if not polymer:
+            continue
+        entity = structure.get_entity_of(polymer)
+        sequence = entity.full_sequence
+        if not sequence:
+            sequence = polymer.extract_sequence()
+            # Preserve microheterogeneous residues in observed sequences.
+            if len(sequence) != len(polymer):
+                sequence = [residue.name for residue in polymer]
+            entity.full_sequence = sequence
+        length = len(sequence)
+        columns[0].extend([polymer[0].subchain] * length)
+        columns[1].extend([entity.name] * length)
+        columns[2].extend(map(str, range(1, length + 1)))
+        columns[3].extend(sequence)
+        columns[4].extend([chain.name or "."] * length)
+    structure.assign_label_seq_id()
+    document = structure.make_mmcif_document()
+    # Gemmi omits the canonical sequence scheme.
+    scheme = document[0].init_loop(
+        "_pdbx_poly_seq_scheme.", ["asym_id", "entity_id", "seq_id", "mon_id", "pdb_strand_id"]
+    )
+    scheme.set_all_values(columns)
+    return document
 
 
 def normalize_gemmi_structure(st) -> None:

@@ -38,6 +38,88 @@ def cif_content() -> str:
     return _FIXTURE.read_text()
 
 
+@pytest.fixture
+def pdb_content() -> str:
+    return _FIXTURE.with_suffix(".pdb").read_text()
+
+
+@pytest.mark.parametrize("chain_id", [None, "A", "B"])
+def test_pdb_cif_parity(cif_content: str, pdb_content: str, chain_id: str | None) -> None:
+    template = {"content": cif_content, "format": "cif", "chain_id": chain_id}
+    expected = build_template_feats("MR", [template])
+    actual = build_template_feats("MR", [{**template, "content": pdb_content, "format": "pdb"}])
+
+    for key in expected.keys() - {"template_domain_names"}:
+        np.testing.assert_array_equal(actual[key], expected[key])
+
+
+def test_pdb_insertions(pdb_content: str) -> None:
+    lines = []
+    for line in pdb_content.splitlines():
+        if line[21:22] == "A":
+            insertion = " " if line[17:20] == "MSE" else "A"
+            line = line[:22] + f"{-3:4d}" + insertion + line[27:]
+        lines.append(line)
+
+    chains = extract_template_chains("\n".join(lines), "PDB")
+
+    assert chains["A"].canonical_seq == "MR"
+    assert list(chains["A"].coords_by_pos) == [1, 2]
+    assert "SD" in chains["A"].coords_by_pos[1]
+
+
+def test_pdb_unresolved_seqres(pdb_content: str) -> None:
+    content = "SEQRES   1 A    3  MSE GLY ARG\n" + pdb_content.replace("ARG A  11", "ARG A  12")
+
+    chains = extract_template_chains(content, "pdb")
+    features = build_template_feats("MGR", [{"content": content, "format": "pdb", "chain_id": "A"}])
+
+    assert chains["A"].canonical_seq == "MGR"
+    assert list(chains["A"].coords_by_pos) == [1, 3]
+    assert features["template_sequence"][0] == b"MGR"
+    assert features["template_all_atom_mask"][0, 1].sum() == 0
+    assert features["template_all_atom_mask"].sum() == 14
+
+
+def test_pdb_microheterogeneity(pdb_content: str) -> None:
+    alternate = "\n".join(line.replace("ARG", "GLY") for line in pdb_content.splitlines() if "ARG" in line)
+
+    chains = extract_template_chains(pdb_content + alternate + "\n", "pdb")
+
+    assert chains["A"].canonical_seq == "MRG"
+    assert chains["A"].res_name_by_pos == {1: "MSE", 2: "ARG", 3: "GLY"}
+
+
+def test_pdb_altloc_occupancy(pdb_content: str) -> None:
+    lines = []
+    for line in pdb_content.splitlines():
+        if line[12:16].strip() == "CA" and line[21:22] == "A" and line[17:20] == "MSE":
+            lines.append(line[:16] + "A" + line[17:30] + f"{99.0:8.3f}" + line[38:54] + "  0.25" + line[60:])
+            line = line[:16] + "B" + line[17:54] + "  0.75" + line[60:]
+        lines.append(line)
+
+    actual = extract_template_chains("\n".join(lines), "pdb")
+    expected = extract_template_chains(pdb_content, "pdb")
+
+    for position, atoms in expected["A"].coords_by_pos.items():
+        for name, coordinate in atoms.items():
+            np.testing.assert_array_equal(actual["A"].coords_by_pos[position][name], coordinate)
+
+
+def test_pdb_first_model(pdb_content: str) -> None:
+    content = f"MODEL        1\n{pdb_content}ENDMDL\nMODEL        2\n{pdb_content.replace('ARG', 'GLY')}ENDMDL\n"
+
+    chains = extract_template_chains(content, "pdb")
+
+    assert chains["A"].canonical_seq == "MR"
+
+
+@pytest.mark.parametrize("content", ["not a PDB", "END\n"])
+def test_invalid_pdb_index(content: str) -> None:
+    with pytest.raises(ValueError, match="Invalid supplied template at index 0"):
+        build_template_feats("MR", [{"content": content, "format": "pdb"}])
+
+
 def test_alignment_keeps_only_mutually_aligned_positions(monkeypatch):
     monkeypatch.setattr(template_logic, "run_kalign", lambda sequences: ["AC-D", "A-CD"])
     chain = ChainTemplateData(
@@ -222,12 +304,12 @@ def test_build_template_feats_rejects_get_content_only_input(cif_content):
         def get_content(self):
             return cif_content
 
-    with pytest.raises(ValueError, match="contain.*CIF content"):
+    with pytest.raises(ValueError, match="contain.*structure content"):
         build_template_feats("MR", [LazyTemplate()])
 
 
 def test_build_template_feats_rejects_path_only_input():
-    with pytest.raises(ValueError, match="contain.*CIF content"):
+    with pytest.raises(ValueError, match="contain.*structure content"):
         build_template_feats("MR", [{"path": _FIXTURE, "chain_id": "A"}])
 
 
@@ -281,7 +363,7 @@ def test_empty_templates_match_existing_no_template_shapes():
 
 def test_invalid_supplied_template_reports_its_input_index(cif_content):
     with pytest.raises(ValueError, match="Invalid supplied template at index 0"):
-        build_template_feats("MR", [{"content": cif_content, "format": "pdb"}])
+        build_template_feats("MR", [{"content": cif_content, "format": "xml"}])
 
 
 def test_build_template_feats_warns_on_excess_input_templates(cif_content, caplog):

@@ -13,9 +13,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Direct-CIF template feature construction for OpenFold2.
+"""PDB/CIF template feature construction for OpenFold2.
 
-The user supplies CIF content directly, so this module only performs the
+The user supplies structure content directly, so this module only performs the
 sequence alignment, chain selection, and atom37 packing that happen after a
 template search. Chain IDs at the API boundary are PDB author-chain IDs. CIF
 label asym IDs and label sequence positions remain internal parsing details.
@@ -37,6 +37,7 @@ import numpy as np
 
 from bionemo_ir.data.tools.kalign import run_kalign
 from bionemo_ir.data.tools.template_alignment import calculate_ids_hit, seq_identity_and_coverage
+from bionemo_ir.data.utils import pdb_to_cif_file
 from bionemo_ir.pipeline.models.openfold2 import const as rc
 
 logger = logging.getLogger(__name__)
@@ -61,7 +62,7 @@ class ChainTemplateData:
 
 @dataclass(frozen=True)
 class SelectedTemplate:
-    """One CIF chain selected and aligned to the query sequence."""
+    """One template chain selected and aligned to the query sequence."""
 
     chain_id: str
     idx_map: np.ndarray
@@ -83,7 +84,7 @@ def align_query_to_template_chain(
     query_seq: str,
     chain_data: ChainTemplateData,
 ) -> tuple[np.ndarray, float, float]:
-    """Align a query to a CIF chain and return its 1-based residue mapping."""
+    """Align a query to a template chain and return its 1-based residue mapping."""
     if not query_seq:
         raise ValueError("query_seq must not be empty")
     if not chain_data.canonical_seq:
@@ -281,18 +282,20 @@ def _correct_arg_atom_names(residue_name: str, atoms: dict[str, np.ndarray]) -> 
 # https://github.com/aqlaboratory/openfold/blob/be2ec1841f16c966c65ae0e7599ebbadc725757d/openfold/data/mmcif_parsing.py#L178-L305
 # https://github.com/aqlaboratory/openfold/blob/be2ec1841f16c966c65ae0e7599ebbadc725757d/openfold/data/mmcif_parsing.py#L435-L502
 def extract_template_chains(content: str, fmt: str = "cif") -> dict[str, ChainTemplateData]:
-    """Parse protein chains from CIF content, keyed by author-chain ID."""
-    if fmt.lower() != "cif":
-        raise ValueError(f"Only CIF templates are supported, got {fmt!r}")
+    """Parse PDB/CIF protein chains, keyed by author-chain ID."""
+    if fmt.lower() not in {"cif", "pdb"}:
+        raise ValueError(f"Unsupported template format: {fmt!r}")
     if not content or not content.strip():
-        raise ValueError("Template CIF content must not be empty")
-
+        raise ValueError("Template content must not be empty")
     from biotite.structure.io.pdbx import CIFFile, get_structure
 
-    try:
-        cif = CIFFile.read(io.StringIO(content))
-    except Exception as error:
-        raise ValueError("Could not parse template CIF content") from error
+    if fmt.lower() == "pdb":
+        cif = pdb_to_cif_file(content)
+    else:
+        try:
+            cif = CIFFile.read(io.StringIO(content))
+        except Exception as error:
+            raise ValueError("Could not parse template CIF content") from error
     if len(cif) != 1:
         raise ValueError(f"Expected one CIF data block, found {len(cif)}")
     block_name, block = next(iter(cif.items()))
@@ -387,14 +390,14 @@ def select_template_for_cif(
     specified_chain_id: str | None = None,
     weak_match_threshold: float = _WEAK_TEMPLATE_SCORE,
 ) -> SelectedTemplate:
-    """Select and align one CIF chain for a query sequence.
+    """Select and align one PDB/CIF chain for a query sequence.
 
     Explicit author-chain requests are never rejected by score. Automatic
     selection requires a nonempty mutual alignment and warns for a weak score.
     """
     chains = extract_template_chains(content, fmt)
     if not chains:
-        raise ValueError("Template CIF contains no protein chains")
+        raise ValueError("Template contains no protein chains")
 
     if specified_chain_id is not None:
         if specified_chain_id not in chains:
@@ -449,7 +452,7 @@ def _template_value(template: Any, name: str, default: Any = None) -> Any:
 def _template_content(template: Any) -> str:
     content = _template_value(template, "content")
     if not isinstance(content, str) or not content.strip():
-        raise ValueError("Each supplied template must contain materialized CIF content")
+        raise ValueError("Each supplied template must contain materialized structure content")
     return content
 
 
@@ -547,10 +550,10 @@ def build_template_feats(
     *,
     max_templates: int = 4,
 ) -> dict[str, np.ndarray]:
-    """Build OpenFold2's six base template features from direct CIF inputs.
+    """Build OpenFold2's six base template features from PDB/CIF inputs.
 
     ``chain_id`` identifies the query chain for diagnostics only. Each template's
-    own optional ``chain_id`` selects a PDB author chain in that CIF.
+    own optional ``chain_id`` selects a PDB author chain in that structure.
     """
     if not query_sequence:
         suffix = f" for query chain {chain_id!r}" if chain_id else ""

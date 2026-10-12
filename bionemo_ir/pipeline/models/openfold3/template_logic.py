@@ -12,9 +12,9 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""OpenFold3 direct-CIF template logic (protein-only).
+"""OpenFold3 direct PDB/CIF template logic (protein-only).
 
-Turns a user-supplied template CIF into per-query-token pseudo-beta /
+Turns a user-supplied template PDB/CIF into per-query-token pseudo-beta /
 backbone-frame coordinates, mirroring the OSS OpenFold-3 CIF-direct flow
 (``CifDirectParser`` + ``map_token_pos_to_template_residues``).
 
@@ -33,6 +33,7 @@ import numpy as np
 
 from bionemo_ir.data.tools.kalign import run_kalign
 from bionemo_ir.data.tools.template_alignment import calculate_ids_hit, seq_identity_and_coverage
+from bionemo_ir.data.utils import pdb_to_cif_file
 
 from .const import _PROTEIN_1TO3, TEMPLATE_CIF_DIRECT_MIN_SCORE
 
@@ -125,7 +126,8 @@ def _canonical_seq_from_poly_scheme(block) -> dict[str, tuple[str, dict[int, str
     (the sequence OSS aligns against), which uses the parent one-letter code for
     modified residues (e.g. MSE -> 'M'); a 3->1 mapping would emit 'X' and shift
     the alignment. Per-position 3-letter names come from ``mon_id`` keyed by
-    ``seq_id``. Falls back to the 3->1 mapping when ``entity_poly`` is absent.
+    ``seq_id``. Without canonical metadata, falls back to the 3->1 mapping
+    with MSE treated as MET.
     """
     if "pdbx_poly_seq_scheme" not in block:
         return None
@@ -139,7 +141,7 @@ def _canonical_seq_from_poly_scheme(block) -> dict[str, tuple[str, dict[int, str
     out: dict[str, tuple[list, dict[int, str]]] = {}
     for a, m, s in zip(asym, mon, seq_id, strict=False):
         chars, names = out.setdefault(a, ([], {}))
-        chars.append((int(s), _PROTEIN_3TO1.get(m, "X")))
+        chars.append((int(s), _PROTEIN_3TO1.get(m, "M" if m == "MSE" else "X")))
         names[int(s)] = m
     result: dict[str, tuple[str, dict[int, str]]] = {}
     for a, (chars, names) in out.items():
@@ -178,20 +180,29 @@ def _entity_canonical_seqs(block) -> dict[str, str]:
 
 
 def extract_template_chains(content: str, fmt: str = "cif") -> dict[str, ChainTemplateData]:
-    """Parse a template CIF into per-chain sequence + backbone/pseudo-beta coords.
+    """Parse PDB/CIF into per-chain sequence + backbone/pseudo-beta coords.
 
     Uses biotite with ``use_author_fields=False`` so that ``chain_id`` is the
     label_asym_id and ``res_id`` is the 1-based label_seq_id (canonical
-    position) — matching the numbering OSS template idx maps use.
+    position) — matching the numbering OSS template idx maps use. PDB inputs
+    return author-chain IDs; CIF inputs retain label-asym IDs.
     """
     from biotite.structure.io.pdbx import CIFFile, get_structure
 
-    if fmt != "cif":
-        raise ValueError(f"Only 'cif' template format is supported, got {fmt!r}")
-
-    cif = CIFFile.read(io.StringIO(content))
+    if fmt.lower() not in {"cif", "pdb"}:
+        raise ValueError(f"Unsupported template format: {fmt!r}")
+    is_pdb = fmt.lower() == "pdb"
+    cif = pdb_to_cif_file(content) if is_pdb else CIFFile.read(io.StringIO(content))
     block = cif.block
     poly = _canonical_seq_from_poly_scheme(block)
+    author_by_label: dict[str, str] = {}
+    if is_pdb:
+        if not poly:
+            raise ValueError("Template PDB contains no polymer sequence")
+        scheme = block["pdbx_poly_seq_scheme"]
+        author_by_label = dict(
+            zip(scheme["asym_id"].as_array(str).tolist(), scheme["pdb_strand_id"].as_array(str).tolist(), strict=True)
+        )
 
     # altloc="occupancy" picks the highest-occupancy conformer, matching OSS.
     # Biotite's default ("first") picks altloc 'A' regardless and diverges.
@@ -237,7 +248,7 @@ def extract_template_chains(content: str, fmt: str = "cif") -> dict[str, ChainTe
             positions = sorted(resname_by_pos)
             canonical_seq = "".join(_PROTEIN_3TO1.get(resname_by_pos[p], "X") for p in positions)
 
-        chains[str(chain_id)] = ChainTemplateData(
+        chains[author_by_label.get(str(chain_id), str(chain_id))] = ChainTemplateData(
             canonical_seq=canonical_seq,
             res_name_by_pos=resname_by_pos,
             coords_by_pos=coords_by_pos,
@@ -259,7 +270,7 @@ def select_template_for_cif(
     *,
     chains: dict[str, ChainTemplateData] | None = None,
 ) -> SelectedTemplate | None:
-    """Pick the best-aligning chain of one template CIF for a query sequence.
+    """Pick the best-aligning PDB/CIF template chain for a query sequence.
 
     Mirrors OSS ``CifDirectParser``: align each candidate chain to the query,
     score by seq_id * q_cov, and keep the best chain scoring >= ``min_score``.

@@ -41,7 +41,9 @@ dependencies = [
   "triton>=3.6.0,<3.7.1",
   "biopython>=1.87",
   "ray[serve,data]==2.56.1",  # Installs pandas and pyarrow.
-  # Security floors for transitive dependencies of Ray and requests.
+  # Security floors for transitive runtime dependencies.
+  "fsspec>=2026.6.0",
+  "multidict>=6.9.1",
   "urllib3>=2.8.0",
   "virtualenv>=21.14.5",
   # uvloop 0.22 breaks Ray Serve: https://github.com/ray-project/ray/issues/57992
@@ -53,7 +55,7 @@ dependencies = [
   "apache-tvm-ffi>=0.1.6,<0.2",
   "biotite==1.6.0",
   # https://github.com/huggingface/datasets/issues/7344
-  "datasets==4.8.4",
+  "datasets==5.0.1",
   # hf_hub_download(), currently transitive through datasets.
   "huggingface_hub>=0.25,<2",
   "PyYAML>=6.0.3",

@@ -186,6 +186,17 @@ wheel. Their package-provided license and notice files remain authoritative.
   - License: MIT; see [`LICENSES/MIT.txt`][mit]
   - Source and license: [urllib3][urllib3]
 
+- **fsspec**
+  - Copyright: Martin Durant and fsspec contributors
+  - License: BSD-3-Clause; see
+    [`LICENSES/BSD-3-Clause.txt`][bsd-3-clause]
+  - Source and license: [filesystem_spec][fsspec]
+
+- **multidict**
+  - Copyright: aio-libs contributors
+  - License: Apache-2.0; see [`LICENSE`][bioir-license]
+  - Source and license: [multidict][multidict]
+
 - **virtualenv**
   - Copyright: The virtualenv developers
   - License: MIT; see [`LICENSES/MIT.txt`][mit]
@@ -359,6 +370,7 @@ resolved operating-system and base-image package closure.
 [datasets]: https://github.com/huggingface/datasets
 [einops]: https://github.com/arogozhnikov/einops
 [flash-attention-cute]: https://github.com/Dao-AILab/flash-attention/tree/main/flash_attn/cute
+[fsspec]: https://github.com/fsspec/filesystem_spec
 [gemmi]: https://github.com/project-gemmi/gemmi
 [huggingface-hub]: https://github.com/huggingface/huggingface_hub
 [kalign]: https://github.com/TimoLassmann/kalign
@@ -368,6 +380,7 @@ resolved operating-system and base-image package closure.
 [ml-collections]: https://github.com/google/ml_collections
 [modelcif]: https://github.com/ihmwg/python-modelcif
 [mpl-2]: LICENSES/MPL-2.0.txt
+[multidict]: https://github.com/aio-libs/multidict
 [nanobind]: https://github.com/wjakob/nanobind/tree/v2.10.2
 [openfold]: https://github.com/aqlaboratory/openfold
 [openfold3]: https://github.com/aqlaboratory/openfold-3/tree/0bb17be5199846e806b6347b6e17c6249c88ff1b

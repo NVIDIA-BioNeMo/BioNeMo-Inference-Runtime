@@ -136,10 +136,11 @@ def _config_shape(path: Path) -> tuple[int, int, int, int]:
         (128, 128, 64),  # minimum: one tile in each dimension
         (128, 128, 100 * 100),  # tail rows, mid bucket
         (128, 128, 1024 * 1024),  # aligned, large bucket
+        (128, 128, 1023 * 1023),  # tail rows, large bucket
         (256, 256, 128 * 128),  # ProtenixV2 width at a bucket boundary
         (256, 256, 257 * 257),  # tail rows just past a bucket boundary
     ],
-    ids=["K128-min", "K128-tail", "K128-aligned", "K256-boundary", "K256-tail"],
+    ids=["K128-min", "K128-tail", "K128-aligned", "K128-large-tail", "K256-boundary", "K256-tail"],
 )
 def test_matches_fp32_reference(cutedsl_mode, dtype, has_bias, K, N, M, monkeypatch):
     skip_if_no_cutedsl(_OP)

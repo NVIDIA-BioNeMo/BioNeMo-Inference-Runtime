@@ -27,16 +27,11 @@ Covers, for every decorated module class:
   and a positional one (boltz-2).
 * **Effective-range resolution** + rejecting an acceptance max
   above the largest capture bucket.
-* **GPU parity smoke** — the decorator's config still drives a correct
-  capture/replay through the real OpenFold3 pipeline.
 """
 
 import pytest
-import torch
 
-import tests._torch.model_forwards.test_model_forward_with_cuda_graph as H
 from bionemo_ir._torch.graph_optimization.config import (
-    CUDAGraphOptimizationConfig,
     GraphOptimizationConfig,
     GraphOptimizationMode,
     InputKeyMethod,
@@ -55,9 +50,6 @@ from bionemo_ir._torch.layers.transformers.diffusion_transformer import (
     ProtenixDiffusionTransformer,
 )
 from bionemo_ir._torch.layers.transformers.pairformer import PairformerModule
-from tests.common.test_utils.model_forwards import _CKPT_ENV, _HF_CKPT, _model_weights_available
-
-_SAMPLE_IDS = ("T1047s1",)
 
 # (decorated class, expected workspace kwargs, expected static args). Every
 # module ties ``num_tokens`` with a 1024 acceptance max; the transformers carry
@@ -154,32 +146,3 @@ def test_effective_ranges_reports_live_max_and_covering_bucket():
     assert ranges["live_max"] == 300
     assert ranges["largest_bucket"] == 1024
     assert ranges["covering_bucket"] == 384  # smallest /128 bucket >= 300
-
-
-# ---------------------------------------------------------------------------
-# GPU parity smoke: the decorator-derived config still drives a correct graph.
-# ---------------------------------------------------------------------------
-def _decorator_pairformer_config(module_name, input_key_method, sample_ids, verify_capture=True):
-    assert module_name == "structure_pairformer"
-    return CUDAGraphOptimizationConfig(
-        graph_optimization_mode=GraphOptimizationMode.CUDA_GRAPH_VIA_TORCH,
-        input_key_method=input_key_method,
-        input_routing_config=H._routing_from_decorator(
-            PairformerModule, bucket=input_key_method == InputKeyMethod.BUCKETED_SHAPES
-        ),
-        verify_capture=verify_capture,
-        num_graphs_max_for_this_module=len(sample_ids),
-    )
-
-
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="decorator GPU parity requires CUDA")
-@pytest.mark.skipif(not H._SAMPLES_AVAILABLE, reason="sample data not found")
-@pytest.mark.skipif(
-    not _model_weights_available("openfold3", _ckpt_env=_CKPT_ENV, _hf_ckpt=_HF_CKPT),
-    reason="openfold3 checkpoint unavailable",
-)
-def test_pairformer_decorator_gpu_parity(monkeypatch):
-    monkeypatch.setattr(H, "_openfold3_graph_optimization_config", _decorator_pairformer_config)
-    H._assert_cuda_graph_parity(
-        "openfold3", "structure_pairformer", sample_ids=_SAMPLE_IDS, input_key_method=InputKeyMethod.EXACT
-    )

@@ -27,6 +27,7 @@ coverage_summary() {
   else
     rc=$?
   fi
-  printf '%s\n' "${report}"
+  # Per-file rows live in the HTML report; the log keeps the total.
+  tail -n 1 <<<"${report}"
   return "${rc}"
 }

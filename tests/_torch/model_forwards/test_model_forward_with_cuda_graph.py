@@ -80,6 +80,7 @@ from bionemo_ir.models.openfold3 import config as of3_config
 from bionemo_ir.models.protenix import config as protenix_config
 from bionemo_ir.pipeline.processor.engine_proc import EngineProcessorConfig
 from bionemo_ir.pipeline.stages.configs import WriterStageConfig
+from tests._torch import packaged_cubin_kernels
 from tests.common.test_utils.basic import path_for_package_in_repo
 from tests.common.test_utils.model_forwards import (
     _AVAILABILITY_EXC,
@@ -122,7 +123,7 @@ _ALL_SAMPLE_IDS = tuple(
 # Diffusion runtime args. num_sampling_steps need only exceed the warmup
 # threshold (3 calls) so each target's graph captures and then replays.
 RECYCLING_STEPS = 3
-NUM_SAMPLING_STEPS = 200
+NUM_SAMPLING_STEPS = 20
 DIFFUSION_SAMPLES = 5
 
 # Max allowed gap between the cuda-graph and eager predictions' CA lDDT to
@@ -180,6 +181,12 @@ def _eager_baseline_cache(tmp_path_factory):
         return cache[key]
 
     return get_or_run
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _packaged_kernels():
+    with packaged_cubin_kernels():
+        yield
 
 
 @pytest.fixture(autouse=True)

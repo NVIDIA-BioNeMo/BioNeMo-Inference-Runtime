@@ -39,10 +39,10 @@ from bionemo_ir._torch.modules.openfold3.diffusion_module import DiffusionModule
 from bionemo_ir._torch.modules.openfold3.utils.atomize_utils import compute_atom_broadcast_index
 from bionemo_ir.pipeline.processor.engine_proc import EngineProcessorConfig
 from bionemo_ir.pipeline.stages.configs import WriterStageConfig
+from tests._torch import packaged_cubin_kernels
 from tests.common.test_utils.model_forwards import (
     _AVAILABILITY_EXC,
     DIFFUSION_SAMPLES,
-    NUM_SAMPLING_STEPS,
     RECYCLING_STEPS,
     _default_model_config,
     _find_sample_json,
@@ -77,7 +77,9 @@ def cached_capture_inputs() -> CaptureInputs:
     def capture(sample_ids: Sequence[str]) -> tuple[DiffusionModule, list[dict]]:
         key = (tuple(sample_ids), os.environ.get("CUTEDSL_FORCE_CUBIN", "0"), torch.cuda.current_device())
         if key not in captures:
-            captures[key] = _capture_per_sample_inputs(sample_ids)
+            # Tests compare runs on these inputs, not kernels.
+            with packaged_cubin_kernels():
+                captures[key] = _capture_per_sample_inputs(sample_ids)
         module, inputs = captures[key]
         return module, deepcopy(inputs)
 
@@ -142,13 +144,15 @@ def _build_eager_config(output_dir: Path) -> EngineProcessorConfig:
     """A plain (no-acceleration) serial-backend OpenFold3 processor config.
 
     The eager run is used only to capture real ``DiffusionModule`` inputs, so it
-    passes no ``accelerated_configs`` — the model runs eager end to end.
+    passes no ``accelerated_configs``. Two steps retain the initial churn
+    level; a one-step schedule reaches the terminal noise level too soon.
     ``_default_model_config`` sets each atom transformer's ``shared_pair_norm``
     to match the checkpoint the engine will load.
     """
     engine_kwargs: dict = {"profile_inference": False}
     default_cfg = _default_model_config("openfold3")
     if default_cfg is not None:
+        default_cfg.disable_cuda_graphs()
         engine_kwargs["config"] = default_cfg
     return EngineProcessorConfig(
         model_source="openfold3",
@@ -156,7 +160,7 @@ def _build_eager_config(output_dir: Path) -> EngineProcessorConfig:
         engine_kwargs=engine_kwargs,
         runtime_args={
             "recycling_steps": RECYCLING_STEPS,
-            "num_sampling_steps": NUM_SAMPLING_STEPS,
+            "num_sampling_steps": 2,
             "diffusion_samples": DIFFUSION_SAMPLES,
         },
         writer_stage=WriterStageConfig(output_path=str(output_dir), format="cif"),

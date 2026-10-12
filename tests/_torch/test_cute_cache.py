@@ -22,8 +22,11 @@ error: Illegal instruction") — an unrecoverable crash, not an exception the
 caller can handle.
 """
 
+import fcntl
 import os
 import stat
+import threading
+import time
 
 import pytest
 
@@ -258,3 +261,41 @@ flags : avx2 avx512f
     monkeypatch.setattr(cute_cache.os, "sched_getaffinity", lambda pid: {0})
     uniform = cute_cache._host_cpu_isa_signature()
     assert "nonshareable=" not in uniform
+
+
+def test_miss_claims_the_key_until_save(cache_dir):
+    """A miss locks the key for its compiler; the save releases it."""
+    cache = cute_cache.CuteKernelCache()
+    key = ("adaln", "float16", 128, "claim")
+    sha = cute_cache._key_to_hash(key)
+
+    assert cache.load_from_cache(key) is None
+    assert sha in cute_cache._compile_claims
+    cache.save_to_cache(key, _FakeArtifact(b"OBJECT"))
+    assert sha not in cute_cache._compile_claims
+
+
+def test_miss_waits_for_a_peer_compile(cache_dir, monkeypatch):
+    """A miss while a peer compiles the key loads the peer's object instead."""
+    cache = cute_cache.CuteKernelCache()
+    key = ("adaln", "float16", 128, "peer")
+    sha = cute_cache._key_to_hash(key)
+    sentinel = object()
+    monkeypatch.setattr(
+        cute_cache.cute.runtime, "load_module", lambda path, enable_tvm_ffi: {cute_cache.EXPORT_FUNC_NAME: sentinel}
+    )
+    cache_path = cute_cache._secure_cache_dir(cache_dir / cute_cache._compute_source_fingerprint())
+    peer = os.open(cache_path / f"{sha}.compile", os.O_WRONLY | os.O_CREAT)
+    fcntl.flock(peer, fcntl.LOCK_EX)
+
+    def peer_compiles():
+        time.sleep(0.5)
+        cache.save_to_cache(key, _FakeArtifact(b"PEER_OBJECT"))
+        fcntl.flock(peer, fcntl.LOCK_UN)
+        os.close(peer)
+
+    thread = threading.Thread(target=peer_compiles)
+    thread.start()
+    assert cache.load_from_cache(key) is sentinel
+    thread.join()
+    assert sha not in cute_cache._compile_claims

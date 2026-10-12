@@ -67,7 +67,7 @@ def create_sample_requests(repeat: int = 1):
     return requests
 
 
-def test_writer_stage_in_noop_pipe(tmp_path: Path):
+def test_ray_processor_pdb_cif_match(tmp_path: Path, ray_local: None) -> None:
     """Check that the atomic structure written with PDBWriter is the same as
     the atomic structure written with CIFWriter..
 
@@ -86,7 +86,7 @@ def test_writer_stage_in_noop_pipe(tmp_path: Path):
     output_path = os.path.join(
         tmp_path,
         "output/tests/pipeline/stages",
-        f"test_writer_stage_in_noop_pipeline_output_{run_label}",
+        f"test_ray_processor_output_{run_label}",
         f"writer_output_{run_label}",
     )
 
@@ -96,30 +96,15 @@ def test_writer_stage_in_noop_pipe(tmp_path: Path):
     ds = ray.data.from_items(records)
 
     # (3) Define and run processors for pdb and cif formats
-    config_for_pdb = EngineProcessorConfig(
+    config = EngineProcessorConfig(
         model_source=model_source,
         executor_backend="ray",
         parser_stage=ParserStageConfig(compute=2),
         feature_generator_stage=FeatureGeneratorStageConfig(compute=4),
-        writer_stage=WriterStageConfig(compute=2, output_path=output_path, format="pdb"),
+        writer_stage=WriterStageConfig(compute=2, output_path=output_path, format=["pdb", "cif"]),
     )
-    config_for_cif = EngineProcessorConfig(
-        model_source=model_source,
-        executor_backend="ray",
-        parser_stage=ParserStageConfig(compute=2),
-        feature_generator_stage=FeatureGeneratorStageConfig(compute=4),
-        writer_stage=WriterStageConfig(compute=2, output_path=output_path, format="cif"),
-    )
-
-    processor_for_pdb: Processor = build_processor(config_for_pdb)
-    processor_for_cif: Processor = build_processor(config_for_cif)
-
-    # (4) Run processors for pdb and cif formats
-    ds_for_pdb = processor_for_pdb(ds)
-    ds_for_pdb.materialize()
-
-    ds_for_cif = processor_for_cif(ds)
-    ds_for_cif.materialize()
+    processor: Processor = build_processor(config)
+    processor(ds).materialize()
 
     # (5) metrics to compare output
     for input_id in [req["input_id"] for req in requests]:

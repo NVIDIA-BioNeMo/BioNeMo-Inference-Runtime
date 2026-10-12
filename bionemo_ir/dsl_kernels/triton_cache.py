@@ -42,6 +42,7 @@ Usage::
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -50,9 +51,10 @@ import sys
 import tempfile
 import textwrap
 from collections.abc import Sequence
+from pathlib import Path
 from typing import Any
 
-from .cache_base import DiskCache, DriverLauncher, KernelCacheBase, make_driver_launcher
+from .cache_base import DiskCache, DriverLauncher, FileLock, KernelCacheBase, make_driver_launcher
 
 # Resolve the isolated cache path before importing Triton.
 
@@ -225,6 +227,10 @@ def _triton_cache_was_cold() -> bool:
     return _was_cold
 
 
+_WARM_TIMEOUT = 120
+# A waiter outlasts one peer's warm subprocess.
+_WARM_LOCK_TIMEOUT = _WARM_TIMEOUT + 60
+
 _SUBPROCESS_SCRIPT = textwrap.dedent("""\
 import json, os, sys
 
@@ -260,7 +266,11 @@ def _compile_in_subprocess(
     grid: tuple[int, ...],
     constexpr_kwargs: dict,
 ) -> None:
-    """Compile one kernel config (all dtypes) in a subprocess."""
+    """Compile one kernel config (all dtypes) in a subprocess.
+
+    A marker in the Triton cache records each warmed config, so concurrent
+    processes sharing the cache warm it once.
+    """
     variants = []
     for dummy_args in dummy_args_by_dtype.values():
         variant = []
@@ -293,6 +303,19 @@ def _compile_in_subprocess(
         "variants": variants,
     }
 
+    warm_dir = os.path.join(TRITON_CACHE_DIR, "bioir_warm")
+    marker = os.path.join(warm_dir, hashlib.sha256(json.dumps(spec, sort_keys=True).encode()).hexdigest())
+    try:
+        os.makedirs(warm_dir, exist_ok=True)
+        with FileLock(Path(f"{marker}.lock"), exclusive=True, timeout=_WARM_LOCK_TIMEOUT):
+            if not os.path.exists(marker):
+                _run_warm_subprocess(jit_fn, spec, marker)
+    except (OSError, RuntimeError):
+        # No shared marker: warm this process's own copy.
+        _run_warm_subprocess(jit_fn, spec, None)
+
+
+def _run_warm_subprocess(jit_fn: JITFunction, spec: dict, marker: str | None) -> None:
     spec_path = None
     try:
         with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
@@ -303,7 +326,7 @@ def _compile_in_subprocess(
             [sys.executable, "-c", _SUBPROCESS_SCRIPT, spec_path],
             capture_output=True,
             text=True,
-            timeout=120,
+            timeout=_WARM_TIMEOUT,
         )
         if result.returncode != 0:
             logger.warning(
@@ -312,6 +335,8 @@ def _compile_in_subprocess(
                 jit_fn.fn.__name__,
                 result.stderr[-500:],
             )
+        elif marker is not None:
+            Path(marker).touch()
     except Exception as e:
         logger.warning("Subprocess compile error for %s: %s", jit_fn.fn.__name__, e)
     finally:

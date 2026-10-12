@@ -34,6 +34,7 @@ differently across containers.
 """
 
 import os
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -95,6 +96,12 @@ def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
             item.add_marker(pytest.mark.xdist_group("pipeline"))
         if "of3_capture_inputs" in item.fixturenames:
             item.add_marker(pytest.mark.xdist_group("of3-capture"))
+        if item.path == _TESTS_DIR / "_torch" / "test_attn_epilogue.py":
+            parameters = getattr(getattr(item, "callspec", None), "params", {})
+            head_dim = parameters.get("head_dim", "default")
+            bias = parameters.get("bias", False)
+            # Gate, residual and fixed bias vary by test function.
+            item.add_marker(pytest.mark.xdist_group(f"attn-epilogue-{item.originalname}-d{head_dim}-bias{bias}"))
 
 
 @pytest.fixture(scope="session")
@@ -102,3 +109,34 @@ def of3_capture_inputs() -> "CaptureInputs":
     from tests.common.test_utils.openfold3.batched_input_tools import cached_capture_inputs
 
     return cached_capture_inputs()
+
+
+@pytest.fixture(scope="session")
+def structural_model() -> Callable[..., object]:
+    """Construct structures without compiling unused kernels."""
+    from bionemo_ir._torch.custom_ops.attn_epilogue.cutedsl import AttnEpilogueCuTe
+    from bionemo_ir.dsl_kernels.triton.fused_ln_proj_moveaxis_pad import FusedLNProjMoveaxisPad
+    from bionemo_ir.dsl_kernels.triton.fused_swiglu import FusedSwiGLU
+    from bionemo_ir.dsl_kernels.triton.ln_pair_bias import LNPairBias
+    from bionemo_ir.dsl_kernels.triton.moveaxis_pad import MoveaxisPad
+    from bionemo_ir.dsl_kernels.triton_cache import CachedKernel, TritonKernelCache
+
+    def skip_compile(
+        cache: TritonKernelCache,
+        kernel: object,
+        dtypes: Sequence[object],
+        make_dummy_args: object,
+        **kwargs: object,
+    ) -> dict[object, CachedKernel]:
+        return dict.fromkeys(dtypes, CachedKernel(None, enable_driver=False))
+
+    def build[T](model_class: type[T], **kwargs: object) -> T:
+        with pytest.MonkeyPatch.context() as patch:
+            patch.setenv("CUTEDSL_FORCE_CUBIN", "1")
+            patch.setattr(AttnEpilogueCuTe, "_compiled_cache", {})
+            patch.setattr(TritonKernelCache, "compile_for_dtypes", skip_compile)
+            for backend in (FusedLNProjMoveaxisPad, FusedSwiGLU, LNPairBias, MoveaxisPad):
+                patch.setattr(backend, "_global_cache", {})
+            return model_class(**kwargs)
+
+    return build

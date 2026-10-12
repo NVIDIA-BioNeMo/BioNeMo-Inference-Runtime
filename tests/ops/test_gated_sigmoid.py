@@ -150,13 +150,15 @@ def test_gated_sigmoid_force_cubin_ignores_warmed_source(monkeypatch):
     ids=["K384_N768", "K256_N768", "K768_N768", "K128_N128"],
 )
 @pytest.mark.parametrize(
-    "outer,mult,inner",
-    [(1, 5, 65), (2, 1, 1100), (1, 3, 2100)],
+    "outer,mult,inner,bucket",
+    # s has outer * inner rows, which pick the M bucket.
+    [(1, 5, 65, "short"), (2, 1, 700, "medium"), (1, 3, 2100, "long")],
     ids=["short_mult5", "medium_mult1", "long_mult3"],
 )
-def test_gated_sigmoid_residual_mask(mode, has_mask, has_residual, K, N, outer, mult, inner, monkeypatch):
+def test_gated_sigmoid_residual_mask(mode, has_mask, has_residual, K, N, outer, mult, inner, bucket, monkeypatch):
     if SM_VERSION not in (80, 86, 89, 90):
         pytest.skip(f"gated-sigmoid CUBINs do not target SM{SM_VERSION}")
+    assert _classify_m_range(outer * inner) == bucket
     torch.manual_seed(7)
     dtype = torch.bfloat16
     s = torch.randn(outer, 1, inner, K, device="cuda", dtype=dtype)

@@ -28,7 +28,11 @@ from bionemo_ir._torch.layers.transformers.diffusion_transformer import Protenix
 from bionemo_ir.configs import DiffusionTransformerConfig
 from tests._torch import cutedsl_test_modes, skip_if_epilogue_tile_exceeds_smem
 
-pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
+pytestmark = [
+    pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required"),
+    # Each worker's first build compiles every kernel.
+    pytest.mark.xdist_group("attention-pair-bias-epilogue"),
+]
 
 # The atom transformers' shape, the one the resident epilogue kernel serves.
 CHANNELS, PAIR_CHANNELS, HEADS = 128, 16, 4

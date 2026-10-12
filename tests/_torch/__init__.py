@@ -13,9 +13,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import contextlib
 import importlib.util
 import os
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from types import ModuleType
 
 import pytest
@@ -183,6 +184,40 @@ def run_cutedsl_test_mode(
     is_library = all(isinstance(value, library_runtime.CuTeDSLKernelLibraryExecutable) for value in cache.values())
     assert is_library == (mode == "cubin")
     return result
+
+
+def _cute_backends() -> set[type]:
+    from bionemo_ir.dsl_kernels.cute_cache import CuteKernelCache
+
+    found: set[type] = set()
+    pending = [CuteKernelCache]
+    while pending:
+        for subclass in pending.pop().__subclasses__():
+            if subclass not in found:
+                found.add(subclass)
+                pending.append(subclass)
+    return {backend for backend in found if "_compiled_cache" in vars(backend)}
+
+
+@contextlib.contextmanager
+def packaged_cubin_kernels() -> Iterator[None]:
+    """Run CuTeDSL ops from the packaged CUBINs, leaving source-mode caches cold.
+
+    For tests whose property does not depend on how a kernel was built: graph
+    capture, batching and pipeline plumbing. The per-op tests own source-mode
+    coverage, so these skip its compilation.
+    """
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setenv("CUTEDSL_FORCE_CUBIN", "1")
+        patched = _cute_backends()
+        for backend in patched:
+            patch.setattr(backend, "_compiled_cache", {})
+        try:
+            yield
+        finally:
+            # Backends first imported inside the block started empty.
+            for backend in _cute_backends() - patched:
+                backend._compiled_cache.clear()
 
 
 def _cutedsl_supported_sm(op_name: str | None = None) -> tuple[int, ...]:

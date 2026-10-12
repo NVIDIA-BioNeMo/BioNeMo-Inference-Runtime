@@ -59,6 +59,7 @@ Controls:
 
 from __future__ import annotations
 
+import fcntl
 import functools
 import hashlib
 import os
@@ -67,6 +68,7 @@ import platform
 import stat
 import sys
 import tempfile
+import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -98,6 +100,11 @@ EXTRA_SOURCE_DIRS: list[Path] = []
 
 EXPORT_FUNC_NAME = "kernel"
 LOCK_TIMEOUT = 60
+# A cold compile takes up to a few minutes on a contended host.
+COMPILE_WAIT_TIMEOUT = 600
+
+# Compile locks this process holds, by key hash, from a cache miss to its save.
+_compile_claims: dict[str, int] = {}
 
 
 def get_cache_dir() -> Path:
@@ -313,6 +320,39 @@ def _key_to_hash(key: tuple) -> str:
     return hashlib.sha256(pickle.dumps(key)).hexdigest()
 
 
+def _claim_compile(cache_path: Path, sha: str) -> bool:
+    """Lock ``sha`` for compiling; return whether a peer held it first.
+
+    The lock lasts until ``save_to_cache`` or process exit. A waiter that
+    times out compiles without it.
+    """
+    fd = os.open(str(cache_path / f"{sha}.compile"), os.O_WRONLY | os.O_CREAT, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        _compile_claims[sha] = fd
+        return False
+    except OSError:
+        pass
+    deadline = time.monotonic() + COMPILE_WAIT_TIMEOUT
+    while time.monotonic() < deadline:
+        time.sleep(0.2)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            _compile_claims[sha] = fd
+            return True
+        except OSError:
+            continue
+    os.close(fd)
+    return True
+
+
+def _release_compile(sha: str) -> None:
+    fd = _compile_claims.pop(sha, None)
+    if fd is not None:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        os.close(fd)
+
+
 # ---------------------------------------------------------------------------
 # CuteKernelCache — KernelCacheBase implementation for CuTe DSL
 # ---------------------------------------------------------------------------
@@ -406,9 +446,15 @@ class CuteKernelCache(KernelCacheBase):
             from bionemo_ir.logger import logger
 
             logger.warning(f"bioir kernel cache: export failed for key {sha}: {e}")
+        finally:
+            _release_compile(sha)
 
     def load_from_cache(self, key: tuple) -> Any | None:
         """Load a compiled CuTe DSL kernel from the disk cache.
+
+        A miss claims the key's compile lock for the caller, who compiles and
+        then calls :meth:`save_to_cache`. While another process holds that
+        lock, this waits for its save and loads the result.
 
         Args:
             key: Same hashable tuple used in :meth:`save_to_cache`.
@@ -422,6 +468,24 @@ class CuteKernelCache(KernelCacheBase):
         try:
             sha = _key_to_hash(key)
             cache_path = _secure_cache_dir(get_cache_dir() / _compute_source_fingerprint())
+        except Exception:
+            return None
+        executable = self._load_object(cache_path, sha)
+        if executable is not None or sha in _compile_claims:
+            return executable
+        try:
+            peer_compiled = _claim_compile(cache_path, sha)
+        except OSError:
+            return None
+        if peer_compiled:
+            executable = self._load_object(cache_path, sha)
+            if executable is not None:
+                _release_compile(sha)
+        return executable
+
+    @staticmethod
+    def _load_object(cache_path: Path, sha: str) -> Any | None:
+        try:
             o_path = cache_path / f"{sha}.o"
             lock_path = cache_path / f"{sha}.lock"
             with FileLock(lock_path, exclusive=False, timeout=LOCK_TIMEOUT):

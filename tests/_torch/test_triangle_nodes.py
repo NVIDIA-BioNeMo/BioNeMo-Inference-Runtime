@@ -408,17 +408,22 @@ def test_trimul_kf_chain_needs_token_padding_and_a_supported_node() -> None:
         assert TriangleMultiplicationNode(**(supported | override))._kf_ops is None, override
 
 
+def _kf_shape(dim: int, hidden_dim: int, tokens: int, bias: bool, name: str) -> object:
+    # One worker compiles each shape's chain.
+    return pytest.param(dim, hidden_dim, tokens, bias, id=name, marks=pytest.mark.xdist_group(f"trimul-kf-{name}"))
+
+
 @pytest.mark.parametrize("residual", [False, True], ids=["update", "residual"])
 @pytest.mark.parametrize("multiplication_type", _DIRECTIONS, ids=lambda direction: direction.name.lower())
 @pytest.mark.parametrize(
     ("dim", "hidden_dim", "tokens", "bias"),
     [
-        pytest.param(128, 128, 128, True, id="C128-N128-streaming"),
-        pytest.param(128, 128, 256, False, id="C128-N256-pingpong-nobias"),
-        pytest.param(256, 256, 256, True, id="C256-N256-row-stats"),
-        pytest.param(256, 256, 256, False, id="C256-N256-row-stats-nobias"),
-        pytest.param(384, 256, 264, False, id="C384-D256-N264-row-stats-nobias"),
-        pytest.param(384, 256, 520, True, id="C384-D256-N520-padded-ab"),
+        _kf_shape(128, 128, 128, True, "C128-N128-streaming"),
+        _kf_shape(128, 128, 256, False, "C128-N256-pingpong-nobias"),
+        _kf_shape(256, 256, 256, True, "C256-N256-row-stats"),
+        _kf_shape(256, 256, 256, False, "C256-N256-row-stats-nobias"),
+        _kf_shape(384, 256, 264, False, "C384-D256-N264-row-stats-nobias"),
+        _kf_shape(384, 256, 520, True, "C384-D256-N520-padded-ab"),
     ],
 )
 def test_trimul_kf_chain_matches_dual_gemm_path(

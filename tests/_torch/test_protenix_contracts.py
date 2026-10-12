@@ -125,8 +125,8 @@ def test_protenix_forward_signature_stable():
     assert defaults["consume_input_features"] is False
 
 
-def test_protenix_load_weight_attribute_names():
-    model = Protenix(ProtenixConfig(), include_load_weights=False)
+def test_protenix_load_weight_attribute_names(structural_model):
+    model = structural_model(Protenix, config=ProtenixConfig(), include_load_weights=False)
     for name in _LOAD_ATTRS:
         assert hasattr(model, name), name
     assert hasattr(model.diffusion_sampler, "diffusion_module")
@@ -135,8 +135,8 @@ def test_protenix_load_weight_attribute_names():
     assert "token_transformer" in registry.get_accelerated_modules()
 
 
-def test_protenix_inference_precision_defaults():
-    cfg = Protenix().get_pretrained_config(SupMat.ProtenixV2)
+def test_protenix_inference_precision_defaults(structural_model):
+    cfg = structural_model(Protenix).get_pretrained_config(SupMat.ProtenixV2)
     assert cfg.trunk_config.pair_state_dtype == "float32"
     dm = cfg.diffusion_module_config
     assert dm.token_transformer_config.dtype == "bfloat16"
@@ -349,9 +349,11 @@ def _tiny_batch(n_token: int = 4, n_atom: int = 4) -> dict[str, torch.Tensor]:
 
 
 @pytest.mark.parametrize("configured", [False, True])
-def test_protenix_forward_output_modes_and_feature_ownership(monkeypatch, configured):
+def test_protenix_forward_output_modes_and_feature_ownership(monkeypatch, configured, structural_model):
     # Keep this API-only test on CPU.
-    model = Protenix(ProtenixConfig(compact_output=configured), include_load_weights=False).cpu()
+    model = structural_model(
+        Protenix, config=ProtenixConfig(compact_output=configured), include_load_weights=False
+    ).cpu()
     model.input_embedder = _StubEmbedder()
     model.relative_position_encoding = _StubRPE()
     model.constraint_embedder = _StubConstraint()

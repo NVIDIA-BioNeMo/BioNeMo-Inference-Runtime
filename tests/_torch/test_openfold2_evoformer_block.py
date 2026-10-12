@@ -32,6 +32,9 @@ from bionemo_ir.utils import str_dtype_to_torch
 from tests._torch import make_left_aligned_mask
 from tests._torch import skip_if_cutedsl as _skip_if_cutedsl
 
+# Each worker's first build compiles every kernel.
+pytestmark = pytest.mark.xdist_group("of2-evoformer-block")
+
 
 @dataclass(kw_only=True, frozen=True)
 class Scenario:

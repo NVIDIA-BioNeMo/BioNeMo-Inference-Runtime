@@ -61,6 +61,7 @@ work as expected. See fetch_weights.sh --help for the full set.
 Environment:
   TEST_PHASE      1 | 2 | all (default)
   PHASE1_TARGETS  paths phase 1 runs (default: tests)
+  PHASE1_ADDOPTS  extra pytest args for phase 1
   PHASE2_TARGETS  paths phase 2 runs
   PHASE2_ADDOPTS  extra pytest args for phase 2
   XDIST_WORKERS   phase 1 worker count (default: scaled to VRAM)
@@ -237,7 +238,9 @@ write_metrics() {
 # to back. See print_help above for the variables.
 TEST_PHASE="${TEST_PHASE:-all}"
 read -r -a phase1_targets <<<"${PHASE1_TARGETS:-tests}"
-PHASE2_TARGETS="${PHASE2_TARGETS:-tests/pipeline tests/_torch/model_forwards}"
+# Past-2^31 trimul cases need 32-51 GiB free, so they run alone.
+TRIMUL_INT32_TESTS="tests/ops/test_trimul_kf.py::test_chain_past_int32_offsets_matches_reference_rows"
+PHASE2_TARGETS="${PHASE2_TARGETS:-tests/pipeline tests/_torch/model_forwards ${TRIMUL_INT32_TESTS}}"
 PHASE2_ADDOPTS="${PHASE2_ADDOPTS:-}"
 case "${TEST_PHASE}" in
   1 | 2 | all) ;;
@@ -275,13 +278,16 @@ if [[ "${TEST_PHASE}" == "all" || "${TEST_PHASE}" == "1" ]]; then
   phase1_addopts="-n ${XDIST_WORKERS} --dist loadgroup"
   phase1_addopts+=" --ignore=tests/pipeline"
   phase1_addopts+=" --ignore=tests/_torch/model_forwards"
+  # Node IDs are relative to tests/pytest.ini.
+  phase1_addopts+=" --deselect=${TRIMUL_INT32_TESTS#tests/}"
+  phase1_addopts+=" ${PHASE1_ADDOPTS:-}"
   PYTEST_ADDOPTS="${phase1_addopts}" pytest -s -ra \
     ${cov_opts[@]+"${cov_opts[@]}"} --junitxml="${REPORT_DIR}/junit-phase1.xml" \
     "${phase1_targets[@]}" || phase1_rc=$?
   lap "phase 1 (xdist bulk)"
 fi
 
-# Ray stays serial; graph shards parallelize.
+# Ray and past-2^31 trimul cases stay serial; graph shards parallelize.
 #
 # Set before pytest: the raylet reads this at startup, and the first test to
 # touch ray.data starts it implicitly. =0 opts into Ray's future behaviour of

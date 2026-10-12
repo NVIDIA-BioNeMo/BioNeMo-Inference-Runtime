@@ -15,8 +15,9 @@
 """OOB tests for CuTeDSL dual GEMM and attention.
 
 Each case puts an operand against a guard page. Launch in a subprocess (this
-module: ``python test_cutedsl_oob.py <case> [--pin-sm <sm>]``) because the
-fault is sticky.
+module: ``python test_cutedsl_oob.py <case>... [--pin-sm <sm>]``) because the
+fault is sticky. One subprocess runs a kernel family's cases in turn and stops
+at the first fault; the next one resumes after it.
 
 Each case runs against the sources once per SM, and once against this GPU's
 packaged CUBIN.
@@ -39,6 +40,7 @@ from tests._torch import SM_VERSION, require_cubin_library, skip_if_no_cutedsl, 
 from tests.common.test_utils.cuda_guard_page import GuardedArena, vmm_supported
 
 OK_SENTINEL = "OOB_PROBE_OK"
+CASE_MARKER = "OOB_PROBE_CASE"
 # Keep "read out of bounds" distinct from "never reached the launch".
 EXIT_OOB = 1
 EXIT_UNSUPPORTED = 2
@@ -237,14 +239,13 @@ def _pin_sm(sm: int) -> None:
     print(f"pinned capability to {capability}")
 
 
-def _run_case_and_exit() -> None:
-    """Child entry point: run one case, then leave without destructors."""
-    parser = argparse.ArgumentParser(description="Run one guard-page OOB case.")
-    parser.add_argument("case", choices=sorted(CASES))
+def _run_cases_and_exit() -> None:
+    """Child entry point: run cases until one fails, then leave without destructors."""
+    parser = argparse.ArgumentParser(description="Run guard-page OOB cases in order.")
+    parser.add_argument("cases", nargs="+", choices=sorted(CASES))
     parser.add_argument("--pin-sm", type=int, default=None, help="select this SM's kernels (source mode only)")
     args = parser.parse_args()
 
-    torch.manual_seed(0)
     torch.cuda.init()
     if not vmm_supported():
         print("device lacks virtual memory management")
@@ -253,35 +254,87 @@ def _run_case_and_exit() -> None:
     if args.pin_sm is not None:
         _pin_sm(args.pin_sm)
 
-    try:
-        CASES[args.case].run()
-    except Exception as exc:  # noqa: BLE001 - the fault is the result
-        described = f"{type(exc).__name__}: {exc}"
-        if any(marker in described.lower() for marker in _ILLEGAL_ACCESS_MARKERS):
-            print(f"OOB_PROBE_FAULT: {described}")
-            code = EXIT_OOB
-        else:
-            print(f"OOB_PROBE_ERROR: {described}")
-            traceback.print_exc()
-            code = EXIT_ERROR
+    for case in args.cases:
+        print(f"{CASE_MARKER} {case}")
+        torch.manual_seed(0)
+        try:
+            CASES[case].run()
+        except Exception as exc:  # noqa: BLE001 - the fault is the result
+            described = f"{type(exc).__name__}: {exc}"
+            if any(marker in described.lower() for marker in _ILLEGAL_ACCESS_MARKERS):
+                print(f"OOB_PROBE_FAULT: {described}")
+                code = EXIT_OOB
+            else:
+                print(f"OOB_PROBE_ERROR: {described}")
+                traceback.print_exc()
+                code = EXIT_ERROR
+            sys.stdout.flush()
+            sys.stderr.flush()
+            os._exit(code)
+        print(f"{OK_SENTINEL} {case}")
         sys.stdout.flush()
-        sys.stderr.flush()
-        os._exit(code)
-
-    print(OK_SENTINEL)
-    sys.stdout.flush()
     # The arena outlives torch's teardown; skip destructors entirely.
     os._exit(0)
 
 
 # Sources can be pinned to any SM up to this GPU's; a CUBIN pack only ever
 # loads its own architecture, so that run carries no SM axis.
-_IMPLEMENTATIONS = [pytest.param("source", sm, id=f"source-sm{sm}") for sm in SM_VERSIONS]
-_IMPLEMENTATIONS.append(pytest.param("cubin", None, id="cubin"))
+_IMPLEMENTATIONS = [("source", sm, f"source-sm{sm}") for sm in SM_VERSIONS] + [("cubin", None, "cubin")]
+_FAMILIES = {_DualGemm: "dual_gemm", _PairwiseAttention: "pairwise_attention", _TriangleAttention: "triangle_attention"}
+
+# A batch shares one subprocess, so it stays on one worker.
+_CASE_PARAMS = [
+    pytest.param(
+        case,
+        mode,
+        sm,
+        id=f"{case}-{implementation}",
+        marks=pytest.mark.xdist_group(f"oob-{_FAMILIES[type(CASES[case])]}-{implementation}"),
+    )
+    for case in sorted(CASES)
+    for mode, sm, implementation in _IMPLEMENTATIONS
+]
+
+# (mode, sm, case) -> (exit status, the case's output)
+_OUTCOMES: dict[tuple[str, int | None, str], tuple[int, str]] = {}
 
 
-@pytest.mark.parametrize(("mode", "sm"), _IMPLEMENTATIONS)
-@pytest.mark.parametrize("case", sorted(CASES))
+def _probe(case: str, mode: str, sm: int | None, env: dict[str, str], cwd: Path) -> tuple[int, str]:
+    """Run ``case`` and the rest of its family's batch, recording each outcome."""
+    if (mode, sm, case) not in _OUTCOMES:
+        family = type(CASES[case])
+        batch = [case] + [
+            name
+            for name in sorted(CASES)
+            if name != case and type(CASES[name]) is family and (mode, sm, name) not in _OUTCOMES
+        ]
+        pin = [] if sm is None else ["--pin-sm", str(sm)]
+        result = subprocess.run(
+            [sys.executable, "-u", str(Path(__file__).resolve()), *batch, *pin],
+            cwd=cwd,
+            env=env,
+            capture_output=True,
+            text=True,
+            # a cold CuTeDSL compile dominates each case; the launch is tiny
+            timeout=900 * len(batch),
+            check=False,
+        )
+        sections = result.stdout.split(f"{CASE_MARKER} ")
+        for section in sections[1:]:
+            name, _, output = section.partition("\n")
+            if f"{OK_SENTINEL} {name}" in output:
+                _OUTCOMES[mode, sm, name] = (0, output)
+            else:
+                _OUTCOMES[mode, sm, name] = (
+                    result.returncode or EXIT_ERROR,
+                    f"{output}\n--- stderr ---\n{result.stderr}",
+                )
+        # A child that stopped before its first case.
+        _OUTCOMES.setdefault((mode, sm, case), (result.returncode, f"{result.stdout}\n--- stderr ---\n{result.stderr}"))
+    return _OUTCOMES[mode, sm, case]
+
+
+@pytest.mark.parametrize(("case", "mode", "sm"), _CASE_PARAMS)
 def test_cutedsl_kernel_stays_in_bounds(case: str, mode: str, sm: int | None):
     """The kernel must not read past ``actual_seqlen`` or the bias."""
     skip_if_no_cutedsl()
@@ -294,7 +347,6 @@ def test_cutedsl_kernel_stays_in_bounds(case: str, mode: str, sm: int | None):
     env["TORCH_USE_CUDA_DSA"] = "1"
     env["PYTHONPATH"] = os.pathsep.join(filter(None, [str(repo_root), env.get("PYTHONPATH", "")]))
 
-    cmd = [sys.executable, "-u", str(Path(__file__).resolve()), case]
     if mode == "cubin":
         require_cubin_library()
         env[FORCE_CUBIN_ENV] = "1"
@@ -304,30 +356,21 @@ def test_cutedsl_kernel_stays_in_bounds(case: str, mode: str, sm: int | None):
         if sm > SM_VERSION:
             pytest.skip(f"SM{sm} kernels need SM{sm} hardware (this GPU is SM{SM_VERSION})")
         env.pop(FORCE_CUBIN_ENV, None)
-        cmd += ["--pin-sm", str(sm)]
 
-    result = subprocess.run(
-        cmd,
-        cwd=repo_root,
-        env=env,
-        capture_output=True,
-        text=True,
-        timeout=900,  # a cold CuTeDSL compile dominates; the launch is tiny
-        check=False,
-    )
+    returncode, output = _probe(case, mode, sm, env, repo_root)
     target = "the packaged CUBIN" if mode == "cubin" else f"the SM{sm} source"
-    detail = f"case={case} via {target}\n--- stdout ---\n{result.stdout}\n--- stderr ---\n{result.stderr}"
+    detail = f"case={case} via {target}\n--- stdout ---\n{output}"
 
-    if result.returncode == EXIT_UNSUPPORTED:
+    if returncode == EXIT_UNSUPPORTED:
         pytest.skip(f"guard page unsupported on this device\n{detail}")
-    if result.returncode == EXIT_ERROR:
+    if returncode == EXIT_ERROR:
         pytest.fail(f"probe never reached the launch, so nothing was verified\n{detail}")
-    if result.returncode == EXIT_OOB:
+    if returncode == EXIT_OOB:
         pytest.fail(f"kernel crossed the guard page: it read outside its operand\n{detail}")
 
-    assert result.returncode == 0, f"probe exited {result.returncode}\n{detail}"
-    assert OK_SENTINEL in result.stdout, f"probe did not report success\n{detail}"
+    assert returncode == 0, f"probe exited {returncode}\n{detail}"
+    assert f"{OK_SENTINEL} {case}" in output, f"probe did not report success\n{detail}"
 
 
 if __name__ == "__main__":
-    _run_case_and_exit()
+    _run_cases_and_exit()

@@ -28,6 +28,9 @@ Each folding model's graph regions capture by default, without changing its
 weights or config, and ``disable_cuda_graphs()`` builds them eager.
 """
 
+import os
+from collections.abc import Callable
+
 import pytest
 import torch.nn as nn
 
@@ -42,9 +45,9 @@ from bionemo_ir.registry import get_model_class
 
 
 @pytest.fixture(scope="module")
-def of3_model():
+def of3_model(structural_model):
     cls = get_model_class("openfold3")
-    return cls(config=cls.get_pretrained_config("openfold3"), include_load_weights=False)
+    return structural_model(cls, config=cls.get_pretrained_config("openfold3"), include_load_weights=False)
 
 
 def _torch_cfg():
@@ -120,7 +123,7 @@ def test_missing_configured_path_is_config_error(of3_model):
         of3_model.get_optimized_modules({"input_embedder": _torch_cfg()})
 
 
-def test_optimize_falls_back_to_decorator_default():
+def test_optimize_falls_back_to_decorator_default(structural_model):
     """When the model config supplies no ``graph_optimization_config``, the
     tracker is built from the module's decorator-declared ``graph_opt_default``
     (set by ``@support_graph_optimization``) — the identical config object.
@@ -130,7 +133,7 @@ def test_optimize_falls_back_to_decorator_default():
     from bionemo_ir._torch.graph_optimization.cuda_graph.runtime import CUDAGraphOptimizationTracker
 
     cls = get_model_class("openfold3")
-    model = cls(config=cls.get_pretrained_config("openfold3"), include_load_weights=False)
+    model = structural_model(cls, config=cls.get_pretrained_config("openfold3"), include_load_weights=False)
     # AcceleratedConfig(backend=TORCH).default is None -> no explicit config.
     model.optimize({"structure_pairformer": _torch_cfg()})
 
@@ -139,8 +142,8 @@ def test_optimize_falls_back_to_decorator_default():
     assert wrapped.graph_optimization_config is PairformerModule.graph_opt_default
 
 
-def test_explicit_policy_overrides_region_policy():
-    model = get_model_class("openfold3")(include_load_weights=False).eval()
+def test_explicit_policy_overrides_region_policy(structural_model):
+    model = structural_model(get_model_class("openfold3"), include_load_weights=False).eval()
     policy = model.config.trunk.graph_optimization_config
     override = policy.model_copy(deep=True)
     model.optimize(
@@ -151,10 +154,10 @@ def test_explicit_policy_overrides_region_policy():
     assert model.config.trunk.graph_optimization_config is policy
 
 
-def test_decorated_child_remains_reachable_inside_enabled_region():
+def test_decorated_child_remains_reachable_inside_enabled_region(structural_model):
     from bionemo_ir._torch.graph_optimization.cuda_graph.runtime import CUDAGraphOptimizationTracker
 
-    model = get_model_class("openfold3")(include_load_weights=False).eval()
+    model = structural_model(get_model_class("openfold3"), include_load_weights=False).eval()
     owner = model.diffusion_sampler.diffusion_module
     model.optimize({"diffusion_module": _torch_cfg(), "token_transformer": _torch_cfg()})
     assert model.diffusion_sampler.graph.enabled
@@ -165,8 +168,8 @@ def test_decorated_child_remains_reachable_inside_enabled_region():
 @pytest.mark.parametrize(
     "model_name", ["boltz-1", "boltz-2", "boltz-2-affinity", "openfold3", "protenix-v2", "alphafold2_1"]
 )
-def test_graph_regions_capture_by_default(model_name):
-    model = get_model_class(model_name)(model_name=model_name, include_load_weights=False).eval()
+def test_graph_regions_capture_by_default(model_name, structural_model):
+    model = structural_model(get_model_class(model_name), model_name=model_name, include_load_weights=False).eval()
     regions = {role: model.get_submodule(path) for role, path in model.GRAPH_REGIONS.items()}
     with_policy = {path for path, m in model.named_modules() if isinstance(m, GraphRegion) and m.policy is not None}
     assert regions and set(model.GRAPH_REGIONS.values()) == with_policy
@@ -181,10 +184,23 @@ def test_graph_regions_capture_by_default(model_name):
     assert model.config.model_dump() == config
 
 
-def test_disable_cuda_graphs_builds_eager_regions():
+def test_disable_cuda_graphs_builds_eager_regions(structural_model):
     model_class = get_model_class("boltz-2")
     config = model_class.get_pretrained_config("boltz-2")
     config.disable_cuda_graphs()
-    model = model_class(config=config, model_name="boltz-2", include_load_weights=False)
+    model = structural_model(model_class, config=config, model_name="boltz-2", include_load_weights=False)
     regions = [m for m in model.modules() if isinstance(m, GraphRegion)]
     assert regions and not any(region.enabled or region.policy is not None for region in regions)
+
+
+def test_structural_model_preserves_dispatch(structural_model: Callable[..., nn.Module]) -> None:
+    from bionemo_ir._torch.custom_ops.attn_epilogue.cutedsl import AttnEpilogueCuTe
+
+    cache = AttnEpilogueCuTe._compiled_cache
+    contents = cache.copy()
+    mode = os.environ.get("CUTEDSL_FORCE_CUBIN")
+    cls = get_model_class("openfold3")
+    structural_model(cls, include_load_weights=False)
+    assert AttnEpilogueCuTe._compiled_cache is cache
+    assert cache == contents
+    assert os.environ.get("CUTEDSL_FORCE_CUBIN") == mode

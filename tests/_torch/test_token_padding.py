@@ -253,10 +253,14 @@ def test_protenix_confidence_pairformer_runs_on_padded_tokens(pairformer_dtype: 
         hook.remove()
 
     assert tokens_seen == [PADDED_TOKENS] * SAMPLES + [TOKENS] * SAMPLES
+    # fp32 GEMMs over the padded shapes round differently (TF32 in the dev container).
+    tolerance = {"rtol": 1e-3, "atol": 2e-3}
+    if pairformer_dtype == "bfloat16":
+        # One bf16 rounding flip moves a logit by up to a bf16 ulp, 7.8e-3 near 1.
+        tolerance = {"rtol": 1.6e-2, "atol": 1.6e-2}
     for key, expected in unpadded.items():
         assert padded[key].shape == expected.shape, key
-        # fp32 GEMMs over the padded shapes round differently (TF32 in the dev container).
-        torch.testing.assert_close(padded[key], expected, rtol=1e-3, atol=2e-3, msg=key)
+        torch.testing.assert_close(padded[key], expected, **tolerance, msg=key)
 
 
 @requires_cuda

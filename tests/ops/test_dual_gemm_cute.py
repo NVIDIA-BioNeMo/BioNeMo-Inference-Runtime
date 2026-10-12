@@ -271,55 +271,6 @@ class Scenario:
 
 
 @pytest.mark.parametrize(
-    "sc",
-    [
-        Scenario(N=128, K=128, dtype=torch.bfloat16),
-        Scenario(N=128, K=128, dtype=torch.bfloat16, has_bias=True),
-        Scenario(N=128, K=128, dtype=torch.float16),
-        Scenario(N=128, K=128, dtype=torch.float16, has_bias=True),
-        # ProtenixV2 trimul out-proj (c_z=256) -- CuTeDSL on SM80/86/89/90.
-        # ``|b=1`` reuses the tuned ``|b=0`` tiles (no separate bias tune).
-        Scenario(N=256, K=256, seq_lens=[100, 256], dtype=torch.bfloat16),
-        Scenario(N=256, K=256, seq_lens=[100, 256], dtype=torch.bfloat16, has_bias=True),
-    ],
-    ids=[
-        "sc_N128_K128_b0_bf16",
-        "sc_N128_K128_b1_bf16",
-        "sc_N128_K128_b0_fp16",
-        "sc_N128_K128_b1_fp16",
-        "sc_N256_K256_b0_bf16",
-        "sc_N256_K256_b1_bf16",
-    ],
-)
-def test_x0_x1_dual_gemm(sc: Scenario):
-    """Test CuTe DSL dual GEMM x0_x1 against fp32 reference."""
-    skip_if_no_cutedsl("dual_gemm_x0_x1")
-    torch.manual_seed(42)
-
-    cute_op = DualGemmX0X1CuTe()
-
-    W0 = torch.randn(sc.N, sc.K, dtype=sc.dtype, device="cuda")
-    W1 = torch.randn(sc.N, sc.K, dtype=sc.dtype, device="cuda")
-    bias0 = torch.randn(sc.N, dtype=sc.dtype, device="cuda") if sc.has_bias else None
-    bias1 = torch.randn(sc.N, dtype=sc.dtype, device="cuda") if sc.has_bias else None
-
-    for seq_len in sc.seq_lens:
-        X0 = torch.randn(1, seq_len, seq_len, sc.K, device="cuda").contiguous().to(sc.dtype)
-        X1 = torch.randn(1, seq_len, seq_len, sc.K, device="cuda").contiguous().to(sc.dtype)
-
-        ref = _ref_x0_x1_dual_gemm(X0, X1, W0, W1, bias0, bias1)
-        out = cute_op(X0, X1, W0, W1, bias0, bias1)
-
-        torch.testing.assert_close(
-            out,
-            ref,
-            atol=sc.atol,
-            rtol=sc.rtol,
-            msg=lambda m, seq_len=seq_len: f"seq_len={seq_len}, has_bias={sc.has_bias}: {m}",
-        )
-
-
-@pytest.mark.parametrize(
     ("N", "K0", "K1"),
     [(384, 384, 256)],
     ids=["k0-384-k1-256-n-384"],

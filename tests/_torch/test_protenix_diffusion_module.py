@@ -53,6 +53,9 @@ from tests.common.test_utils.protenix.ref_layers_from_oss import (
     update_input_feature_dict,
 )
 
+# Load the checkpoint on one worker.
+pytestmark = pytest.mark.xdist_group("protenix-diffusion-module")
+
 
 @dataclass(kw_only=True, frozen=True)
 class Scenario:
@@ -722,7 +725,7 @@ def test_sample_coords_drop_consumed_features(real_case):
     )
 
 
-def test_protenix_module_registry_wiring():
+def test_protenix_module_registry_wiring(structural_model):
     """Check token-transformer CUDA-graph discovery wiring.
 
     Discovery is generic rather than per-model: modules opt in via
@@ -734,7 +737,7 @@ def test_protenix_module_registry_wiring():
 
     from bionemo_ir.models.protenix import Protenix
 
-    model = Protenix(config=Protenix.get_pretrained_config("protenix-v2"), include_load_weights=False)
+    model = structural_model(Protenix, config=Protenix.get_pretrained_config("protenix-v2"), include_load_weights=False)
     reg = model.get_optimized_modules({})
     spec = reg.get_accelerated_modules()["token_transformer"]
     assert spec.graph_optimization_cls is CUDAGraphOptimizationTracker
@@ -748,7 +751,7 @@ def test_protenix_module_registry_wiring():
     assert model.get_submodule(path) is replacement
 
 
-def test_enabled_modules_act_as_cudagraph_whitelist():
+def test_enabled_modules_act_as_cudagraph_whitelist(structural_model):
     """``GRAPH_OPT_ENABLED_MODULES`` is a whitelist: a module may be cuda-graphed
     only if its path is a value in the alias map. The recycling-trunk and
     confidence-head pairformers are decorated (``@support_graph_optimization``)
@@ -758,7 +761,7 @@ def test_enabled_modules_act_as_cudagraph_whitelist():
     from bionemo_ir.configs import AcceleratedConfig, BackendType
     from bionemo_ir.models.protenix import Protenix
 
-    model = Protenix(config=Protenix.get_pretrained_config("protenix-v2"), include_load_weights=False)
+    model = structural_model(Protenix, config=Protenix.get_pretrained_config("protenix-v2"), include_load_weights=False)
 
     def cfg():
         return AcceleratedConfig(backend=BackendType.TORCH)

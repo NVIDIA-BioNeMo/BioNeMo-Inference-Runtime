@@ -148,7 +148,14 @@ def _check_guarded_output(buffer: torch.Tensor, operands: tuple, variant: Transi
 
 
 @pytest.mark.parametrize("mode", _CUTEDSL_MODES)
-@pytest.mark.parametrize("variant", _SM90_VARIANTS, ids=_variant_id)
+@pytest.mark.parametrize(
+    "variant",
+    [
+        pytest.param(variant, marks=pytest.mark.xdist_group(f"transition-sm90-{_variant_id(variant)}"))
+        for variant in _SM90_VARIANTS
+    ],
+    ids=_variant_id,
+)
 @pytest.mark.parametrize(("batch", "tokens"), _NON_ALIGNED_TOKENS)
 def test_matches_reference_on_non_aligned_tokens(mode, variant, batch, tokens, monkeypatch):
     """Every row, including a partial final tile, matches fp32; rows past the end stay untouched."""
@@ -165,7 +172,14 @@ def test_matches_reference_on_non_aligned_tokens(mode, variant, batch, tokens, m
 
 
 @pytest.mark.parametrize("mode", _CUTEDSL_MODES)
-@pytest.mark.parametrize(("variant", "bucket"), _SM90_IMAGES, ids=_SM90_IMAGE_IDS)
+@pytest.mark.parametrize(
+    ("variant", "bucket"),
+    [
+        pytest.param(variant, bucket, marks=pytest.mark.xdist_group(f"transition-sm90-{_variant_id(variant)}"))
+        for variant, bucket in _SM90_IMAGES
+    ],
+    ids=_SM90_IMAGE_IDS,
+)
 def test_every_shipped_sm90_tile_matches_reference(mode, variant, bucket, monkeypatch):
     """Each distinct tile a bucket ships meets the same bar, forced on a map with a partial last tile."""
     skip_if_not_sm90()
@@ -269,7 +283,19 @@ _SM8X_TILES = _sm8x_tiles()
 _SM8X_TILE_IDS = [f"sm{sm}-{_variant_id(variant)}-S{bucket}" for sm, variant, bucket in _SM8X_TILES]
 
 
-@pytest.mark.parametrize(("sm", "variant", "bucket"), _SM8X_TILES, ids=_SM8X_TILE_IDS)
+@pytest.mark.parametrize(
+    ("sm", "variant", "bucket"),
+    [
+        pytest.param(
+            sm,
+            variant,
+            bucket,
+            marks=pytest.mark.xdist_group(f"transition-sm{sm}-{_variant_id(variant)}-S{bucket}"),
+        )
+        for sm, variant, bucket in _SM8X_TILES
+    ],
+    ids=_SM8X_TILE_IDS,
+)
 @pytest.mark.parametrize(("batch", "tokens"), _NON_ALIGNED_TOKENS)
 def test_sm80_kernel_matches_reference_on_non_aligned_tokens(sm, variant, bucket, batch, tokens, monkeypatch):
     """The SM80 kernel, compiled for this GPU from each SM8x config's tile, meets the same bar."""

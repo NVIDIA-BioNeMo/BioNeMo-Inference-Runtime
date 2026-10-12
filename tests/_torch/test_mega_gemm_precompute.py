@@ -32,6 +32,9 @@ from bionemo_ir._torch.layers.transformers.diffusion_transformer import OpenFold
 from bionemo_ir.configs.modules import DiffusionTransformerConfig
 from tests._torch import skip_if_cutedsl
 
+# Each worker's first build compiles every kernel.
+pytestmark = pytest.mark.xdist_group("mega-gemm-precompute")
+
 SEED = 42
 
 

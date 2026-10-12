@@ -427,9 +427,25 @@ if __name__ == "__main__":
 def _alive(pid: int) -> bool:
     try:
         os.kill(pid, 0)
-    except ProcessLookupError:
+        if sys.platform == "linux":
+            state = Path(f"/proc/{pid}/stat").read_text().rpartition(")")[2].split()[0]
+            return state not in {"Z", "X", "x"}
+    except (ProcessLookupError, FileNotFoundError):
         return False
     return True
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="requires Linux process states")
+def test_alive_excludes_zombies() -> None:
+    proc = subprocess.Popen([sys.executable, "-c", "pass"])
+    try:
+        deadline = time.monotonic() + 10.0
+        while time.monotonic() < deadline and _alive(proc.pid):
+            time.sleep(0.01)
+        assert not _alive(proc.pid)
+        assert _alive(os.getpid())
+    finally:
+        proc.wait(timeout=10)
 
 
 def test_process_workers_exit_when_parent_dies() -> None:

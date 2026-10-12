@@ -38,8 +38,9 @@ from bionemo_ir.models.protenix import Protenix
 def test_supported_models_replace_plain_layernorm(
     model_cls: type[nn.Module],
     keeps_high_precision: bool,
+    structural_model,
 ) -> None:
-    model = model_cls(include_load_weights=False)
+    model = structural_model(model_cls, include_load_weights=False)
 
     assert any(isinstance(module, FusedLayerNorm) for module in model.modules())
     assert not any(type(module) is nn.LayerNorm for module in model.modules())

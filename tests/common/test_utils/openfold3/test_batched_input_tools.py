@@ -16,11 +16,14 @@
 
 import random
 from collections.abc import Sequence
+from pathlib import Path
 
 import numpy as np
 import pytest
 import torch
 
+from bionemo_ir._torch.sampling.edm import EDMIntegratorConfig, EDMScheduleConfig
+from tests.common.test_utils.model_forwards import NUM_SAMPLING_STEPS
 from tests.common.test_utils.openfold3 import batched_input_tools
 from tests.common.test_utils.openfold3.batched_input_tools import (
     AVAILABILITY_EXC,
@@ -81,3 +84,18 @@ def test_cache_preserves_rng(monkeypatch: pytest.MonkeyPatch, rng: str) -> None:
         cached(("T1038", "T1047s1"))
         assert draw() == expected()
     assert captures == [("T1038", "T1047s1")]
+
+
+@pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16])
+def test_capture_retains_initial_churn(tmp_path: Path, dtype: torch.dtype) -> None:
+    config = batched_input_tools._build_eager_config(tmp_path)
+    noise = config.engine_kwargs["config"].noise_schedule_config
+    schedule = EDMScheduleConfig(
+        sigma_data=noise.sigma_data, s_max=noise.s_max, s_min=noise.s_min, rho=noise.p, final="keep"
+    )
+    original = schedule.build(NUM_SAMPLING_STEPS, dtype=dtype)
+    capture = schedule.build(config.runtime_args["num_sampling_steps"], dtype=dtype)
+    diffusion = config.engine_kwargs["config"].edm_sampling_config
+    integrator = EDMIntegratorConfig(gamma0=diffusion.gamma_0, gamma_min=diffusion.gamma_min)
+    assert torch.equal(capture[0], original[0])
+    assert torch.equal(integrator.churn_rates(capture[1]), integrator.churn_rates(original[1]))

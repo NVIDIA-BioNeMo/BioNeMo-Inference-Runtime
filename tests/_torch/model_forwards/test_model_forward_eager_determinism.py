@@ -18,7 +18,7 @@ Companion to ``model_forwards/test_model_forward_with_cuda_graph.py``.
 Where that test asks "does the CUDA-graph replay match eager?", this one
 asks the prerequisite question: "is the *eager* model itself reproducible
 run-to-run?" — because the CUDA-graph parity premise (graph trajectory ==
-eager trajectory over a 200-step diffusion rollout) only holds when the
+eager trajectory over a diffusion rollout) only holds when the
 underlying kernels are deterministic.
 
 Each model is run through the public ``build_processor`` API on the in-process

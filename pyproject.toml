@@ -125,7 +125,7 @@ dev = [
 ]
 
 [tool.uv]
-required-version = ">=0.12.9,<0.13"
+required-version = ">=0.13.0,<0.14"
 default-groups = ["dev"]
 # CUTLASS's base and CUDA 13 wheels contain overlapping paths. Install in
 # dependency order so the CUDA 13 wheel consistently supplies those files.

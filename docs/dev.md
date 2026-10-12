@@ -34,7 +34,7 @@ API, refer to [Python API](ref/api.md).
   3.12 patch through uv, the extension is built `cp312`, and the published
   package metadata remains `requires-python >=3.12,<4.0`.
 
-- **uv**: 0.12.x on a configured host. [Install uv][uv-install] if it is not
+- **uv**: 0.13.x on a configured host. [Install uv][uv-install] if it is not
   already available. The development image includes the repository's minimum
   accepted version.
 

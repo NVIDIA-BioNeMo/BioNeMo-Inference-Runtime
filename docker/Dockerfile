@@ -30,7 +30,7 @@ ARG RUNTIME_TAG=13.0.2-base-ubuntu24.04
 
 # --------------------------------------------------------------------- base
 FROM ${BASE_IMAGE}:${BASE_TAG} AS base
-ARG UV_VERSION=0.12.9
+ARG UV_VERSION=0.13.0
 
 ENV CUDA_HOME=/usr/local/cuda \
     PATH=/usr/local/cuda/bin:${PATH} \

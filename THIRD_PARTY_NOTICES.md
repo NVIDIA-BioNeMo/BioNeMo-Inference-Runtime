@@ -25,8 +25,10 @@ files distributed by an upstream package remain authoritative for that package.
   - Version: source excerpts; no upstream release pin
   - Copyright: AlQuraishi Laboratory and DeepMind Technologies Limited
   - License: Apache-2.0; see [`LICENSE`][bioir-license]
-  - Source: [OpenFold][openfold] and [AlphaFold][alphafold]
-  - Distribution: adapted files ship in the public source tree and wheel
+  - Source: [OpenFold][openfold], [OpenFold3][openfold3], and
+    [AlphaFold][alphafold]
+  - Distribution: adapted files ship in the public source tree and wheel;
+    adapted OpenFold3 test helpers ship in the public source tree only
   - Modifications: integration with BioIR data structures, optimized layers,
     checkpoint conversion, and output handling
 
@@ -62,7 +64,17 @@ files distributed by an upstream package remain authoritative for that package.
   - License: Apache-2.0; see [`LICENSE`][bioir-license]
   - Source: [Quack cache implementation][quack]
   - Distribution: adapted code ships in
-    `bionemo_ir/dsl_kernels/cute_cache.py`
+    `bionemo_ir/dsl_kernels/cute_cache.py`; adapted CuTe DSL code is compiled
+    into the distributed CUBIN packs
+
+- **FlashAttention CuTe DSL source excerpt**
+  - Version: source excerpt; no upstream release pin
+  - Copyright: Tri Dao and FlashAttention contributors
+  - License: BSD-3-Clause; see
+    [`LICENSES/BSD-3-Clause.txt`][bsd-3-clause]
+  - Source: [FlashAttention CuTe DSL][flash-attention-cute]
+  - Distribution: adapted CuTe DSL code is compiled into the distributed CUBIN
+    packs
 
 - **cuEquivariance source excerpt**
   - Version: source excerpt from the cuEquivariance implementation
@@ -70,7 +82,8 @@ files distributed by an upstream package remain authoritative for that package.
   - License: Apache-2.0; see [`LICENSE`][bioir-license]
   - Source: [cuEquivariance][cuequivariance]
   - Distribution: adapted code ships in
-    `bionemo_ir/dsl_kernels/triton/fused_ln_proj_moveaxis_pad.py`
+    `bionemo_ir/dsl_kernels/triton/fused_ln_proj_moveaxis_pad.py` and
+    `bionemo_ir/dsl_kernels/triton/fused_layer_norm_transpose.py`
 
 - **Uplifting Biomolecular Modeling triangle-attention kernel**
   - Version: commit `f4f62fa6592ae4938d49b1757bea0cfeff9f468e`
@@ -94,6 +107,14 @@ files distributed by an upstream package remain authoritative for that package.
   - Source: [CUTLASS][cutlass] and [CuTe DSL license][cutlass-dsl-license]
   - Distribution: BSD-3-Clause files may ship; proprietary CuTe DSL source is
     removed from public artifacts before release
+
+- **CCCL clangd configuration**
+  - Version: source excerpt; no upstream release pin
+  - Copyright: NVIDIA Corporation and affiliates
+  - License: Apache-2.0; see [`LICENSE`][bioir-license]
+  - Source: [CCCL][cccl]
+  - Distribution: copied editor configuration ships in the public source tree
+    as `.clangd`; it is not part of the wheel
 
 - **TensorRT-LLM source excerpt**
   - Version: source excerpt; no upstream release pin
@@ -325,6 +346,7 @@ resolved operating-system and base-image package closure.
 [biotite]: https://github.com/biotite-dev/biotite
 [biotraj]: https://github.com/biotite-dev/biotraj
 [bsd-3-clause]: LICENSES/BSD-3-Clause.txt
+[cccl]: https://github.com/NVIDIA/cccl
 [cmake]: https://github.com/Kitware/CMake
 [cuda-python]: https://pypi.org/project/cuda-python/
 [cudnn-frontend]: https://github.com/NVIDIA/cudnn-frontend/tree/v1.23.0
@@ -336,6 +358,7 @@ resolved operating-system and base-image package closure.
 [cutlass-dsl-license]: https://docs.nvidia.com/cutlass/latest/media/docs/pythonDSL/license.html
 [datasets]: https://github.com/huggingface/datasets
 [einops]: https://github.com/arogozhnikov/einops
+[flash-attention-cute]: https://github.com/Dao-AILab/flash-attention/tree/main/flash_attn/cute
 [gemmi]: https://github.com/project-gemmi/gemmi
 [huggingface-hub]: https://github.com/huggingface/huggingface_hub
 [kalign]: https://github.com/TimoLassmann/kalign

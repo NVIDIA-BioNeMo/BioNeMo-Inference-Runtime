@@ -55,7 +55,8 @@ class ParserStageConfig(_StageConfigBase):
         default=None,
         description=(
             "Optional directory that must contain every MSA and template file. "
-            "Set this when processing paths supplied by untrusted callers."
+            "Set this when processing paths supplied by untrusted callers. "
+            "When unset, file reads are unrestricted and the parser logs a warning."
         ),
     )
 

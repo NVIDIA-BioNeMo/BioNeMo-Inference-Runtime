@@ -14,6 +14,7 @@
 # limitations under the License.
 
 import hashlib
+import logging
 from io import StringIO
 from pathlib import Path
 from typing import Any
@@ -24,6 +25,8 @@ from bionemo_ir.data.schemas import InputRequest, MSARecord, Polymer, PolymerTyp
 from bionemo_ir.data.schemas.basic import InputParsed, MSAParsed, PolymerParsed, TemplateParsed
 from bionemo_ir.pipeline.base import numpy_to_dict
 from bionemo_ir.pipeline.stages.base import StatefulStage, StatefulStageUDF
+
+logger = logging.getLogger(__name__)
 
 
 class FileContentCache:
@@ -40,6 +43,7 @@ class FileContentCache:
 
     def __init__(self, allowed_root: str | Path | None = None):
         self._allowed_root = Path(allowed_root).resolve() if allowed_root is not None else None
+        self._warned_unrestricted = False
         # Maps content hash -> actual content
         self._content_by_hash: dict[str, str] = {}
         # Maps file path -> content hash
@@ -86,6 +90,9 @@ class FileContentCache:
 
     def get_or_load(self, path: str) -> str:
         """Get cached content or load from file and cache it."""
+        if self._allowed_root is None and not self._warned_unrestricted:
+            logger.warning("Parser file reads are unrestricted; configure input_root for confinement.")
+            self._warned_unrestricted = True
         resolved_path = str(resolve_input_path(path, self._allowed_root))
         # Check if path is already cached
         cached = self.get_by_path(resolved_path)

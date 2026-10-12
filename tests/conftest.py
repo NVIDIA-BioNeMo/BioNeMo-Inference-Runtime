@@ -34,7 +34,7 @@ differently across containers.
 """
 
 import os
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -102,6 +102,22 @@ def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
             bias = parameters.get("bias", False)
             # Gate, residual and fixed bias vary by test function.
             item.add_marker(pytest.mark.xdist_group(f"attn-epilogue-{item.originalname}-d{head_dim}-bias{bias}"))
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _verify_repeated_captures(request: pytest.FixtureRequest) -> Iterator[None]:
+    """Verify every repeated-region capture against eager, as serving no longer does.
+
+    Session scope so session fixtures that build models get the same policy as tests.
+    """
+    if torch is None or _is_launcher_free_only(request.config):
+        yield
+        return
+    from bionemo_ir._torch.graph_optimization import graph_policy
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(graph_policy, "_VERIFY_REPEATED_CAPTURES", True)
+        yield
 
 
 @pytest.fixture(scope="session")

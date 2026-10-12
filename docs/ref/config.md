@@ -89,6 +89,13 @@ A region with a policy captures by default.
 field to `None` keeps that region eager. Both apply to models constructed from
 the config afterwards; refer to [API — CUDA graphs][cuda-graphs].
 
+Policies do not verify their captures by default. Set `verify_capture=True` on
+a region's policy, such as `config.trunk.graph_optimization_config`, to compare
+each new shape's first replay with eager execution bit for bit and keep that
+shape eager on a mismatch. Each check runs the region eagerly once more, about
+0.15 s on a Boltz-2 trunk. The test suite turns it on for every trunk and
+confidence region.
+
 ## Boltz-2 Graph Caches
 
 Each Boltz-2 region keeps a bounded number of exact input shapes, so traffic

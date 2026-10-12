@@ -35,6 +35,10 @@ from .config import (
 if TYPE_CHECKING:
     from .region import GraphRegion
 
+# Verifying a capture re-runs its region eagerly once per new shape and compares bit for bit, which costs about
+# 0.15 s on a Boltz-2 trunk. The test suite turns it on (tests/conftest.py); serving does not pay for it.
+_VERIFY_REPEATED_CAPTURES = False
+
 
 def _release_unused_graphs(regions: Sequence[GraphRegion], *, num_tokens: int) -> None:
     """Release ineligible region caches before allocating an eager request.
@@ -84,7 +88,8 @@ def exact_graph_config(
     Args:
         named_dims: Input/output axes defined by the model's region signature.
         max_tokens: Inclusive token limit; larger inputs run eagerly.
-        repeated: Verify and prepare the first eligible repeated-region call.
+        repeated: Prepare the first eligible repeated-region call, and verify its capture when
+            ``_VERIFY_REPEATED_CAPTURES`` is set.
         static_args: Arguments whose structural metadata enters routing keys.
         workspace_kwargs: Scratch arguments owned by each graph state.
         stable_kwargs: Read-only inputs that stay fixed during a rollout.
@@ -102,7 +107,7 @@ def exact_graph_config(
         num_calls_for_kernel_compilation=1,
         num_calls_for_memory_allocator=1 if repeated else 3,
         capture_on_first_call=True,
-        verify_capture=repeated,
+        verify_capture=repeated and _VERIFY_REPEATED_CAPTURES,
         num_graphs_max_for_this_module=4 if repeated else 1,
         graph_cache_budget_bytes=(4 << 30) if repeated else None,
     )

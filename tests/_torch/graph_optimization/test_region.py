@@ -17,13 +17,15 @@
 import copy
 import gc
 import pickle
+import subprocess
+import sys
 import weakref
 
 import pytest
 import torch
 from torch import nn
 
-from bionemo_ir._torch.graph_optimization import GraphRegion, eager_graphs
+from bionemo_ir._torch.graph_optimization import GraphRegion, eager_graphs, graph_policy
 from bionemo_ir._torch.graph_optimization.config import NamedDimTies
 from bionemo_ir._torch.graph_optimization.graph_policy import _release_unused_graphs, exact_graph_config
 from bionemo_ir.configs import AcceleratedConfig, BaseConfig
@@ -63,6 +65,18 @@ class _Parent(_Model):
 
     def step(self, x: torch.Tensor, *, scale: float = 1.0) -> torch.Tensor:
         return self.child(x, scale=scale) + self.weight
+
+
+def test_repeated_regions_verify_only_under_tests(monkeypatch: pytest.MonkeyPatch) -> None:
+    script = "from bionemo_ir._torch.graph_optimization import graph_policy as p; print(p._VERIFY_REPEATED_CAPTURES)"
+    served = subprocess.run([sys.executable, "-c", script], check=True, capture_output=True, text=True)
+    assert served.stdout.strip() == "False"
+    assert _policy(8).verify_capture
+    monkeypatch.setattr(graph_policy, "_VERIFY_REPEATED_CAPTURES", False)
+    assert not _policy(8).verify_capture
+    monkeypatch.setattr(graph_policy, "_VERIFY_REPEATED_CAPTURES", True)
+    single = exact_graph_config(named_dims=(NamedDimTies(name="num_tokens", input_dims=(("x", (-2,)),)),), max_tokens=8)
+    assert not single.verify_capture
 
 
 def test_regions_capture_by_default_and_optimize_enables_selected_ones() -> None:

@@ -130,8 +130,16 @@ conda activate bioir
 
 </Tab>
 <Tab title="Python venv">
-Install Python 3.12 on the host, then create and activate an environment with
-Python's built-in `venv` module:
+Install Python 3.12 on the host. On Ubuntu and Debian, the `venv` module ships
+in a separate package; without it, `python3.12 -m venv` fails with
+`ensurepip is not available`. Install it, or use the uv tab, which needs no
+administrator access:
+
+```bash
+sudo apt-get install --yes python3.12-venv
+```
+
+Then create and activate an environment with Python's built-in `venv` module:
 
 ```bash
 python3.12 -m venv .venv

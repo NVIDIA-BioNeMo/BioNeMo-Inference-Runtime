@@ -584,7 +584,10 @@ Have these ready first; the skill cannot supply them:
   builds the `dataset-0.3.0` inputs from RCSB and that endpoint rather than
   downloading a release; the structures need no credential at all
   (`--structures-only`). Free key at
-  [build.nvidia.com](https://build.nvidia.com/).
+  [build.nvidia.com](https://build.nvidia.com/). Every structure is checked
+  against the coordinates that were measured. When RCSB has since revised an
+  entry's coordinates (7PV5 in September 2026), the script takes the measured
+  version from the wwPDB versioned archive instead.
 - **`HF_TOKEN` exported.** OpenFold3's checkpoint is gated and an anonymous
   fetch returns `401`. Registering is free. Checkpoint staging generally is
   [Model Weights](model-weights.md).

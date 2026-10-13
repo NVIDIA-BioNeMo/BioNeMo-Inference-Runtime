@@ -109,8 +109,14 @@ annotation stripped — and the script reports:
 
 - `ok` / `cached` — byte-identical
 - `revised` — bytes differ, **coordinates identical**; accepted
-- `MISMATCH` — an atom moved; aborts, because that moves every lDDT for the
-  target
+- `archived` — RCSB moved the entry to a new major version, which moves
+  atoms; the wwPDB versioned archive still holds the version MANIFEST was
+  built from, and its coordinates match. `ground_truth/7PV5.cif` is the live
+  case: version 3.0 on 2026-09-02 remediated a gold-modified cysteine, so the
+  build takes archived version 2.1, byte-identical to MANIFEST
+- `MISMATCH` — an atom moved and no archived copy matches; aborts, because
+  that moves every lDDT for the target. Assembly files have no archived
+  copies, so a major revision to one lands here
 
 **Alignments — depth, not bytes.** A structure is a fixed deposition; an
 alignment is a search result. It is reproducible for a fixed database version

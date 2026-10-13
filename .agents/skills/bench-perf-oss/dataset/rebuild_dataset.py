@@ -38,8 +38,15 @@ does not, and a mismatch is checked at the coordinate level before it is called
 a problem: RCSB re-releases entries for metadata reasons alone (4KL8 gained
 revision 3.2 on 2026-08-12 — 11 KB of new annotation, all 14237 atoms
 unchanged), and failing that build would be wrong. So a hash mismatch whose
-ATOM/HETATM records still agree is reported as `revised` and accepted; a
-mismatch that moves an atom aborts, because it moves every lDDT for that target.
+ATOM/HETATM records still agree is reported as `revised` and accepted.
+
+A mismatch that moves an atom is a new major version (7PV5 became 3.0 on
+2026-09-02 when wwPDB remediated its gold-modified cysteine), and it would move
+every lDDT for that target. RCSB serves only the newest version, so for an entry
+file the script then asks the wwPDB versioned archive, which keeps the newest
+minor version of every major version. A copy whose ATOM/HETATM records match is
+reported as `archived` and used; none matching aborts. Assembly files have no
+archived copies, so a coordinate change to one still aborts.
 
 An alignment is a search result. It is reproducible for a fixed database version
 and a fixed server, and the NIM pins its databases in the response
@@ -59,6 +66,7 @@ from __future__ import annotations
 
 import argparse
 import concurrent.futures as futures
+import gzip
 import hashlib
 import json
 import os
@@ -74,6 +82,7 @@ SPECS = ("spec_full.json", "spec_monomer.json")
 
 RCSB_ENTRY = "https://files.rcsb.org/download/{pdb}.cif"
 RCSB_ASSEMBLY = "https://files.rcsb.org/download/{pdb}-assembly{n}.cif"
+WWPDB_VERSIONED = "https://files-versioned.wwpdb.org/pdb_versioned/data/entries/{mid}/pdb_0000{pdb}/"
 
 MSA_BASE = "https://health.api.nvidia.com/v1/biology/colabfold/msa-search"
 NVCF_STATUS = "https://health.api.nvidia.com/v1/status/{reqid}"
@@ -224,6 +233,24 @@ def structure_url(rel: Path, assembly: int | None) -> str:
     if m and rel.parent.name == "ground_truth":
         return RCSB_ASSEMBLY.format(pdb=m.group(1), n=assembly or 1)
     return RCSB_ENTRY.format(pdb=stem)
+
+
+def archived_copy(pdb: str, want_atoms: str) -> tuple[str, str] | None:
+    """(version, text) of the archived entry whose coordinates match, else None.
+
+    The archive lists one file per major version, `..._xyz_v2-1.cif.gz`, and a
+    later minor release replaces it under a new name, so the names are read
+    from the directory index rather than recorded.
+    """
+    pdb = pdb.lower()
+    base = WWPDB_VERSIONED.format(mid=pdb[1:3], pdb=pdb)
+    index = http_get(base).decode("utf-8")
+    found = re.findall(rf'href="(pdb_0000{pdb}_xyz_v(\d+)-(\d+)\.cif\.gz)"', index)
+    for name, major, minor in sorted(found, key=lambda f: (-int(f[1]), -int(f[2]))):
+        text = gzip.decompress(http_get(base + name)).decode("utf-8")
+        if atoms_digest(text) == want_atoms:
+            return f"{major}.{minor}", text
+    return None
 
 
 # ------------------------------------------------------------------------ msa
@@ -457,7 +484,7 @@ def plan(items: list[dict]) -> tuple[dict[str, dict], list[dict]]:
 
 
 def fetch_structure(data: Path, rel: str, assembly, manifest: dict, force: bool) -> tuple[str, str]:
-    """-> (status, note). status in {ok, cached, revised, MISMATCH, ERROR}."""
+    """-> (status, note). status in {ok, cached, revised, archived, MISMATCH, ERROR}."""
     dest = data / rel
     dest.parent.mkdir(parents=True, exist_ok=True)
     want = manifest.get(rel, {}).get("sha256")
@@ -489,6 +516,15 @@ def fetch_structure(data: Path, rel: str, assembly, manifest: dict, force: bool)
                 f"{url}: sha256 {got[:16]} != manifest {want[:16]}, "
                 "and MANIFEST carries no atoms_sha256 to fall back on"
             )
+        if url == RCSB_ENTRY.format(pdb=Path(rel).stem):
+            try:
+                archived = archived_copy(Path(rel).stem, want_atoms)
+            except Exception as e:  # noqa: BLE001
+                return "ERROR", f"{url}: coordinates differ, and the wwPDB archive failed: {e}"
+            if archived:
+                version, text = archived
+                dest.write_text(text)
+                return "archived", f"RCSB moved to a new major version; using wwPDB archive v{version}"
         return "MISMATCH", f"{url}: coordinates differ — RCSB revised the entry"
 
     dest.write_text(text)
@@ -676,12 +712,13 @@ def main() -> int:
 
     failures: list[str] = []
     revised: list[str] = []
+    archived: list[str] = []
 
     if not args.msa_only:
         print("\nstructures (RCSB)")
         for rel, meta in sorted(structures.items()):
             status, note = fetch_structure(data, rel, meta["assembly"], manifest, args.force)
-            mark = {"ok": "+", "cached": "=", "revised": "~"}.get(status, "!")
+            mark = {"ok": "+", "cached": "=", "revised": "~", "archived": "~"}.get(status, "!")
             print(f"  {mark} {rel:34s} {status}{'  ' + note if note else ''}")
             if status == "MISMATCH":
                 failures.append(rel)
@@ -689,6 +726,8 @@ def main() -> int:
                 failures.append(rel)
             elif status == "revised":
                 revised.append(rel)
+            elif status == "archived":
+                archived.append(rel)
 
     if not args.structures_only and msa_work:
         if not args.api_key:
@@ -728,16 +767,18 @@ def main() -> int:
         new = write_manifest(data, structures, msa_rels)
         print(f"rewrote MANIFEST.json — {new['file_count']} files, {new['total_bytes'] / 1e6:.1f} MB")
 
-    # A `revised` file differs from MANIFEST by construction — that is what the
+    # A `revised` or `archived` file can differ from MANIFEST — that is what the
     # coordinate check just cleared it for. Reporting it again as drift reads as
     # a second, unexplained problem.
     shallow = check_depth(data, manifest, msa_rels)
     msa_drift = [r for r in rep["drift"] if r.startswith("msa/")]
-    other_drift = [r for r in rep["drift"] if not r.startswith("msa/") and r not in set(revised)]
+    other_drift = [r for r in rep["drift"] if not r.startswith("msa/") and r not in set(revised + archived)]
 
     print(f"\nwrote BUILD.json — {len(rep['files'])} file(s)")
     if revised:
         print(f"revised since MANIFEST, coordinates unchanged: {', '.join(revised)}")
+    if archived:
+        print(f"newer major version on RCSB, archived copy used: {', '.join(archived)}")
     if msa_drift:
         print(
             f"\n{len(msa_drift)} alignment(s) differ from MANIFEST — expected when "

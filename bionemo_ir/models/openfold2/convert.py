@@ -287,7 +287,7 @@ def convert_hf_evoformer_torch(
                 "bias": module_state_dict[f"blocks.{i}.pair_transition.linear_2.bias"],
             }
         ]
-    return split_pair_bias_proj(bioir_state_dict, config.tri_attn_bias_in_norm)
+    return split_pair_bias_proj(bioir_state_dict)
 
 
 def convert_hf_extra_msa_stack_torch(

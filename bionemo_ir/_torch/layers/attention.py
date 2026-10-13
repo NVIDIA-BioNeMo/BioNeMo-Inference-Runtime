@@ -25,9 +25,7 @@ from bionemo_ir._torch.custom_ops.gated_sigmoid import get_gated_sigmoid_op
 from bionemo_ir._torch.layers.linear import Linear, WeightMode, WeightsLoadingConfig
 from bionemo_ir._torch.layers.normalization import AdaLN
 from bionemo_ir._torch.utils import ChunkPolicy, chunk_apply, iter_chunks, permute_final_dims
-from bionemo_ir.dsl_kernels.triton.moveaxis_pad import MoveaxisPad
 from bionemo_ir.runtime.buffers import PreallocatedBuffers, ensure_buffer
-from bionemo_ir.utils import get_sm_version
 
 from ..attention_backend import AttentionMetadata, AttentionType
 from ..attention_backend.utils import backend_uses_left_mask, create_attention, triangle_bias_pad_multiple
@@ -40,26 +38,6 @@ def _make_norm(norm_type: str, dim: int, eps: float = 1e-5, dtype: torch.dtype =
     if norm_type == "layer_norm":
         return nn.LayerNorm(dim, eps=eps, dtype=dtype, bias=bias)
     raise ValueError(f"Unsupported norm_type={norm_type!r}; expected 'layer_norm' or 'rms_norm'")
-
-
-# Pad the pair-bias heads so the fused projection width stays a cuBLAS-friendly
-# multiple: unaligned widths fall back to an SM80 kernel up to 3x slower, and on
-# SM90 a width of 1024 + 32 picks a poor tile that 1024 + 64 avoids. The CuTeDSL
-# triangle kernel also needs q/k/v row strides divisible by 8 elements.
-_PAIR_BIAS_ROW_ALIGN_SM8X = 32
-_PAIR_BIAS_ROW_ALIGN_SM90 = 64
-
-
-def _pair_bias_row_align() -> int:
-    if torch.cuda.is_available() and get_sm_version() >= 90:
-        return _PAIR_BIAS_ROW_ALIGN_SM90
-    return _PAIR_BIAS_ROW_ALIGN_SM8X
-
-
-def pair_bias_rows(num_heads: int) -> int:
-    """Rows ``TriangleAttention.in_proj`` reserves for pair bias: ``num_heads`` rounded up to the SM's alignment."""
-    align = _pair_bias_row_align()
-    return -(-num_heads // align) * align
 
 
 def _narrow_rows(tensor: torch.Tensor | None, rows: int, start: int, length: int) -> torch.Tensor | None:
@@ -92,8 +70,7 @@ def _broadcast_rows(lead: torch.Size, gate_lead: torch.Size) -> tuple[int, int, 
 class TriangleAttention(nn.Module):
     """
     A module that implements the triangle attention mechanism with tensor parallelism in torch.
-    The module implements lines 2-7 from Algorithm 14 from https://www.nature.com/articles/s41586-024-07487-w#Sec19;
-    line 3, the triangle bias, only with ``bias_proj``.
+    The module implements lines 2,4, and 5-7 from Algorithm 14 from https://www.nature.com/articles/s41586-024-07487-w#Sec19.
     """
 
     def __init__(
@@ -106,8 +83,6 @@ class TriangleAttention(nn.Module):
         layer_idx: int,
         bias_flags: dict[str, bool] | None = None,
         gating: bool = True,
-        bias_proj: bool = False,
-        transposed_bias: bool = False,
         chunk_policy: ChunkPolicy | None = None,
         dtype: torch.dtype = None,
         skip_create_weights: bool = False,
@@ -115,10 +90,6 @@ class TriangleAttention(nn.Module):
     ):
         """
         Args:
-            bias_proj: Project the triangle bias in ``in_proj`` too and use it
-                when the caller passes none.
-            transposed_bias: Project the triangle bias from the transposed
-                ``hidden_states``.
             chunk_policy: Query-row chunking policy; ``None`` attends densely.
         """
         super().__init__()
@@ -143,16 +114,12 @@ class TriangleAttention(nn.Module):
         self.q_size = self.num_heads * self.head_dim
         self.kv_size = self.num_key_value_heads * self.head_dim
         self.gating = gating
-        self.bias_proj = bias_proj
-        self.transposed_bias = transposed_bias
         self.chunk_policy = chunk_policy
 
-        # One GEMM projects q, k, v, then the gate and the pair-bias heads when present.
+        # One GEMM projects q, k, v, then the gate when present.
         self._in_proj_sizes = [self.q_size, self.kv_size, self.kv_size]
         if gating:
             self._in_proj_sizes.append(self.q_size)
-        if bias_proj:
-            self._in_proj_sizes.append(pair_bias_rows(self.num_heads))
         self.in_proj = Linear(
             self.hidden_size,
             sum(self._in_proj_sizes),
@@ -177,9 +144,6 @@ class TriangleAttention(nn.Module):
             if gating
             else None
         )
-        if bias_proj:
-            self._bias_pad_multiple = triangle_bias_pad_multiple(attn_backend)
-            self._moveaxis_pad = MoveaxisPad(H=self.num_heads, dtype=dtype or torch.bfloat16)
         self.attn = create_attention(
             attn_backend,
             self.layer_idx,
@@ -188,15 +152,6 @@ class TriangleAttention(nn.Module):
             self.num_key_value_heads,
             attention_type=AttentionType.TRIANGLE,
         )
-
-    def _pair_bias(self, heads: torch.Tensor) -> torch.Tensor:
-        """Lay projected ``[B, I, J, H]`` bias heads out as ``[B, H, I, J_padded]``."""
-        # The projection is position-wise, so transposing its heads equals
-        # projecting the transposed pair. Transpose before padding: the pad
-        # lands on the key axis.
-        if self.transposed_bias:
-            heads = heads.transpose(1, 2)
-        return self._moveaxis_pad(heads, multiple=self._bias_pad_multiple)
 
     def forward(
         self,
@@ -214,8 +169,7 @@ class TriangleAttention(nn.Module):
             hidden_states: [B, I, J, F]
             mask_bias: Per-row mask in the backend's layout, e.g.
                 [B, I, 1, 1, J] additive or CuTeDSL's [B, I] int32 lengths.
-            triangle_bias: [B, H, J, J]. ``None`` projects it from
-                ``hidden_states`` when the module has ``bias_proj``.
+            triangle_bias: [B, H, J, J].
             buffers: Optional dict of shared pre-allocated output buffers
                 (``tri_attn_output``) to avoid per-call allocation.
             use_kv_lengths: Encode a left-aligned mask as per-row lengths for
@@ -238,13 +192,6 @@ class TriangleAttention(nn.Module):
                 buffers=buffers,
                 use_kv_lengths=use_kv_lengths,
             )
-        if triangle_bias is None and self.bias_proj:
-            # A row slice cannot project the bias, which spans every row, so
-            # project just the real bias heads over the whole pair first.
-            start = sum(self._in_proj_sizes[:-1])
-            rows = slice(start, start + self.num_heads)
-            bias = None if self.in_proj.bias is None else self.in_proj.bias[rows]
-            triangle_bias = self._pair_bias(F.linear(hidden_states, self.in_proj.weight[rows], bias))
         # Query rows attend independently, so row slices are exact; the
         # triangle bias passes through unsliced.
         if residual is None:
@@ -295,9 +242,8 @@ class TriangleAttention(nn.Module):
         With a ``residual``, return ``residual + update``, written to
         ``output`` when given; ``output`` may be ``residual`` itself.
         """
-        q, k, v, *gate_and_bias = self.in_proj(hidden_states).split(self._in_proj_sizes, dim=-1)
-        if triangle_bias is None and self.bias_proj:
-            triangle_bias = self._pair_bias(gate_and_bias[-1][..., : self.num_heads])
+        projections = self.in_proj(hidden_states).split(self._in_proj_sizes, dim=-1)
+        q, k, v = projections[:3]
         # q: [B, I, J, H*D] → kernel output: [B*I, J, H, D]
         attn_buf = (
             ensure_buffer(
@@ -319,7 +265,7 @@ class TriangleAttention(nn.Module):
             output=attn_buf,
             use_kv_lengths=use_kv_lengths,
         )
-        gate = gate_and_bias[0] if self.gating else None
+        gate = projections[3] if self.gating else None
         if residual is not None and self._epilogue is not None:
             fused = self._epilogue(mha_o, gate, self.o_proj.weight, residual, output, bias=self.o_proj.bias)
             if fused is not None:

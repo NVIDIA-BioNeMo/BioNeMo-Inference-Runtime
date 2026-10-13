@@ -246,7 +246,7 @@ def convert_hf_pairformer_torch(
                     "weight": module_state_dict[f"layers.{i}.transition_{name}.fc3.weight"],
                 }
             ]
-    return split_pair_bias_proj(bioir_state_dict, config.tri_attn_bias_in_norm)
+    return split_pair_bias_proj(bioir_state_dict)
 
 
 def _template_module_weight(bioir_state_dict, module_state_dict, name):
@@ -799,7 +799,7 @@ def convert_hf_msa_stack_torch(
     for name in clean_layer_list:
         module_state_dict.pop(name)
 
-    return split_pair_bias_proj(module_state_dict, config.tri_attn_bias_in_norm)
+    return split_pair_bias_proj(module_state_dict)
 
 
 def convert_hf_msa_module_embedder_torch(

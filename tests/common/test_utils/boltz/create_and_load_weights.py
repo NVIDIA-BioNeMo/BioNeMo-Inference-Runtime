@@ -97,7 +97,7 @@ def create_triangle_attention_weights(
     return q_weight, q_bias, k_weight, k_bias, v_weight, v_bias, out_weight, out_bias, gating_weight, gating_bias
 
 
-def load_triangle_attention_weights_torch(module, weights_and_biases, dtype=torch.float32, pair_bias_weight=None):
+def load_triangle_attention_weights_torch(module, weights_and_biases, dtype=torch.float32):
     # Load for _torch module
     q_weight, q_bias, k_weight, k_bias, v_weight, v_bias, out_weight, out_bias, gating_weight, gating_bias = (
         weights_and_biases
@@ -108,10 +108,7 @@ def load_triangle_attention_weights_torch(module, weights_and_biases, dtype=torc
 
     gate = [entry(gating_weight, gating_bias)] if gating_weight is not None else []
     if getattr(module, "in_proj", None) is not None:
-        pair_bias = [entry(pair_bias_weight)] if pair_bias_weight is not None else []
-        module.in_proj.load_weights(
-            [entry(q_weight, q_bias), entry(k_weight, k_bias), entry(v_weight, v_bias), *gate, *pair_bias]
-        )
+        module.in_proj.load_weights([entry(q_weight, q_bias), entry(k_weight, k_bias), entry(v_weight, v_bias), *gate])
     else:
         module.q_proj.load_weights([entry(q_weight, q_bias)])
         module.kv_proj.load_weights([entry(k_weight, k_bias), entry(v_weight, v_bias)])
@@ -550,11 +547,8 @@ def load_triangle_attention_node_weights_torch(module, weights_and_biases, dtype
     layer_norm_weight, layer_norm_bias = weights_and_biases["layer_norm"]
     linear_weight = weights_and_biases["linear"]
     mha_weights_and_biases = weights_and_biases["mha"]
-    if module.bias_in_norm:
-        load_triangle_attention_weights_torch(module.mha, mha_weights_and_biases, dtype)
-        module.pair_bias_proj.load_weights([{"weight": linear_weight.to(dtype).to("cuda")}])
-    else:
-        load_triangle_attention_weights_torch(module.mha, mha_weights_and_biases, dtype, pair_bias_weight=linear_weight)
+    load_triangle_attention_weights_torch(module.mha, mha_weights_and_biases, dtype)
+    module.pair_bias_proj.load_weights([{"weight": linear_weight.to(dtype).to("cuda")}])
     module.layer_norm.weight.data.copy_(layer_norm_weight.to(dtype).to("cuda"))
     module.layer_norm.bias.data.copy_(layer_norm_bias.to(dtype).to("cuda"))
 

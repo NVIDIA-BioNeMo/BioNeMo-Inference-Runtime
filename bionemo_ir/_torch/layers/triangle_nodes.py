@@ -130,7 +130,6 @@ class TriangleAttentionNode(nn.Module):
         mha_bias_flags: dict[str, bool] | None = None,
         pair_mask_left_aligned: bool = True,
         transposed_bias: bool = False,
-        bias_in_norm: bool = True,
     ):
         """
         Args:
@@ -150,8 +149,6 @@ class TriangleAttentionNode(nn.Module):
                 pair representation. OpenFold-3 v0.5.0 adopted this for the
                 ending node; AlphaFold-2, Boltz and Protenix do not.
                 See https://github.com/aqlaboratory/openfold-3/commit/1baf2c71.
-            bias_in_norm: Project the triangle-bias heads with ``pair_bias_proj`` in the LayerNorm
-                pass; ``in_proj`` then projects q, k, v and the gate only.
         """
         super().__init__()
         if mha_bias_flags is None:
@@ -165,20 +162,18 @@ class TriangleAttentionNode(nn.Module):
         self.attn_backend = attn_backend
         self.pair_mask_left_aligned = pair_mask_left_aligned
         self.layer_norm = nn.LayerNorm(self.c_in, dtype=dtype)
-        self.bias_in_norm = bias_in_norm
         self.transposed_bias = transposed_bias
-        if bias_in_norm:
-            self.pair_bias_proj = Linear(
-                self.c_in, num_heads, bias=False, dtype=dtype, skip_create_weights=skip_create_weights
-            )
-            self._bias_pad_multiple = triangle_bias_pad_multiple(attn_backend)
-            self._ln_pair_bias = LNPairBias(
-                c_in,
-                num_heads,
-                swap_ij=node_type == TriangleAttentionNodeType.ENDING,
-                transposed=transposed_bias,
-                dtype=dtype,
-            )
+        self.pair_bias_proj = Linear(
+            self.c_in, num_heads, bias=False, dtype=dtype, skip_create_weights=skip_create_weights
+        )
+        self._bias_pad_multiple = triangle_bias_pad_multiple(attn_backend)
+        self._ln_pair_bias = LNPairBias(
+            c_in,
+            num_heads,
+            swap_ij=node_type == TriangleAttentionNodeType.ENDING,
+            transposed=transposed_bias,
+            dtype=dtype,
+        )
         self.mha = TriangleAttention(
             layer_idx=layer_idx,
             hidden_size=self.c_in,
@@ -187,8 +182,6 @@ class TriangleAttentionNode(nn.Module):
             num_key_value_heads=self.num_heads,
             gating=True,
             bias_flags=mha_bias_flags,
-            bias_proj=not bias_in_norm,
-            transposed_bias=transposed_bias,
             # Row chunks bound the [chunk, J, H, ...] attention temporaries at large N.
             chunk_policy=chunk_policy if chunk_policy is not None else CHUNK_REGISTRY.get(TRIANGLE_ATTENTION),
             dtype=dtype,
@@ -227,13 +220,7 @@ class TriangleAttentionNode(nn.Module):
         if x.dtype != self.dtype:
             x = x.to(self.dtype)
         ending = self.node_type == TriangleAttentionNodeType.ENDING
-        triangle_bias = None
-        if self.bias_in_norm:
-            normed, triangle_bias = self._norm_and_bias(x, ending)
-        elif ending and isinstance(self.layer_norm, FusedLayerNorm):
-            normed = self.layer_norm.forward_swap_ij(x)
-        else:
-            normed = self.layer_norm(x.transpose(1, 2) if ending else x)
+        normed, triangle_bias = self._norm_and_bias(x, ending)
         if ending:
             x = x.transpose(1, 2)
 
@@ -278,10 +265,8 @@ class TriangleAttentionNode(nn.Module):
 _TRI_ATTN_IN_PROJ_KEYS = ("tri_attn_start.mha.in_proj", "tri_attn_end.mha.in_proj")
 
 
-def split_pair_bias_proj(weights: dict, bias_in_norm: bool = True) -> dict:
+def split_pair_bias_proj(weights: dict) -> dict:
     """Move the bias-head segment ending each triangle-attention node's ``mha.in_proj`` to ``pair_bias_proj``."""
-    if not bias_in_norm:
-        return weights
     for key in [key for key in weights if key.endswith(_TRI_ATTN_IN_PROJ_KEYS)]:
         node = key.removesuffix(".mha.in_proj")
         if f"{node}.pair_bias_proj" in weights:

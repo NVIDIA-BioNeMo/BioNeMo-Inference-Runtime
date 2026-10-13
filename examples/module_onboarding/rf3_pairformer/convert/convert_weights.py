@@ -22,7 +22,8 @@ Weight conversion: RF3 PairformerBlock -> BioIR PairformerLayerV1.
 
 Handles:
 - Name renames (tri_mul_outgoing -> tri_mul_out, etc.)
-- Q/K/V/gate/pair-bias fusion for triangle attention (-> fused mha.in_proj)
+- Q/K/V/gate fusion for triangle attention (-> fused mha.in_proj), with its
+  pair-bias projection in pair_bias_proj
 - Q/gate/K/V fusion for attention pair bias (-> fused in_proj)
 - Transition fusion (linear_2, then the SiLU-activated linear_1 -> fused_fc2_fc1)
 - Triangle attention gate and output biases (to_g.bias, to_out.bias). They load
@@ -32,9 +33,6 @@ No checkpoint needed — works with any state_dict matching the RF3 PairformerBl
 """
 
 import torch
-import torch.nn.functional as F
-
-from bionemo_ir._torch.layers.attention import pair_bias_rows
 
 
 def convert_tri_mul_weights(state_dict, prefix, bioir_prefix):
@@ -55,35 +53,24 @@ def convert_tri_attn_weights(state_dict, prefix, bioir_prefix):
     """Convert TriangleAttention weights.
 
     Fusions:
-    - to_q + to_k + to_v + to_g + to_b -> mha.in_proj (cat dim=0), with to_b
-      zero-padded to pair_bias_rows(H) rows. Its bias is to_g's over the gate
-      rows and zero over the rest, which have none in RF3.
+    - to_q + to_k + to_v + to_g -> mha.in_proj (cat dim=0). Its bias is to_g's
+      over the gate rows and zero over the rest, which have none in RF3.
+    - to_b -> pair_bias_proj
     - to_out -> mha.o_proj, with its bias
     - norm -> layer_norm
     """
     q_weight = state_dict[f"{prefix}.to_q.weight"]
     k_weight = state_dict[f"{prefix}.to_k.weight"]
     v_weight = state_dict[f"{prefix}.to_v.weight"]
-    pair_bias_weight = state_dict[f"{prefix}.to_b.weight"]
-    num_heads = pair_bias_weight.shape[0]
-    bias_rows = pair_bias_rows(num_heads)
-    in_proj_weight = torch.cat(
-        [
-            q_weight,
-            k_weight,
-            v_weight,
-            state_dict[f"{prefix}.to_g.weight"],
-            F.pad(pair_bias_weight, (0, 0, 0, bias_rows - num_heads)),
-        ],
-        dim=0,
-    )
+    in_proj_weight = torch.cat([q_weight, k_weight, v_weight, state_dict[f"{prefix}.to_g.weight"]], dim=0)
     g_bias = state_dict[f"{prefix}.to_g.bias"]
     qkv_rows = q_weight.shape[0] + k_weight.shape[0] + v_weight.shape[0]
-    in_proj_bias = torch.cat([g_bias.new_zeros(qkv_rows), g_bias, g_bias.new_zeros(bias_rows)])
+    in_proj_bias = torch.cat([g_bias.new_zeros(qkv_rows), g_bias])
 
     return {
         f"{bioir_prefix}.layer_norm.weight": state_dict[f"{prefix}.norm.weight"],
         f"{bioir_prefix}.layer_norm.bias": state_dict[f"{prefix}.norm.bias"],
+        f"{bioir_prefix}.pair_bias_proj.weight": state_dict[f"{prefix}.to_b.weight"],
         f"{bioir_prefix}.mha.in_proj.weight": in_proj_weight,
         f"{bioir_prefix}.mha.in_proj.bias": in_proj_bias,
         f"{bioir_prefix}.mha.o_proj.weight": state_dict[f"{prefix}.to_out.weight"],

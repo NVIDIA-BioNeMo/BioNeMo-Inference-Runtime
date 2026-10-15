@@ -50,6 +50,8 @@ def _rmse_ratio(a: torch.Tensor, b: torch.Tensor) -> float:
 
 def _config(sc: Scenario) -> ProtenixMSAModuleConfig:
     return ProtenixMSAModuleConfig(
+        # The OSS reference runs with row sampling disabled.
+        sample_rows=False,
         c_m=sc.c_m,
         c_z=sc.c_z,
         c_hidden_mul=sc.c_z,
@@ -178,3 +180,96 @@ def test_protenix_msa_module_precomputed_masks():
         precomputed = model.build_pair_masks(pair_mask)
         out_precomputed = model(feat, z, s_inputs, pair_mask=pair_mask, precomputed_masks=precomputed)
     assert torch.equal(out_default, out_precomputed)
+
+
+@pytest.mark.parametrize("cutoff", [3, 16384])
+def test_protenix_msa_rows_sampled_per_call_from_the_seeded_generator(cutoff):
+    """Each call keeps a seeded random subset of rows: 1..N_msa, capped at the cutoff, at a fixed depth."""
+    config = _config(Scenario(dtype="float32")).model_copy(update={"sample_rows": True, "sample_cutoff": cutoff})
+    module = ProtenixMSAModule(config)
+    rows = torch.arange(10).repeat_interleave(4).reshape(1, 10, 4)
+    feat = {"msa": rows, "has_deletion": rows.float(), "deletion_value": rows.float()}
+
+    def draws(seed):
+        generator = torch.Generator().manual_seed(seed)
+        out = []
+        for _ in range(8):
+            sampled = module._sample_rows(feat, generator)
+            assert sampled["msa"].shape == (1, min(10, cutoff), 4)
+            out.append(sampled["msa"][0, sampled["msa_row_mask"], 0].tolist())
+        return out
+
+    first = draws(7)
+    assert first == draws(7)
+    assert len({tuple(d) for d in first}) > 1
+    for kept in first:
+        assert 1 <= len(kept) <= min(10, cutoff)
+        assert len(set(kept)) == len(kept) and set(kept) <= set(range(10))
+
+
+@pytest.mark.parametrize("cutoff", [5, 16384])
+@pytest.mark.parametrize("explicit_mask", [False, True])
+def test_protenix_msa_masked_rows_match_the_sampled_subset(cutoff, explicit_mask):
+    """Masked rows of a fixed-depth draw leave z as the sampled rows alone do."""
+    torch.manual_seed(0)
+    device = torch.device("cuda")
+    sc = Scenario(dtype="float32", n_msa=12)
+    config = _config(sc).model_copy(update={"sample_rows": True, "sample_cutoff": cutoff})
+    model = ProtenixMSAModule(config).to(device).eval()
+    with torch.no_grad():
+        for p in model.parameters():
+            p.normal_(mean=0.0, std=0.02)
+
+    bs, n, s_msa = sc.batch_size, sc.n_token, sc.n_msa
+    feat = {
+        "msa": torch.randint(0, 32, (bs, s_msa, n), device=device),
+        "has_deletion": (torch.randn(bs, s_msa, n, device=device) > 0).float(),
+        "deletion_value": torch.rand(bs, s_msa, n, device=device),
+    }
+    z = torch.randn(bs, n, n, sc.c_z, device=device)
+    s_inputs = torch.randn(bs, n, sc.c_s_inputs, device=device)
+    mask = torch.randint(0, 2, (bs, s_msa, n), device=device).float() if explicit_mask else None
+
+    partial = 0
+    for seed in range(6):
+        sampled = model._sample_rows(
+            {**feat, **({"msa_mask": mask} if explicit_mask else {})},
+            torch.Generator().manual_seed(seed),
+            torch.Generator(device=device).manual_seed(seed),
+        )
+        keep = sampled["msa_row_mask"]
+        partial += int(keep.sum()) < keep.numel()
+        subset = {name: sampled[name][:, keep] for name in ("msa", "has_deletion", "deletion_value")}
+        with torch.inference_mode():
+            masked = model(
+                feat,
+                z,
+                s_inputs,
+                generator=torch.Generator().manual_seed(seed),
+                row_generator=torch.Generator(device=device).manual_seed(seed),
+                msa_mask=mask,
+            )
+            expected = model(
+                subset, z, s_inputs, sample_rows=False, msa_mask=sampled["msa_mask"][:, keep] if explicit_mask else None
+            )
+        torch.testing.assert_close(masked, expected, rtol=1e-5, atol=1e-5)
+    assert partial  # At least one draw masks rows.
+
+
+@pytest.mark.parametrize("device", ["cpu", "cuda"])
+@pytest.mark.parametrize("depth", [0, 1, 13])
+def test_msa_sampling_matches_upstream(device: str, depth: int) -> None:
+    from protenix.model.utils import sample_msa_feature_dict_random_without_replacement
+
+    module = ProtenixMSAModule(_config(Scenario(dtype="float32")))
+    rows = torch.arange(depth, device=device).reshape(1, depth, 1).expand(1, depth, 4)
+    features = {"msa": rows, "has_deletion": rows.float(), "deletion_value": rows.float()}
+    dims = dict.fromkeys(module.input_feature, -2)
+    torch.manual_seed(101)
+    expected = [sample_msa_feature_dict_random_without_replacement(features, dims, cutoff=5) for _ in range(6)]
+    torch.manual_seed(101)
+    module.config.sample_cutoff = 5
+    for reference in expected:
+        sampled = module._sample_rows(features, None)
+        for name in dims:
+            assert torch.equal(sampled[name][:, sampled["msa_row_mask"]], reference[name])

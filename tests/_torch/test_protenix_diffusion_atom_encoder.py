@@ -24,8 +24,10 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from bionemo_ir._torch.layers.linear import WeightMode
+from bionemo_ir._torch.layers.sequence_local_atom import build_local_attn_metadata
 from bionemo_ir._torch.modules.protenix import ProtenixAtomAttentionEncoder
 from bionemo_ir._torch.modules.protenix._common import atom_encoder_kwargs
+from bionemo_ir._torch.modules.protenix.atom_attention import atom_windows
 from bionemo_ir.configs import DiffusionTransformerConfig
 from bionemo_ir.models.protenix.config import DiffusionAtomAttentionEncoderConfig
 from bionemo_ir.models.protenix.convert import convert_diffusion_atom_encoder_torch
@@ -273,3 +275,27 @@ def test_cached_atom_biases(dtype: str, batch_size: int, n_sample: int, precompu
                     atol=2e-3 if dtype == "bfloat16" else 1e-5,
                     rtol=2e-2 if dtype == "bfloat16" else 1e-4,
                 )
+
+
+@pytest.mark.parametrize("length", [1, 31, 32, 33, 64])
+def test_atom_windows_preserve_valid_pair_offsets(length):
+    positions = torch.arange(length * 3).reshape(1, length, 3).float()
+    groups = torch.arange(length).reshape(1, length) // 4
+    window = atom_windows(positions, groups, build_local_attn_metadata(32, 128), 32, 128)
+    reference = update_input_feature_dict({"ref_pos": positions[0], "ref_space_uid": groups[0]})
+    for name in ("d_lm", "v_lm"):
+        assert torch.equal(window[name][0], reference[name])
+    for name, value in reference["pad_info"].items():
+        if isinstance(value, torch.Tensor):
+            assert torch.equal(window["pad_info"][name], value)
+        else:
+            assert window["pad_info"][name] == value
+    assert window["d_lm"].shape == (1, (length + 31) // 32, 32, 128, 3)
+    for block in range((length + 31) // 32):
+        for query in range(min(32, length - block * 32)):
+            index = block * 32 + query
+            key_slot = index - block * 32 + 48
+            assert window["pad_info"]["mask_trunked"][block, query, key_slot]
+            assert torch.equal(window["d_lm"][0, block, query, key_slot], torch.zeros(3))
+            assert window["v_lm"][0, block, query, key_slot, 0]
+    assert int(window["pad_info"]["mask_trunked"].sum()) >= length

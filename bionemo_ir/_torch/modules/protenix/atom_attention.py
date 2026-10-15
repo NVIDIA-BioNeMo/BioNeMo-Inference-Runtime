@@ -35,6 +35,43 @@ from bionemo_ir.configs import BaseConfig
 from bionemo_ir.dsl_kernels.triton.atom_gather_kernel import reduce_atom_slots
 
 
+def atom_windows(
+    position: torch.Tensor, uid: torch.Tensor, metadata: AttentionMetadata, queries: int, keys: int
+) -> dict[str, torch.Tensor | dict[str, torch.Tensor | int]]:
+    """Window reference positions and conformer groups for atom attention.
+
+    Matches the release ``update_input_feature_dict``: ``ceil(N / queries)``
+    query blocks, each with a ``keys``-wide window centered on it, zero-padded.
+
+    Args:
+        position: ``[B, N_atom, 3]`` reference conformer positions.
+        uid: ``[B, N_atom]`` reference conformer group ids.
+        metadata: Sequence-local attention metadata providing ``query_to_keys``.
+        queries: Query window size ``W``.
+        keys: Key window size ``H``.
+
+    Returns:
+        ``d_lm`` ``[B, K, W, H, 3]``, ``v_lm`` ``[B, K, W, H, 1]`` and ``pad_info``
+        with ``mask_trunked`` ``[K, W, H]``.
+    """
+    n = position.shape[-2]
+    blocks = -(-n // queries)
+    # One gather moves positions, group ids (exact below 2**24) and validity together.
+    packed = torch.cat([position.float(), uid[..., None].float(), torch.ones_like(position[..., :1])], dim=-1)
+    query = to_blocks(packed, blocks, queries)
+    key = metadata.query_to_keys(query)
+    return {
+        "d_lm": query[..., :, None, :3] - key[..., None, :, :3],
+        "v_lm": (query[..., :, None, 3] == key[..., None, :, 3]).unsqueeze(-1),
+        "pad_info": {
+            "mask_trunked": (query[0, ..., :, None, 4] > 0) & (key[0, ..., None, :, 4] > 0),
+            "q_pad": blocks * queries - n,
+            "k_pad_left": (keys - queries) // 2,
+            "k_pad_right": blocks * queries + (keys - queries) // 2 - n,
+        },
+    }
+
+
 def _broadcast_token_to_atom(x_token: torch.Tensor, atom_to_token_idx: torch.Tensor) -> torch.Tensor:
     """Gather per-token features to per-atom (OSS ``broadcast_token_to_atom``)."""
     return gather_token_features_to_atoms(x_token, atom_to_token_idx)

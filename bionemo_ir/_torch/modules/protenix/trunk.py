@@ -39,8 +39,9 @@ class ProtenixMSAModule(nn.Module):
     """Protenix MSA module (AF3 Algorithm 8).
 
     Feature embedding (one-hot MSA + deletion -> ``linear_no_bias_m``, plus
-    ``linear_no_bias_s``) then shared :class:`MSAModuleStack`. MSA row
-    subsampling is handled upstream by the data pipeline.
+    ``linear_no_bias_s``) then shared :class:`MSAModuleStack`. With
+    ``sample_rows``, each call keeps a random subset of MSA rows, as the
+    release does at inference.
     """
 
     # OSS Algorithm 8 raw MSA feature widths (concat order feeds linear_no_bias_m).
@@ -64,6 +65,36 @@ class ProtenixMSAModule(nn.Module):
             config.c_s_inputs, self.c_m, bias=False, dtype=self.dtype, skip_create_weights=config.skip_create_weights
         )
         self.msa_stack = MSAModuleStack(config)
+
+    def _sample_rows(
+        self,
+        input_feature_dict: dict[str, Any],
+        generator: torch.Generator | None,
+        row_generator: torch.Generator | None = None,
+    ) -> dict[str, Any]:
+        """Keep the first ``k ~ U[1, N_msa]`` rows of a random permutation, capped at ``sample_cutoff``.
+
+        Mirrors the release's ``sample_msa_feature_dict_random_without_replacement``
+        with the ``random`` strategy and a lower bound of one row. Every call gathers
+        ``min(N_msa, sample_cutoff)`` rows and masks those past ``k`` in
+        ``msa_row_mask``, so the depth stays fixed and a captured recycle replays.
+        """
+        n = input_feature_dict["msa"].shape[-2]
+        count = int(torch.randint(min(1, n), n + 1, (1,), generator=generator))
+        depth = min(n, self.config.sample_cutoff)
+        device = input_feature_dict["msa"].device
+        if device.type == "cpu" and row_generator is None:
+            row_generator = generator
+        rows = torch.randperm(n, device=device, generator=row_generator)[:depth]
+        row_mask = torch.arange(depth, device=device) < count
+        sampled = {name: input_feature_dict[name].index_select(-2, rows) for name in self.input_feature}
+        if "msa_mask" in input_feature_dict:
+            sampled["msa_mask"] = input_feature_dict["msa_mask"].index_select(-2, rows)
+        return {
+            **input_feature_dict,
+            **sampled,
+            "msa_row_mask": row_mask,
+        }
 
     def _embed_msa(self, input_feature_dict: dict[str, Any], s_inputs: torch.Tensor) -> torch.Tensor:
         """Build the MSA embedding ``m`` ``[B, N_msa, N_token, c_m]``."""
@@ -101,6 +132,9 @@ class ProtenixMSAModule(nn.Module):
         msa_mask: torch.Tensor | None = None,
         attn_metadata: AttentionMetadata | None = None,
         precomputed_masks: PrecomputedPairMasks | None = None,
+        generator: torch.Generator | None = None,
+        row_generator: torch.Generator | None = None,
+        sample_rows: bool = True,
     ) -> torch.Tensor:
         """Update pair ``z`` via MSA feature embed + :class:`MSAModuleStack`.
 
@@ -109,6 +143,9 @@ class ProtenixMSAModule(nn.Module):
                 ``has_deletion`` / ``deletion_value`` ``[B, N_msa, N_token]``
             z: ``[B, N_token, N_token, c_z]``
             s_inputs: ``[B, N_token, c_s_inputs]``
+            generator: CPU generator for MSA row sampling; ``None`` uses the global RNG.
+            row_generator: Feature-device generator for the row permutation.
+            sample_rows: Sample rows unless the caller already sampled them.
 
         Returns:
             ``[B, N_token, N_token, c_z]`` updated pair (unchanged if no MSA)
@@ -116,9 +153,18 @@ class ProtenixMSAModule(nn.Module):
         if self.n_blocks < 1 or "msa" not in input_feature_dict:
             return z
 
+        if self.config.sample_rows and sample_rows:
+            if msa_mask is not None:
+                input_feature_dict = {**input_feature_dict, "msa_mask": msa_mask}
+            input_feature_dict = self._sample_rows(input_feature_dict, generator, row_generator)
+            msa_mask = input_feature_dict.get("msa_mask", msa_mask)
         m = self._embed_msa(input_feature_dict, s_inputs)
         if msa_mask is None:
             msa_mask = m.new_ones(m.shape[:-1])
+        row_mask = input_feature_dict.get("msa_row_mask")
+        if row_mask is not None:
+            # OPM excludes unsampled rows.
+            msa_mask = msa_mask * row_mask.to(msa_mask.dtype).unsqueeze(-1)
         if pair_mask is None:
             pair_mask = z.new_ones(z.shape[:-1])
         out = self.msa_stack(m, z, msa_mask, pair_mask, attn_metadata, precomputed_masks=precomputed_masks)
@@ -173,6 +219,8 @@ class ProtenixTrunk(nn.Module):
         token_mask: torch.Tensor | None = None,
         attn_metadata: AttentionMetadata | None = None,
         num_cycles: int | None = None,
+        generator: torch.Generator | None = None,
+        row_generator: torch.Generator | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Run ``n_cycle`` recycling iterations; return trunk ``(s, z)``.
 
@@ -181,6 +229,8 @@ class ProtenixTrunk(nn.Module):
             s_init: ``[B, N_token, c_s]``
             z_init: ``[B, N_token, N_token, c_z]``
             num_cycles: override ``config.n_cycle`` when set
+            generator: CPU generator for per-cycle MSA row sampling
+            row_generator: Feature-device generator for row permutations.
 
         Returns:
             ``s`` ``[B, N_token, c_s]``, ``z`` ``[B, N_token, N_token, c_z]``
@@ -239,13 +289,17 @@ class ProtenixTrunk(nn.Module):
 
         n_cycle = self.n_cycle if num_cycles is None else num_cycles
         for _ in range(n_cycle):
+            sampled_features = cycle_features
+            if self.msa_module.n_blocks > 0 and self.msa_module.config.sample_rows and "msa" in cycle_features:
+                # CPU sampling must stay outside graph capture.
+                sampled_features = self.msa_module._sample_rows(cycle_features, generator, row_generator)
             s, z = self.graph(
                 s=s,
                 z=z,
                 s_init=s_init,
                 z_init=z_init,
                 s_inputs=s_inputs,
-                input_feature_dict=cycle_features,
+                input_feature_dict=sampled_features,
                 pair_mask=pair_mask,
                 token_mask=token_mask,
                 attn_metadata=attn_metadata,
@@ -283,6 +337,7 @@ class ProtenixTrunk(nn.Module):
             pair_mask=pair_mask,
             attn_metadata=attn_metadata,
             precomputed_masks=precomputed,
+            sample_rows=False,
         )
         s = self.linear_no_bias_s(self.layernorm_s(s))
         s.add_(s_init)

@@ -600,7 +600,6 @@ class ProtenixDiffusionSampler(nn.Module):
             atom_mask=mask,
             integrator_config=self.integrator.config,
         )
-        context = SamplingContext.create(device, seed)
 
         def predict(x_noisy: torch.Tensor, sigma_hat: torch.Tensor) -> torch.Tensor:
             return self.denoise(
@@ -616,7 +615,8 @@ class ProtenixDiffusionSampler(nn.Module):
                 cache=cache,
             )
 
-        coords = self.runner.run(self.integrator, plan, predict, context).final_state
+        with SamplingContext.graph_safe(device, seed) as context:
+            coords = self.runner.run(self.integrator, plan, predict, context).final_state
         # Uncached rollout reads relp every step — free only after the loop.
         if not self.use_cache:
             if drop_consumed_features:

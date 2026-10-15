@@ -468,6 +468,38 @@ def _sampler_inputs(device: torch.device, sc: Scenario, module):
 
 
 @pytest.mark.parametrize("use_cache", [False, True])
+def test_sampler_respects_seed(use_cache: bool) -> None:
+    torch.manual_seed(0)
+    device = torch.device("cuda")
+    sc = Scenario(dtype="float32", z_pair_dtype="float32")
+    module = ProtenixDiffusionModule(_build_config(sc)).to(device).eval()
+    with torch.no_grad():
+        for parameter in module.parameters():
+            parameter.normal_(mean=0.0, std=0.02)
+    sampler = ProtenixDiffusionSampler(module, use_cache=use_cache).eval()
+    batch, s_inputs, s_trunk, z_trunk = _sampler_inputs(device, sc, module)
+
+    def roll(seed: int | None) -> torch.Tensor:
+        with torch.inference_mode():
+            return sampler.sample_coords(batch, s_inputs, s_trunk, z_trunk, num_sampling_steps=2, N_sample=2, seed=seed)
+
+    torch.manual_seed(101)
+    first = roll(None)
+    advanced = torch.cuda.get_rng_state()
+    second = roll(None)
+    assert not torch.equal(first, second)
+    torch.manual_seed(101)
+    assert torch.equal(first, roll(None))
+    assert torch.equal(advanced, torch.cuda.get_rng_state())
+    state = torch.cuda.get_rng_state()
+    explicit = roll(7)
+    assert torch.equal(state, torch.cuda.get_rng_state())
+    torch.manual_seed(202)
+    assert torch.equal(explicit, roll(7))
+    assert not torch.equal(explicit, roll(8))
+
+
+@pytest.mark.parametrize("use_cache", [False, True])
 def test_sample_diffusion_smoke(use_cache: bool, monkeypatch: pytest.MonkeyPatch) -> None:
     """Check EDM rollout shape and finiteness."""
     # Keep the random-weight smoke in full fp32.

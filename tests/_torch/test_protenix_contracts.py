@@ -290,7 +290,7 @@ class _StubTrunk(nn.Module):
         self.graph = GraphRegion(self, "forward", None)
         self.pair_state_dtype = pair_state_dtype
 
-    def forward(self, batch, s_inputs, s_init, z_init, num_cycles=1):
+    def forward(self, batch, s_inputs, s_init, z_init, num_cycles=1, generator=None, row_generator=None):
         return s_init, z_init
 
 
@@ -344,12 +344,14 @@ def _tiny_batch(n_token: int = 4, n_atom: int = 4) -> dict[str, torch.Tensor]:
         "deletion_mean": torch.zeros(1, n_token, 1),
         "token_bonds": torch.zeros(1, n_token, n_token),
         "ref_pos": torch.zeros(1, n_atom, 3),
+        "ref_space_uid": torch.arange(n_atom).unsqueeze(0),
         "atom_to_token_idx": torch.arange(n_atom).unsqueeze(0) % n_token,
     }
 
 
 @pytest.mark.parametrize("configured", [False, True])
-def test_protenix_forward_output_modes_and_feature_ownership(monkeypatch, configured, structural_model):
+@pytest.mark.parametrize("unbatched", [False, True])
+def test_protenix_forward_output_modes_and_feature_ownership(monkeypatch, configured, unbatched, structural_model):
     # Keep this API-only test on CPU.
     model = structural_model(
         Protenix, config=ProtenixConfig(compact_output=configured), include_load_weights=False
@@ -361,9 +363,11 @@ def test_protenix_forward_output_modes_and_feature_ownership(monkeypatch, config
     model.distogram_head = _StubDistogram()
     stub_sampler = _StubSampler()
     model.diffusion_sampler = stub_sampler
-    model.generate_attn_metadata = lambda batch: None  # type: ignore[method-assign]
 
     batch = _tiny_batch()
+    if unbatched:
+        batch = {name: value[0] for name, value in batch.items()}
+    shapes = {name: value.shape for name, value in batch.items()}
     owned = set(batch.keys())
     full = model.forward(
         batch,
@@ -375,6 +379,8 @@ def test_protenix_forward_output_modes_and_feature_ownership(monkeypatch, config
     )
     assert set(full) >= {"s_inputs", "s", "z", "coordinate", "distogram_logits"}
     assert set(batch.keys()) == owned
+    assert {name: value.shape for name, value in batch.items()} == shapes
+    assert {"d_lm", "v_lm", "pad_info"} <= stub_sampler.last_kwargs["batch_keys"]
     assert stub_sampler.last_kwargs["drop_consumed_features"] is False
 
     batch2 = _tiny_batch()

@@ -274,7 +274,9 @@ def _autochunk_min_for_gpu(total_gb):
     [
         (80.0, 2560),  # reference GPU -> the anchor
         (320.0, 5120),  # 4x memory -> sqrt(4)=2x threshold
-        (20.0, 1280),  # 1/4 memory -> 1/2 threshold
+        (20.0, 1024),
+        (24.0, 1024),
+        (32.0, 1664),
         (100.0, 2816),  # sqrt(1.25)*2560 = 2862.5 -> round to 128-multiple
         (1.0, _AUTOCHUNK_MIN_FLOOR),  # tiny GPU -> clamped at the floor
     ],

@@ -60,8 +60,8 @@ def default_autochunk_min(device=None) -> int:
 
     Anchored at :data:`DEFAULT_AUTOCHUNK_MIN_REF` on a :data:`_REFERENCE_GPU_GB` GPU,
     scaled by ``sqrt(total_memory / reference)``, rounded to a multiple of 128, and
-    floored at :data:`_AUTOCHUNK_MIN_FLOOR`. Falls back to the reference when CUDA
-    is unavailable.
+    floored at :data:`_AUTOCHUNK_MIN_FLOOR`. Devices with at most 24 GiB cap
+    the threshold at 1024. Falls back to the reference without CUDA.
     """
     try:
         if not torch.cuda.is_available():
@@ -70,7 +70,8 @@ def default_autochunk_min(device=None) -> int:
             device = torch.cuda.current_device()
         total_gb = torch.cuda.get_device_properties(device).total_memory / (1024**3)
         scaled = DEFAULT_AUTOCHUNK_MIN_REF * math.sqrt(total_gb / _REFERENCE_GPU_GB)
-        return max(_AUTOCHUNK_MIN_FLOOR, int(round(scaled / 128) * 128))
+        threshold = max(_AUTOCHUNK_MIN_FLOOR, int(round(scaled / 128) * 128))
+        return min(threshold, 1024) if total_gb <= 24 else threshold
     except Exception:
         return DEFAULT_AUTOCHUNK_MIN_REF
 

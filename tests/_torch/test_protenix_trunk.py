@@ -28,12 +28,15 @@ from bionemo_ir.models.protenix.config import (
 )
 
 
-def _small_trunk_config(c_s: int, c_z: int, c_s_inputs: int, pair_state_dtype: str = "float32") -> TrunkConfig:
+def _small_trunk_config(
+    c_s: int, c_z: int, c_s_inputs: int, pair_state_dtype: str = "float32", sample_rows: bool = False
+) -> TrunkConfig:
     # Keep random-weight assembly stable in fp32.
     template = TemplateEmbedderConfig(
         c=32, c_z=c_z, n_blocks=1, pairwise_head_width=16, pairwise_num_heads=2, pairformer_dtype="float32"
     )
     msa = ProtenixMSAModuleConfig(
+        sample_rows=sample_rows,
         c_m=64,
         c_z=c_z,
         c_hidden_mul=c_z,
@@ -99,6 +102,35 @@ def test_protenix_trunk_smoke():
     # Random untrained recycles may be non-finite; only validate assembly shape.
     assert s.shape == (B, N, c_s)
     assert z.shape == (B, N, N, c_z)
+
+
+def test_protenix_trunk_replays_sampled_recycles():
+    """Row sampling keeps the MSA depth fixed, so every recycle after the first replays one graph."""
+    device = torch.device("cuda")
+    B, N, S = 1, 16, 6
+    c_s, c_z, c_s_inputs = 64, 64, 449
+    trunk = ProtenixTrunk(_small_trunk_config(c_s, c_z, c_s_inputs, sample_rows=True)).to(device).eval()
+    # Finite weights let the test-session capture verification compare against eager.
+    with torch.no_grad():
+        for parameter in trunk.parameters():
+            parameter.normal_(mean=0.0, std=0.02)
+    feat = {
+        "asym_id": torch.zeros(B, N, dtype=torch.long, device=device),
+        "msa": torch.randint(0, 32, (B, S, N), device=device),
+        "has_deletion": torch.zeros(B, S, N, device=device),
+        "deletion_value": torch.zeros(B, S, N, device=device),
+    }
+    s_inputs = 0.1 * torch.randn(B, N, c_s_inputs, device=device)
+    s_init = 0.1 * torch.randn(B, N, c_s, device=device)
+    z_init = 0.1 * torch.randn(B, N, N, c_z, device=device)
+
+    with torch.inference_mode():
+        trunk(feat, s_inputs, s_init, z_init, num_cycles=4, generator=torch.Generator().manual_seed(0))
+
+    tracker = trunk.graph.tracker
+    assert len(tracker.graph_state_by_key) == 1, dict(tracker.execution_counts)
+    assert tracker.execution_counts["capture"] == 1
+    assert tracker.execution_counts["replay"] == 3
 
 
 def test_protenix_default_pairformer_config():

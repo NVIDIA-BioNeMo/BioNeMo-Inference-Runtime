@@ -365,6 +365,8 @@ class ProtenixMSAModuleConfig(MSAModuleStackConfig):
     dtype: str = "bfloat16"
     c_s_inputs: int = _Default.c_s_inputs
     msa_input_dim: int = 34  # one-hot msa (32) + has_deletion (1) + deletion (1)
+    sample_rows: bool = Field(default=True, description="Resample MSA rows on every inference recycle.")
+    sample_cutoff: int = Field(default=16384, ge=1, description="Maximum sampled MSA rows.")
 
 
 class TrunkConfig(BaseConfig):
@@ -424,7 +426,7 @@ class ProtenixConfig(BaseConfig):
         default=True,
         description=(
             "Truncate pairformer nodes whose checkpoint parameters are all below 1e-30 in magnitude; the model's"
-            " state_dict then omits their parameters. Turn off to train or to export a full state_dict."
+            " state_dict then omits their parameters. Turn off to export a full state_dict."
         ),
     )
     c_s: int = _Default.c_s

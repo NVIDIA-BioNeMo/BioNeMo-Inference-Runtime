@@ -47,6 +47,7 @@ from bionemo_ir._torch.modules.protenix import (
     ProtenixTrunk,
 )
 from bionemo_ir.configs import BaseConfig
+from bionemo_ir._torch.modules.protenix.atom_attention import atom_windows
 from bionemo_ir.hubs import FoldingSupportMatrix as SupMat
 from bionemo_ir.hubs import load_weights as load_weights_from_hubs
 
@@ -122,6 +123,18 @@ def _restore(replaced: list[tuple[nn.Module, str, object]]) -> None:
 def _unbatch(x: torch.Tensor, ndim: int) -> torch.Tensor:
     """Drop leading batch dim when present (OSS unbatched layout, B=1)."""
     return x[0] if x.dim() > ndim else x
+
+
+def _batch_features(features: dict[str, Any]) -> dict[str, Any]:
+    """Add the singleton batch dimension to OSS features."""
+    return {
+        name: value.unsqueeze(0)
+        if isinstance(value, torch.Tensor)
+        else _batch_features(value)
+        if isinstance(value, dict) and name != "pad_info"
+        else value
+        for name, value in features.items()
+    }
 
 
 def _configure_inference_precision(config: BaseConfig) -> BaseConfig:
@@ -510,6 +523,8 @@ class Protenix(nn.Module, OptimizedModuleSetterMixin):
                 ``[..., N_atom]``, ``d_lm`` / ``v_lm`` / ``pad_info``
                 (windowed ``K×W×H``), ``relp`` or RPE index fields, and
                 optional template / confidence masks.
+                Unbatched OSS features are accepted. Missing atom windows
+                are built from ``ref_pos`` and ``ref_space_uid``.
             recycling_steps: trunk recycle count (cycles = this + 1)
             num_sampling_steps: EDM steps (``None`` → config default)
             diffusion_samples: ``N_sample`` / ``S``
@@ -543,7 +558,14 @@ class Protenix(nn.Module, OptimizedModuleSetterMixin):
         # Precompute relp once (shared by trunk RPE and diffusion conditioning).
         # Destructive mode takes ownership; otherwise shallow-copy the shell.
         batch = batch if consume_input_features else {**batch}
+        if batch["ref_pos"].ndim == 2:
+            batched = _batch_features(batch)
+            batch.update(batched)
         attn_metadata = self.generate_attn_metadata(batch)
+        if not all(name in batch for name in ("d_lm", "v_lm", "pad_info")):
+            windows = atom_windows(batch["ref_pos"], batch["ref_space_uid"], attn_metadata, self.n_queries, self.n_keys)
+            for name, value in windows.items():
+                batch.setdefault(name, value)
 
         def _drop_features(*names: str) -> None:
             for name in names:
@@ -556,7 +578,13 @@ class Protenix(nn.Module, OptimizedModuleSetterMixin):
 
         s_init, z_init = self._init_pair_state(s_inputs, batch, _drop_features)
 
-        s, z = self.trunk(batch, s_inputs, s_init, z_init, num_cycles=num_cycles)
+        generator = None if sampling_seed is None else torch.Generator().manual_seed(sampling_seed)
+        row_generator = (
+            None if sampling_seed is None else torch.Generator(device=s_inputs.device).manual_seed(sampling_seed)
+        )
+        s, z = self.trunk(
+            batch, s_inputs, s_init, z_init, num_cycles=num_cycles, generator=generator, row_generator=row_generator
+        )
         del s_init, z_init
         _drop_features(
             "msa",

@@ -226,6 +226,13 @@ class WriterUDF(StatefulStageUDF):
             max_pae=row.get("max_pae", None),
             residue_names=row.get("residue_names", None),
             mol_types=row.get("mol_types", None),
+            # Ligand atoms whose names fall outside the ``AtomTypes`` vocabulary
+            # sit in overflow slots, so the slot's canonical name is unrelated to
+            # the atom. Dropping these two here made every such atom inherit its
+            # slot name, which collides inside a residue ("Multiple atoms with
+            # same atom_id") and loses the element.
+            atom_names=row.get("atom_names", None),
+            atom_elements=row.get("atom_elements", None),
         )
         row_id = row.get(self.RECORD_ID_IN_BATCH_COLUMN)
 

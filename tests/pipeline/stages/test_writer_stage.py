@@ -359,3 +359,95 @@ class TestWriterStage:
         assert "residue_types" in required_keys
         assert "atom_mask" in required_keys
         assert "residue_indices" in required_keys
+
+
+class TestWriterUDFLigandAtomIdentity:
+    """Regression for the nvbug 6932678 follow-up.
+
+    The shared scatter places ligand atoms whose names fall outside the
+    ``AtomTypes`` vocabulary into overflow slots, where the slot's canonical
+    name says nothing about the atom. ``WriterUDF`` rebuilds a
+    ``FoldingOutput`` from the row and used to leave ``atom_names`` and
+    ``atom_elements`` behind, so every overflow atom inherited its slot name.
+    Inside one ligand residue that collides, and ``modelcif`` rejected it with
+    "Multiple atoms with same atom_id". Direct writer calls were unaffected,
+    which is why this only showed up in the full pipeline.
+    """
+
+    @staticmethod
+    def _ligand_row():
+        from bionemo_ir.pipeline.utils.atom import scatter_flat_atoms_to_folding_layout
+
+        # Names as the Boltz2 SMILES builder emits them for NAG.
+        names = ["C24", "C22", "O16", "N23", "C29"]
+        elements = ["C", "C", "O", "N", "C"]
+        n = len(names)
+        positions = np.arange(n * 3, dtype=np.float32).reshape(n, 3)
+        scattered = scatter_flat_atoms_to_folding_layout(
+            positions,
+            np.arange(n),
+            names,
+            np.ones(n, dtype=bool),
+            n,
+            atom_elements=elements,
+        )
+        assert int(scattered.mask.sum()) == n
+        return names, {
+            "atom_positions": scattered.positions,
+            "residue_types": np.full(n, 20, dtype=np.int64),
+            "atom_mask": scattered.mask,
+            "residue_indices": np.ones(n, dtype=np.int64),
+            "chain_indices": np.full(n, 2, dtype=np.int64),
+            "residue_names": ["NAG"] * n,
+            "mol_types": np.full(n, 3, dtype=np.int64),
+            "atom_names": scattered.names,
+            "atom_elements": scattered.elements,
+            "__record_id": "nag",
+            "__idx_in_batch": 0,
+        }
+
+    def test_overflow_atom_names_reach_the_written_cif(self):
+        from bionemo_ir.data.utils import get_all_atom_types, get_all_residue_types
+
+        names, row = self._ligand_row()
+        udf = WriterUDF(
+            compute_by_rows=True,
+            drop_keys=[],
+            expected_input_keys=["atom_positions", "residue_types", "atom_mask", "residue_indices"],
+            update_row=False,
+            mappings={
+                "res_type_mapping": dict(enumerate(get_all_residue_types("boltz2"))),
+                "atom_type_mapping": dict(enumerate(get_all_atom_types("boltz2"))),
+            },
+            format="cif",
+            output_path=None,
+        )
+
+        result = asyncio.run(udf.udf_for_item(row))
+
+        atom_rows = [line for line in result["output_raw"].splitlines() if line.startswith(("ATOM", "HETATM"))]
+        assert len(atom_rows) == len(names)
+        written = sorted(line.split()[3] for line in atom_rows)
+        assert written == sorted(names)
+        # Every atom in one residue must keep a distinct id, or modelcif rejects it.
+        assert len(set(written)) == len(written)
+
+    def test_atom_identity_survives_the_arrow_tensor_roundtrip(self):
+        """Ray moves rows between stages as Arrow blocks.
+
+        ``atom_names``/``atom_elements`` are fixed-width unicode arrays, a
+        different Arrow type from every other field on the row, so their
+        transport is worth pinning rather than assuming. This goes through the
+        tensor extension directly: ``ArrowBlockBuilder`` would start a local
+        Ray instance, which breaks later tests that call ``ray.init``.
+        """
+        import pyarrow as pa
+        from ray.data.extensions.tensor_extension import ArrowTensorArray
+
+        _, row = self._ligand_row()
+        table = pa.table({field: ArrowTensorArray.from_numpy(row[field]) for field in ("atom_names", "atom_elements")})
+
+        for field in ("atom_names", "atom_elements"):
+            restored = table.column(field).chunk(0).to_numpy()
+            assert restored.dtype == row[field].dtype
+            assert np.array_equal(restored, row[field])

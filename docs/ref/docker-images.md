@@ -50,8 +50,9 @@ against; a `--build-arg` there would let a rebased image claim it. `BASE_TAG`
 still names the `deps` tag, though, so passing it renames the image without
 changing its base — pass it only to label a build you know matches the pin.
 
-`nvcc` never compiles CUDA here — the kernels ship precompiled, and it is only
-read to stamp the wheel's `+cuXYZ` local version. `CUDA_TAG` overrides that, and
+CuTeDSL kernels ship precompiled. The default build also uses `nvcc` to compile
+the source-visible ClaudeKit CUDA kernel. The toolkit version stamps the
+wheel's `+cuXYZ` local version; `CUDA_TAG` overrides that version tag, and
 `BUILD_JOBS` caps the compile parallelism:
 
 ```bash
@@ -123,6 +124,11 @@ the NVIDIA container runtime; `BIOIR_GPUS` overrides that (`none`, `all`,
 
 `runtime` installs the built wheel onto `nvidia/cuda:*-base`, adding `gcc` and
 the Python headers for Triton JIT compilation.
+
+The CUDA base supplies `libcudart` for the source-built ClaudeKit kernel.
+The host driver supplies `libcuda.so.1` through `docker run --gpus`.
+The build checks that every other extension dependency resolves and rejects
+CUDA math and JIT libraries outside this base's supported closure.
 
 ```bash
 make -C docker runtime TAG=local

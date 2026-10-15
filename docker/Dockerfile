@@ -224,8 +224,8 @@ COPY --from=wheel /dist/ /
 FROM ${RUNTIME_IMAGE}:${RUNTIME_TAG} AS runtime
 #
 # Deliberately a `base` CUDA image, not `runtime` or `devel`:
-#   * the extension links exactly one CUDA library, libcuda.so.1 (the driver
-#     API), which the container toolkit injects from the host;
+#   * the extension needs libcuda.so.1 from the host and libcudart from the
+#     CUDA base for the default source-built ClaudeKit kernel;
 #   * it loads already-compiled CUBINs via cuModuleLoadData, so the driver never
 #     JITs and neither nvrtc nor nvJitLink is needed;
 #   * torch brings its own cudart/cublas/cudnn as PyPI wheels, so a CUDA
@@ -278,14 +278,14 @@ RUN set -eux; \
     cp -a "${license_dir}/." /usr/share/licenses/bionemo-ir/
 
 # Check what can actually be checked without a GPU: that the wheel carried the
-# compiled extension, and that the only CUDA library it needs is the driver's
+# compiled extension, and that its dependencies resolve except for the driver's
 # libcuda.so.1. Importing it here is impossible -- dlopen has to resolve
 # DT_NEEDED libcuda.so.1, and the container toolkit injects that from the host
 # only at `docker run --gpus`, not at build time. The import is verified at run
 # time instead.
 # Runtime details: docs/ref/docker-images.md.
 # Asserting libcuda.so.1 is present says nothing about what else crept in, so
-# also fail if the closure picks up a toolkit or math library this base
+# also fail if the closure picks up another toolkit or math library this base
 # deliberately does not ship. Written as `if ... exit 1`, not `! grep`:
 # `set -e` is specified to ignore the exit status of a !-negated command, so the
 # negated form would report every leak as a clean build.
@@ -295,7 +295,11 @@ RUN set -eux; \
     deps="$(ldd "${so}")"; \
     echo "${deps}"; \
     echo "${deps}" | grep -q 'libcuda\.so\.1'; \
-    if echo "${deps}" | grep -Eq 'lib(cudart|cublas|cublasLt|cudnn|nvrtc|nvJitLink|cufft|curand|cusparse|cusolver)\.so'; then \
+    if echo "${deps}" | grep -vE '^[[:space:]]*libcuda\.so\.1[[:space:]]+=>' | grep -q 'not found'; then \
+        echo "extension has unresolved runtime dependencies" >&2; \
+        exit 1; \
+    fi; \
+    if echo "${deps}" | grep -Eq 'lib(cublas|cublasLt|cudnn|nvrtc|nvJitLink|cufft|curand|cusparse|cusolver)\.so'; then \
         echo "extension links a CUDA library this image does not ship" >&2; \
         exit 1; \
     fi; \

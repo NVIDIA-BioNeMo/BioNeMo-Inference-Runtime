@@ -34,6 +34,8 @@ from bionemo_ir.pipeline.models.boltz2.const import chain_type_ids, tokens
 from bionemo_ir.pipeline.utils.atom import (
     NUM_FOLDING_ATOM_TYPES,
     decode_atom_name_chars,
+    decode_element_symbols,
+    one_hot_indices,
     scatter_flat_atoms_to_folding_layout,
 )
 
@@ -55,6 +57,17 @@ _BOLTZ_TO_FOLDING_MOL_TYPE[chain_type_ids["NONPOLYMER"]] = MOL_TYPE_LIGAND
 _BOLTZ_RES_NAMES: list[str] = list(tokens)
 _BOLTZ_RES_NAMES[0] = "UNK"
 _BOLTZ_RES_NAMES[1] = "UNK"
+
+# Boltz2-specific per-sample ``(B, S)`` scores, beside ``ptm`` and ``iptm``.
+_EXTRA_SCORE_KEYS = (
+    "confidence_score",
+    "complex_plddt",
+    "complex_iplddt",
+    "complex_pde",
+    "complex_ipde",
+    "ligand_iptm",
+    "protein_iptm",
+)
 
 
 class PostProcessorConfig(BaseModel):
@@ -94,33 +107,41 @@ class PostProcessor(PostProcessorBase):
         # --- Best sample selection ----------------------------------------------
         conf_score = _cpu(output["confidence_score"])  # (B, S)
         best_idx = int(conf_score[0].argmax())
-        n_samples = int(_cpu(output["coords"]).shape[1])
+        coords = torch.as_tensor(output["coords"])
+        n_samples = int(coords.shape[1])
 
         # --- Coordinates (best sample, flat) ------------------------------------
-        best_coords_flat = _cpu(output["coords"])[0, best_idx].numpy()  # (N_atoms_pad, 3)
+        best_coords_flat = _cpu(coords[0, best_idx]).numpy()  # (N_atoms_pad, 3)
 
         # --- Atom-to-token mapping ----------------------------------------------
-        atom_to_token = _cpu(batch["atom_to_token"])[0]  # (N_atoms_pad, N_tokens_pad)
-        token_per_atom = atom_to_token.argmax(dim=-1).numpy()  # (N_atoms_pad,)
+        token_per_atom = one_hot_indices(torch.as_tensor(batch["atom_to_token"])[0])  # (N_atoms_pad,)
 
         # --- Decode atom names --------------------------------------------------
         raw_atom_names = batch.get("ref_atom_name_chars")
         if raw_atom_names is not None:
-            raw_atom_names = _cpu(raw_atom_names)[0]
+            raw_atom_names = torch.as_tensor(raw_atom_names)[0]
         flat_atom_names = decode_atom_name_chars(raw_atom_names, atom_mask_bool)
 
+        # --- Decode elements ----------------------------------------------------
+        # Boltz2 one-hots ``ref_element`` by atomic number directly (see
+        # ``boltz2/const.py`` ``num_elements = 128``), so no index offset.
+        raw_elements = batch.get("ref_element")
+        if raw_elements is not None:
+            raw_elements = torch.as_tensor(raw_elements)[0]
+        flat_atom_elements = decode_element_symbols(raw_elements, atom_mask_bool, index_offset=0)
+
         # --- Remap into the canonical atom layout -------------------------------
-        atom_positions, atom_mask_out = scatter_flat_atoms_to_folding_layout(
+        atom_positions, atom_mask_out, per_slot_atom_names, per_slot_elements = scatter_flat_atoms_to_folding_layout(
             best_coords_flat,
             token_per_atom,
             flat_atom_names,
             atom_mask_bool,
             n_tokens,
+            atom_elements=flat_atom_elements,
         )
 
         # --- Residue metadata from batch ----------------------------------------
-        res_type_onehot = _cpu(batch["res_type"])[0].numpy()  # (N_tokens_pad, C)
-        residue_types = res_type_onehot[:n_tokens].argmax(axis=-1).astype(np.int64)
+        residue_types = one_hot_indices(torch.as_tensor(batch["res_type"])[0, :n_tokens]).astype(np.int64)
         # Boltz2's residue_types index into the full 33-entry token table
         # (PAD, GAP, 20 amino acids, X, RA..RX, DA..DX). Writers built from
         # ``get_all_residue_types("boltz-2")`` have the same 33-entry
@@ -163,8 +184,14 @@ class PostProcessor(PostProcessorBase):
         max_pae = float(np.max(pae)) if pae is not None else None
 
         # --- Scalar confidence metrics ------------------------------------------
-        ptm = _scalar(output, "ptm", best_idx)
-        iptm = _scalar(output, "iptm", best_idx)
+        # Copy every score to the host at once; separate reads each synchronize.
+        score_keys = ("ptm", "iptm", *_EXTRA_SCORE_KEYS)
+        raw_pci = output.get("pair_chains_iptm", {})
+        selected = [_best_sample_score(output.get(key), best_idx) for key in score_keys]
+        selected += [_pair_chain_score(val, best_idx) for inner in raw_pci.values() for val in inner.values()]
+        values = iter(_to_floats(selected))
+        scores = {key: next(values) for key in score_keys}
+        pair_chains_iptm = {str(c1): {str(c2): next(values) for c2 in inner} for c1, inner in raw_pci.items()}
 
         result = FoldingOutput(
             atom_positions=atom_positions,
@@ -174,37 +201,22 @@ class PostProcessor(PostProcessorBase):
             b_factors=b_factors,
             chain_indices=chain_indices,
             plddt=plddt,
-            ptm=ptm,
-            iptm=iptm,
+            ptm=scores["ptm"],
+            iptm=scores["iptm"],
             pae=pae,
             max_pae=max_pae,
             residue_names=residue_names,
             mol_types=mol_types_out,
+            atom_names=per_slot_atom_names,
+            atom_elements=per_slot_elements,
         )
 
         # --- Boltz2-specific extras ---------------------------------------------
-        result["confidence_score"] = _scalar(output, "confidence_score", best_idx)
-        result["complex_plddt"] = _scalar(output, "complex_plddt", best_idx)
-        result["complex_iplddt"] = _scalar(output, "complex_iplddt", best_idx)
-        result["complex_pde"] = _scalar(output, "complex_pde", best_idx)
-        result["complex_ipde"] = _scalar(output, "complex_ipde", best_idx)
-        result["ligand_iptm"] = _scalar(output, "ligand_iptm", best_idx)
-        result["protein_iptm"] = _scalar(output, "protein_iptm", best_idx)
+        for key in _EXTRA_SCORE_KEYS:
+            result[key] = scores[key]
         result["pde"] = pde
         result["n_samples"] = n_samples
         result["best_sample_idx"] = best_idx
-
-        raw_pci = output.get("pair_chains_iptm", {})
-        pair_chains_iptm: dict[str, dict[str, float]] = {}
-        for c1, inner in raw_pci.items():
-            k1 = str(c1)
-            pair_chains_iptm[k1] = {}
-            for c2, val in inner.items():
-                if isinstance(val, torch.Tensor):
-                    v = val.cpu().squeeze()
-                    pair_chains_iptm[k1][str(c2)] = float(v[best_idx] if v.dim() > 0 else v)
-                else:
-                    pair_chains_iptm[k1][str(c2)] = float(val)
         result["pair_chains_iptm"] = pair_chains_iptm
 
         return result
@@ -222,19 +234,34 @@ def _cpu(t: Any) -> torch.Tensor:
     return torch.as_tensor(t)
 
 
-def _scalar(output: dict, key: str, best_idx: int) -> float:
-    """Extract a scalar confidence metric for the best sample."""
-    v = output.get(key)
-    if v is None:
-        return float("nan")
-    if isinstance(v, torch.Tensor):
-        v = v.cpu()
-        if v.dim() >= 2:
-            return float(v[0, best_idx])
-        if v.dim() == 1:
-            return float(v[0])
-        return float(v)
-    return float(v)
+def _best_sample_score(value: Any, best_idx: int) -> Any:
+    """Select the best sample of a ``(B, S)`` score without leaving its device."""
+    if isinstance(value, torch.Tensor):
+        if value.dim() >= 2:
+            return value[0, best_idx]
+        if value.dim() == 1:
+            return value[0]
+    return value
+
+
+def _pair_chain_score(value: Any, best_idx: int) -> Any:
+    """Select the best sample of a ``pair_chains_iptm`` entry without leaving its device."""
+    if isinstance(value, torch.Tensor):
+        value = value.squeeze()
+        return value[best_idx] if value.dim() > 0 else value
+    return value
+
+
+def _to_floats(values: list[Any]) -> list[float]:
+    """Convert one-element scores to floats, ``None`` to NaN, in one host copy."""
+    tensors = [value.reshape(()) for value in values if isinstance(value, torch.Tensor)]
+    if len({(t.device, t.dtype) for t in tensors}) > 1:
+        tensors = [t.to(tensors[0].device, torch.float64) for t in tensors]
+    host = iter(torch.stack(tensors).tolist() if tensors else ())
+    return [
+        float(next(host)) if isinstance(value, torch.Tensor) else float("nan") if value is None else float(value)
+        for value in values
+    ]
 
 
 def _extract_pair_matrix(
@@ -247,7 +274,9 @@ def _extract_pair_matrix(
     raw = output.get(key)
     if raw is None:
         return None
-    if isinstance(raw, torch.Tensor):
-        raw = raw.cpu().numpy()
-    mat = raw[0, best_idx][:n_tokens, :n_tokens]
-    return np.round(mat, 3)
+    mat = torch.as_tensor(raw)[0, best_idx, :n_tokens, :n_tokens]
+    if mat.is_cuda and mat.dtype == torch.float32:
+        # Equals ``np.round(x, 3)`` for every float32 bit pattern, NaN
+        # payloads aside, and leaves the host only the copy.
+        return mat.round(decimals=3).cpu().numpy()
+    return np.round(_cpu(mat).numpy(), 3)

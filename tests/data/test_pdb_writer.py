@@ -407,3 +407,43 @@ class TestPDBWriterMultiPolymer:
         # Both ATOM and HETATM records persist to disk with correct codes
         assert "ATOM" in text and "HETATM" in text
         assert "ALA" in text and "NAG" in text
+
+
+class TestPDBWriterSmilesLigandAtoms:
+    """Regression: SMILES ligand atoms used to vanish from the PDB (nvbug 6932678)."""
+
+    @pytest.fixture
+    def writer(self):
+        res_map, atom_map = of3_mappings()
+        return PDBWriter(res_type_mapping=res_map, atom_type_mapping=atom_map, output_path="test.pdb")
+
+    def test_smiles_generated_names_are_written(self, writer):
+        names = ["C24", "C22", "O16", "N23"]
+        out = writer.write(
+            nonpoly_ligand_folding(
+                atom_names=names,
+                atom_elements=["C", "C", "O", "N"],
+                ccd_code="NAG",
+                with_mol_types=True,
+            )
+        )
+
+        hetatm_lines = [l for l in out.split("\n") if l.startswith("HETATM")]
+        assert len(hetatm_lines) == len(names)
+        # Atom name occupies cols 13-16 (0-indexed 12:16).
+        assert {line[12:16].strip() for line in hetatm_lines} == set(names)
+
+    def test_two_letter_elements_are_not_truncated(self, writer):
+        out = writer.write(
+            nonpoly_ligand_folding(
+                atom_names=["CL7", "FE1", "ZN2"],
+                atom_elements=["Cl", "Fe", "Zn"],
+                ccd_code="LIG",
+                with_mol_types=True,
+            )
+        )
+
+        hetatm_lines = [l for l in out.split("\n") if l.startswith("HETATM")]
+        assert len(hetatm_lines) == 3
+        # Element symbol occupies cols 77-78 (0-indexed 76:78).
+        assert {line[76:78].strip() for line in hetatm_lines} == {"Cl", "Fe", "Zn"}

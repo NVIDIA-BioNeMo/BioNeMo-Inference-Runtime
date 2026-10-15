@@ -32,10 +32,18 @@ The shared residue-name remap and chain-classification logic lives in
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+
 import numpy as np
 
 from bionemo_ir.data.schemas.basic import AtomType, FoldingOutput, ResType
-from bionemo_ir.data.writers.base_writer import _IHM_REMAP, _MOL_TYPE_TO_KIND, BaseWriter, _classify_chain
+from bionemo_ir.data.writers.base_writer import (
+    _IHM_REMAP,
+    _MOL_TYPE_TO_KIND,
+    BaseWriter,
+    _classify_chain,
+    _occupied_atoms,
+)
 
 # PDB single-character chain IDs (cf. spec — column 22 is a single byte).
 # 62 unique chains max; beyond that PDB format breaks and callers should
@@ -114,19 +122,18 @@ class PDBWriter(BaseWriter):
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _format_atom_line(
+    def _format_atom_lines(
         record_type: str,
-        atom_index: int,
-        atom_name: str,
+        first_atom_index: int,
         res_name_3: str,
         chain_tag: str,
         residue_index: int,
-        pos: np.ndarray,
-        b_factor: float,
-        element: str,
-        occupancy: float = 1.00,
-    ) -> str:
-        """Format a single ``ATOM`` / ``HETATM`` line per PDB columnar spec.
+        atom_names: Sequence[str],
+        positions: Sequence[Sequence[float]],
+        b_factors: Sequence[float],
+        elements: Sequence[str],
+    ) -> list[str]:
+        """Format one residue's ``ATOM`` / ``HETATM`` lines per PDB columnar spec.
 
         Atom name placement (cols 13-16): four-character names are
         left-aligned at col 13; three-and-fewer-character names start at
@@ -134,20 +141,27 @@ class PDBWriter(BaseWriter):
         legacy AlphaFold writer and matches PDB v3.3 examples for
         residues with hydrogen-bearing positions.
         """
-        # 4-char atom names use the full slot; shorter names get one
-        # leading space so the element-symbol column stays aligned.
-        name = atom_name if len(atom_name) == 4 else f" {atom_name}"
         alt_loc = ""
         insertion_code = ""
+        occupancy = 1.00
         charge = ""
-        return (
-            f"{record_type:<6}{atom_index:>5} {name:<4}{alt_loc:>1}"
-            f"{res_name_3:>3} {chain_tag:>1}"
-            f"{residue_index:>4}{insertion_code:>1}   "
-            f"{pos[0]:>8.3f}{pos[1]:>8.3f}{pos[2]:>8.3f}"
+        residue = f"{alt_loc:>1}{res_name_3:>3} {chain_tag:>1}{residue_index:>4}{insertion_code:>1}   "
+        return [
+            # 4-char atom names use the full slot; shorter names get one
+            # leading space so the element-symbol column stays aligned.
+            f"{record_type:<6}{atom_index:>5} {name if len(name) == 4 else f' {name}':<4}{residue}"
+            f"{x:>8.3f}{y:>8.3f}{z:>8.3f}"
             f"{occupancy:>6.2f}{b_factor:>6.2f}          "
             f"{element:>2}{charge:>2}"
-        )
+            for atom_index, name, (x, y, z), b_factor, element in zip(
+                range(first_atom_index, first_atom_index + len(atom_names)),
+                atom_names,
+                positions,
+                b_factors,
+                elements,
+                strict=True,
+            )
+        ]
 
     # ------------------------------------------------------------------
     # Main entry point
@@ -186,6 +200,10 @@ class PDBWriter(BaseWriter):
         # leave both ``None`` and fall back to the legacy paths.
         residue_names: list[str] | None = folding_output.get("residue_names")
         mol_types: np.ndarray | None = folding_output.get("mol_types")
+
+        # Per-slot atom identity; see the equivalent block in CIFWriter.
+        per_slot_atom_names: np.ndarray | None = folding_output.get("atom_names")
+        per_slot_elements: np.ndarray | None = folding_output.get("atom_elements")
 
         n = residue_types.shape[0]
 
@@ -270,6 +288,13 @@ class PDBWriter(BaseWriter):
         chain_tag_of: dict[int, str] = {c: PDB_CHAIN_IDS[c] for c in unique_chains.tolist()}
         chain_is_het: dict[int, bool] = {c: chain_kind[c] == "nonpoly" for c in chain_kind}
 
+        atoms = _occupied_atoms(
+            atom_types, atom_positions, atom_mask, b_factors, per_slot_atom_names, per_slot_elements
+        )
+        # Python floats format like the NumPy scalars they replace.
+        coordinates = atoms.positions.tolist()
+        atom_b_factors = atoms.b_factors.tolist()
+
         # ── Emit lines ────────────────────────────────────────────────
         pdb_lines: list[str] = []
         pdb_lines.extend(self.get_pdb_headers())
@@ -312,36 +337,21 @@ class PDBWriter(BaseWriter):
                 res_name_3 = pdb_restypes[residue_types[i]]
 
             # Emit ATOM/HETATM rows for the masked-in atoms.
-            for atom_name, pos, mask, b_factor in zip(
-                atom_types,
-                atom_positions[i],
-                atom_mask[i],
-                b_factors[i],
-                strict=False,
-            ):
-                if mask < 0.5:
-                    continue
-                # Current AtomTypes universe contains only single-letter
-                # element symbols (C, N, O, S, P) suffixed with digits
-                # or primes, so first-char extraction is exact. If
-                # two-letter elements (CL, FE, MG, ZN, …) ever enter
-                # the universe, AtomType must gain an explicit
-                # ``element`` field and this line must consult it.
-                element = atom_name[0]
-                pdb_lines.append(
-                    self._format_atom_line(
-                        record_type=record_type,
-                        atom_index=atom_index,
-                        atom_name=atom_name,
-                        res_name_3=res_name_3,
-                        chain_tag=chain_tag,
-                        residue_index=r,
-                        pos=pos,
-                        b_factor=float(b_factor),
-                        element=element,
-                    )
+            start, end = atoms.bounds[i], atoms.bounds[i + 1]
+            pdb_lines.extend(
+                self._format_atom_lines(
+                    record_type=record_type,
+                    first_atom_index=atom_index,
+                    res_name_3=res_name_3,
+                    chain_tag=chain_tag,
+                    residue_index=r,
+                    atom_names=atoms.names[start:end],
+                    positions=coordinates[start:end],
+                    b_factors=atom_b_factors[start:end],
+                    elements=atoms.elements[start:end],
                 )
-                atom_index += 1
+            )
+            atom_index += end - start
 
             last_chain_index = c
             last_res_pdb_name = res_name_3

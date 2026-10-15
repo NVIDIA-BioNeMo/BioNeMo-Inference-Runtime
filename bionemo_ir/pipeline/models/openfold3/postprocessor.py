@@ -31,6 +31,8 @@ from bionemo_ir.pipeline.base import PostProcessorBase
 from bionemo_ir.pipeline.utils.atom import (
     NUM_FOLDING_ATOM_TYPES,
     decode_atom_name_chars,
+    decode_element_symbols,
+    one_hot_indices,
     scatter_flat_atoms_to_folding_layout,
 )
 
@@ -94,27 +96,37 @@ class PostProcessor(PostProcessorBase):
         # --- Decode atom names ---
         raw_atom_names = batch.get("ref_atom_name_chars")
         if raw_atom_names is not None:
-            raw_atom_names = _cpu(raw_atom_names).squeeze(0)
+            raw_atom_names = torch.as_tensor(raw_atom_names).squeeze(0)
         flat_atom_names = decode_atom_name_chars(raw_atom_names, atom_mask_bool)
+
+        # --- Decode elements ---
+        # OF3 one-hots ``ref_element`` by atomic number minus one (see
+        # ``feature_generators.py``: ``anum - 1`` into NUM_ELEMENT_CLASSES=119,
+        # with index 118 reserved for unknown), hence ``index_offset=1``.
+        raw_elements = batch.get("ref_element")
+        if raw_elements is not None:
+            raw_elements = torch.as_tensor(raw_elements).squeeze(0)
+        flat_atom_elements = decode_element_symbols(raw_elements, atom_mask_bool, index_offset=1)
 
         # --- Remap into the shared atom layout ---
         # The universe covers protein backbone+sidechain, nucleic backbone,
         # nucleobases, and common ligand atom labels. Ligand tokens are
-        # atomized (one atom = one token), so
-        # writing each atom to its own (token, atom-name-slot) does not
-        # collide with neighbouring tokens: there's no shared vocabulary
-        # problem here because each ligand atom owns its own row.
-        atom_positions, atom_mask_out = scatter_flat_atoms_to_folding_layout(
+        # atomized (one atom = one token), so writing each atom to its own
+        # (token, atom-name-slot) does not collide with neighbouring tokens.
+        # Names outside the universe — SMILES-generated ones in particular —
+        # take an overflow slot in their own row and keep their real name via
+        # ``per_slot_atom_names``.
+        atom_positions, atom_mask_out, per_slot_atom_names, per_slot_elements = scatter_flat_atoms_to_folding_layout(
             best_pos,
             atom_to_token,
             flat_atom_names,
             atom_mask_bool,
             n_tokens,
+            atom_elements=flat_atom_elements,
         )
 
         # --- Residue metadata ---
-        restype_onehot = _cpu(batch["restype"]).squeeze(0).numpy()  # (N_tokens, 32)
-        residue_types = restype_onehot[:n_tokens].argmax(axis=-1).astype(np.int64)
+        residue_types = one_hot_indices(torch.as_tensor(batch["restype"]).squeeze(0)[:n_tokens]).astype(np.int64)
         residue_indices = _cpu(batch["residue_index"]).squeeze(0).numpy()[:n_tokens].astype(np.int64)
         # OF3 asym_id is 1-indexed per OSS contract (see feature_context.py
         # _renumber_chain_ids → chains numbered 1..N alphabetically). The
@@ -171,6 +183,8 @@ class PostProcessor(PostProcessorBase):
             max_pae=max_pae,
             residue_names=residue_names,
             mol_types=mol_types_out,
+            atom_names=per_slot_atom_names,
+            atom_elements=per_slot_elements,
         )
 
         return result

@@ -892,6 +892,8 @@ class FoldingOutput(dict):
         max_pae: float | None = None,
         residue_names: list[str] | None = None,
         mol_types: np.ndarray | None = None,
+        atom_names: np.ndarray | None = None,
+        atom_elements: np.ndarray | None = None,
     ):
         """
         Args:
@@ -943,6 +945,18 @@ class FoldingOutput(dict):
                 3=ligand). Lets the writer classify chains explicitly rather
                 than inferring from residue letters. When ``None``, writers
                 fall back to the legacy classification heuristics.
+            atom_names: (num_res, num_atom_type) string ndarray, optional
+                Per-slot atom name as the producer named it. ``AtomTypes`` is a
+                fixed vocabulary, so ligand atoms whose names fall outside it
+                occupy overflow slots whose canonical name is unrelated to the
+                atom. When provided, writers emit these names instead of the
+                slot's ``AtomTypes`` name. Entries are empty where the
+                ``atom_mask`` is zero, and writers fall back to the slot name
+                for any empty entry.
+            atom_elements: (num_res, num_atom_type) string ndarray, optional
+                Per-slot element symbol. Writers otherwise derive the element
+                from the first character of the atom name, which is wrong for
+                two-letter elements (CL, FE, MG, ZN, ...).
         """
         super().__init__(
             atom_positions=atom_positions,
@@ -958,6 +972,8 @@ class FoldingOutput(dict):
             max_pae=max_pae,
             residue_names=residue_names,
             mol_types=mol_types,
+            atom_names=atom_names,
+            atom_elements=atom_elements,
         )
 
     def get_score_values(self) -> dict[str, np.ndarray | float | None]:

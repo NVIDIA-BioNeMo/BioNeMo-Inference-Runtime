@@ -16,6 +16,10 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from collections.abc import Sequence
+from typing import NamedTuple
+
+import numpy as np
 
 from bionemo_ir.data.schemas.basic import AtomType, FoldingOutput, ResType
 from bionemo_ir.logger import logger
@@ -59,6 +63,61 @@ _MOL_TYPE_TO_KIND: dict[int, str] = {
     2: "dna",
     3: "nonpoly",
 }
+
+
+class _OccupiedAtoms(NamedTuple):
+    """Occupied atom slots in residue-major, slot-ascending order.
+
+    Attributes:
+        bounds: Residue ``i`` owns atoms ``bounds[i]:bounds[i + 1]``.
+        names: Producer names where given, else canonical slot names.
+        elements: Producer elements where given, else each name's first letter.
+        positions: Coordinates shaped ``[K, 3]`` in the input dtype.
+        b_factors: B factors shaped ``[K]`` in the input dtype.
+    """
+
+    bounds: list[int]
+    names: list[str]
+    elements: list[str]
+    positions: np.ndarray
+    b_factors: np.ndarray
+
+
+def _occupied_atoms(
+    atom_types: Sequence[str],
+    positions: np.ndarray,
+    mask: np.ndarray,
+    b_factors: np.ndarray,
+    names: np.ndarray | None,
+    elements: np.ndarray | None,
+) -> _OccupiedAtoms:
+    """Gather occupied slots with producer atom identity.
+
+    Args:
+        atom_types: Canonical slot names.
+        positions: Per-slot coordinates, shaped ``[R, A, 3]``.
+        mask: Per-slot occupancy, shaped ``[R, A]``.
+        b_factors: Per-slot B factors, shaped ``[R, A]``.
+        names: Optional producer names, shaped ``[R, A]``.
+        elements: Optional element symbols, shaped ``[R, A]``.
+    """
+    width = min(len(atom_types), positions.shape[1], mask.shape[1], b_factors.shape[1])
+    rows, slots = np.nonzero(~(mask[:, :width] < 0.5))
+    atom_names = np.asarray(atom_types[:width], dtype=str)[slots]
+    if names is not None:
+        given = np.asarray(names, dtype=str)[rows, slots]
+        atom_names = np.where(given != "", given, atom_names)
+    atom_elements = atom_names.astype("<U1")
+    if elements is not None:
+        given = np.asarray(elements, dtype=str)[rows, slots]
+        atom_elements = np.where(given != "", given, atom_elements)
+    return _OccupiedAtoms(
+        bounds=np.searchsorted(rows, np.arange(mask.shape[0] + 1)).tolist(),
+        names=atom_names.tolist(),
+        elements=atom_elements.tolist(),
+        positions=positions[rows, slots],
+        b_factors=b_factors[rows, slots],
+    )
 
 
 def _classify_chain(restype_names: tuple[str, ...]) -> str:

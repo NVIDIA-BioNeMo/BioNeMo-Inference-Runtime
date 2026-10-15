@@ -23,7 +23,13 @@ import numpy as np
 from modelcif import dumper, model, qa_metric  # noqa: F401
 
 from bionemo_ir.data.schemas.basic import FoldingOutput
-from bionemo_ir.data.writers.base_writer import _IHM_REMAP, _MOL_TYPE_TO_KIND, BaseWriter, _classify_chain
+from bionemo_ir.data.writers.base_writer import (
+    _IHM_REMAP,
+    _MOL_TYPE_TO_KIND,
+    BaseWriter,
+    _classify_chain,
+    _occupied_atoms,
+)
 from bionemo_ir.logger import logger
 
 
@@ -122,6 +128,13 @@ class CIFWriter(BaseWriter):
         # classify chains by an explicit mol-type rather than the all-X
         # heuristic. Producers that don't carry CCD identity leave both None
         # and fall back to the legacy paths.
+        # Per-slot atom identity. ``AtomTypes`` is a fixed vocabulary, so a
+        # ligand atom whose name falls outside it lands in an overflow slot
+        # whose canonical name says nothing about the atom. When the producer
+        # supplies these we emit the real name and element per slot.
+        per_slot_atom_names: np.ndarray | None = folding_output.get("atom_names")
+        per_slot_elements: np.ndarray | None = folding_output.get("atom_elements")
+
         residue_names: list[str] | None = folding_output.get("residue_names")
         mol_types: np.ndarray | None = folding_output.get("mol_types")
 
@@ -330,11 +343,15 @@ class CIFWriter(BaseWriter):
             software = None
             description = "Global pLDDT, mean of per-residue pLDDTs"
 
-        # Capture closure state.
-        _atom_positions = atom_positions
+        # Capture closure state. Atom values stay NumPy scalars: ``ihm``
+        # formats those with ``str`` and Python floats with three decimals.
+        _atoms = _occupied_atoms(
+            atom_types, atom_positions, atom_mask, b_factors, per_slot_atom_names, per_slot_elements
+        )
+        _xs, _ys, _zs = (list(_atoms.positions[:, axis]) for axis in range(3))
+        _atom_b_factors = list(_atoms.b_factors)
         _atom_mask = atom_mask
         _b_factors = b_factors
-        _atom_types = atom_types
         _chain_indices = chain_indices
         _residue_indices = residue_indices
         _local_seq_id = local_seq_id
@@ -352,33 +369,17 @@ class CIFWriter(BaseWriter):
                     asym = _asym_unit_map[c]
                     seq_id = _local_seq_id[(c, r)]
                     het = _chain_is_het[c]
-                    for atom_name, pos, mask, b_factor in zip(
-                        _atom_types,
-                        _atom_positions[i],
-                        _atom_mask[i],
-                        _b_factors[i],
-                        strict=False,
-                    ):
-                        if mask < 0.5:
-                            continue
-                        # Current AtomTypes universe contains only single-
-                        # letter element symbols (C, N, O, S, P) suffixed
-                        # with digits or primes, so first-char extraction
-                        # is exact. If two-letter elements (CL, FE, MG, ZN,
-                        # …) ever enter the universe, ``AtomType`` must
-                        # gain an explicit ``element`` field and this line
-                        # must consult it.
-                        element = atom_name[0]
+                    for k in range(_atoms.bounds[i], _atoms.bounds[i + 1]):
                         yield modelcif.model.Atom(
                             asym_unit=asym,
-                            type_symbol=element,
+                            type_symbol=_atoms.elements[k],
                             seq_id=seq_id,
-                            atom_id=atom_name,
-                            x=pos[0],
-                            y=pos[1],
-                            z=pos[2],
+                            atom_id=_atoms.names[k],
+                            x=_xs[k],
+                            y=_ys[k],
+                            z=_zs[k],
                             het=het,
-                            biso=b_factor,
+                            biso=_atom_b_factors[k],
                             occupancy=1.00,
                         )
 

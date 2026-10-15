@@ -74,6 +74,7 @@ def _build_folding(
     per_residue_atom_names: list[list[str]],
     residue_names: list[str] | None = None,
     mol_types: list[int] | None = None,
+    per_residue_atom_elements: list[list[str]] | None = None,
     coord_offset: float = 0.0,
 ) -> FoldingOutput:
     """Low-level synthetic FoldingOutput constructor.
@@ -81,6 +82,11 @@ def _build_folding(
     Each residue gets a sparse atom_mask covering only the atom names
     listed in ``per_residue_atom_names[i]``; positions are deterministic
     so test assertions can find them.
+
+    Names outside the ``AtomTypes`` vocabulary — SMILES-generated ligand names
+    such as ``"C24"`` — take the first free slot of their residue's row,
+    mirroring ``scatter_flat_atoms_to_folding_layout``. The real names are
+    always carried in ``atom_names`` so the writers emit them verbatim.
     """
     res_idx_map, atom_idx_map = _of3_indices()
     n_tokens = len(res_indices)
@@ -88,15 +94,37 @@ def _build_folding(
     atom_positions = np.zeros((n_tokens, n_atom_types, 3), dtype=np.float32)
     atom_mask = np.zeros((n_tokens, n_atom_types), dtype=np.float32)
     b_factors = np.zeros((n_tokens, n_atom_types), dtype=np.float32)
+    out_atom_names = np.full((n_tokens, n_atom_types), "", dtype="<U4")
+    out_atom_elements = np.full((n_tokens, n_atom_types), "", dtype="<U2")
     for i, names in enumerate(per_residue_atom_names):
+        # Two passes, like ``scatter_flat_atoms_to_folding_layout``: canonical
+        # slots first, so an overflow atom can never squat on a slot a known
+        # name in the same row still needs.
+        slots: dict[int, int] = {}
         for j, name in enumerate(names):
-            slot = atom_idx_map[name]
+            slot = atom_idx_map.get(name)
+            if slot is not None:
+                slots[j] = slot
+                atom_mask[i, slot] = 1.0
+        next_free = 0
+        for j in range(len(names)):
+            if j in slots:
+                continue
+            while next_free < n_atom_types and atom_mask[i, next_free] != 0.0:
+                next_free += 1
+            slots[j] = next_free
+            atom_mask[i, next_free] = 1.0
+            next_free += 1
+        for j, name in enumerate(names):
+            slot = slots[j]
+            out_atom_names[i, slot] = name
+            if per_residue_atom_elements is not None:
+                out_atom_elements[i, slot] = per_residue_atom_elements[i][j]
             atom_positions[i, slot] = [
                 coord_offset + i + j * 0.1,
                 coord_offset + i * 1.5 + j * 0.2,
                 coord_offset + i * 2.0 + j * 0.3,
             ]
-            atom_mask[i, slot] = 1.0
             b_factors[i, slot] = 50.0 + i + j
 
     kwargs = {
@@ -106,7 +134,10 @@ def _build_folding(
         "residue_indices": np.asarray(residue_indices, dtype=np.int64),
         "b_factors": b_factors,
         "chain_indices": np.asarray(chain_indices, dtype=np.int64),
+        "atom_names": out_atom_names,
     }
+    if per_residue_atom_elements is not None:
+        kwargs["atom_elements"] = out_atom_elements
     if residue_names is not None:
         kwargs["residue_names"] = residue_names
     if mol_types is not None:
@@ -206,6 +237,7 @@ def protein_only_folding(
 def nonpoly_ligand_folding(
     *,
     atom_names: list[str] = ("C1", "C2", "N2"),
+    atom_elements: list[str] | None = None,
     chain_index: int = 0,
     ccd_code: str | None = None,
     with_mol_types: bool = False,
@@ -228,6 +260,7 @@ def nonpoly_ligand_folding(
         residue_indices=[1] * n,
         chain_indices=[chain_index] * n,
         per_residue_atom_names=per_res_atoms,
+        per_residue_atom_elements=[[e] for e in atom_elements] if atom_elements is not None else None,
         residue_names=residue_names,
         mol_types=mol_types,
     )

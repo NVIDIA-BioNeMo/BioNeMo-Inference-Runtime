@@ -353,3 +353,64 @@ class TestCIFWriterMultiPolymer:
         writer.write(multi_polymer_folding())
         text = out_path.read_text()
         assert "NAG" in text and ("ALA" in text or "ALA " in text)
+
+
+class TestCIFWriterSmilesLigandAtoms:
+    """Regression: SMILES ligand atoms used to vanish from the mmCIF (nvbug 6932678)."""
+
+    @pytest.fixture
+    def writer(self):
+        res_map, atom_map = of3_mappings()
+        return CIFWriter(res_type_mapping=res_map, atom_type_mapping=atom_map, output_path="test.cif")
+
+    def test_smiles_generated_names_are_written(self, writer):
+        """``_build_smiles_mol`` names atoms ``SYMBOL + canonical_rank``, which
+        lands outside the fixed ``AtomTypes`` vocabulary for all but the
+        smallest ligands. Those atoms used to be dropped, leaving a
+        protein-only structure for a successful ligand request."""
+        names = ["C24", "C22", "O16", "N23"]
+        out = writer.write(
+            nonpoly_ligand_folding(
+                atom_names=names,
+                atom_elements=["C", "C", "O", "N"],
+                ccd_code="NAG",
+                with_mol_types=True,
+            )
+        )
+
+        atom_rows = [ln for ln in out.splitlines() if ln.startswith(("ATOM", "HETATM"))]
+        assert len(atom_rows) == len(names)
+        for name in names:
+            assert any(f" {name} " in row for row in atom_rows), f"{name} missing from output"
+
+    def test_two_letter_elements_are_not_truncated(self, writer):
+        """Element came from ``atom_name[0]``, turning CL into C and FE into F."""
+        out = writer.write(
+            nonpoly_ligand_folding(
+                atom_names=["CL7", "FE1", "ZN2"],
+                atom_elements=["Cl", "Fe", "Zn"],
+                ccd_code="LIG",
+                with_mol_types=True,
+            )
+        )
+
+        atom_rows = [ln for ln in out.splitlines() if ln.startswith(("ATOM", "HETATM"))]
+        assert len(atom_rows) == 3
+        elements = {row.split()[2] for row in atom_rows}
+        assert elements == {"Cl", "Fe", "Zn"}
+
+    def test_monatomic_ion_chain_is_no_longer_dropped(self, writer):
+        """A K+ chain has one atom named "K", which is not in ``AtomTypes``.
+        It used to produce an empty chain that the writer discarded."""
+        out = writer.write(
+            nonpoly_ligand_folding(
+                atom_names=["K"],
+                atom_elements=["K"],
+                ccd_code="K",
+                with_mol_types=True,
+            )
+        )
+
+        atom_rows = [ln for ln in out.splitlines() if ln.startswith(("ATOM", "HETATM"))]
+        assert len(atom_rows) == 1
+        assert " K " in atom_rows[0]

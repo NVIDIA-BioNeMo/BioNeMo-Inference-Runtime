@@ -162,6 +162,11 @@ python -m pip install --upgrade pip
 
 ### Install the Package
 
+The [external materials notice][external-materials] applies to the dependencies
+downloaded separately by pip.
+
+[external-materials]: overview.mdx#notice-and-disclaimer
+
 Install BioIR into the active environment:
 
 ```bash

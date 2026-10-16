@@ -26,9 +26,11 @@ following code blocks in order.
 [installation]: install.md
 
 The first run downloads the Boltz-2 checkpoint and chemical metadata from
-Hugging Face. Later runs reuse the local copies. Refer to
+Hugging Face. The [notice and disclaimer][download-notice] applies to these
+downloads. Later runs reuse the local copies. Refer to
 [Model Weights][model-weights] for cache locations and offline staging.
 
+[download-notice]: ref/model-weights.md#notice-and-disclaimer
 [model-weights]: ref/model-weights.md
 
 Start at the top-level import.

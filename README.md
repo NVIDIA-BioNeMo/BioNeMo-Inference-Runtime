@@ -36,6 +36,9 @@ feedback to improve and iterate on our products.
 
 ## Getting Started
 
+The [notice and disclaimer](#notice-and-disclaimer) applies to separately
+downloaded dependencies, model checkpoints, and metadata.
+
 ### Prerequisites
 
 - **Linux, x86_64 or aarch64**, with an NVIDIA GPU. The wheels are
@@ -241,6 +244,23 @@ Distribution compliance material is available here:
 - [Full third-party license texts][third-party-licenses]
 - [Gemmi 0.6.5 corresponding source][gemmi-source], licensed under MPL-2.0 or
   LGPL-3.0-or-later; BioIR distributes it under the MPL-2.0 option
+
+## Notice and Disclaimer
+
+The following notice applies to separately downloaded components, including
+runtime dependencies, model checkpoints, and chemical metadata.
+
+**NOTICE AND DISCLAIMER:** This software automatically retrieves, accesses or
+interacts with external materials. Those retrieved materials are not distributed
+with this software and are governed solely by separate terms, conditions and
+licenses. You are solely responsible for finding, reviewing and complying with
+all applicable terms, conditions, and licenses, and for verifying the security,
+integrity and suitability of any retrieved materials for your specific use case.
+This software is provided "AS IS", without warranty of any kind. The author
+makes no representations or warranties regarding any retrieved materials, and
+assumes no liability for any losses, damages, liabilities or legal consequences
+from your use or inability to use this software or any retrieved materials. Use
+this software and the retrieved materials at your own risk.
 
 [gemmi-source]: https://github.com/project-gemmi/gemmi/tree/v0.6.5
 [cuda-badge]:

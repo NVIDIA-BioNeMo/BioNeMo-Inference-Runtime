@@ -14,12 +14,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Compose BioIR's generated Fern documentation from final release tags.
+"""Compose BioIR's generated Fern documentation for final releases.
 
 Canonical Markdown stays at its repository-native paths and keeps relative
 links that work in IDEs and Git forges. This module copies only the public
 documentation into a generated Fern tree and converts links in that copy to
 Fern routes or GitHub URLs.
+An explicit update can replace the latest release's documentation from HEAD.
 """
 
 from __future__ import annotations
@@ -277,17 +278,17 @@ def _git_bytes(repo: Path, *args: str) -> bytes:
     return result.stdout
 
 
-def _tag_fern_path(repo: Path, tag: str) -> Path:
-    """Find the Fern source directory used by a release tag."""
+def _ref_fern_path(repo: Path, ref: str) -> Path:
+    """Find the Fern source directory used by a Git revision."""
     for candidate in (Path("fern"), Path("docs/fern")):
         result = subprocess.run(
-            ["git", "-C", str(repo), "cat-file", "-e", f"{tag}:{candidate.as_posix()}/index.yml"],
+            ["git", "-C", str(repo), "cat-file", "-e", f"{ref}:{candidate.as_posix()}/index.yml"],
             capture_output=True,
             check=False,
         )
         if result.returncode == 0:
             return candidate
-    raise ValueError(f"release tag {tag} has no Fern navigation")
+    raise ValueError(f"documentation revision {ref} has no Fern navigation")
 
 
 def _tag_pages(navigation: str, fern_path: Path) -> dict[Path, str]:
@@ -312,15 +313,17 @@ def _write_release_snapshot(
     repo: Path,
     destination_fern: Path,
     slug: str,
-    tag: str,
+    ref: str,
     notes: dict[str, Note],
     dates: dict[str, str | None],
     validate_payloads: Callable[[Mapping[str, bytes]], None],
+    *,
+    github_ref: str | None = None,
 ) -> None:
-    """Compose one immutable public-doc snapshot from a release tag."""
-    fern_path = _tag_fern_path(repo, tag)
+    """Compose one validated public-doc snapshot from a Git revision."""
+    fern_path = _ref_fern_path(repo, ref)
     navigation_path = fern_path / "index.yml"
-    navigation = _git_bytes(repo, "show", f"{tag}:{navigation_path.as_posix()}").decode("utf-8")
+    navigation = _git_bytes(repo, "show", f"{ref}:{navigation_path.as_posix()}").decode("utf-8")
     page_routes = _tag_pages(navigation, fern_path)
     with tempfile.TemporaryDirectory(prefix="bioir-release-docs-") as directory:
         source_root = Path(directory)
@@ -329,17 +332,17 @@ def _write_release_snapshot(
         payloads: dict[str, bytes] = {navigation_path.as_posix(): navigation.encode("utf-8")}
         for relative in page_routes:
             path = f"docs/{relative.as_posix()}"
-            payloads[path] = _git_bytes(repo, "show", f"{tag}:{path}")
-        assets = _git_bytes(repo, "ls-tree", "-r", "--name-only", "-z", tag, "--", "docs/assets")
+            payloads[path] = _git_bytes(repo, "show", f"{ref}:{path}")
+        assets = _git_bytes(repo, "ls-tree", "-r", "--name-only", "-z", ref, "--", "docs/assets")
         for raw in assets.split(b"\0"):
             if not raw:
                 continue
             path = raw.decode("utf-8")
-            payloads[path] = _git_bytes(repo, "show", f"{tag}:{path}")
+            payloads[path] = _git_bytes(repo, "show", f"{ref}:{path}")
         try:
             validate_payloads(payloads)
         except (ValueError, subprocess.CalledProcessError) as error:
-            raise ValueError(f"release documentation failed outbound validation for {tag}") from error
+            raise ValueError(f"release documentation failed outbound validation for {ref}") from error
         for path, content in payloads.items():
             target = source_root / path
             target.parent.mkdir(parents=True, exist_ok=True)
@@ -349,7 +352,8 @@ def _write_release_snapshot(
         _replace_snapshot(source_docs, snapshot, page_routes)
         _write_release_notes(snapshot, notes, dates, slug, repo / "docs" / NOTES_DIR / INDEX_NAME)
         # GitHub names the mirrored release tag v<version>, not release/<version>.
-        github_ref = "v" + tag.removeprefix("release/")
+        if github_ref is None:
+            github_ref = "v" + ref.removeprefix("release/")
         _rewrite_snapshot_links(snapshot, source_docs, slug, github_ref, page_routes)
         _version_navigation(
             source_fern / "index.yml",
@@ -366,14 +370,16 @@ def sync_site(
     site_root: Path,
     *,
     preview: bool,
+    update_version: str | None = None,
     release_tags: list[tuple[str, str]] | None = None,
     validate_payloads: Callable[[Mapping[str, bytes]], None] | None = None,
 ) -> None:
     """Compose final release snapshots, newest first, behind an optional preview.
 
-    Production publishes only final release tags; the newest is the default
-    version under the ``latest`` slug. A preview adds the working-tree
-    documentation first so a merge request can review it.
+    Production defaults to final release tags; the newest uses ``latest``.
+    ``update_version`` replaces that release's documentation with committed
+    public pages from HEAD. A preview adds the working-tree documentation
+    first so a merge request can review it.
     Release snapshots require a payload validator before writing output.
     """
     source_docs, source_fern = source_paths(source_root)
@@ -383,6 +389,11 @@ def sync_site(
     releases = final_release_tags(source_root) if release_tags is None else release_tags
     if not releases and not preview:
         raise ValueError("no final release tag to publish; production docs are built from release/X.Y.Z tags")
+    if update_version is not None:
+        if preview:
+            raise ValueError("release documentation updates require production mode")
+        if releases[0][0] != update_version:
+            raise ValueError(f"can only update the latest final release ({releases[0][0]}), not {update_version}")
     if releases and validate_payloads is None:
         raise ValueError("release snapshots require an outbound validator")
     notes = load_notes(source_root)
@@ -412,7 +423,12 @@ def sync_site(
         for position, (version, tag) in enumerate(releases):
             slug = LATEST_SLUG if position == 0 else version
             shipped = {key: note for key, note in notes.items() if version_key(key) <= version_key(version)}
-            _write_release_snapshot(source_root, destination_fern, slug, tag, shipped, dates, validate_payloads)
+            if version == update_version:
+                _write_release_snapshot(
+                    source_root, destination_fern, slug, "HEAD", shipped, dates, validate_payloads, github_ref="main"
+                )
+            else:
+                _write_release_snapshot(source_root, destination_fern, slug, tag, shipped, dates, validate_payloads)
             label = f"{version} (latest)" if position == 0 else version
             versions.append(Version(slug, label, "stable"))
     shutil.copy2(source_fern / "fern.config.json", destination_fern / "fern.config.json")

@@ -13,22 +13,142 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Check that release versions contain only their tagged public documentation."""
+"""Check release snapshots and explicit updates of the latest documentation."""
 
 from __future__ import annotations
 
+import shutil
 import subprocess
 from collections.abc import Mapping
 from pathlib import Path
 
 import pytest
 from check_fern_versions import Version, _tag_pages, _write_release_snapshot, _write_versions, sync_site
-from common import REPO_ROOT
-from release_notes import Note
+from common import PAGE_ROUTES, REPO_ROOT
+from release_notes import CHANGELOG_HEADER, Note
 
 
 def _git(repo: Path, *args: str) -> None:
     subprocess.run(["git", "-C", str(repo), *args], check=True, capture_output=True)
+
+
+@pytest.fixture
+def documentation_repo(tmp_path: Path) -> Path:
+    """Create tagged documentation followed by a committed correction."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init", "-q")
+    _git(repo, "config", "user.name", "Test User")
+    _git(repo, "config", "user.email", "test@example.com")
+    (repo / "fern").mkdir()
+    for name in ("index.yml", "docs.yml", "fern.config.json"):
+        shutil.copy2(REPO_ROOT / "fern" / name, repo / "fern" / name)
+    for relative in PAGE_ROUTES:
+        path = repo / "docs" / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("# Public page\n", encoding="utf-8")
+    (repo / "docs/assets").mkdir()
+    (repo / "docs/assets/example.png").write_bytes(b"tagged asset")
+    (repo / "CHANGELOG.md").write_text(
+        CHANGELOG_HEADER
+        + "\n## 0.2.0\n\n- Future release.\n"
+        + "\n## 0.1.1 (2026-10-02)\n\n- Second release.\n"
+        + "\n## 0.1.0 (2026-09-10)\n\n- First release.\n",
+        encoding="utf-8",
+    )
+    links = "[Quickstart](quickstart.md)\n[Examples](../examples/)\n"
+    for version in ("0.1.0", "0.1.1"):
+        (repo / "docs/install.md").write_text(f"Guide for {version}\n{links}", encoding="utf-8")
+        _git(repo, "add", ".")
+        _git(repo, "commit", "-q", "-m", f"docs: release {version}")
+        _git(repo, "tag", f"release/{version}")
+    (repo / "docs/install.md").write_text(f"Corrected guide\n{links}", encoding="utf-8")
+    (repo / "docs/assets/example.png").write_bytes(b"corrected asset")
+    (repo / "docs/unlisted.md").write_text("Unlisted page\n", encoding="utf-8")
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-q", "-m", "docs: correct installation")
+    (repo / "docs/install.md").write_text("Uncommitted guide\n", encoding="utf-8")
+    return repo
+
+
+@pytest.mark.parametrize("update_version", [None, "0.1.1"])
+def test_production_latest_update_preserves_older_releases(
+    tmp_path: Path, documentation_repo: Path, update_version: str | None
+) -> None:
+    validated: list[dict[str, bytes]] = []
+
+    def validate(payloads: Mapping[str, bytes]) -> None:
+        validated.append(dict(payloads))
+
+    sync_site(
+        documentation_repo, tmp_path / "site", preview=False, update_version=update_version, validate_payloads=validate
+    )
+    output = tmp_path / "site/fern"
+    config = (output / "docs.yml").read_text()
+    assert "display-name: 0.1.1 (latest)" in config
+    assert "slug: latest" in config
+    assert "Preview" not in config
+    assert "slug: main" not in config
+    latest = (output / "pages-latest/install.md").read_text()
+    expected = "Corrected guide" if update_version else "Guide for 0.1.1"
+    github_ref = "main" if update_version else "v0.1.1"
+    assert expected in latest
+    assert "Uncommitted guide" not in latest
+    assert "/bionemo/inference-runtime/latest/quickstart" in latest
+    assert f"/tree/{github_ref}/examples)" in latest
+    asset = b"corrected asset" if update_version else b"tagged asset"
+    assert (output / "pages-latest/assets/example.png").read_bytes() == asset
+    older = (output / "pages-0.1.0/install.md").read_text()
+    assert "Guide for 0.1.0" in older
+    assert "/bionemo/inference-runtime/0.1.0/quickstart" in older
+    assert "/tree/v0.1.0/examples)" in older
+    assert (output / "pages-0.1.0/assets/example.png").read_bytes() == b"tagged asset"
+    assert {path.name for path in (output / "pages-latest/release-notes").iterdir()} == {
+        "index.md",
+        "0.1.1.md",
+        "0.1.0.md",
+    }
+    assert "0.2.0" not in (output / "versions/latest.yml").read_text()
+    assert not (output / "pages-latest/unlisted.md").exists()
+    assert expected.encode() in validated[0]["docs/install.md"]
+    assert validated[0]["docs/assets/example.png"] == asset
+    assert b"Guide for 0.1.0" in validated[1]["docs/install.md"]
+    assert all("docs/unlisted.md" not in payloads for payloads in validated)
+
+
+@pytest.mark.parametrize(
+    ("version", "preview", "newer_tag", "message"),
+    [
+        ("0.1.0", False, False, "can only update the latest final release"),
+        ("0.9.9", False, False, "can only update the latest final release"),
+        ("0.1.1", True, False, "require production mode"),
+        ("0.1.1", False, True, "latest final release \\(0.2.0\\)"),
+    ],
+)
+def test_release_update_rejects_invalid_target_before_replacing_site(
+    tmp_path: Path, documentation_repo: Path, version: str, preview: bool, newer_tag: bool, message: str
+) -> None:
+    if newer_tag:
+        _git(documentation_repo, "tag", "release/0.2.0")
+    output = tmp_path / "site/fern"
+    output.mkdir(parents=True)
+    marker = output / "existing.txt"
+    marker.write_text("previous site", encoding="utf-8")
+    with pytest.raises(ValueError, match=message):
+        sync_site(documentation_repo, output.parent, preview=preview, update_version=version)
+    assert marker.read_text() == "previous site"
+
+
+def test_current_release_update_requires_outbound_validation(tmp_path: Path, documentation_repo: Path) -> None:
+    def reject(payloads: Mapping[str, bytes]) -> None:
+        assert b"Corrected guide" in payloads["docs/install.md"]
+        raise ValueError("rejected current payload")
+
+    with pytest.raises(ValueError, match="failed outbound validation for HEAD"):
+        sync_site(
+            documentation_repo, tmp_path / "site", preview=False, update_version="0.1.1", validate_payloads=reject
+        )
+    assert not (tmp_path / "site/fern/pages-latest").exists()
 
 
 @pytest.mark.parametrize("legacy", [False, True])

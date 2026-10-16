@@ -770,7 +770,7 @@ git clone --depth 1 https://github.com/deepspeedai/DeepSpeed.git \
 
 # Non-editable, -v, one arch. `pip install -e` silently builds
 # nothing — see deepspeed-evoformer.md.
-export TORCH_CUDA_ARCH_LIST=9.0 MAX_JOBS=16
+export TORCH_CUDA_ARCH_LIST=$("$OSS_PYTHON" -c 'import torch; print("%d.%d" % torch.cuda.get_device_capability(0))') MAX_JOBS=16
 DS_BUILD_OPS=0 DS_BUILD_EVOFORMER_ATTN=1 \
   "$OSS_PYTHON" -m pip install "$WORKDIR/oss/deepspeed" \
   --no-build-isolation -v > "$WORKDIR/debug/ds_build.log" 2>&1

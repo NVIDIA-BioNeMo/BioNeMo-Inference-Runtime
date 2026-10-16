@@ -22,8 +22,8 @@ Use this when `docs/ref/support-matrix.md` says Pipeline = **No**
 **and** the model is still a folding compute path. Today that is
 `protenix-v2` (no factory). `boltz-2-affinity` is the same *shape*
 (module only) but a different task — do not run it with this
-folding dump / CIF / lDDT path. See SKILL.md
-[Later: other model kinds](SKILL.md#later-other-model-kinds).
+folding dump / CIF / lDDT path. See
+[Extending to other model kinds](workflow.md#extending-to-other-model-kinds).
 
 `build_processor` cannot run. Both timed forwards consume **the same
 OSS-featurized batch**. The BioIR side is the `nn.Module` constructor

@@ -280,6 +280,14 @@ proteins show a quality gap:
 - compare deletion summaries outside the timing window
 - report the pinned OSS featurizer behavior explicitly
 
+RNA-only rows are not this bug. To confirm it, dump `deletion_value` (or
+`deletion_mean`) for one MSA-bearing protein on both sides: OSS all-zero after
+the query row, with a large lDDT gap, is this bug. Record the OSS commit, the
+hit, and the lDDT delta in `implementation-notes.md`, and tell the human. If the
+OSS source already reads the full `all_deletions`, or never rebinds
+`chain_deletions` in the loop, this is not the cause; check config, MSA
+attachment, seed, and sampling knobs instead.
+
 A later upstream revision may fix the bug, but it is not the declared
 `v2.2.1` reference and must not replace the pin mid-benchmark.
 

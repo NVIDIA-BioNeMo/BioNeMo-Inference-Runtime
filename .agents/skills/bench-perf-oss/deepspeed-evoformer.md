@@ -70,7 +70,7 @@ build **non-editable** from the source directory:
 
 export CUTLASS_PATH="$WORKDIR/oss/cutlass"
 export CUDA_HOME=/usr/local/cuda
-export TORCH_CUDA_ARCH_LIST=9.0    # bench GPU only; 9.0 = H100
+export TORCH_CUDA_ARCH_LIST=$("$OSS_PYTHON" -c 'import torch; print("%d.%d" % torch.cuda.get_device_capability(0))')  # bench GPU only
 export MAX_JOBS=16
 DS_BUILD_OPS=0 DS_BUILD_EVOFORMER_ATTN=1 \
   "$OSS_PYTHON" -m pip install "$WORKDIR/oss/deepspeed" \

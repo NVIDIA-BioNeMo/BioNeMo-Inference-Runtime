@@ -180,9 +180,10 @@ every listed template.
   postprocessing, writing, and scoring stay outside the window.
 - Discard one warmup forward, then report one measured forward per sample.
 - BioIR runs its default optimized config, which captures CUDA graphs of each
-  model's trunk recycle, diffusion step, and confidence Pairformer for inputs
-  up to 1024 tokens. The results below, measured 2026-09-08, used a CUDA graph
-  on the diffusion module only.
+  model's trunk recycle, diffusion step, and confidence Pairformer (OpenFold2:
+  trunk recycle only) for inputs up to 1024 tokens, or 2048 for the diffusion
+  step on GPUs with at least 64 GiB; larger inputs run those regions eagerly.
+  The results below were measured 2026-10-14.
 - OSS runs its own inference script: eager always, plus `torch.compile` when it
   passes a dynamic-shape probe.
 - Runtime knobs match on both sides — 200 sampling steps, 3 or 5 diffusion
@@ -197,14 +198,14 @@ every listed template.
 
 | Model                           | H100          | H200          |
 | ------------------------------- | ------------- | ------------- |
-| Boltz-2                         | 1.78x / 2.65x | 1.74x / 2.54x |
-| OpenFold3                       | 1.55x / 2.02x | 1.54x / 2.03x |
-| OpenFold2 / AlphaFold2 monomer  | 2.55x / 2.60x | 2.61x / 2.66x |
-| OpenFold2 / AlphaFold2 multimer | 2.66x / 2.77x | 2.61x / 2.75x |
-| Protenix                        | — / 1.87x     | — / 1.84x     |
+| Boltz-2                         | 3.81x / 6.35x | 4.33x / 6.19x |
+| OpenFold3                       | 6.27x / 8.20x | 5.63x / 7.93x |
+| OpenFold2 / AlphaFold2 monomer  | 6.08x / 5.70x | 5.98x / 6.02x |
+| OpenFold2 / AlphaFold2 multimer | 5.27x / 6.03x | 5.25x / 6.09x |
+| Protenix                        | — / 5.37x     | — / 5.03x     |
 
 Geomean speedup, `vs OSS torch.compile / vs OSS PyTorch eager`; above 1 favours
-BioIR. Protenix has no `torch.compile` path. Fourteen GPUs, per-model accuracy
+BioIR. Protenix has no `torch.compile` path. Twelve GPUs, per-model accuracy
 and peak memory, and how to reproduce any of it:
 [`docs/ref/benchmark.md`](docs/ref/benchmark.md).
 

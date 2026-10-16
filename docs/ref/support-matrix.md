@@ -110,9 +110,10 @@ python -c 'import torch; print(torch.cuda.get_device_capability())'
 By default, for inputs up to 1024 tokens, Boltz-2, OpenFold3, and Protenix
 (`protenix-v2`) capture one trunk recycle, one diffusion step, and the
 confidence Pairformer as CUDA graphs; Boltz-1 captures the diffusion step;
-OpenFold2 / AlphaFold2 capture one trunk recycle. Replays skip per-kernel
-launch overhead (largest win on short sequences). Limits and opt-out:
-[`api.md` CUDA graphs](api.md#cuda-graphs).
+OpenFold2 / AlphaFold2 capture one trunk recycle. The diffusion step captures up
+to 2048 tokens on a device with at least 64 GiB. Replays skip per-kernel launch
+overhead (largest win on short sequences). Limits and opt-out: [`api.md` CUDA
+graphs](api.md#cuda-graphs).
 
 ## Fused Kernels
 

@@ -39,7 +39,7 @@ The only dataset is the one `rebuild_dataset.py` builds
   `examples/data/samples/` or FASTA-only inputs.
 - Progress bars, logging, and feature assertions stay **outside** the
   timing window — in the sample loop, never between the CUDA syncs
-  (`SKILL.md`, Phase 3 progress reporting).
+  ([progress reporting](workflow.md#progress-reporting--every-harness-shows-a-bar)).
 - Record resolved MSA paths on every result row
   (`unpaired_msas`, `paired_msas`) so a dropped alignment is visible,
   plus `templates` and `template_status` so a dropped template is

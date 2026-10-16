@@ -586,15 +586,16 @@ depth, match. The diffusion region sees the true count, as does OpenFold2's
 trunk region, which pads inside the recycle. A region captures on its first
 eligible call, which takes extra time, and replays on later calls with the
 same shape.
-Trunk and confidence regions check each capture against eager output and keep up
-to four shapes within an estimated 4 GiB per region; the diffusion region keeps
-one. A shape whose capture fails, fails that check, or lacks free GPU memory
-runs eagerly. The confidence Pairformer runs eagerly for a single-sample request
-and when OpenFold3's `auxiliary_heads_config.memory_efficient_mode` is off.
-Regions also run eagerly with gradients enabled or inputs off CUDA. Loading a
-state dict or moving the model with `.to()` drops its graphs. Protenix releases
-cached graphs that cannot serve a request's token count before allocating that
-request's activations.
+Trunk and confidence regions keep up to four shapes within an estimated 4 GiB
+per region; the diffusion region keeps one. Captures are not checked against
+eager output unless a policy sets `verify_capture=True`
+([Configuration](config.md)). A shape whose capture fails, fails an enabled
+check, or lacks free GPU memory runs eagerly. The confidence Pairformer runs
+eagerly for a single-sample request and when OpenFold3's
+`auxiliary_heads_config.memory_efficient_mode` is off. Regions also run eagerly
+with gradients enabled or inputs off CUDA. Loading a state dict or moving the
+model with `.to()` drops its graphs. Protenix releases cached graphs that cannot
+serve a request's token count before allocating that request's activations.
 
 ### Outputs
 

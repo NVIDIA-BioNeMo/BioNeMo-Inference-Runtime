@@ -21,13 +21,12 @@ from typing import Any
 import torch
 from huggingface_hub import hf_hub_download
 
+from bionemo_ir.hubs.integrity import HF_REVISIONS, verify_checkpoint_sha256
 from bionemo_ir.hubs.local import (
     BOLTZ_MODEL_NAMES,
-    PROTENIX_MODEL_NAMES,
+    LOCAL_CHECKPOINTS,
     _load_boltz_state_dict,
     _load_of3_state_dict,
-    _load_protenix_state_dict,
-    verify_boltz_checkpoint_sha256,
 )
 from bionemo_ir.hubs.support_matrix import FoldingSupportMatrix as SupMat
 from bionemo_ir.logger import logger
@@ -113,12 +112,6 @@ HF_CHECKPOINTS = {
         weights_only=True,
         state_dict_key=None,
     ),
-    SupMat.ProtenixV2: HFCheckpoint(
-        repo_id="TMF001/protenix-v2-weights",
-        filename="protenix-v2.pt",
-        weights_only=True,
-        state_dict_key=None,
-    ),
 }
 
 
@@ -132,22 +125,29 @@ def load_state_dict_from_hf(
     return_raw: bool = False,
     name: str | None = None,
 ) -> io.BytesIO | dict[str, Any]:
-    """Load a state dict from the Hugging Face Hub"""
+    """Load a state dict from the Hugging Face Hub.
+
+    A default repo is fetched at its pinned commit in ``HF_REVISIONS``. Every
+    file is checked against ``CHECKPOINT_SHA256`` before it is returned or
+    deserialized, so a file without a recorded digest is refused.
+    """
     if cache_dir is None:
         cache_dir = Path.home() / ".cache" / "hf"
     cached_file = hf_hub_download(
-        repo_id=repo_id, filename=filename, cache_dir=cache_dir, local_files_only=local_files_only
+        repo_id=repo_id,
+        filename=filename,
+        revision=HF_REVISIONS.get(repo_id),
+        cache_dir=cache_dir,
+        local_files_only=local_files_only,
     )
+    verify_checkpoint_sha256(cached_file, filename)
     if return_raw:
         return cached_file
     logger.debug(f"Loading state dict from {cached_file}")
     if name in BOLTZ_MODEL_NAMES:
-        verify_boltz_checkpoint_sha256(cached_file, filename)
         state_dict = _load_boltz_state_dict(cached_file)
     elif name == SupMat.OpenFold3:
         state_dict = _load_of3_state_dict(cached_file)
-    elif name in PROTENIX_MODEL_NAMES:
-        state_dict = _load_protenix_state_dict(cached_file)
     else:
         try:
             state_dict = torch.load(cached_file, weights_only=weights_only)
@@ -166,7 +166,9 @@ def load_hf_weights(
     repo_id: str | Path | None = None,
 ) -> io.BytesIO | dict[str, Any]:
     """Load a checkpoint from the Hugging Face Hub"""
-    assert name in HF_CHECKPOINTS, f"Checkpoint {name} not found in HF_CHECKPOINTS"
+    if name not in HF_CHECKPOINTS:
+        env = LOCAL_CHECKPOINTS[name].env if name in LOCAL_CHECKPOINTS else "its *_CKPT variable"
+        raise ValueError(f"{name} has no Hugging Face download; stage the checkpoint and set {env}")
     checkpoint = HF_CHECKPOINTS[name]
     default_repo_id = checkpoint.repo_id
     if repo_id is None:

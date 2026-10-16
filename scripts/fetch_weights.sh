@@ -99,32 +99,36 @@ METADATA=(
   "boltz|mols.tar|BOLTZ_MOL_DIR|tar"
 )
 
-# Public, no-credentials download URLs, keyed "<family>/<filename>".
+# Public, no-credentials download URLs and the SHA-256 each must match, keyed
+# "<family>/<filename>". HuggingFace URLs name a commit, not `main`, and match
+# HF_REVISIONS in bionemo_ir/hubs/integrity.py. The OpenFold S3 bucket has no
+# versions, so its digests are the bytes of the pinned `nz/OpenFold` mirror.
 #
 # The AlphaFold2 rows are deliberately absent: DeepMind publishes JAX ``.npz``
 # parameters, and the loader here wants an OpenFold-format PyTorch state dict.
 # Converting is a local step an external user runs once, so these stage only from
 # a path the user supplies. The licence is not the obstacle — see
-# docs/ref/model-weights.md.
+# docs/ref/model-weights.md. Protenix-v2 is absent too: no source here is pinned
+# to a digest, so it stages from NGC or a file the user supplies. See
+# docs/ref/model-weights.md for the download sources and the MD5 to check.
 PUBLIC_URLS=(
-  "openfold2/finetuning_2.pt|https://openfold.s3.amazonaws.com/openfold_params/finetuning_2.pt"
-  "openfold2/finetuning_3.pt|https://openfold.s3.amazonaws.com/openfold_params/finetuning_3.pt"
-  "openfold2/finetuning_4.pt|https://openfold.s3.amazonaws.com/openfold_params/finetuning_4.pt"
-  "openfold2/finetuning_5.pt|https://openfold.s3.amazonaws.com/openfold_params/finetuning_5.pt"
-  "openfold2/finetuning_no_templ_1.pt|https://openfold.s3.amazonaws.com/openfold_params/finetuning_no_templ_1.pt"
-  "openfold2/finetuning_no_templ_2.pt|https://openfold.s3.amazonaws.com/openfold_params/finetuning_no_templ_2.pt"
-  "openfold2/finetuning_no_templ_ptm_1.pt|https://openfold.s3.amazonaws.com/openfold_params/finetuning_no_templ_ptm_1.pt"
-  "openfold2/finetuning_ptm_1.pt|https://openfold.s3.amazonaws.com/openfold_params/finetuning_ptm_1.pt"
-  "openfold2/finetuning_ptm_2.pt|https://openfold.s3.amazonaws.com/openfold_params/finetuning_ptm_2.pt"
-  "boltz/boltz1_conf.ckpt|https://huggingface.co/boltz-community/boltz-1/resolve/main/boltz1_conf.ckpt"
-  "boltz/boltz2_conf.ckpt|https://huggingface.co/boltz-community/boltz-2/resolve/main/boltz2_conf.ckpt"
-  "boltz/boltz2_aff.ckpt|https://huggingface.co/boltz-community/boltz-2/resolve/main/boltz2_aff.ckpt"
-  "boltz/ccd.pkl|https://huggingface.co/boltz-community/boltz-1/resolve/main/ccd.pkl"
-  "boltz/mols.tar|https://huggingface.co/boltz-community/boltz-2/resolve/main/mols.tar"
-  "protenix/protenix-v2.pt|https://huggingface.co/TMF001/protenix-v2-weights/resolve/main/protenix-v2.pt"
+  "openfold2/finetuning_2.pt|https://openfold.s3.amazonaws.com/openfold_params/finetuning_2.pt|9511993ad138a66f3c51412d65351c5162e16bc4abd51d76f8016b6e0c392362"
+  "openfold2/finetuning_3.pt|https://openfold.s3.amazonaws.com/openfold_params/finetuning_3.pt|4ee7b3de7a2754c6102029b2997df3b9f32d3e9104836986939d1aba2a164494"
+  "openfold2/finetuning_4.pt|https://openfold.s3.amazonaws.com/openfold_params/finetuning_4.pt|a0bc9cde0c9c09c9632e496cd290319ea4e2e63456c51063e3c44db6c0cb9dc0"
+  "openfold2/finetuning_5.pt|https://openfold.s3.amazonaws.com/openfold_params/finetuning_5.pt|8b0951473212433443fc9970a7b902830d377da21bc3d0304dbbb01dd0d64ad2"
+  "openfold2/finetuning_no_templ_1.pt|https://openfold.s3.amazonaws.com/openfold_params/finetuning_no_templ_1.pt|aebc5db250c4c9cc6751490329981384c82407f6b0b24026348abc2b63c40b09"
+  "openfold2/finetuning_no_templ_2.pt|https://openfold.s3.amazonaws.com/openfold_params/finetuning_no_templ_2.pt|400e1d95a41203633925b0d009e91371617a7123107acceb3ca07e278c3ee634"
+  "openfold2/finetuning_no_templ_ptm_1.pt|https://openfold.s3.amazonaws.com/openfold_params/finetuning_no_templ_ptm_1.pt|1a179937a6f61143c41f8b6a0b763ac1f4762c9dc63d2fb151240930c110bee1"
+  "openfold2/finetuning_ptm_1.pt|https://openfold.s3.amazonaws.com/openfold_params/finetuning_ptm_1.pt|11b641d4c90440b945197892f8b048f9dd8ba6224a31960682847f6c07dd7075"
+  "openfold2/finetuning_ptm_2.pt|https://openfold.s3.amazonaws.com/openfold_params/finetuning_ptm_2.pt|aff88a4534f500bcd4509584c2a6ce824417b31f4efaa5b17d19b4c97a8aaa49"
+  "boltz/boltz1_conf.ckpt|https://huggingface.co/boltz-community/boltz-1/resolve/7c1d83b779e4c65ecc37dfdf0c6b2788076f31e1/boltz1_conf.ckpt|fea245d912c570ec117b2277c2719f312a6fc109c07b6f6ef741690ee775c2f5"
+  "boltz/boltz2_conf.ckpt|https://huggingface.co/boltz-community/boltz-2/resolve/6fdef46d763fee7fbb83ca5501ccceff43b85607/boltz2_conf.ckpt|090e82ac8c92f5e943fa1b39e7410a44027bea7243c0bbb3caa67a77fc1428e1"
+  "boltz/boltz2_aff.ckpt|https://huggingface.co/boltz-community/boltz-2/resolve/6fdef46d763fee7fbb83ca5501ccceff43b85607/boltz2_aff.ckpt|dcc5cd3722b1c9eaa34267e4ae32f55cbbf1963f4c19319381ccfa30fdd2ca9e"
+  "boltz/ccd.pkl|https://huggingface.co/boltz-community/boltz-1/resolve/7c1d83b779e4c65ecc37dfdf0c6b2788076f31e1/ccd.pkl|2d3b2f03a3c5665944adba51e33263511e51b21c9cd05d902f9c4b7c1e58d2f4"
+  "boltz/mols.tar|https://huggingface.co/boltz-community/boltz-2/resolve/6fdef46d763fee7fbb83ca5501ccceff43b85607/mols.tar|39e076d96dbec6b4e86982bbda16f3a53a2a60c9bdc17828d88f6f9a0c7d1fd7"
   # GATED: anonymous GET returns 401. Accept the terms on the model page and
   # export HF_TOKEN; without one the download degrades to a skip.
-  "openfold3/of3-p2-155k.pt|https://huggingface.co/OpenFold/OpenFold3/resolve/main/checkpoints/of3-p2-155k.pt"
+  "openfold3/of3-p2-155k.pt|https://huggingface.co/OpenFold/OpenFold3/resolve/33ffa390314567dd2d61bb635de52c7810e47056/checkpoints/of3-p2-155k.pt|af09eac4f29cef856633af07558cb143226fe95ebbef2c20921769d4a5f4bee4"
 )
 
 # Field accessors (keep the call sites readable).
@@ -154,7 +158,19 @@ public_url() {
   local key="$1" row
   for row in "${PUBLIC_URLS[@]}"; do
     [[ "${row%%|*}" == "${key}" ]] && {
-      printf '%s\n' "${row#*|}"
+      row="${row#*|}"
+      printf '%s\n' "${row%%|*}"
+      return 0
+    }
+  done
+  return 1
+}
+
+public_sha256() {
+  local key="$1" row
+  for row in "${PUBLIC_URLS[@]}"; do
+    [[ "${row%%|*}" == "${key}" ]] && {
+      printf '%s\n' "${row##*|}"
       return 0
     }
   done
@@ -164,7 +180,6 @@ public_url() {
 NGC_RETRY_ATTEMPTS=3
 NGC_RETRY_DELAY_SECONDS=5
 NGC_CLI_SHA256="ff554b11edac202f5b8198f4bdd2543f25f35e6cbf7c55ff78c6a1a080b41267"
-BOLTZ_MOLS_SHA256="39e076d96dbec6b4e86982bbda16f3a53a2a60c9bdc17828d88f6f9a0c7d1fd7"
 
 verify_sha256() {
   local file="$1" expected="$2"
@@ -526,9 +541,10 @@ _idle_or_absent() {
   [[ -z "$(find "$1" -maxdepth 0 -mmin "-${PART_LOCK_IDLE_MINUTES}" 2>/dev/null)" ]]
 }
 
-# Fetch URL into DEST. The caller holds DEST's lock, so this .part has one writer.
+# Fetch URL into DEST and check it against SHA256 before moving it into place.
+# The caller holds DEST's lock, so this .part has one writer.
 download_public_file() {
-  local family=$1 filename=$2 url=$3 dest=$4
+  local family=$1 filename=$2 url=$3 dest=$4 sha256=$5
   echo "downloading ${family}/${filename}"
   local -a auth=()
   # HuggingFace gated repos need a token; sending one to S3 would be pointless
@@ -554,16 +570,23 @@ download_public_file() {
     echo "could not download ${family}/${filename} (gated, or network) — skipping" >&2
     return 2
   fi
+  # A mismatch is not "unavailable": the source now serves different bytes than
+  # the ones BioIR pinned. Drop them so the next run does not resume onto them.
+  if ! verify_sha256 "${dest}.part" "${sha256}"; then
+    rm -f "${dest}.part"
+    return 1
+  fi
   mv "${dest}.part" "${dest}"
 }
 
 # Download one public file, skipping it when it is already complete or when
 # another worker or run holds it.
 fetch_public_file() {
-  local family=$1 filename=$2 url dest lock stale rc waited=0
+  local family=$1 filename=$2 url sha256 dest lock stale rc waited=0
   if ! url=$(public_url "${family}/${filename}"); then
     return 2 # no public source for this file
   fi
+  sha256=$(public_sha256 "${family}/${filename}")
   dest="${PUBLIC_ROOT}/${family}/${filename}"
   lock="${dest}.lock"
   mkdir -p "$(dirname "${dest}")"
@@ -597,7 +620,7 @@ fetch_public_file() {
     sleep "${PART_LOCK_POLL_SECONDS}"
   done
   rc=0
-  download_public_file "${family}" "${filename}" "${url}" "${dest}" || rc=$?
+  download_public_file "${family}" "${filename}" "${url}" "${dest}" "${sha256}" || rc=$?
   rmdir "${lock}" 2>/dev/null || true
   return "${rc}"
 }
@@ -617,7 +640,7 @@ public_targets() {
 # openfold2 has 9 files where boltz has 3, so a job-per-family run finishes its
 # tail on one worker while the rest idle. Workers take a strided slice of one
 # list, which needs no `wait -n` (bash 4.3+; macOS ships 3.2). Missing files are
-# reported, not fatal — their tests skip themselves.
+# reported, not fatal — their tests skip themselves. A digest mismatch is fatal.
 fetch_public_all() {
   local -a targets=()
   local line
@@ -639,17 +662,26 @@ fetch_public_all() {
         target="${targets[$i]}"
         rc=0
         fetch_public_file "${target%%|*}" "${target#*|}" || rc=$?
-        ((rc == 0)) || printf '%s/%s\n' "${target%%|*}" "${target#*|}" >>"${miss_dir}/${w}"
+        case "${rc}" in
+          0) ;;
+          1) printf '%s/%s\n' "${target%%|*}" "${target#*|}" >>"${miss_dir}/bad.${w}" ;;
+          *) printf '%s/%s\n' "${target%%|*}" "${target#*|}" >>"${miss_dir}/missing.${w}" ;;
+        esac
       done
     ) &
   done
   wait
 
-  local -a missing=()
-  while IFS= read -r line; do missing+=("${line}"); done < <(cat "${miss_dir}"/* 2>/dev/null)
+  local -a missing=() bad=()
+  while IFS= read -r line; do missing+=("${line}"); done < <(cat "${miss_dir}"/missing.* 2>/dev/null)
+  while IFS= read -r line; do bad+=("${line}"); done < <(cat "${miss_dir}"/bad.* 2>/dev/null)
   rm -rf "${miss_dir}"
   if ((${#missing[@]})); then
     echo "not staged: ${missing[*]} — see docs/ref/model-weights.md"
+  fi
+  if ((${#bad[@]})); then
+    echo "refused, SHA-256 mismatch: ${bad[*]} — the source changed the pinned bytes" >&2
+    return 1
   fi
   return 0
 }
@@ -724,6 +756,25 @@ metadata_src() {
   return 1
 }
 
+# The public cache persists across runs and script versions, so a file checked
+# when it was downloaded is checked again before it is staged. Every public
+# download is pinned, so a cached file with no digest did not come from one (an
+# old mirror download, or a copy dropped in by hand) and is refused. NGC copies
+# and user-supplied files pass through: the pinned digests describe the public
+# bytes.
+verify_public_copy() {
+  local src=$1 key=$2 sha256
+  [[ "${src}" == "${PUBLIC_ROOT}/"* ]] || return 0
+  sha256=$(public_sha256 "${key}") || {
+    echo "${src} has no pinned digest; delete it, or set the model's *_CKPT to it" >&2
+    return 1
+  }
+  verify_sha256 "${src}" "${sha256}" || {
+    echo "delete ${src} to download it again" >&2
+    return 1
+  }
+}
+
 # Directory hubs.local.resolve_cached_checkpoint() probes. Mirrors
 # local_checkpoint_dir() exactly: BIOIR_CHECKPOINTS override, else
 # cache_root/checkpoints — keep in sync with hubs/local.py.
@@ -762,6 +813,7 @@ stage_checkpoints_into_cache() {
       skipped+=("$(row_dir "${row}")")
       continue
     fi
+    verify_public_copy "${src}" "$(row_family "${row}")/$(row_file "${row}")" || return 1
     probe=$(row_dir "${row}")
     dest_dir="${probe_root}/${probe}"
     mkdir -p "${dest_dir}"
@@ -813,7 +865,7 @@ stage_metadata() {
       # is a sibling.
       if [[ ! -d "${extract_dir}" ]]; then
         echo "extracting $(meta_file "${row}") -> ${extract_dir}"
-        verify_sha256 "${file_path}" "${BOLTZ_MOLS_SHA256}"
+        verify_sha256 "${file_path}" "$(public_sha256 "$(meta_family "${row}")/$(meta_file "${row}")")"
         local staging_dir
         staging_dir=$(mktemp -d "${MODEL_CACHE_DIR}/.$(meta_family "${row}")_${stem}.part.XXXXXX")
         if ! tar -xf "${file_path}" -C "${staging_dir}" || [[ ! -d "${staging_dir}/mols" ]]; then
@@ -835,6 +887,7 @@ stage_metadata() {
       }
       resolved="${unpacked}"
     else
+      verify_public_copy "${file_path}" "$(meta_family "${row}")/$(meta_file "${row}")" || return 1
       resolved="${file_path}"
     fi
     mkdir -p "${probe_root}"

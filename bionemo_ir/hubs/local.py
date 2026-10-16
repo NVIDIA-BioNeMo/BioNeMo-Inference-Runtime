@@ -23,7 +23,6 @@ from pathlib import Path
 
 import torch
 
-from bionemo_ir.hubs.integrity import verify_sha256
 from bionemo_ir.hubs.support_matrix import FoldingSupportMatrix as SupMat
 
 logger = logging.getLogger(__name__)
@@ -40,13 +39,6 @@ PROTENIX_MODEL_NAMES = frozenset(
         SupMat.ProtenixV2,
     }
 )
-
-# SHA-256 digests of HuggingFace Boltz checkpoints.
-BOLTZ_CHECKPOINT_SHA256 = {
-    "boltz1_conf.ckpt": "fea245d912c570ec117b2277c2719f312a6fc109c07b6f6ef741690ee775c2f5",
-    "boltz2_conf.ckpt": "090e82ac8c92f5e943fa1b39e7410a44027bea7243c0bbb3caa67a77fc1428e1",
-    "boltz2_aff.ckpt": "dcc5cd3722b1c9eaa34267e4ae32f55cbbf1963f4c19319381ccfa30fdd2ca9e",
-}
 
 LocalCheckpoint = namedtuple("LocalCheckpoint", ["env", "weights_only", "state_dict_key"])
 
@@ -265,15 +257,6 @@ def _load_protenix_state_dict(local_checkpoint: str):
     if sample_key.startswith("module."):
         state_dict = {k[len("module.") :]: v for k, v in state_dict.items()}
     return state_dict
-
-
-def verify_boltz_checkpoint_sha256(path: str | Path, filename: str) -> None:
-    """Verify a downloaded Boltz checkpoint."""
-    checkpoint_name = Path(filename).name
-    expected = BOLTZ_CHECKPOINT_SHA256.get(checkpoint_name)
-    if expected is None:
-        raise ValueError(f"Missing SHA-256 digest: {checkpoint_name}")
-    verify_sha256(path, expected)
 
 
 def _resolve_local_checkpoint(

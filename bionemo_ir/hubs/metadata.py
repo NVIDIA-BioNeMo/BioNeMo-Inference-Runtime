@@ -24,7 +24,7 @@ from typing import Any
 
 from huggingface_hub import hf_hub_download
 
-from bionemo_ir.hubs.integrity import verify_sha256
+from bionemo_ir.hubs.integrity import HF_REVISIONS, verify_sha256
 from bionemo_ir.hubs.support_matrix import FoldingSupportMatrix as SupMat
 
 logger = logging.getLogger(__name__)
@@ -43,10 +43,14 @@ def download_hf_file(
     cache_dir: str | Path,
     local_files_only: bool = False,
 ) -> str:
-    """Download a single file from HuggingFace Hub. Returns the local path."""
+    """Download a single file from HuggingFace Hub. Returns the local path.
+
+    A repo listed in ``HF_REVISIONS`` is fetched at its pinned commit.
+    """
     return hf_hub_download(
         repo_id=repo_id,
         filename=filename,
+        revision=HF_REVISIONS.get(repo_id),
         cache_dir=str(cache_dir),
         local_files_only=local_files_only,
     )

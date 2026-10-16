@@ -42,25 +42,29 @@ this software and the retrieved materials at your own risk.
 | Boltz-2    | `boltz-2-affinity`                      | `boltz-community/boltz-2`    | `boltz2_aff.ckpt`                            |
 | OpenFold2  | every `openfold2_*` key                 | `nz/OpenFold`                | `finetuning_*.pt` (incl. `no_templ` / `ptm`) |
 | OpenFold3  | `openfold3`                             | `OpenFold/OpenFold3`         | `checkpoints/of3-p2-155k.pt`                 |
-| Protenix   | `protenix-v2`                           | `TMF001/protenix-v2-weights` | `protenix-v2.pt`                             |
+| Protenix   | `protenix-v2`                           | none                         | local file only                              |
 | AlphaFold2 | `alphafold2_*`, `alphafold2_multimer_*` | none                         | local file only                              |
 
 - **OpenFold2 Hub downloads come from a third-party mirror.** `nz/OpenFold` is
-  not `aqlaboratory/openfold`, and downloads are not pinned to a revision, so
-  a re-uploaded file silently changes what you get. If provenance matters, use
-  `scripts/fetch_weights.sh` — it pulls the same parameters from OpenFold's
-  own S3 bucket — or [stage the files yourself](#staging-and-overrides).
-- **AlphaFold2 has no `HF_CHECKPOINTS` entry**, so those keys resolve locally
-  only. With nothing staged, the Hub fallback raises `AssertionError` from
-  `load_hf_weights` naming the key. Refer to
+  not `aqlaboratory/openfold`. `scripts/fetch_weights.sh` pulls the same
+  parameters from OpenFold's own S3 bucket and checks them against the same
+  digests, or [stage the files yourself](#staging-and-overrides).
+- **AlphaFold2 and Protenix have no `HF_CHECKPOINTS` entry**, so those keys
+  resolve locally only. With nothing staged, `load_hf_weights` raises
+  `ValueError` naming the `<MODEL>_CKPT` variable to set. Refer to
   [AlphaFold2 parameters](#alphafold2-parameters).
+- **Protenix-v2:** to get the weights, check
+  <https://github.com/bytedance/Protenix> or contact the Protenix authors.
 - **`protenix-v2` has weights but no pipeline factory.** Construct
   `models/protenix` and call `load_weights()` yourself (`include_load_weights`
   defaults to `False`).
 
-Downloads are **not revision-pinned** (`hf_hub_download` with no `revision=`).
-Boltz-2 files are digest-checked after download — refer to
-[Downloads](#downloads).
+Every Hub download is **pinned to a commit** (`HF_REVISIONS` in
+`hubs/integrity.py`), so an upstream re-upload changes nothing until BioIR
+moves the pin. Each file is also checked against its SHA-256
+(`CHECKPOINT_SHA256`) before it is loaded, and a file with no recorded digest
+is refused. A `repo_id` you pass yourself resolves that repo's default branch,
+and the digest check still applies. Local files are not checked.
 
 ## Staging With fetch_weights.sh
 
@@ -91,12 +95,17 @@ What the public source covers, per family — the per-file list is the
 | OpenFold2  | `openfold.s3.amazonaws.com`                     | CC BY 4.0  |
 | Boltz      | HuggingFace `boltz-community`, plus metadata    | MIT        |
 | OpenFold3  | HuggingFace `OpenFold/OpenFold3` (**gated**)    | Apache-2.0 |
-| Protenix   | HuggingFace mirror                              | Apache-2.0 |
+| Protenix   | none; stage your own file                       | Apache-2.0 |
 | AlphaFold2 | **conversion required**, refer to the following | CC BY 4.0  |
 
-Downloads are resumable and skipped when already present. Anything that cannot
-be fetched is reported and skipped, never fatal — so a run with no credentials
-completes, and the tests whose weights are missing skip themselves.
+Downloads are resumable and skipped when already present. Hugging Face URLs
+name the same commits as `HF_REVISIONS`, and every file is checked against its
+SHA-256 when it downloads and again each time it is staged. A download that
+does not match is deleted and fails the run; a cached file that no longer
+matches, or that has no pinned digest, fails staging until you delete it.
+Anything that cannot be fetched is reported and skipped, never fatal — so a run
+with no credentials completes, and the tests whose weights are missing skip
+themselves.
 
 OpenFold3 is gated and needs `HF_TOKEN`; refer to
 [Authentication](#downloads). AlphaFold2 is not downloadable at all — refer to
@@ -235,9 +244,9 @@ others return `{}`):
 | `mol_dir`  | molecules  | `boltz-community/boltz-2` | `mols.tar` | `BOLTZ_MOL_DIR`  |
 
 Identical for `boltz-1`, `boltz-2`, and `boltz-2-affinity` (CCD from Boltz-1,
-`mols.tar` from Boltz-2 — including for Boltz-1). `mols.tar` is extracted after
-download; extraction is skipped when the target already exists. Order: override
-→ staged entry → download.
+`mols.tar` from Boltz-2 — including for Boltz-1). Downloads use the pinned
+commits and are digest-checked; `mols.tar` is then extracted, which is skipped
+when the target already exists. Order: override → staged entry → download.
 
 ## AlphaFold2 Parameters
 

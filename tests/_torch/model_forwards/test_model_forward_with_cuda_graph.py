@@ -147,7 +147,6 @@ _CKPT_ENV = {
 _HF_CKPT = {
     "openfold3": ("OpenFold/OpenFold3", "checkpoints/of3-p2-155k.pt"),
     "boltz-2": ("boltz-community/boltz-2", "boltz-2_conf.ckpt"),
-    "protenix-v2": ("TMF001/protenix-v2-weights", "protenix-v2.pt"),
 }
 
 

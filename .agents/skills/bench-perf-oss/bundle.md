@@ -245,8 +245,10 @@ has the image's Python). It:
    first model. Fall back to `lib/weights.py`, which downloads
    through the registries the wheel does ship
    (`bionemo_ir.hubs.hf.HF_CHECKPOINTS` and
-   `bionemo_ir.hubs.metadata.HF_MODEL_METADATA`). Never copy
-   HuggingFace URLs into the pack; the wheel already knows them.
+   `bionemo_ir.hubs.metadata.HF_MODEL_METADATA`), at the commits in
+   `bionemo_ir.hubs.integrity.HF_REVISIONS`. Never copy HuggingFace
+   URLs into the pack; the wheel already knows them. Protenix-v2 has
+   no Hub entry; the user stages it.
    `hf_hub_download` writes a
    `models--org--repo/snapshots/...` tree, so link each asset to
    a flat fallback name `lib.checkpoints` probes (`boltz2_conf.ckpt`,

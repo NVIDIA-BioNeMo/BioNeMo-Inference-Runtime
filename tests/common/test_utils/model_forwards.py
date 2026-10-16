@@ -31,6 +31,7 @@ import torch
 
 import tests
 from bionemo_ir.data.schemas import InputRequest, MSARecord, Polymer
+from bionemo_ir.hubs.integrity import HF_REVISIONS
 from bionemo_ir.pipeline.processor.engine_proc import EngineProcessorConfig, build_processor
 from bionemo_ir.pipeline.stages.engine_stage import FoldingPredictionError
 from tests.common.test_utils.basic import path_for_package_in_repo
@@ -68,7 +69,7 @@ def _find_sample_json(sample_id: str) -> Path | None:
 _CKPT_ENV = {"openfold3": "OPENFOLD3_CKPT", "boltz2": "BOLTZ2_CKPT"}
 _HF_CKPT = {
     "openfold3": ("OpenFold/OpenFold3", "checkpoints/of3-p2-155k.pt"),
-    "boltz2": ("boltz-community/boltz2", "boltz2_conf.ckpt"),
+    "boltz2": ("boltz-community/boltz-2", "boltz2_conf.ckpt"),
 }
 
 
@@ -90,7 +91,11 @@ def _model_weights_available(model_source: str, _ckpt_env=_CKPT_ENV, _hf_ckpt=_H
         from huggingface_hub import hf_hub_download
 
         hf_hub_download(
-            repo_id=repo_id, filename=filename, cache_dir=str(Path.home() / ".cache" / "hf"), local_files_only=True
+            repo_id=repo_id,
+            filename=filename,
+            revision=HF_REVISIONS.get(repo_id),
+            cache_dir=str(Path.home() / ".cache" / "hf"),
+            local_files_only=True,
         )
         return True
     except Exception:

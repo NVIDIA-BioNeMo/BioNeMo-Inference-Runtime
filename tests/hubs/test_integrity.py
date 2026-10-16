@@ -18,7 +18,7 @@ from unittest.mock import Mock
 
 import pytest
 
-from bionemo_ir.hubs import hf, local
+from bionemo_ir.hubs import hf, integrity, local
 
 
 @pytest.mark.parametrize(
@@ -30,26 +30,34 @@ from bionemo_ir.hubs import hf, local
     ],
 )
 def test_boltz_checkpoint_sha256(filename, expected):
-    assert local.BOLTZ_CHECKPOINT_SHA256[filename] == expected
+    assert integrity.CHECKPOINT_SHA256[filename] == expected
 
 
-def test_verify_boltz_checkpoint_sha256(tmp_path, monkeypatch):
+@pytest.mark.parametrize("name", sorted(hf.HF_CHECKPOINTS))
+def test_every_hub_checkpoint_is_pinned(name):
+    checkpoint = hf.HF_CHECKPOINTS[name]
+    assert len(integrity.HF_REVISIONS[checkpoint.repo_id]) == 40
+    assert len(integrity.CHECKPOINT_SHA256[checkpoint.filename.rsplit("/", 1)[-1]]) == 64
+
+
+def test_verify_checkpoint_sha256(tmp_path, monkeypatch):
     checkpoint = tmp_path / "test.ckpt"
     checkpoint.write_bytes(b"trusted checkpoint")
     monkeypatch.setitem(
-        local.BOLTZ_CHECKPOINT_SHA256,
+        integrity.CHECKPOINT_SHA256,
         checkpoint.name,
         hashlib.sha256(b"trusted checkpoint").hexdigest(),
     )
 
-    local.verify_boltz_checkpoint_sha256(checkpoint, checkpoint.name)
+    integrity.verify_checkpoint_sha256(checkpoint, checkpoint.name)
     checkpoint.write_bytes(b"untrusted checkpoint")
 
     with pytest.raises(ValueError, match="SHA-256 mismatch: test.ckpt"):
-        local.verify_boltz_checkpoint_sha256(checkpoint, checkpoint.name)
+        integrity.verify_checkpoint_sha256(checkpoint, checkpoint.name)
 
 
-def test_missing_boltz_digest_blocks_deserialization(tmp_path, monkeypatch):
+@pytest.mark.parametrize("return_raw", [False, True])
+def test_missing_digest_blocks_use(tmp_path, monkeypatch, return_raw):
     checkpoint = tmp_path / "boltz1_unreviewed.ckpt"
     checkpoint.write_bytes(b"checkpoint")
     load_state_dict = Mock()
@@ -61,6 +69,31 @@ def test_missing_boltz_digest_blocks_deserialization(tmp_path, monkeypatch):
             repo_id="boltz-community/boltz-1",
             filename=checkpoint.name,
             name=local.SupMat.Boltz1,
+            return_raw=return_raw,
         )
 
     load_state_dict.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("repo_id", "revision"),
+    [
+        ("nz/OpenFold", integrity.HF_REVISIONS["nz/OpenFold"]),
+        ("someone/fork", None),
+    ],
+)
+def test_default_repo_downloads_pinned_revision(tmp_path, monkeypatch, repo_id, revision):
+    checkpoint = tmp_path / "finetuning_2.pt"
+    checkpoint.write_bytes(b"checkpoint")
+    monkeypatch.setitem(integrity.CHECKPOINT_SHA256, checkpoint.name, hashlib.sha256(b"checkpoint").hexdigest())
+    download = Mock(return_value=str(checkpoint))
+    monkeypatch.setattr(hf, "hf_hub_download", download)
+
+    hf.load_state_dict_from_hf(repo_id=repo_id, filename=checkpoint.name, return_raw=True)
+
+    assert download.call_args.kwargs["revision"] == revision
+
+
+def test_checkpoint_without_hub_source_names_its_variable():
+    with pytest.raises(ValueError, match="stage the checkpoint and set PROTENIX_V2_CKPT"):
+        hf.load_hf_weights(local.SupMat.ProtenixV2)

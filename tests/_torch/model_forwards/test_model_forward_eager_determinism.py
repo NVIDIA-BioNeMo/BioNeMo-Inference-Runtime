@@ -52,6 +52,7 @@ import torch
 
 import tests
 from bionemo_ir.data.schemas import InputRequest, MSARecord, Polymer
+from bionemo_ir.hubs.integrity import HF_REVISIONS
 from bionemo_ir.pipeline.processor.engine_proc import EngineProcessorConfig, build_processor
 from bionemo_ir.pipeline.stages.configs import WriterStageConfig
 from bionemo_ir.pipeline.stages.engine_stage import FoldingPredictionError
@@ -111,7 +112,11 @@ def _model_weights_available(model_source: str) -> bool:
         from huggingface_hub import hf_hub_download
 
         hf_hub_download(
-            repo_id=repo_id, filename=filename, cache_dir=str(Path.home() / ".cache" / "hf"), local_files_only=True
+            repo_id=repo_id,
+            filename=filename,
+            revision=HF_REVISIONS.get(repo_id),
+            cache_dir=str(Path.home() / ".cache" / "hf"),
+            local_files_only=True,
         )
         return True
     except Exception:

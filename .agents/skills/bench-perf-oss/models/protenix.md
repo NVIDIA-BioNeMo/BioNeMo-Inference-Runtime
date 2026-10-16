@@ -38,11 +38,13 @@ do not featurize a second time for BioIR.
 - Required pin: ByteDance Protenix tag `v2.0.0`, commit
   `2475421477ab414b571149ad4a875c390ff8a35d`.
 - Model name on both sides: `protenix-v2`.
-- Checkpoint registry: `TMF001/protenix-v2-weights/protenix-v2.pt`.
+- Checkpoint: BioIR has no Hub fallback, so stage `protenix-v2.pt` yourself.
+  To get the weights, check <https://github.com/bytedance/Protenix> or contact
+  the Protenix authors.
 - BioIR construction:
   `Protenix(model_name="protenix-v2", include_load_weights=True)`.
   Omit `config=` so the optimized pretrained config is selected.
-- Set `PROTENIX_V2_CKPT` when a local checkpoint is staged. Record the
+- Set `PROTENIX_V2_CKPT` to the staged checkpoint. Record the
   resolved path and SHA-256 and strict-load the same file in both
   interpreters before feature dumping or timing.
 - Default scratch work directory for this profile: `/tmp/protenix`.

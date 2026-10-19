@@ -22,6 +22,7 @@ from bionemo_ir.logger import logger
 # isort: off
 import bionemo_ir.pipeline.models.openfold2.const as residue_constants
 from bionemo_ir._torch.graph_optimization import GraphRegion, eager_graphs
+from bionemo_ir._torch.graph_optimization.graph_policy import _release_unused_graphs
 from bionemo_ir._torch.attention_backend import auto_select_triangle_attention_backend, get_attention_backend
 from bionemo_ir._torch.layers.normalization import replace_with_fused_layernorm
 from bionemo_ir._torch.layers.token_padding import pad_trunk_tokens, unpad_trunk_tokens
@@ -451,6 +452,8 @@ class OpenFold2(nn.Module, OptimizedModuleSetterMixin):
         num_iters = feed_dict["aatype"].shape[-1]
         if recycling_steps is not None:
             num_iters = min(num_iters, recycling_steps)
+
+        _release_unused_graphs((self.trunk_graph,), num_tokens=n_res)
 
         # [*, N_res, C_m]
         m_1_prev = torch.zeros(

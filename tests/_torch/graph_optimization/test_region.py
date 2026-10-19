@@ -20,6 +20,7 @@ import pickle
 import subprocess
 import sys
 import weakref
+from types import SimpleNamespace
 
 import pytest
 import torch
@@ -29,6 +30,7 @@ from bionemo_ir._torch.graph_optimization import GraphRegion, eager_graphs, grap
 from bionemo_ir._torch.graph_optimization.config import NamedDimTies
 from bionemo_ir._torch.graph_optimization.graph_policy import _release_unused_graphs, exact_graph_config
 from bionemo_ir.configs import AcceleratedConfig, BaseConfig
+from bionemo_ir.models.openfold2.modeling import OpenFold2
 from bionemo_ir.models.optimize_module_setter import DiscoveredModuleRegistry, OptimizedModuleSetterMixin
 
 
@@ -206,6 +208,38 @@ def test_release_unused_graphs_keeps_in_range_caches() -> None:
     assert longer_counts["replay"] == 1
     torch.testing.assert_close(short(x), short.step(x), rtol=0, atol=0)
     assert short_counts["capture"] == 2
+
+
+@pytest.mark.parametrize("num_tokens", [8, 9])
+@torch.inference_mode()
+def test_openfold2_releases_graphs_before_recycle_allocation(
+    cuda_model: _Model, monkeypatch: pytest.MonkeyPatch, num_tokens: int
+) -> None:
+    cuda_model(torch.ones(1, 4, 4, device="cuda"))
+    tracker = cuda_model.graph.tracker
+    tracker.fallback_to_eager_by_key["failed"] = True
+    probe = SimpleNamespace(
+        parameters=cuda_model.parameters,
+        trunk_graph=cuda_model.graph,
+        config=SimpleNamespace(input_embedder=SimpleNamespace(c_m=4, torch_dtype=torch.float32)),
+    )
+    feed_dict = {
+        "target_feat": torch.empty(num_tokens, 1, 1),
+        "msa_feat": torch.empty(1, num_tokens, 1, 1),
+        "aatype": torch.empty(num_tokens, 1),
+    }
+
+    def stop_allocation(*args: object, **kwargs: object) -> None:
+        raise RuntimeError("recycle state allocation")
+
+    # Abort at the first state allocation so eviction must happen before it.
+    monkeypatch.setattr(torch, "zeros", stop_allocation)
+    with pytest.raises(RuntimeError, match="recycle state allocation"):
+        OpenFold2.forward(probe, feed_dict)
+
+    assert len(tracker.graph_state_by_key) == int(num_tokens <= 8)
+    assert tracker.execution_counts["eviction"] == int(num_tokens > 8)
+    assert tracker.fallback_to_eager_by_key == {"failed": True}
 
 
 def test_copied_and_unpickled_models_call_their_own_owner() -> None:

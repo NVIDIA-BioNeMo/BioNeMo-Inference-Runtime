@@ -354,7 +354,8 @@ previous exit check passes. Harnesses live in `$WORKDIR`; do not modify
 ### Phase 3 — Write the harnesses
 
 - **Read:** [workflow.md](workflow.md#phase-3--write-the-harnesses) and
-  [measurement.md](measurement.md); copy its timer verbatim. The OSS feature
+  [measurement.md](measurement.md). Copy the shared helpers from
+  [`harness/`](harness/) into `bench/`; do not rewrite them. The OSS feature
   path also needs [no-pipeline.md](no-pipeline.md).
 - **Produce:** on the processor path, `bench/run_bioir.py` and
   `bench/run_oss.py`; on the OSS feature path, `bench/dump_oss_features.py`
@@ -389,8 +390,8 @@ previous exit check passes. Harnesses live in `$WORKDIR`; do not modify
   residue bin, lDDT, DockQ, GPU power and clocks from in-forward samples,
   commands, and the path to `implementation-notes.md`. Show the chart PNGs
   inline.
-- **Exit:** every number cites an artifact, and latency is in seconds to
-  three decimals.
+- **Exit:** `harness/check_results.py` passes on every result file, every
+  number cites an artifact, and latency is in seconds to three decimals.
 
 ## Optional — compact a portable `bioir-perf` package
 

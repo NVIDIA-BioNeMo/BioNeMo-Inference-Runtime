@@ -425,9 +425,11 @@ exactly like a fast model.
 
 ## Phase 3 — Write the harnesses
 
-Read [measurement.md](measurement.md) and copy the timer verbatim.
-Write the harnesses for `feature_path` from Phase 0: both processor-path
-blocks, or the OSS feature-path block.
+Copy the shared helpers from [`harness/`](harness/) into `$WORKDIR/bench/`
+([measurement.md](measurement.md)): the timer, GPU telemetry, both scorers, the
+result checker, the speedup summary, and the charts. Both sides import the same
+files. Then write the harnesses for `feature_path` from Phase 0: both
+processor-path blocks, or the OSS feature-path block.
 
 Both harnesses have to turn spec items into their side's input. That
 mapping — field names, enable flags, files to synthesize, and the
@@ -447,6 +449,7 @@ from bionemo_ir.pipeline.stages.configs import (
     FeatureGeneratorStageConfig,
     WriterStageConfig,
 )
+from scoring import score_dockq, score_lddt  # harness/, copied into bench/
 
 # Omit engine_kwargs["config"] unless the model profile documents one
 # minimal input-parity feature flag or this is the eager arm
@@ -477,12 +480,15 @@ for sample in in_scope_manifest:
     forward_s = float(row["model_inference_time"])
     # Scoring is AFTER the timed window (writer already ran).
     cif = parse_cif_path(row)
-    lddt = dockq = None
-    if cif and sample.gt_path:
-        lddt = score_lddt(locked["ost_cmd"], cif, sample.gt_path)
-        if sample.n_chains > 1:  # monomers have no interface
-            dockq = score_dockq(locked["dockq_cmd"], cif, sample.gt_path,
-                                args=locked["dockq_args"])
+    sid = sample.sample_id
+    scores = score_dockq(  # decides single_chain / no_gt / unsupported itself
+        locked["dockq_cmd"], cif, sample.gt_path, debug_dir / f"dockq_{sid}.json",
+        locked["dockq_args"], polymer_types=sample.polymer_types,
+        n_chains=sample.n_chains,
+    )
+    if sample.gt_path:
+        scores |= score_lddt(locked["ost_cmd"], cif, sample.gt_path,
+                             debug_dir / f"ost_{sid}.json")
 ```
 
 - **One `InputRequest` per `processor([record])` call.** Do not
@@ -740,6 +746,10 @@ If an OSS **eager** kernel crashes, that backend is blocked. Do not
 disable the kernel and still label the row `oss_e2e`.
 
 ## Phase 6 — Compare and report
+
+First run `check_results.py` on every result file of the comparison and fix
+the harness until it reports no problems. Then run `summarize_speedup.py` and
+`plot_latency.py` from `$WORKDIR` ([measurement.md](measurement.md)).
 
 Print (not only file):
 

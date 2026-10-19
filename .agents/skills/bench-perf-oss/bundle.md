@@ -309,7 +309,8 @@ Set `PYTHONPATH` to the package root (the directory that contains
 
 ## Shared `lib/`
 
-Keep one copy of:
+Start `lib/` from the skill's [`harness/`](harness/) (timer, GPU telemetry,
+both scorers, result checker, speedup summary, charts), then keep one copy of:
 
 - spec → manifest / `InputRequest` / DockQ contract / smoke IDs
 - OpenStructure lDDT + DockQ

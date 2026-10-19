@@ -18,8 +18,21 @@
 
 # Measurement protocol
 
-Copy these helpers into `$WORKDIR/bench/`. Do not invent a different timer
-on one side of the comparison.
+The shared helpers ship in [`harness/`](harness/). Copy them into
+`$WORKDIR/bench/` and import them from both harnesses; do not invent a
+different timer, scorer, or aggregate on one side of the comparison.
+
+- [`timing.py`](harness/timing.py) — `time_model_forward`, `residues_all_chains`
+- [`gpu_telemetry.py`](harness/gpu_telemetry.py) — `GpuSampler`, file-level
+  aggregate
+- [`scoring.py`](harness/scoring.py) — `score_lddt`, `score_dockq`,
+  `dockq_band`
+- [`check_results.py`](harness/check_results.py) — the result-JSON contract
+- [`summarize_speedup.py`](harness/summarize_speedup.py) — `speedup.json`
+- [`plot_latency.py`](harness/plot_latency.py) — both Phase 6 charts
+
+`tests/skills/` runs them on CPU in CI. The model-specific staging and runner
+scripts stay per bench, because each depends on its pinned OSS tree.
 
 ## Dataset and MSAs
 
@@ -63,25 +76,8 @@ Outside the window: parse, tokenize, featurize, H2D, postprocess, write,
 `stage_timing_s`, `time_taken`, and processor wall time. Record those as
 diagnostics only.
 
-```python
-import time
-
-import torch
-
-
-def time_model_forward(model, device_batch, runtime_args):
-    """GPU-synced host clock around model.forward only."""
-    torch.cuda.reset_peak_memory_stats()
-    torch.cuda.synchronize()
-    t0 = time.perf_counter()
-    with torch.inference_mode():
-        output = model(device_batch, **runtime_args)
-    torch.cuda.synchronize()
-    elapsed_s = time.perf_counter() - t0
-    peak_alloc_gb = torch.cuda.max_memory_allocated() / (1024**3)
-    peak_reserved_gb = torch.cuda.max_memory_reserved() / (1024**3)
-    return output, elapsed_s, peak_alloc_gb, peak_reserved_gb
-```
+`time_model_forward` in [`harness/timing.py`](harness/timing.py) is this window,
+and also returns peak allocated and reserved GiB.
 
 **Processor path.** Do not re-wrap `model.forward`. Set
 `engine_kwargs={"profile_inference": True}` and read
@@ -790,7 +786,7 @@ single snapshot after `cuda.synchronize()` is usually idle again
 measured forward, outside the timing window. Do not call
 `nvidia-smi` on the thread that runs `timed_forward`.
 
-Copy `$WORKDIR/bench/gpu_telemetry.py` from the snippet below.
+[`harness/gpu_telemetry.py`](harness/gpu_telemetry.py) implements this.
 
 Per timed sample, write `gpu_telemetry`:
 
@@ -815,186 +811,6 @@ min of per-sample mins, max of per-sample maxes, mean of
 per-sample means, plus the union of throttle reasons. Phase 6
 prints both, and names the gap between `clocks.max.sm` and the
 observed SM mean.
-
-```python
-# $WORKDIR/bench/gpu_telemetry.py
-from __future__ import annotations
-
-import statistics
-import subprocess
-import threading
-from typing import Any
-
-_QUERY = (
-    "power.draw,"
-    "clocks.current.sm,"
-    "clocks.current.graphics,"
-    "clocks.current.memory,"
-    "pstate,"
-    "clocks_event_reasons.active,"
-    "clocks_event_reasons.gpu_idle,"
-    "clocks_event_reasons.sw_power_cap,"
-    "clocks_event_reasons.hw_slowdown,"
-    "clocks_event_reasons.sw_thermal_slowdown,"
-    "clocks_event_reasons.applications_clocks_setting"
-)
-_KEYS = [
-    "power_draw_w",
-    "clocks_sm_mhz",
-    "clocks_graphics_mhz",
-    "clocks_memory_mhz",
-    "pstate",
-    "event_reasons",
-    "gpu_idle",
-    "sw_power_cap",
-    "hw_slowdown",
-    "sw_thermal_slowdown",
-    "applications_clocks",
-]
-
-
-def _parse_number(text: str) -> float | None:
-    token = text.strip()
-    if not token or token.upper() in {"[N/A]", "N/A", "NA"}:
-        return None
-    if "deprecated" in token.lower():
-        return None
-    try:
-        return float(token.split()[0].replace(",", ""))
-    except ValueError:
-        return None
-
-
-def query_gpu_snapshot() -> dict[str, Any]:
-    """One nvidia-smi row. Host-side; never call inside timed_forward."""
-    raw = subprocess.check_output(
-        ["nvidia-smi", f"--query-gpu={_QUERY}", "--format=csv,noheader,nounits"],
-        text=True,
-    ).strip()
-    parts = [p.strip() for p in raw.split(",")]
-    if len(parts) != len(_KEYS):
-        raise RuntimeError(f"nvidia-smi field count {len(parts)} != {len(_KEYS)}: {raw!r}")
-    row: dict[str, Any] = {}
-    for key, value in zip(_KEYS, parts, strict=True):
-        if key in {"pstate", "event_reasons", "gpu_idle", "sw_power_cap",
-                   "hw_slowdown", "sw_thermal_slowdown", "applications_clocks"}:
-            row[key] = value
-        else:
-            row[key] = _parse_number(value)
-    return row
-
-
-def _busy(row: dict[str, Any]) -> bool:
-    return str(row.get("gpu_idle", "")).lower() != "active"
-
-
-def _minmaxmean(values: list[float]) -> dict[str, float] | None:
-    if not values:
-        return None
-    return {
-        "min": min(values),
-        "max": max(values),
-        "mean": statistics.fmean(values),
-    }
-
-
-def summarize_polls(polls: list[dict[str, Any]]) -> dict[str, Any]:
-    busy = [p for p in polls if _busy(p)]
-    throttle = []
-    for key in ("sw_power_cap", "hw_slowdown", "sw_thermal_slowdown",
-                "applications_clocks"):
-        if any(str(p.get(key, "")).lower() == "active" for p in busy):
-            throttle.append(key)
-    return {
-        "n_polls": len(polls),
-        "n_busy": len(busy),
-        "power_draw_w": _minmaxmean(
-            [p["power_draw_w"] for p in busy if p.get("power_draw_w") is not None]
-        ),
-        "clocks_sm_mhz": _minmaxmean(
-            [p["clocks_sm_mhz"] for p in busy if p.get("clocks_sm_mhz") is not None]
-        ),
-        "clocks_graphics_mhz": _minmaxmean(
-            [p["clocks_graphics_mhz"] for p in busy if p.get("clocks_graphics_mhz") is not None]
-        ),
-        "clocks_memory_mhz": _minmaxmean(
-            [p["clocks_memory_mhz"] for p in busy if p.get("clocks_memory_mhz") is not None]
-        ),
-        "throttle": throttle,
-    }
-
-
-class GpuSampler:
-    """Sidecar nvidia-smi polls. Start just before timed_forward, stop after."""
-
-    def __init__(self, interval_s: float = 0.2) -> None:
-        self.interval_s = interval_s
-        self.polls: list[dict[str, Any]] = []
-        self._stop = threading.Event()
-        self._thread: threading.Thread | None = None
-
-    def start(self) -> None:
-        self.polls = []
-        self._stop.clear()
-        self._thread = threading.Thread(target=self._loop, daemon=True)
-        self._thread.start()
-
-    def stop(self) -> dict[str, Any]:
-        self._stop.set()
-        if self._thread is not None:
-            self._thread.join(timeout=5.0)
-        return summarize_polls(self.polls)
-
-    def _loop(self) -> None:
-        while not self._stop.is_set():
-            try:
-                self.polls.append(query_gpu_snapshot())
-            except (OSError, subprocess.CalledProcessError, RuntimeError):
-                pass
-            self._stop.wait(self.interval_s)
-
-
-def aggregate_file_telemetry(samples: dict[str, Any]) -> dict[str, Any]:
-    """Min of mins, max of maxes, mean of means over ok rows."""
-    rows = [
-        row["gpu_telemetry"]
-        for row in samples.values()
-        if row.get("status") == "ok" and row.get("gpu_telemetry")
-    ]
-    throttle: set[str] = set()
-    n_busy_total = 0
-    for tel in rows:
-        n_busy_total += int(tel.get("n_busy") or 0)
-        throttle.update(tel.get("throttle") or [])
-
-    def collect(field: str) -> dict[str, float] | None:
-        mins: list[float] = []
-        maxs: list[float] = []
-        means: list[float] = []
-        for tel in rows:
-            obj = tel.get(field)
-            if not obj:
-                continue
-            if obj.get("min") is not None:
-                mins.append(float(obj["min"]))
-            if obj.get("max") is not None:
-                maxs.append(float(obj["max"]))
-            if obj.get("mean") is not None:
-                means.append(float(obj["mean"]))
-        if not means:
-            return None
-        return {"min": min(mins), "max": max(maxs), "mean": statistics.fmean(means)}
-
-    return {
-        "n_ok": len(rows),
-        "n_busy_total": n_busy_total,
-        "power_draw_w": collect("power_draw_w"),
-        "clocks_sm_mhz": collect("clocks_sm_mhz"),
-        "clocks_graphics_mhz": collect("clocks_graphics_mhz"),
-        "clocks_memory_mhz": collect("clocks_memory_mhz"),
-        "throttle": sorted(throttle),
-    }
-```
 
 Wire it as `sampler.start(); try: elapsed = timed_forward(...) finally:
 telemetry = sampler.stop()` and store `telemetry` as `gpu_telemetry`.
@@ -1021,18 +837,7 @@ polymers add `len(sequence) * n_copies`, where `n_copies` is
 polymer entries (A and B) both count. Spec `seq_len` is already
 this sum — assert equality; do not replace it with chain A.
 
-```python
-def residues_all_chains(item: dict) -> int:
-    """Sum residue/nucleotide length over every polymer chain."""
-    total = 0
-    for polymer in item["polymers"]:
-        if polymer.get("polymer_type", "protein") not in {"protein", "rna", "dna"}:
-            continue
-        chain_id = polymer.get("chain_id")
-        n_copies = len(chain_id) if isinstance(chain_id, (list, tuple)) else 1
-        total += len(polymer["sequence"]) * max(n_copies, 1)
-    return total
-```
+[`residues_all_chains`](harness/timing.py) computes it.
 
 Write that integer on the manifest and on every result row.
 Example: `8ic7-assembly1_A_B` is `867 + 867 = 1734`, not `867`.
@@ -1110,6 +915,13 @@ A row templated on one side and bare — or filtered down — on the
 other is a hard failure, not a latency win
 ([templates.md](templates.md#verification)).
 
+Row `status` is `ok`, `oom`, `recapture`, or `failed` (a crash, with its
+stderr in `implementation-notes.md`). Run
+[`check_results.py`](harness/check_results.py) on every result file of the
+comparison before Phase 6. It enforces this section per file, then checks that
+the files cover the same samples and agree on residues, template counts, and
+DockQ scope.
+
 On `oss_compile.json` also require file-level `compile_stats` and
 per-sample `warmup_compile_delta`, `measure_compile_delta`,
 `warmup_recompile`, `measure_recompile`. Any sample may have
@@ -1160,6 +972,8 @@ whether the two stacks agree on the assembly.
 
 Install both before Phase 4
 ([environment.md](environment.md#step-8--install-dockq-interface-scorer)).
+[`harness/scoring.py`](harness/scoring.py) runs both and applies the rules
+below; build any scorer-only DockQ input copy before calling it.
 
 **Per sample, per side:**
 
@@ -1361,123 +1175,9 @@ Write the same structure to `$WORKDIR/results/speedup.json` (or
 Speedup numbers live in that JSON and in the Phase 6 printout,
 not in the model profile notes.
 
-Copy `$WORKDIR/bench/summarize_speedup.py` from the snippet
-below and run it with `$BIOIR_PYTHON`. Ratios are three decimals.
-
-```python
-# $WORKDIR/bench/summarize_speedup.py
-from __future__ import annotations
-
-import json
-import statistics
-from pathlib import Path
-from typing import Any
-
-RESULTS = Path("results")  # run from $WORKDIR, or pass a role subdir
-
-
-def _ok_map(path: Path) -> dict[str, tuple[int, float]]:
-    data = json.loads(path.read_text())
-    out: dict[str, tuple[int, float]] = {}
-    for sid, row in data.get("samples", {}).items():
-        if row.get("status") != "ok":
-            continue
-        if "residues" not in row or not row.get("forward_s"):
-            continue
-        out[sid] = (int(row["residues"]), float(row["forward_s"][0]))
-    return out
-
-
-def _bin_name(residues: int) -> str:
-    if residues < 512:
-        return "short"
-    if residues <= 1024:
-        return "medium"
-    return "long"
-
-
-def _stats(pairs: list[tuple[str, int, float]]) -> dict[str, Any]:
-    n = len(pairs)
-    ids = [p[0] for p in pairs]
-    if n == 0:
-        return {"n": 0, "geomean": None, "median": None, "ids": []}
-    ratios = [p[2] for p in pairs]
-    return {
-        "n": n,
-        "geomean": statistics.geometric_mean(ratios),
-        "median": statistics.median(ratios),
-        "ids": ids,
-    }
-
-
-def speedup_block(
-    bioir: dict[str, tuple[int, float]],
-    other: dict[str, tuple[int, float]],
-) -> dict[str, Any]:
-    rows: list[tuple[str, int, float]] = []
-    for sid, (residues, bioir_s) in bioir.items():
-        if sid not in other or bioir_s <= 0:
-            continue
-        oss_s = other[sid][1]
-        if oss_s <= 0:
-            continue
-        rows.append((sid, residues, oss_s / bioir_s))
-    rows.sort(key=lambda t: t[1])
-    by_bin = {"short": [], "medium": [], "long": []}
-    for sid, residues, ratio in rows:
-        by_bin[_bin_name(residues)].append((sid, residues, ratio))
-    return {
-        "overall": _stats(rows),
-        "short": {**_stats(by_bin["short"]), "rule": "residues < 512"},
-        "medium": {
-            **_stats(by_bin["medium"]),
-            "rule": "512 <= residues <= 1024",
-        },
-        "long": {**_stats(by_bin["long"]), "rule": "residues > 1024"},
-    }
-
-
-def fmt(block: dict[str, Any], label: str) -> str:
-    lines = [f"Speedup {label} (oss_s / bioir_s; >1 favors BioIR)"]
-    for key, title in (
-        ("overall", "overall"),
-        ("short", "short < 512"),
-        ("medium", "medium 512-1024"),
-        ("long", "long > 1024"),
-    ):
-        item = block[key]
-        n = item["n"]
-        if n == 0:
-            lines.append(f"- {title} (n=0): no speedup")
-            continue
-        extra = ""
-        if key != "overall" and item["ids"]:
-            extra = f"  [{', '.join(item['ids'])}]"
-        lines.append(
-            f"- {title} (n={n}): geomean {item['geomean']:.3f}, "
-            f"median {item['median']:.3f}{extra}"
-        )
-    return "\n".join(lines)
-
-
-def main() -> None:
-    bioir = _ok_map(RESULTS / "bioir_forward.json")
-    payload: dict[str, Any] = {
-        "vs_eager": speedup_block(bioir, _ok_map(RESULTS / "oss_eager.json")),
-    }
-    compile_path = RESULTS / "oss_compile.json"
-    if compile_path.exists():
-        payload["vs_compile"] = speedup_block(bioir, _ok_map(compile_path))
-    (RESULTS / "speedup.json").write_text(json.dumps(payload, indent=2) + "\n")
-    print(fmt(payload["vs_eager"], "vs OSS eager"))
-    if "vs_compile" in payload:
-        print()
-        print(fmt(payload["vs_compile"], "vs OSS compile"))
-
-
-if __name__ == "__main__":
-    main()
-```
+Run [`harness/summarize_speedup.py`](harness/summarize_speedup.py) with
+`$BIOIR_PYTHON` from `$WORKDIR` (or pass the role directory). Ratios are three
+decimals.
 
 Two-role benches (OpenFold2 monomer / multimer) run this once per
 role directory. Do not merge the two roles into one geomean.
@@ -1485,8 +1185,8 @@ role directory. Do not merge the two roles into one geomean.
 ## Charts (latency vs residues)
 
 Phase 6 **must** plot the headline times. A table alone is not
-the report. Copy `$WORKDIR/bench/plot_latency.py` from the
-snippet below and run it with `$BIOIR_PYTHON`.
+the report. Run [`harness/plot_latency.py`](harness/plot_latency.py) with
+`$BIOIR_PYTHON` from `$WORKDIR`.
 
 Required artifacts:
 
@@ -1514,96 +1214,6 @@ Rules:
 - Title must name the model key and GPU from `bench_config.json`.
 - After writing the PNGs, **read both image files in the final
   reply** so the human sees the charts, not only a path.
-
-```python
-# $WORKDIR/bench/plot_latency.py
-import json
-from pathlib import Path
-
-import matplotlib
-
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
-
-RESULTS = Path("results")  # run from $WORKDIR
-
-
-def load_ok(path: Path) -> list[tuple[str, int, float]]:
-    data = json.loads(path.read_text())
-    rows = []
-    for sid, row in data["samples"].items():
-        if row.get("status") != "ok":
-            continue
-        if "residues" not in row or not row.get("forward_s"):
-            continue
-        rows.append((sid, int(row["residues"]), float(row["forward_s"][0])))
-    rows.sort(key=lambda t: t[1])
-    return rows
-
-
-def series_xy(rows):
-    return [r[1] for r in rows], [r[2] for r in rows], [r[0] for r in rows]
-
-
-def annotate(ax, xs, ys, ids):
-    if len(xs) > 20:
-        return
-    for x, y, sid in zip(xs, ys, ids):
-        ax.annotate(sid, (x, y), textcoords="offset points", xytext=(4, 4), fontsize=7)
-
-
-bioir = load_ok(RESULTS / "bioir_forward.json")
-eager = load_ok(RESULTS / "oss_eager.json")
-compile_path = RESULTS / "oss_compile.json"
-compiled = load_ok(compile_path) if compile_path.is_file() else []
-
-cfg = json.loads(Path("ref_data/bench_config.json").read_text())
-title = f"{cfg['model_source']}  {cfg.get('gpu_name', '')}".strip()
-
-fig, ax = plt.subplots(figsize=(8.5, 5.0))
-for label, rows in (
-    ("BioIR", bioir),
-    ("OSS eager", eager),
-    ("OSS compile", compiled),
-):
-    if not rows:
-        continue
-    xs, ys, ids = series_xy(rows)
-    ax.plot(xs, ys, marker="o", label=label)
-    annotate(ax, xs, ys, ids)
-ax.set_xlabel("Residues")
-ax.set_ylabel("model.forward() (s)")
-ax.set_title(f"Forward latency vs residues — {title}")
-ax.legend()
-ax.grid(True, alpha=0.3)
-fig.tight_layout()
-fig.savefig(RESULTS / "latency_vs_residues.png", dpi=150)
-plt.close(fig)
-
-bioir_s = {r[0]: r[2] for r in bioir}
-fig, ax = plt.subplots(figsize=(8.5, 5.0))
-for label, rows in (("vs eager", eager), ("vs compile", compiled)):
-    xs, ys, ids = [], [], []
-    for sid, nres, oss_s in rows:
-        if sid not in bioir_s or bioir_s[sid] <= 0:
-            continue
-        xs.append(nres)
-        ys.append(oss_s / bioir_s[sid])
-        ids.append(sid)
-    if not xs:
-        continue
-    ax.plot(xs, ys, marker="o", label=label)
-    annotate(ax, xs, ys, ids)
-ax.axhline(1.0, color="gray", linestyle="--", linewidth=1)
-ax.set_xlabel("Residues")
-ax.set_ylabel("OSS s / BioIR s  (>1 favors BioIR)")
-ax.set_title(f"Speedup vs residues — {title}")
-ax.legend()
-ax.grid(True, alpha=0.3)
-fig.tight_layout()
-fig.savefig(RESULTS / "speedup_vs_residues.png", dpi=150)
-plt.close(fig)
-```
 
 ## Executor: serial, not Ray
 

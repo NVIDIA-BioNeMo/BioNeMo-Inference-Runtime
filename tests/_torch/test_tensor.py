@@ -16,7 +16,7 @@
 import pytest
 import torch
 
-from bionemo_ir._torch.utils.tensor import batched_gather, tensor_tree_map, tree_map
+from bionemo_ir._torch.utils import batched_gather, tensor_tree_map, tree_map
 
 DEVICES = ["cpu"] + (["cuda"] if torch.cuda.is_available() else [])
 

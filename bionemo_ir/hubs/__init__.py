@@ -15,7 +15,12 @@
 
 from .checkpoint import load_weights
 from .hf import load_hf_weights
-from .local import load_local_weights
+from .local import (
+    load_local_weights,
+    resolve_local_checkpoint_path,
+    resolve_rfproteina_autoencoder_checkpoint,
+    resolve_rfproteina_checkpoint,
+)
 from .metadata import (
     MetadataFile,
     download_hf_file,
@@ -24,7 +29,7 @@ from .metadata import (
     load_metadata,
     resolve_from_env,
 )
-from .support_matrix import FoldingSupportMatrix
+from .support_matrix import FoldingSupportMatrix, GenerativeSupportMatrix
 
 __all__ = [
     "load_weights",
@@ -36,5 +41,9 @@ __all__ = [
     "extract_archive",
     "get_model_cache_dir",
     "resolve_from_env",
+    "resolve_local_checkpoint_path",
+    "resolve_rfproteina_autoencoder_checkpoint",
+    "resolve_rfproteina_checkpoint",
     "FoldingSupportMatrix",
+    "GenerativeSupportMatrix",
 ]

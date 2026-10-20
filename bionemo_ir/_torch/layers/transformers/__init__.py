@@ -13,8 +13,18 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from .blocks import ConditionedTransformerBlock, PairUpdateBlock
 from .diffusion_transformer import BoltzDiffusionTransformer, OpenFold3DiffusionTransformer
 from .evoformer import EvoformerStack
+from .local_latents_transformer import LocalLatentsTransformer
 from .pairformer import PairformerModule
 
-__all__ = ["EvoformerStack", "PairformerModule", "BoltzDiffusionTransformer", "OpenFold3DiffusionTransformer"]
+__all__ = [
+    "EvoformerStack",
+    "PairformerModule",
+    "ConditionedTransformerBlock",
+    "PairUpdateBlock",
+    "BoltzDiffusionTransformer",
+    "OpenFold3DiffusionTransformer",
+    "LocalLatentsTransformer",
+]

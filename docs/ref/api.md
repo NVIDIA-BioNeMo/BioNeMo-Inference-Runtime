@@ -802,6 +802,35 @@ when the region runs eagerly.
 
 ## Custom Architectures
 
+### Reusable inference blocks
+
+`bionemo_ir._torch.layers.transformers.blocks` exposes
+`ConditionedTransformerBlock`, `PairUpdateBlock`, `precompute_trimul_metadata`,
+and `with_cuda_graph`. These operate on caller-supplied tensors:
+
+- Attention: `block(single, pair, condition, mask)` returns `[B, N, C]`.
+  Pair bias is optional; `pair=None` uses SDPA mask-only attention.
+- Pair update: precompute one TriMul metadata object per stack, then call
+  `block(single, pair, mask, trimul_metadata)`. It returns `[B, N, N, P]`.
+  Triangle multiplication is optional, and pair injection supports sum and
+  Hadamard writes.
+- `mask` is boolean `[B, N]`, with `True` for valid tokens. Interior gaps and
+  fully masked samples are supported. Invalid outputs are zero.
+
+Construct blocks with explicit dimensions and dtype, load their parameters,
+and call them inside `torch.no_grad()` or `torch.inference_mode()`. They do not
+support backward passes.
+
+`with_cuda_graph(block)` verifies and replays an exact-shape CUDA graph while
+refreshing tensor values, including masks. Reset its graph before changing
+weights or moving the captured block to another device.
+
+The calling model owns checkpoint mapping, feature semantics, recycling,
+sampling, and output formatting. BioIR's RFProteína model composes these blocks
+internally; external model adapters can use the same boundary directly.
+
+### Other transformer families
+
 If you already have a trained PyTorch model and want BioIR's optimized
 Pairformer, diffusion transformer, or Evoformer in place of your module — not
 the full folding pipeline — construct the layer, remap weights, and swap it

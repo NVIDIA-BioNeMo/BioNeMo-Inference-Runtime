@@ -9,6 +9,130 @@
 Each final release of BioNeMo Inference Runtime, newest first. Release
 candidates are not listed.
 
+## 0.2.0
+
+### Key Features and Enhancements
+
+- **RFProteína.** BioIR runs RFProteína (RFD4) as a conditional sampler.
+  One call returns a sequence and an all-atom structure from a length and
+  optional conditioning.
+- **Design tasks.** One model covers unconditional generation, fold-class
+  and secondary-structure steering, indexed and unindexed motif
+  scaffolding, protein and small-molecule binders, nucleic-acid binders,
+  partial redesign, inverse folding, and metric-guided beam search.
+- **Checkpoints.** Load the released velocity-network and autoencoder
+  checkpoints and call `RFProteina`. Checkpoints that carry training
+  metadata load.
+- **Sampling schedule.** The default is the released medium policy: 60
+  steps, 185 trunk passes, a denser tail on both modalities, and a decoder
+  conditioned on the predicted sequence.
+- **Design replay.** Sampling records one trunk recycle and replays it, so
+  a shape is captured once whatever depths that schedule uses.
+- **Motif coordinates.** Motif scaffolding reads internal-coordinate
+  conditioning from the coordinate group. A motif supplied only as
+  internal coordinates is no longer dropped.
+
+### Performance
+
+- **Folding replay.** For inputs up to 1024 tokens, Boltz-2, OpenFold3,
+  and Protenix record one trunk recycle, one diffusion step, and the
+  confidence Pairformer, and replay them on later calls of the same shape.
+  Boltz-1 records the diffusion step. OpenFold2 and AlphaFold2 record one
+  trunk recycle. The diffusion step extends to 2048 tokens on GPUs with at
+  least 64 GiB. Larger inputs run without replay. Token counts are padded
+  so nearby lengths share one recording. A serving request does not rerun
+  the first recording to check it.
+- **Stable replay inputs.** A replay copies only tensors that changed.
+  Diffusion steps keep features, trunk outputs, and prepared biases in
+  place.
+- **Conditioning reuse.** Noise-independent pair and single conditioning,
+  atom-pair biases, and diffusion noise levels are computed once per
+  rollout. Boltz deduplicates diffusion conditioning across samples.
+  Protenix reuses denoiser conditioning across samples, layers, and steps.
+- **Triangle updates.** Boltz-2, Protenix, and OpenFold3 embed relative
+  position in one pass. Below 512 tokens, triangle attention uses a
+  narrower tile.
+- **Fused triangle multiplication.** With token padding on, Boltz,
+  Protenix, and OpenFold3 run triangle multiplication in the MSA,
+  template, and pairformer stacks as one chain: input normalization and
+  gated projections, the contraction, then output normalization,
+  projection, gate, and masked residual. OpenFold2 does this in the
+  Evoformer and extra-MSA stacks. RFProteína does it in the
+  velocity-network pair updates. Confidence heads, OpenFold2 templates,
+  and token counts that are not multiples of 8 take the dual-product
+  path, including a residual add. On Hopper the output-tile weights stay
+  resident while rows stream past. On Blackwell that projection also feeds
+  conditioned transitions.
+- **Fused attention output.** Triangle attention and pair-biased attention
+  fuse the output gate, projection, and residual, including the diffusion
+  adaptive output gate. A residual-free form leaves the add to the caller.
+  Token transformers use it when they add the residual themselves. The
+  sigmoid gate can carry the residual.
+- **Fused transitions.** A transition keeps its hidden activation on chip.
+  A conditioned transition that does not take that path uses the
+  dual-product SwiGLU gate, then a fused SwiGLU. Adaptive normalization
+  fuses the norm and the sigmoid gate.
+- **Fused pair updates.** Pair-to-single averaging and single-to-pair
+  outer products are fused. OpenFold2 runs the dense outer product in
+  BF16. Pair-bias normalization, projection, and layout share one pass.
+- **Atom transformers.** OpenFold3 and Protenix run atom attention in BF16
+  inside the FP32 encoder and decoder, and gather each local atom window
+  in one pass. Boltz gathers atoms by token instead of a one-hot product.
+  OpenFold3 projects only the atom pairs it reads, applies the encoder
+  activation inside the atom reduction, and drops the unused atom-index
+  matrix.
+- **Protenix trunk.** Pairformer nodes whose weights are zero are skipped.
+  Triangle-bias heads are projected in the same pass as LayerNorm.
+  Confidence summaries stay on the host. pLDDT weights are not rebuilt for
+  every atom.
+- **Longer OpenFold3 inputs.** OpenFold3 fits longer sequences with the
+  same recycles, diffusion steps, samples, and confidence outputs. Static
+  atom conditioning and pair conditioning stay on the device for the
+  rollout. Protein conformers are prefetched.
+- **Structure math.** OpenFold2 fuses inference rotation products.
+  Quaternion conversion is fused. Rigid alignment reuses its solver setup.
+  Diffusion noise increments are prepared once per rollout and do not
+  change the random draws.
+- **Less host time.** Deep MSA decoding, template binning, and the
+  OpenFold2 and OpenFold3 tokenizers take less time. Boltz-2 no longer
+  waits on the device at every diffusion step. A serial processor overlaps
+  CPU stages with inference instead of starting a distributed runtime.
+- **Pipeline confidence.** Pipelines keep the confidence scores and maps
+  the writer uses and omit unused heads. Distance bins and their
+  projection are fused. Existing calls keep the same arguments, and the
+  written structure and confidence scores stay in place.
+- **Design sampling.** RFProteína projects shared pair biases in one pass
+  and conditions pair adaptive normalization once per design. The first
+  pass does not recycle a zero state. Sampling does not copy results back
+  to the host on every step.
+
+### Fixed Issues
+
+- **Ligand atom names.** Atoms outside the standard chemical vocabulary
+  keep their real names and elements when a pipeline writes them.
+- **SMILES ligands.** A SMILES ligand is no longer written as protein
+  only, and it no longer fails at the writer with duplicate atom ids.
+- **PDB templates.** OpenFold2 and OpenFold3 accept protein templates in
+  PDB as well as mmCIF. Author chain ids, insertion codes, and unresolved
+  residues are preserved.
+- **Template chain ids.** PDB inputs use author chain ids. mmCIF inputs
+  keep label chain ids. When the sequence is taken from observed residues,
+  selenomethionine is mapped to methionine.
+- **Protenix MSA.** MSA rows are resampled on each recycle with a fixed
+  depth, so a recorded recycle still replays.
+- **Protenix seed.** An omitted sampler seed follows the caller's random
+  state. An explicit sampling seed still overrides it.
+- **Protenix features.** Stock unbatched features are accepted, and missing
+  atom windows are built inside the forward pass.
+- **Protenix memory.** On GPUs with at most 24 GiB, activations are chunked
+  above 1024 tokens instead of running out of memory.
+- **Revised structures.** A revised RCSB entry is taken from the wwPDB
+  archive when the newest RCSB file is a later remediation.
+- **Downloaded archives.** Archives are checked before they are used.
+
+The full public history for this release is on
+[GitHub](https://github.com/NVIDIA-BioNeMo/BioNeMo-Inference-Runtime/commits/v0.2.0).
+
 ## 0.1.1 (2026-10-02)
 
 ### Fixed Issues

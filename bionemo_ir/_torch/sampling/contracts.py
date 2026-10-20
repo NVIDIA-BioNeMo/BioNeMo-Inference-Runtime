@@ -25,7 +25,7 @@ from typing import Protocol, TypeVar
 
 import torch
 
-from bionemo_ir._torch.utils import safe_generator
+from bionemo_ir._torch.utils.common import safe_generator
 
 StateT = TypeVar("StateT")
 PlanT = TypeVar("PlanT")

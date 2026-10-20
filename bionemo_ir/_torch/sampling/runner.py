@@ -43,11 +43,62 @@ class GenerativeRunner[PlanT, StateT, ModelInputT, TimeT, PredictionT]:
         predict: PredictFn[ModelInputT, TimeT, PredictionT],
         context: SamplingContext,
     ) -> SamplingResult[StateT]:
-        state = integrator.initialize(plan, context)
+        """Run every interval in ``plan`` from a freshly initialized state."""
+        return self.run_segment(integrator, plan, predict, context)
+
+    def run_segment(
+        self,
+        integrator: StepIntegrator[PlanT, StateT, ModelInputT, TimeT, PredictionT],
+        plan: PlanT,
+        predict: PredictFn[ModelInputT, TimeT, PredictionT],
+        context: SamplingContext,
+        *,
+        start_step: int = 0,
+        end_step: int | None = None,
+        initial_state: StateT | None = None,
+    ) -> SamplingResult[StateT]:
+        """Integrate global steps ``[start_step, end_step)`` on the full plan.
+
+        ``initialize`` prepares integrator-local segment state. For a
+        continuation its sampled state is discarded and the generator is
+        restored, so lifecycle setup cannot perturb the rollout's random
+        stream. Resuming past step 0 requires ``initial_state``. Step indices
+        are the plan's global indices so times and last-step logic stay correct
+        across segments.
+
+        Args:
+            integrator: Mathematical step implementation.
+            plan: Full rollout plan covering every interval.
+            predict: Denoiser callback.
+            context: Mutable rollout context, including the generator.
+            start_step: Inclusive global step index.
+            end_step: Exclusive global step index. ``None`` runs to the end
+                of ``plan``.
+            initial_state: Continuation to resume from. Required when
+                ``start_step > 0``.
+
+        Returns:
+            The state after ``end_step - start_step`` integrations, with
+            ``num_steps`` equal to that count.
+        """
         num_steps = integrator.num_steps(plan)
-        for step_index in range(num_steps):
+        stop = num_steps if end_step is None else end_step
+        if start_step < 0 or stop < start_step or stop > num_steps:
+            raise ValueError(f"invalid segment [{start_step}, {stop}) for a plan of {num_steps} steps")
+        if start_step != 0 and initial_state is None:
+            raise ValueError("resuming a rollout requires initial_state")
+        if initial_state is None:
+            state = integrator.initialize(plan, context)
+        else:
+            generator_state = context.generator.get_state()
+            try:
+                integrator.initialize(plan, context)
+            finally:
+                context.generator.set_state(generator_state)
+            state = initial_state
+        for step_index in range(start_step, stop):
+            context.step_index = step_index
             if context.is_cancelled is not None and context.is_cancelled():
                 raise SamplingCancelled(f"Sampling cancelled before step {step_index}")
-            context.step_index = step_index
             state = integrator.step(step_index, state, plan, predict, context)
-        return SamplingResult(final_state=state, seed=context.seed, num_steps=num_steps)
+        return SamplingResult(final_state=state, seed=context.seed, num_steps=stop - start_step)

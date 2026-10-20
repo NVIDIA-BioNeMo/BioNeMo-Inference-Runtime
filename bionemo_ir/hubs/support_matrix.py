@@ -14,7 +14,17 @@
 # limitations under the License.
 
 
-class FoldingSupportMatrix:
+class _SupportMatrix:
+    @classmethod
+    def is_supported(cls, model_name: str) -> bool:
+        return model_name in cls.get_all_supported_model_names()
+
+    @classmethod
+    def get_all_supported_model_names(cls) -> list[str]:
+        return [value for key, value in cls.__dict__.items() if not key.startswith("_") and isinstance(value, str)]
+
+
+class FoldingSupportMatrix(_SupportMatrix):
     Boltz1 = "boltz-1"
     Boltz2 = "boltz-2"
     Boltz2Affinity = "boltz-2-affinity"
@@ -40,14 +50,6 @@ class FoldingSupportMatrix:
     AlphaFold2_Multimer_5 = "alphafold2_multimer_5"
     OpenFold3 = "openfold3"
 
-    @staticmethod
-    def is_supported(model_name: str) -> bool:
-        return model_name in FoldingSupportMatrix.get_all_supported_model_names()
 
-    @staticmethod
-    def get_all_supported_model_names() -> list[str]:
-        return [
-            value
-            for key, value in FoldingSupportMatrix.__dict__.items()
-            if not key.startswith("_") and isinstance(value, str)
-        ]
+class GenerativeSupportMatrix(_SupportMatrix):
+    RFProteina = "rfproteina"

@@ -36,6 +36,7 @@ GITHUB_REPOSITORY = "github.com/NVIDIA-BioNeMo/BioNeMo-Inference-Runtime"
 ASSETS_DIR = Path("assets")
 PAGE_ROUTES = {
     Path("advanced/accelerate-custom-model.md"): "references/accelerate-custom-model",
+    Path("advanced/design-with-rfproteina.md"): "references/design-with-rfproteina",
     Path("advanced/port-data-pipeline.md"): "references/port-data-pipeline",
     Path("advanced/validate-data-pipeline.md"): "references/validate-data-pipeline",
     Path("release-notes/index.md"): "release-notes/overview",
@@ -54,6 +55,8 @@ PAGE_ROUTES = {
     Path("ref/docker-images.md"): "references/docker-images",
     Path("ref/gpu-stack.md"): "references/gpu-stack",
     Path("ref/model-weights.md"): "references/model-weights",
+    Path("ref/oracles.md"): "references/oracles",
+    Path("ref/rfproteina.md"): "references/rfproteina",
     Path("ref/sampling.md"): "references/sampling",
     Path("ref/support-matrix.md"): "references/support-matrix",
     Path("ref/system-information.md"): "references/system-information",

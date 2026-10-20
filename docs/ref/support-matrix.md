@@ -162,8 +162,9 @@ projects through the Blackwell `x_x` kernels.
 LayerNorm and gated projections, K2 the triangle contraction, and K3 the output
 LayerNorm, projection, gate, and masked residual. The Boltz, Protenix, and
 OpenFold3 trunks run it in their MSA, template, and pairformer stacks; OpenFold2
-in its Evoformer and extra-MSA stacks. Confidence heads, OpenFold2 templates,
-and calls whose token counts are not multiples of 8 take the dual-GEMM path.
+in its Evoformer and extra-MSA stacks; RFProteina in its velocity-network pair
+updates. Confidence heads, OpenFold2 templates, and calls whose token counts are
+not multiples of 8 take the dual-GEMM path.
 
 Override backends on a config if you need a reference path, for example
 `config.trunk.set_triangle_attention_backend("SDPA")`.

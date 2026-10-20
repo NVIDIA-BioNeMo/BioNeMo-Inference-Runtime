@@ -254,9 +254,7 @@ for variant in spec["variants"]:
             args.append(torch.empty(a["shape"], dtype=getattr(torch, a["dtype"]), device="cuda"))
         else:
             args.append(a["value"])
-    jit_fn[grid](*args, **ckw)
-
-torch.cuda.synchronize()
+    jit_fn.warmup(*args, grid=grid, **ckw)
 """)
 
 
@@ -368,15 +366,16 @@ class TritonKernelCache(KernelCacheBase):
         Args:
             jit_fn: A ``@triton.jit`` decorated function.
             dummy_args: Dummy positional arguments.
-            grid: Grid dimensions for the compilation launch.
+            grid: Grid dimensions for compilation.
             constexpr_kwargs: Keyword arguments for ``tl.constexpr`` params.
             stream: Optional launch stream.
 
         Returns:
             The compiled kernel wrapper.
         """
-        compiled = jit_fn[grid](*dummy_args, **constexpr_kwargs)
-        torch.cuda.synchronize()
+        # ``warmup`` compiles and specializes exactly as a launch does, but never
+        # runs the kernel, so the uninitialized dummy buffers are only addressed.
+        compiled = jit_fn.warmup(*dummy_args, grid=grid, **constexpr_kwargs)
 
         if not _looks_like_compiled_kernel(compiled):
             compiled = self._lookup_compiled(jit_fn, dummy_args, constexpr_kwargs)

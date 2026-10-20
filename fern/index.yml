@@ -25,6 +25,9 @@ navigation:
             path: ../docs/ref/architecture.md
           - page: Sampling
             path: ../docs/ref/sampling.md
+          - page: RFProteína Architecture
+            path: ../docs/ref/rfproteina.md
+            slug: rfproteina
           - page: Support Matrix
             path: ../docs/ref/support-matrix.md
           - page: Model Weights
@@ -35,6 +38,9 @@ navigation:
           - page: Token Padding
             path: ../docs/ref/token-padding.md
             slug: token-padding
+          - page: Custom Structure Oracles
+            path: ../docs/ref/oracles.md
+            slug: oracles
       - section: Performance and Scaling
         skip-slug: true
         collapsed: true
@@ -59,6 +65,9 @@ navigation:
           - page: Accelerate a Custom Model
             path: ../docs/advanced/accelerate-custom-model.md
             slug: accelerate-custom-model
+          - page: Design Proteins with RFProteína
+            path: ../docs/advanced/design-with-rfproteina.md
+            slug: design-with-rfproteina
           - page: Port a Data Pipeline
             path: ../docs/advanced/port-data-pipeline.md
             slug: port-data-pipeline

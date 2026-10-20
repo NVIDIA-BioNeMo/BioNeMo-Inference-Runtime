@@ -22,6 +22,8 @@ from typing import Any, NamedTuple
 
 import torch
 
+from bionemo_ir._torch.graph_optimization.tensor_copy_utils import _dataclass_fields, _is_dataclass_instance
+
 MB = 1 << 20
 
 # Executable and node metadata omitted from tensor-byte accounting.
@@ -55,6 +57,8 @@ def tensor_bytes(value: Any) -> int:
         return sum(tensor_bytes(v) for v in value.values())
     if isinstance(value, (list, tuple)):
         return sum(tensor_bytes(v) for v in value)
+    if _is_dataclass_instance(value):
+        return sum(tensor_bytes(v) for _, v in _dataclass_fields(value))
     return 0
 
 
@@ -98,6 +102,11 @@ def container_device(value: Any) -> torch.device | None:
                 return device
     elif isinstance(value, (list, tuple)):
         for v in value:
+            device = container_device(v)
+            if device is not None:
+                return device
+    elif _is_dataclass_instance(value):
+        for _, v in _dataclass_fields(value):
             device = container_device(v)
             if device is not None:
                 return device

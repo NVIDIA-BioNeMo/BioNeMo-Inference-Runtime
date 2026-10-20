@@ -171,6 +171,26 @@ def test_value_specialized_compile_does_not_wrap_dummy_cubin() -> None:
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
+def test_compiling_populates_the_cache_without_running_the_kernel() -> None:
+    """Compilation addresses the dummy buffers; it must never execute on their contents.
+
+    The dummies are ``torch.empty``, so a stray launch computes garbage here and
+    would fault outright for a kernel that indexed through one.
+    """
+    block = 16
+    sentinel = torch.full((block,), -7.0, device="cuda", dtype=torch.float32)
+    kernel = TritonKernelCache().compile(_add_n_kernel, (sentinel, 5), (1,), {"BLOCK": block})
+    torch.cuda.synchronize()
+
+    assert bool((sentinel == -7.0).all()), "compiling the kernel launched it over the dummy buffer"
+
+    out = torch.empty(block, device="cuda", dtype=torch.float32)
+    kernel.launch((1,), out, 5, block)
+    torch.cuda.synchronize()
+    torch.testing.assert_close(out, torch.arange(block, device="cuda", dtype=torch.float32) + 5)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
 def test_unreadable_params_do_not_wrap_dummy_cubin(monkeypatch: pytest.MonkeyPatch) -> None:
     """When specialization cannot be inspected, launch must not reuse the dummy CUBIN."""
     monkeypatch.setattr(
@@ -326,6 +346,25 @@ def test_streaming_ln_projection_matches_reference(
     if not rms_norm:
         functional = fused_ln_proj_moveaxis_pad(z, ln_weight, ln_bias, proj_weight, multiple=multiple)
         torch.testing.assert_close(functional, actual)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
+@pytest.mark.parametrize(("batch", "tokens", "multiple"), [(1, 136, 8), (2, 45, -1)], ids=["padded", "unpadded-b2"])
+def test_fp32_folded_projection_reproduces_each_layers_fold(batch: int, tokens: int, multiple: int) -> None:
+    """Two RMSNorm layers' gamma-folded FP32 weights under a unit gamma give each layer's own bias, bit for bit."""
+    torch.manual_seed(7)
+    dim_d, heads = 384, 12
+    z = torch.randn(batch, tokens, tokens, dim_d, device="cuda", dtype=torch.bfloat16)
+    gammas = [(1 + 0.2 * torch.randn(dim_d, device="cuda")).to(torch.bfloat16) for _ in range(2)]
+    weights = [(torch.randn(heads, dim_d, device="cuda") * dim_d**-0.5).to(torch.bfloat16) for _ in range(2)]
+    single = FusedLNProjMoveaxisPad(D=dim_d, H=heads, rms_norm=True)
+    merged = FusedLNProjMoveaxisPad(D=dim_d, H=2 * heads, rms_norm=True, fp32_projection=True)
+    folded = torch.cat([weight.float() * gamma.float() for gamma, weight in zip(gammas, weights, strict=True)])
+
+    actual = merged(z, torch.ones(dim_d, device="cuda"), None, folded, multiple=multiple)
+    for index, (gamma, weight) in enumerate(zip(gammas, weights, strict=True)):
+        expected = single(z, gamma, None, weight, multiple=multiple)
+        torch.testing.assert_close(actual[:, index * heads : (index + 1) * heads], expected, atol=0, rtol=0)
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")

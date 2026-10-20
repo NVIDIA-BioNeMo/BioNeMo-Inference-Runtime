@@ -33,10 +33,14 @@ __all__ = [
     "get_pair_weighted_averaging_op",
     "get_attn_epilogue_op",
     "LNProjMoveaxisPad",
+    "PairInjection",
+    "fused_masked_residual",
 ]
 
 _EXPORTS = {
     "LNProjMoveaxisPad": ".fused_ln_proj_moveaxis_pad",
+    "PairInjection": ".fused_pair_injection",
+    "fused_masked_residual": ".fused_masked_residual",
     "get_adaln_layernorm_sigmoid_op": ".adaln_layernorm_sigmoid",
     "get_attn_epilogue_op": ".attn_epilogue",
     "get_dual_gemm_x0_x1_op": ".dual_gemm_x0_x1",

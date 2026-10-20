@@ -18,12 +18,14 @@ import logging
 import os
 import pickle
 import zipfile
-from collections import OrderedDict, defaultdict, namedtuple
+from collections import OrderedDict, defaultdict
+from dataclasses import dataclass
 from pathlib import Path
 
 import torch
 
 from bionemo_ir.hubs.support_matrix import FoldingSupportMatrix as SupMat
+from bionemo_ir.hubs.support_matrix import GenerativeSupportMatrix as GenSupMat
 
 logger = logging.getLogger(__name__)
 
@@ -40,7 +42,13 @@ PROTENIX_MODEL_NAMES = frozenset(
     }
 )
 
-LocalCheckpoint = namedtuple("LocalCheckpoint", ["env", "weights_only", "state_dict_key"])
+
+@dataclass(frozen=True)
+class LocalCheckpoint:
+    env: str | list[str]
+    weights_only: bool
+    state_dict_key: str | None
+
 
 LOCAL_CHECKPOINTS = {
     SupMat.Boltz1: LocalCheckpoint(
@@ -163,10 +171,24 @@ LOCAL_CHECKPOINTS = {
         weights_only=True,
         state_dict_key="model",
     ),
+    GenSupMat.RFProteina: LocalCheckpoint(
+        env=["RFPROTEINA_LDM_CKPT", "RFPROTEINA_AE_CKPT"],
+        weights_only=False,
+        state_dict_key="state_dict",
+    ),
 }
 
 # File extensions scanned when probing the local checkpoint cache.
 _CHECKPOINT_EXTENSIONS = (".pt", ".ckpt")
+
+
+def _checkpoint_env(checkpoint: LocalCheckpoint, index: int = 0) -> str:
+    """Return one environment name; index zero is the primary checkpoint."""
+    envs = [checkpoint.env] if isinstance(checkpoint.env, str) else checkpoint.env
+    try:
+        return envs[index]
+    except IndexError as exc:
+        raise ValueError(f"Checkpoint does not define environment index {index}") from exc
 
 
 def local_checkpoint_dir() -> Path:
@@ -191,6 +213,42 @@ def resolve_cached_checkpoint(name: str) -> str | None:
         if matches:
             return str(matches[0])
     return None
+
+
+def resolve_local_checkpoint_path(
+    name: str,
+    checkpoint_path: str | Path | None = None,
+    repo_id: str | Path | None = None,
+) -> Path | None:
+    """Resolve a local checkpoint filepath for a registered model name."""
+    if checkpoint_path is not None:
+        return Path(checkpoint_path)
+    checkpoint = LOCAL_CHECKPOINTS.get(name)
+    if checkpoint is None:
+        return None
+    env_name = repo_id if repo_id is not None else _checkpoint_env(checkpoint)
+    filepath = os.getenv(str(env_name))
+    return Path(filepath) if filepath else None
+
+
+def resolve_rfproteina_checkpoint(checkpoint_path: str | Path | None = None) -> Path | None:
+    """Resolve the RFProteina LDM checkpoint from an explicit path or
+    ``RFPROTEINA_LDM_CKPT``."""
+    return resolve_local_checkpoint_path(GenSupMat.RFProteina, checkpoint_path=checkpoint_path)
+
+
+def resolve_rfproteina_autoencoder_checkpoint(checkpoint_path: str | Path | None = None) -> Path | None:
+    """Resolve the RFProteina partial-autoencoder checkpoint from an explicit
+    path or ``RFPROTEINA_AE_CKPT``.
+
+    The autoencoder ships separately from the LDM velocity checkpoint and
+    carries the encoder and decoder that map structures to and from latents.
+    """
+    if checkpoint_path is not None:
+        return Path(checkpoint_path)
+    checkpoint = LOCAL_CHECKPOINTS[GenSupMat.RFProteina]
+    filepath = os.getenv(_checkpoint_env(checkpoint, index=1))
+    return Path(filepath) if filepath else None
 
 
 class Dummy:
@@ -275,7 +333,7 @@ def _resolve_local_checkpoint(
     HuggingFace repo in :func:`hubs.load_hf_weights`. Either way it is a name,
     never a path: a `Path` would be read as an env var and silently miss.
     """
-    default_repo_id = LOCAL_CHECKPOINTS[name].env
+    default_repo_id = _checkpoint_env(LOCAL_CHECKPOINTS[name])
     if cache_path is not None:
         return cache_path, default_repo_id
     if repo_id is not None:
@@ -308,6 +366,7 @@ def load_local_weights(
     if not filepath:
         logger.info(f"Not found local checkpoint for {name}, using default repo id {default_repo_id}")
         return None
+    filepath = str(filepath)
     logger.info(f"Loading {name} from local filesystem {filepath}")
     cached_file = open(filepath, "rb")
     if return_raw:

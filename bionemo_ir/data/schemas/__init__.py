@@ -29,20 +29,46 @@ from .basic import (
     Template,
     TemplateParsed,
 )
+from .oracle import (
+    AtomIdentity,
+    EncodedStructure,
+    OracleRequest,
+    OracleResponse,
+    OracleStatus,
+    ResidueIdentity,
+    ResolvedStructure,
+)
+from .vocabulary import (
+    ATOM37_SIZE,
+    ResidueVocabulary,
+    residue_vocabulary,
+    vendored_residue_vocabularies,
+)
 
 __all__ = [
+    "ATOM37_SIZE",
+    "AtomIdentity",
     "MSAParsed",
     "AtomType",
     "AtomTypes",
+    "EncodedStructure",
     "FoldingOutput",
     "InputParsed",
     "InputRequest",
     "MSARecord",
+    "OracleRequest",
+    "OracleResponse",
+    "OracleStatus",
+    "ResidueVocabulary",
+    "residue_vocabulary",
+    "vendored_residue_vocabularies",
     "Polymer",
     "PolymerParsed",
     "PolymerType",
     "ResType",
     "ResTypes",
+    "ResidueIdentity",
+    "ResolvedStructure",
     "Template",
     "TemplateParsed",
 ]

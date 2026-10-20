@@ -45,6 +45,11 @@ more as `diffusion_samples` grows. With 5 samples at 100 and 199 tokens,
 Boltz-1's confidence module takes 708–724 ms padded against 864 ms unpadded,
 1.19–1.22x faster.
 
+RFProteína's velocity network fuses the residual of every triangle
+multiplication once padded. At 250, 381, and 509 tokens, with its released
+widths and one recycling pass, it runs 1.46–1.55x faster on H100 and peaks
+23–25% lower in memory.
+
 ## What Gets Padded
 
 - **Boltz-1 and Boltz-2**: the trunk's MSA module, pairformer, and Boltz-2
@@ -56,6 +61,9 @@ Boltz-1's confidence module takes 708–724 ms padded against 864 ms unpadded,
   and the confidence pairformer in the auxiliary heads.
 - **OpenFold2**: the extra-MSA and Evoformer stacks. The template stack runs
   before padding, at the true residue count.
+- **RFProteína**: the velocity network's transformer and pair-update layers.
+  The autoencoder's encoder and decoder run no triangle multiplication and
+  stay at the true token count.
 
 Each region pads once, before its recycling or layer loop, and slices its
 outputs back afterwards; the slices are views, not copies. The diffusion and
@@ -80,7 +88,7 @@ unpadded path. Each padded region has its own `enable_token_pad` flag:
 - Boltz-1, Boltz-2, Protenix, and OpenFold3 read it from the region's
   `PairformerConfig`: the trunk pairformer's for the trunk, the confidence
   pairformer's for the confidence module.
-- OpenFold2 reads `trunk.enable_token_pad`.
+- OpenFold2 and RFProteína read `trunk.enable_token_pad`.
 
 ```python
 from bionemo_ir.models.boltz2 import Boltz2

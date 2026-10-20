@@ -12,8 +12,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-
-"""Tests for the ``safe_generator`` context manager in ``_torch.utils``.
+"""Tests for the ``safe_generator`` context manager in ``_torch.utils.common``.
 
 ``safe_generator`` yields a private RNG seeded from the default generator's
 current state, so its draws reproduce exactly what the default generator would
@@ -25,7 +24,7 @@ pin that contract on CPU (and CUDA when available) without any model.
 import pytest
 import torch
 
-from bionemo_ir._torch.utils import safe_generator
+from bionemo_ir._torch.utils.common import safe_generator
 
 SEED = 1234
 

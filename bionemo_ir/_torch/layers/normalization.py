@@ -95,6 +95,14 @@ class AdaLN(nn.Module):
             rms_norm=norm_type == "rms_norm",
         )
 
+    def project_condition(self, s: torch.Tensor) -> torch.Tensor:
+        """Project ``s`` ``[B, I, d_cond]`` into the ``[B, I, 2 * d]`` scale and shift logits.
+
+        A caller that applies this layer several times under one condition, such as a
+        trunk recycling its passes, projects it once and passes ``projected_condition``.
+        """
+        return self.fused_s_scale_s_bias(self.s_norm(s))
+
     def forward(
         self,
         a: torch.Tensor,
@@ -102,6 +110,8 @@ class AdaLN(nn.Module):
         buffers: PreallocatedBuffers | None = None,
         buffer_key: str = "adaln_out",
         mask: torch.Tensor | None = None,
+        excluded: torch.Tensor | None = None,
+        projected_condition: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """
         Args:
@@ -111,14 +121,17 @@ class AdaLN(nn.Module):
             buffer_key: key into ``buffers`` for the AdaLN output tensor.
             mask: optional binary mask ``[B, I]`` applied after the affine.
                 Broadcasts across a sample axis when ``a`` is ``[B, S, I, d]``.
+            excluded: optional ``~mask`` as a bool ``[B, I, 1]``, precomputed by
+                a caller that masks many layers; replaces ``mask``.
+            projected_condition: ``project_condition(s)``, precomputed; ``s`` is
+                then not read.
 
         Returns:
             a: [B, I, d]
         """
-        s_normed = self.s_norm(s)
-        ss = self.fused_s_scale_s_bias(s_normed)
+        ss = self.project_condition(s) if projected_condition is None else projected_condition
         s_scale, s_bias = ss.split([self.dim, self.dim], dim=-1)
-        return self.normalize(a, s_scale, s_bias, buffers=buffers, buffer_key=buffer_key, mask=mask)
+        return self.normalize(a, s_scale, s_bias, buffers=buffers, buffer_key=buffer_key, mask=mask, excluded=excluded)
 
     def normalize(
         self,
@@ -128,6 +141,7 @@ class AdaLN(nn.Module):
         buffers: PreallocatedBuffers | None = None,
         buffer_key: str = "adaln_out",
         mask: torch.Tensor | None = None,
+        excluded: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """``sigmoid(s_scale) * Norm(a) + s_bias`` from an already projected condition.
 
@@ -135,7 +149,7 @@ class AdaLN(nn.Module):
             a: [B, I, d]
             s_scale, s_bias: [B, I, d] halves of ``fused_s_scale_s_bias(s_norm(s))``;
                 one leading dimension may be 1 and broadcast.
-            buffers, buffer_key, mask: as in :meth:`forward`.
+            buffers, buffer_key, mask, excluded: as in :meth:`forward`.
         """
         # The dispatcher returns a torch fallback when no payload is available.
         # Tests also clear this to force the inline path as an independent
@@ -148,20 +162,27 @@ class AdaLN(nn.Module):
             if out is None:
                 out = torch.empty_like(a)
             out = self._fused_op(a, s_scale, s_bias, out=out, eps=self.eps)
-            return self._maybe_mask(out, mask)
+            return self._maybe_mask(out, mask, excluded)
 
         a = self.a_norm(a)
         a = F.sigmoid(s_scale) * a + s_bias
-        return self._maybe_mask(a, mask)
+        return self._maybe_mask(a, mask, excluded)
 
     @staticmethod
-    def _maybe_mask(x: torch.Tensor, mask: torch.Tensor | None) -> torch.Tensor:
+    def _maybe_mask(x: torch.Tensor, mask: torch.Tensor | None, excluded: torch.Tensor | None = None) -> torch.Tensor:
+        """Zero the rows of ``x``, this layer's own output, that ``mask`` excludes."""
+        if excluded is not None:
+            return x.masked_fill_(excluded, 0)
         if mask is None:
             return x
         # ``[B, I]`` must expand over a sample axis of ``[B, S, I, D]``.
         while mask.ndim < x.ndim - 1:
             mask = mask.unsqueeze(-2)
-        return x * mask.unsqueeze(-1).to(x.dtype)
+        # ``masked_fill``, not multiply: a non-finite ``x`` at a masked-out
+        # position must become exact zero, and NaN * 0 is still NaN, as in
+        # ``_apply_masked_residual`` in ``transformers/blocks.py``. In place,
+        # since ``x`` is never the caller's tensor.
+        return x.masked_fill_(~mask.unsqueeze(-1).to(torch.bool), 0)
 
 
 class FusedLayerNorm(nn.LayerNorm):

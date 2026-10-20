@@ -14,9 +14,21 @@
 # limitations under the License.
 """Clone, copy, compare, and release tensors in nested containers."""
 
+import copy
+import dataclasses
 from typing import Any
 
 import torch
+
+
+def _is_dataclass_instance(value: Any) -> bool:
+    """Whether ``value`` is a dataclass object, which holds its tensors in fields like a container does."""
+    return dataclasses.is_dataclass(value) and not isinstance(value, type)
+
+
+def _dataclass_fields(value: Any) -> list[tuple[str, Any]]:
+    """A dataclass object's ``(name, value)`` fields in declaration order."""
+    return [(field.name, getattr(value, field.name)) for field in dataclasses.fields(value)]
 
 
 def _clone_tensors(value: Any) -> Any:
@@ -27,6 +39,12 @@ def _clone_tensors(value: Any) -> Any:
         return {k: _clone_tensors(v) for k, v in value.items()}
     elif isinstance(value, (list, tuple)):
         return type(value)(_clone_tensors(v) for v in value)
+    elif _is_dataclass_instance(value):
+        # A shallow copy keeps fields that are not ``__init__`` arguments; ``object.__setattr__`` reaches frozen ones.
+        cloned = copy.copy(value)
+        for name, field_value in _dataclass_fields(value):
+            object.__setattr__(cloned, name, _clone_tensors(field_value))
+        return cloned
     return value
 
 
@@ -48,6 +66,12 @@ def _copy_tensors_into(dest: Any, src: Any) -> None:
         assert len(dest) == len(src), "structure mismatch: static buffer and live input have different lengths"
         for d, s in zip(dest, src, strict=True):
             _copy_tensors_into(d, s)
+    elif _is_dataclass_instance(dest):
+        assert type(dest) is type(src), (
+            f"structure mismatch: static buffer is a {type(dest).__name__} but live input is {type(src).__name__}"
+        )
+        for (_, d), (_, s) in zip(_dataclass_fields(dest), _dataclass_fields(src), strict=True):
+            _copy_tensors_into(d, s)
 
 
 def _tensor_leaves(value: Any) -> list[torch.Tensor]:
@@ -58,6 +82,8 @@ def _tensor_leaves(value: Any) -> list[torch.Tensor]:
         return [leaf for item in value.values() for leaf in _tensor_leaves(item)]
     if isinstance(value, (list, tuple)):
         return [leaf for item in value for leaf in _tensor_leaves(item)]
+    if _is_dataclass_instance(value):
+        return [leaf for _, item in _dataclass_fields(value) for leaf in _tensor_leaves(item)]
     return []
 
 
@@ -75,6 +101,10 @@ def _assert_equal_but_distinct(original: Any, clone: Any) -> None:
     elif isinstance(original, (list, tuple)):
         assert len(original) == len(clone)
         for o, c in zip(original, clone, strict=True):
+            _assert_equal_but_distinct(o, c)
+    elif _is_dataclass_instance(original):
+        assert type(original) is type(clone)
+        for (_, o), (_, c) in zip(_dataclass_fields(original), _dataclass_fields(clone), strict=True):
             _assert_equal_but_distinct(o, c)
 
 
@@ -124,3 +154,8 @@ def _delete_tensors_in_container(value: Any) -> None:
             _delete_tensors_in_container(v)
         if isinstance(value, list):
             value.clear()
+    elif _is_dataclass_instance(value):
+        for name, field_value in _dataclass_fields(value):
+            _delete_tensors_in_container(field_value)
+            if isinstance(field_value, (torch.Tensor, dict, list, tuple)) or _is_dataclass_instance(field_value):
+                object.__setattr__(value, name, None)

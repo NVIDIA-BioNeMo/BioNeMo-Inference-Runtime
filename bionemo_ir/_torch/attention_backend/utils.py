@@ -202,11 +202,15 @@ class PrecomputedPairMasks:
             but threading the transposed view through ``tri_mul_in`` keeps
             the wiring symmetric with the rest of the precompute consumers
             and handles non-square pair tensors correctly.
+        value_mask: ``pair_mask`` as ``[B, I, J, 1]`` in the activation
+            dtype, for blocks that multiply or accumulate pair activations
+            under it; ``None`` unless requested.
     """
 
     pair_mask: torch.Tensor
     mask_bias: torch.Tensor
     mask_bias_transposed: torch.Tensor
+    value_mask: torch.Tensor | None = None
 
 
 PrecomputePairMasksFn = Callable[[torch.Tensor, float, torch.dtype | None], PrecomputedPairMasks]
@@ -227,6 +231,7 @@ def precompute_pair_masks(
     pair_mask: torch.Tensor,
     inf: float = 1e9,
     dtype: torch.dtype | None = None,
+    activation_dtype: torch.dtype | None = None,
 ) -> PrecomputedPairMasks:
     """Dispatch to the registered precompute function for *backend_name*.
 
@@ -235,6 +240,7 @@ def precompute_pair_masks(
         pair_mask: ``[B, I, J]`` mask tensor.
         inf: Large value used to mask out invalid positions.
         dtype: Target dtype for the mask bias tensors.
+        activation_dtype: Also precompute ``value_mask`` in this dtype.
 
     Returns:
         A :class:`PrecomputedPairMasks` bundle ready to be passed through
@@ -246,7 +252,10 @@ def precompute_pair_masks(
             f"No precompute_pair_masks registered for backend '{backend_name}'. "
             f"Available: {sorted(_PRECOMPUTE_PAIR_MASKS_REGISTRY.keys())}"
         )
-    return fn(pair_mask, inf, dtype)
+    result = fn(pair_mask, inf, dtype)
+    if activation_dtype is not None:
+        result.value_mask = pair_mask.unsqueeze(-1).to(activation_dtype)
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -357,16 +366,24 @@ class PrecomputedSingleMasks:
 
     Attributes:
         single_mask: Original ``[*, I]`` mask.
-        mask_bias: Additive mask bias ready for the attention kernel.
-            Shape depends on backend (default: ``[*, 1, 1, I]``).
-        mask_bias_local: Additive mask bias after ``query_to_keys``
+        mask_bias: Mask payload ready for the attention kernel. Default
+            backends take an additive bias ``[*, 1, 1, I]``; the CuTeDSL
+            left-mask kernel takes the ``int32`` count of valid keys, one per
+            row of the flattened leading dims.
+        mask_bias_local: ``mask_bias`` after ``query_to_keys``
             transformation for sequence-local atom attention.
             ``None`` when ``query_to_keys`` is not used.
+        excluded: ``[*, I, 1]`` bool, true where ``single_mask`` excludes the
+            token, for filling activations in place; ``None`` unless requested.
+        value_mask: ``single_mask`` as ``[*, I, 1]`` in the activation dtype,
+            for masked residuals; ``None`` unless requested.
     """
 
     single_mask: torch.Tensor
     mask_bias: torch.Tensor
     mask_bias_local: torch.Tensor | None = None
+    excluded: torch.Tensor | None = None
+    value_mask: torch.Tensor | None = None
 
 
 PrecomputeSingleMasksFn = Callable[[torch.Tensor, float], PrecomputedSingleMasks]
@@ -387,6 +404,7 @@ def precompute_single_masks(
     single_mask: torch.Tensor,
     inf: float = 1e9,
     query_to_keys: Callable | None = None,
+    activation_dtype: torch.dtype | None = None,
 ) -> PrecomputedSingleMasks:
     """Dispatch to the registered precompute function for *backend_name*.
 
@@ -399,6 +417,9 @@ def precompute_single_masks(
             sequence-local atom attention.  When provided, the transformed
             mask bias is also precomputed and stored in
             ``mask_bias_local``.
+        activation_dtype: Also precompute ``excluded`` and ``value_mask``,
+            with ``value_mask`` in this dtype, for layers that mask their
+            activations.
 
     Returns:
         A :class:`PrecomputedSingleMasks` bundle ready to be passed through
@@ -416,6 +437,10 @@ def precompute_single_masks(
         local_mask = (local_mask > 0).to(local_mask.dtype)
         local_result = fn(local_mask, inf)
         result.mask_bias_local = local_result.mask_bias
+    if activation_dtype is not None:
+        valid = single_mask.unsqueeze(-1)
+        result.excluded = ~valid.to(torch.bool)
+        result.value_mask = valid.to(activation_dtype)
     return result
 
 
@@ -440,7 +465,9 @@ def _cutedsl_precompute_single_masks(
     single_mask: torch.Tensor,
     inf: float = 1e9,
 ) -> PrecomputedSingleMasks:
-    mask_bias = single_mask.float()
+    # The left-mask kernel takes each row's count of valid keys; counting once
+    # here spares every layer the reduction.
+    mask_bias = (single_mask.float() > 0.5).sum(dim=-1, dtype=torch.int32).reshape(-1)
     return PrecomputedSingleMasks(
         single_mask=single_mask,
         mask_bias=mask_bias,

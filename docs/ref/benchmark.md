@@ -51,6 +51,7 @@ enough to quote.
 - [OpenFold3](#openfold3)
 - [OpenFold2 / AlphaFold2](#openfold2--alphafold2)
 - [Protenix](#protenix)
+- [RFProteína](#rfproteína)
 - [Reproducing](#reproducing)
 
 ## Measurements
@@ -511,6 +512,55 @@ Each cell is `BioIR / OSS torch.compile / OSS PyTorch eager`. lDDT is scored
 over every sample; DockQ covers the subset with a supported protein interface,
 which is why its count is lower. The three should agree -- a speedup that moved
 them would not be the same answer.
+
+## RFProteína
+
+RFProteína is a design model rather than a folding model, so it runs on its own
+harness and these figures are not comparable with the tables above. The unit is
+**milliseconds per sampling step** on one `h100`, batch 1, 50 sampling steps, a
+mid-peak recycling schedule for 170 trunk passes, and self-conditioning
+disabled, across thirty sequence lengths from 64 to 1024 residues.
+
+Each side is configured as it would be deployed rather than forced into a common
+mould: the OSS implementation uses static `torch.compile` and pads every input
+up to a released compile anchor, while BioIR runs the native length unpadded,
+with exact-shape CUDA graphs through 512 residues and eager execution above.
+Compilation, capture and warmup are outside the timed region.
+
+BioIR is faster at all thirty shapes, with a median speedup of 2.03x over a
+range of 1.28x to 3.35x.
+
+| Residues | OSS pads to | BioIR mode |     OSS |   BioIR | Speedup |
+| -------: | ----------: | ---------- | ------: | ------: | ------: |
+|       64 |         128 | CUDA graph |  233.69 |   74.02 |   3.16x |
+|      128 |         128 | CUDA graph |  225.74 |  103.16 |   2.19x |
+|      256 |         256 | CUDA graph |  436.60 |  272.56 |   1.60x |
+|      512 |         512 | CUDA graph | 1195.36 |  767.43 |   1.56x |
+|      769 |         896 | eager      | 2983.93 |  889.79 |   3.35x |
+|     1024 |        1024 | eager      | 2895.81 | 1489.11 |   1.94x |
+
+Fourteen of the thirty measured shapes carry the pattern; six representative
+rows are shown. Read the extremes with care. The largest speedups sit
+immediately after an OSS compile anchor -- 769 residues padded to 896 gives
+3.35x -- where much of the gain is padding waste on the OSS side rather than
+BioIR being faster. Each row is a single timed rollout after warmup rather than
+a median of repeats, so individual rows carry run-to-run noise. The sweep also
+predates the removal of a short-sequence triangle-multiplication path, so rows
+below 384 residues understate current BioIR performance, and it predates the
+upstream thinking-mode schedules, so its fixed 50-step, 170-pass budget is not
+what a default run executes today: the default is `thinking_medium`, 60 steps
+over 185 trunk passes. Latency per sampling step stays the comparable unit;
+total design time scales with the mode's trunk-pass count.
+
+Peak **allocated** memory is lower for BioIR at long lengths, 10.74 against
+15.56 GiB at 1024 residues, while peak **reserved** memory is higher, 38.69
+against 33.62 GiB. That reflects caching-allocator behaviour under graph
+capture rather than live tensor footprint, so deployments sized on reserved
+memory should note the difference.
+
+Design quality is reported separately in
+[RFProteína architecture](rfproteina.md), because the comparison is
+distributional rather than a per-sample score.
 
 ## Reproducing
 

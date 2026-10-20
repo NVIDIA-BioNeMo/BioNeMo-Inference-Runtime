@@ -57,6 +57,9 @@ class LNProjMoveaxisPad(nn.Module):
         rms_norm: use RMSNorm (no mean subtraction, no bias) instead of
             LayerNorm.
         eps: epsilon added to the normalization variance.
+        fp32_projection: also accept FP32 norm and projection weights on the
+            streaming kernel, for projections with gammas folded in at full
+            precision.
     """
 
     def __init__(
@@ -66,6 +69,7 @@ class LNProjMoveaxisPad(nn.Module):
         dtype: torch.dtype = torch.bfloat16,
         rms_norm: bool = False,
         eps: float = 1e-5,
+        fp32_projection: bool = False,
     ) -> None:
         super().__init__()
         self._rms_norm = rms_norm
@@ -73,9 +77,15 @@ class LNProjMoveaxisPad(nn.Module):
         self._moveaxis_pad = MoveaxisPad(H=H, dtype=dtype)
         self._fused_kernel: _TritonFusedLNProj | None = None
         try:
-            self._fused_kernel = _TritonFusedLNProj(D=D, H=H, dtype=dtype, rms_norm=rms_norm, eps=eps)
+            self._fused_kernel = _TritonFusedLNProj(
+                D=D, H=H, dtype=dtype, rms_norm=rms_norm, eps=eps, fp32_projection=fp32_projection
+            )
         except Exception:
             pass
+
+    def streams(self, dtype: torch.dtype) -> bool:
+        """Whether contiguous inputs of ``dtype`` take the single-pass streaming kernel at any padding."""
+        return self._fused_kernel is not None and self._fused_kernel.streams(dtype)
 
     def forward(
         self,

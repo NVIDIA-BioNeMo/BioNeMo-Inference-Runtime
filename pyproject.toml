@@ -35,9 +35,9 @@ authors = [{ name = "NVIDIA-BioNeMo team" }]
 dependencies = [
   "cuda-python>=13",
   "torch>=2.11",
-  "cuequivariance>=0.11.1,<0.13",
-  "cuequivariance-ops-cu13>=0.11.1,<0.13",
-  "cuequivariance-ops-torch-cu13>=0.11.1,<0.13",
+  "cuequivariance>=0.11.1,<0.14",
+  "cuequivariance-ops-cu13>=0.11.1,<0.14",
+  "cuequivariance-ops-torch-cu13>=0.11.1,<0.14",
   "triton>=3.6.0,<3.8",
   "biopython>=1.87",
   "ray[serve,data]==2.56.1",  # Installs pandas and pyarrow.
@@ -187,8 +187,9 @@ cache-keys = [
 [tool.ruff]
 line-length = 120
 target-version = "py312"
-# 3rdparty is vendored and never linted.
-extend-exclude = ["3rdparty"]
+# 3rdparty is vendored and never linted. Vendored vocabularies are transcribed
+# data, one long row per residue class, so formatting them helps nobody.
+extend-exclude = ["3rdparty", "bionemo_ir/data/schemas/vocabularies"]
 
 [tool.ruff.lint]
 # Enforced on changed files only, so the set stays low-noise: rules with little

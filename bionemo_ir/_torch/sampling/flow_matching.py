@@ -90,6 +90,21 @@ class FlowMatchingSchedule:
             raise ValueError("noise_rate must be nonnegative")
 
     @property
+    def host_times(self) -> tuple[float, ...]:
+        """The grid as host floats, read back once and reused.
+
+        A step rule that branches on time -- VF-TSR's ODE window, for one --
+        would otherwise read a device scalar back on every step. Validation
+        above already pays one transfer, so this adds no synchronization that
+        constructing the schedule did not.
+        """
+        cached = getattr(self, "_host_times", None)
+        if cached is None:
+            cached = tuple(self.times.detach().to("cpu", torch.float64).tolist())
+            object.__setattr__(self, "_host_times", cached)
+        return cached
+
+    @property
     def num_steps(self) -> int:
         return self.times.numel() - 1
 
@@ -171,6 +186,13 @@ class FlowMatchingState:
             clean={modality: torch.zeros_like(tensor) for modality, tensor in value.items()},
         )
 
+    def clone(self) -> FlowMatchingState:
+        """Deep-copy the modality tensors so a continuation can branch."""
+        return FlowMatchingState(
+            value={modality: tensor.clone() for modality, tensor in self.value.items()},
+            clean={modality: tensor.clone() for modality, tensor in self.clean.items()},
+        )
+
 
 @dataclass(frozen=True)
 class FlowMatchingModelInput:
@@ -239,18 +261,27 @@ class FlowMatchingIntegrator(
         config: FlowMatchingIntegratorConfig,
         hook_pipeline: DenoiseHookPipeline[FlowMatchingStep] | None = None,
         initial_value: Mapping[str, torch.Tensor] | None = None,
+        *,
+        segment_start_step: int | None = None,
+        carry_self_condition: bool = False,
     ) -> None:
         super().__init__(hook_pipeline)
         self.config = config
         if initial_value is None:
             raise ValueError("initial_value is required")
+        if segment_start_step is not None and segment_start_step < 0:
+            raise ValueError("segment_start_step must be nonnegative")
         self.initial_value = initial_value
+        self.segment_start_step = segment_start_step
+        self._active_segment_start_step = segment_start_step
+        self.carry_self_condition = carry_self_condition
 
     def num_steps(self, plan: FlowMatchingRolloutPlan) -> int:
         return plan.num_steps
 
     def initialize(self, plan: FlowMatchingRolloutPlan, context: SamplingContext) -> FlowMatchingState:
         del plan, context
+        self._active_segment_start_step = self.segment_start_step
         return FlowMatchingState.initial(self.initial_value)
 
     def prepare_denoise_step(
@@ -269,15 +300,37 @@ class FlowMatchingIntegrator(
             noise_rate[modality] = (
                 schedule.times.new_zeros(()) if schedule.noise_rate is None else schedule.noise_rate[step_index]
             )
+        use_self_conditioning = self._use_self_conditioning(step_index)
+        self_conditioning = (
+            dict(state.clean)
+            if use_self_conditioning
+            else {modality: torch.zeros_like(value) for modality, value in state.clean.items()}
+        )
         return FlowMatchingStep(
             step_index=step_index,
             state=dict(state.value),
             time=time,
             delta_time=delta_time,
             noise_rate=noise_rate,
-            self_conditioning=dict(state.clean),
-            use_self_conditioning=self.config.self_condition and step_index > 0,
+            self_conditioning=self_conditioning,
+            use_self_conditioning=use_self_conditioning,
         )
+
+    def _use_self_conditioning(self, step_index: int) -> bool:
+        """Activate self-conditioning after the first step of a segment.
+
+        Branching continuations set ``carry_self_condition`` so the parent's
+        clean prediction is used on the first step of a later interval.
+        Scoring continuations leave it false and zero-fill ``clean``, matching
+        a rollout that starts without ``x_1_pred``.
+        """
+        if not self.config.self_condition:
+            return False
+        if self._active_segment_start_step is None:
+            self._active_segment_start_step = step_index
+        if step_index > self._active_segment_start_step:
+            return True
+        return self.carry_self_condition and step_index > 0
 
     def denoiser_inputs(self, step: FlowMatchingStep) -> tuple[FlowMatchingModelInput, Mapping[str, torch.Tensor]]:
         model_input = FlowMatchingModelInput(

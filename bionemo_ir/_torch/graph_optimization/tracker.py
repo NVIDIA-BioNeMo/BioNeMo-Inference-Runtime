@@ -15,6 +15,7 @@
 """Shared graph-cache keying, input routing, and shape-bucket padding."""
 
 import abc
+import copy
 import inspect
 from typing import Any
 
@@ -32,6 +33,7 @@ from bionemo_ir._torch.graph_optimization.config import (
     input_padded_assignments,
     output_padded_assignments,
 )
+from bionemo_ir._torch.graph_optimization.tensor_copy_utils import _dataclass_fields, _is_dataclass_instance
 from bionemo_ir.runtime.backend import BackendBase
 
 # A call container with at least one tensor.
@@ -187,6 +189,10 @@ class GraphOptimizationTracker(BackendBase):
             for i, v in enumerate(value):
                 child = f"{path}{self.SEP_BW_ARG_AND_DIM}{i}" if path else str(i)
                 self._walk_container_leaves(v, child, on_leaf)
+        elif _is_dataclass_instance(value):
+            for name, v in _dataclass_fields(value):
+                child = f"{path}{self.SEP_BW_ARG_AND_DIM}{name}" if path else name
+                self._walk_container_leaves(v, child, on_leaf)
         else:
             on_leaf(path, value)
 
@@ -289,6 +295,15 @@ class GraphOptimizationTracker(BackendBase):
                 for i, v in enumerate(value)
             ]
             return tuple(mapped) if isinstance(value, tuple) else mapped
+        if _is_dataclass_instance(value):
+            mapped_value = copy.copy(value)
+            for name, v in _dataclass_fields(value):
+                object.__setattr__(
+                    mapped_value,
+                    name,
+                    self._map_container_tensors(v, f"{path}{self.SEP_BW_ARG_AND_DIM}{name}" if path else name, fn),
+                )
+            return mapped_value
         return value
 
     @staticmethod

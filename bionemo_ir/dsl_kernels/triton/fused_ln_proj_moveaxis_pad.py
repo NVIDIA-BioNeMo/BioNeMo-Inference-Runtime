@@ -404,6 +404,10 @@ class FusedLNProjMoveaxisPad(TritonKernelCache):
         rms_norm: Use RMSNorm (no mean subtraction or bias) instead of
             LayerNorm.
         eps: Epsilon added to the normalization variance.
+        fp32_projection: Also compile the streaming kernel for FP32 norm and
+            projection weights. A caller folding several layers' gammas into
+            their projections passes the products in FP32 with a unit gamma,
+            which reproduces each layer's in-kernel fold exactly.
     """
 
     _global_cache: dict[tuple, dict] = {}
@@ -416,6 +420,7 @@ class FusedLNProjMoveaxisPad(TritonKernelCache):
         dtype: torch.dtype = torch.bfloat16,
         rms_norm: bool = False,
         eps: float = 1e-5,
+        fp32_projection: bool = False,
     ) -> None:
         self._dim_d = D
         self._num_heads = H
@@ -426,6 +431,7 @@ class FusedLNProjMoveaxisPad(TritonKernelCache):
         self._dtype = dtype
         self._rms_norm = rms_norm
         self._eps = eps
+        self._fp32_projection = fp32_projection
         self._kernels: dict[torch.dtype | tuple[torch.dtype, ...], CachedKernel] = {}
         self._streaming = _streaming_supported(D, H)
         self._streaming_tuning = _STREAMING_DEFAULT_TUNING
@@ -490,7 +496,16 @@ class FusedLNProjMoveaxisPad(TritonKernelCache):
         self._streaming_tuning = tuning
         # The key names the dtypes compiled, so a bfloat16 op cannot leave a float16 one without kernels.
         low_precision = [dt for dt in dict.fromkeys(dtypes) if dt in _STREAMING_DTYPES]
-        key = ("streaming", tuning, self._dim_d, self._num_heads, self._rms_norm, self._eps, *low_precision)
+        key = (
+            "streaming",
+            tuning,
+            self._dim_d,
+            self._num_heads,
+            self._rms_norm,
+            self._eps,
+            self._fp32_projection,
+            *low_precision,
+        )
         cached = FusedLNProjMoveaxisPad._global_cache.get(key)
         if cached is not None:
             self._streaming_kernels = cached
@@ -514,14 +529,28 @@ class FusedLNProjMoveaxisPad(TritonKernelCache):
             result.update(
                 {((dtype, torch.float32, torch.float32, dtype), tile_j): kernel for dtype, kernel in mixed.items()}
             )
+            if self._fp32_projection:
+                folded = self._compile_streaming(low_precision, torch.float32, common_kwargs, torch.float32)
+                result.update(
+                    {
+                        ((dtype, torch.float32, torch.float32, torch.float32), tile_j): kernel
+                        for dtype, kernel in folded.items()
+                    }
+                )
         self._streaming_kernels = result
         FusedLNProjMoveaxisPad._global_cache[key] = result
 
     def _compile_streaming(
-        self, dtypes: list[torch.dtype], ln_dtype: torch.dtype | None, kwargs: dict
+        self,
+        dtypes: list[torch.dtype],
+        ln_dtype: torch.dtype | None,
+        kwargs: dict,
+        proj_dtype: torch.dtype | None = None,
     ) -> dict[torch.dtype, CachedKernel]:
         def make_dummy_args(dtype: torch.dtype) -> tuple:
-            return self._make_streaming_dummy_args(dtype, ln_dtype=ln_dtype, tile_j=kwargs["TILE_J"])
+            return self._make_streaming_dummy_args(
+                dtype, ln_dtype=ln_dtype, tile_j=kwargs["TILE_J"], proj_dtype=proj_dtype
+            )
 
         kernels = self.compile_for_dtypes(
             _fused_ln_proj_moveaxis_pad_streaming_kernel,
@@ -551,7 +580,11 @@ class FusedLNProjMoveaxisPad(TritonKernelCache):
         return self._streaming and dtype in _STREAMING_DTYPES
 
     def _make_streaming_dummy_args(
-        self, dtype: torch.dtype, ln_dtype: torch.dtype | None = None, tile_j: int = 64
+        self,
+        dtype: torch.dtype,
+        ln_dtype: torch.dtype | None = None,
+        tile_j: int = 64,
+        proj_dtype: torch.dtype | None = None,
     ) -> tuple:
         D, H, tj = self._dim_d, self._num_heads, tile_j
         ln_dtype = ln_dtype or dtype
@@ -561,7 +594,7 @@ class FusedLNProjMoveaxisPad(TritonKernelCache):
             z,
             torch.empty(D, dtype=ln_dtype, device="cuda"),
             torch.empty(D, dtype=ln_dtype, device="cuda"),
-            torch.empty(H, D, dtype=dtype, device="cuda"),
+            torch.empty(H, D, dtype=proj_dtype or dtype, device="cuda"),
             out,
             2,
             tj,

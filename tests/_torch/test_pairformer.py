@@ -400,7 +400,7 @@ def test_precomputed_pair_masks_no_actual_seqlen_field():
     Catches accidental re-introduction of the field.
     """
     field_names = {f.name for f in fields(PrecomputedPairMasks)}
-    assert field_names == {"pair_mask", "mask_bias", "mask_bias_transposed"}
+    assert field_names == {"pair_mask", "mask_bias", "mask_bias_transposed", "value_mask"}
     assert "actual_seqlen" not in field_names
 
 

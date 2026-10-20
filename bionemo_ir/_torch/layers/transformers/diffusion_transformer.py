@@ -14,7 +14,7 @@
 # limitations under the License.
 
 import contextlib
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from typing import NamedTuple
 
 import torch
@@ -39,23 +39,34 @@ from bionemo_ir.dsl_kernels.triton.fused_layer_norm_transpose import layer_norm_
 from bionemo_ir.runtime.buffers import PreallocatedBuffers
 
 
-def build_bias_mega_weight(layers: nn.ModuleList, attn_attr: str = "pair_bias_attn") -> torch.Tensor:
+def build_bias_mega_weight(
+    layers: Sequence[nn.Module], attn_attr: str = "pair_bias_attn", dtype: torch.dtype | None = None
+) -> torch.Tensor:
     """Fold LayerNorm gamma into pair-bias weights and stack them.
 
     Args:
         layers: transformer layers, each holding an ``AttentionPairBias``.
         attn_attr: attribute name of that attention on each layer.
+        dtype: Dtype of the folded products; ``None`` keeps the weights'.
+            FP32 keeps every BF16 product exact.
 
     Returns ``[num_layers * num_heads, c_z]`` for one shared normalization.
     """
+    proj_zs = [getattr(layer, attn_attr).proj_z for layer in layers]
+    if all(len(proj_z) > 1 for proj_z in proj_zs):
+        # Every layer normalizes: one multiply folds them all, for callers that fold on every forward.
+        weights = torch.stack([proj_z[-1].weight.data for proj_z in proj_zs])  # [N, H, D]
+        gammas = torch.stack([proj_z[0].weight.data for proj_z in proj_zs])  # [N, D]
+        if dtype is not None:
+            weights, gammas = weights.to(dtype), gammas.to(dtype)
+        return (weights * gammas.unsqueeze(1)).reshape(-1, weights.shape[-1])  # [N*H, D]
     parts: list[torch.Tensor] = []
-    for layer in layers:
-        proj_z = getattr(layer, attn_attr).proj_z
+    for proj_z in proj_zs:
         ln = proj_z[0] if len(proj_z) > 1 else None
-        proj = proj_z[-1]
-        w = proj.weight.data  # [H, D]
+        w = proj_z[-1].weight.data if dtype is None else proj_z[-1].weight.data.to(dtype)  # [H, D]
         if ln is not None:
-            w = w * ln.weight.data.unsqueeze(0)  # [H, D] * [1, D]
+            gamma = ln.weight.data if dtype is None else ln.weight.data.to(dtype)
+            w = w * gamma.unsqueeze(0)  # [H, D] * [1, D]
         parts.append(w)
     return torch.cat(parts, dim=0).contiguous()  # [N*H, D]
 

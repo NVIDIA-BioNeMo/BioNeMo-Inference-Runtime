@@ -24,6 +24,7 @@ from bionemo_ir._torch.custom_ops.attn_epilogue import SLAB, AttnEpilogue
 from bionemo_ir._torch.custom_ops.attn_epilogue._config import tuned_configs
 from bionemo_ir._torch.custom_ops.attn_epilogue.cutedsl import AttnEpilogueCuTe
 from bionemo_ir._torch.layers.attention import AttentionPairBias
+from bionemo_ir._torch.layers.transformers.blocks import ConditionedTransformerBlock
 from bionemo_ir._torch.layers.transformers.diffusion_transformer import ProtenixDiffusionTransformer
 from bionemo_ir.configs import DiffusionTransformerConfig
 from tests._torch import cutedsl_test_modes, skip_if_epilogue_tile_exceeds_smem
@@ -39,6 +40,8 @@ CHANNELS, PAIR_CHANNELS, HEADS = 128, 16, 4
 N_QUERIES, N_KEYS = 32, 128
 # The diffusion token transformers' shape, the one the streamed SM90 kernel serves.
 TOKEN_CHANNELS, TOKEN_PAIR_CHANNELS, TOKEN_HEADS, TOKEN_COND = 768, 128, 16, 384
+# RFProteína's conditioned block: 12 heads of 64, a biased output projection and a 256-wide condition.
+BLOCK_HEADS, BLOCK_COND = 12, 256
 
 
 def _init(module: torch.nn.Module) -> None:
@@ -225,6 +228,76 @@ def test_token_transformer_layers_take_the_streamed_kernel(monkeypatch: pytest.M
 
     assert served == [True] * config.num_blocks
     torch.testing.assert_close(actual, expected, atol=5e-2, rtol=2e-2)
+
+
+def _rfproteina_block(backend: str) -> tuple[ConditionedTransformerBlock, list[AttentionPairBias]]:
+    block = ConditionedTransformerBlock(
+        layer_idx=0,
+        token_dim=TOKEN_CHANNELS,
+        pair_dim=TOKEN_PAIR_CHANNELS,
+        condition_dim=BLOCK_COND,
+        num_heads=BLOCK_HEADS,
+        transition_expansion=4,
+        backend=backend,
+        mask_inf=1e4,
+        use_qk_norm=True,
+        eps=1e-5,
+        dtype=torch.bfloat16,
+        sanitize_masked_inputs=False,
+    ).cuda()
+    _init(block)
+    return block, _epilogues(block)
+
+
+def _rfproteina_inputs(batch: int, tokens: int) -> tuple[torch.Tensor, ...]:
+    """Inputs with exact-zero padding, as the trunk keeps it; the second design pads its last 9 tokens."""
+    bf16 = {"device": "cuda", "dtype": torch.bfloat16}
+    lengths = torch.tensor([tokens, tokens - 9][:batch], device="cuda")
+    mask = torch.arange(tokens, device="cuda") < lengths[:, None]
+    pair_mask = mask[:, :, None] & mask[:, None, :]
+    x = torch.randn(batch, tokens, TOKEN_CHANNELS, **bf16).masked_fill(~mask[..., None], 0)
+    pair = torch.randn(batch, tokens, tokens, TOKEN_PAIR_CHANNELS, **bf16).masked_fill(~pair_mask[..., None], 0)
+    condition = torch.randn(batch, tokens, BLOCK_COND, **bf16).masked_fill(~mask[..., None], 0)
+    return x, pair, condition, mask
+
+
+@pytest.mark.parametrize("backend", ["CuTeDSL", "SDPA"])
+@pytest.mark.parametrize("batch", [1, 2])
+def test_rfproteina_block_gates_attention_in_the_epilogue(
+    monkeypatch: pytest.MonkeyPatch, backend: str, batch: int
+) -> None:
+    """The adaLN-zero gate and the residual add join the epilogue; padded rows still leave the block as zeros."""
+    torch.manual_seed(0)
+    block, attentions = _rfproteina_block(backend)
+    x, pair, condition, mask = _rfproteina_inputs(batch, tokens=136)
+    served = _count_served(monkeypatch)
+    with torch.inference_mode():
+
+        def run():
+            return block(x, pair, condition, mask)
+
+        expected = _unfused(attentions, run)
+        actual = run()
+
+    assert served == [True]
+    torch.testing.assert_close(actual, expected, atol=5e-2, rtol=2e-2)
+    assert torch.count_nonzero(actual[~mask]) == 0
+
+
+def test_rfproteina_block_epilogue_clears_nonfinite_padded_rows(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The epilogue adds the residual on padded rows too; the transition's masked residual must clear them."""
+    torch.manual_seed(1)
+    block, _ = _rfproteina_block("CuTeDSL")
+    x, pair, condition, mask = _rfproteina_inputs(batch=2, tokens=136)
+    x[~mask] = float("nan")
+    condition[~mask] = float("inf")
+    served = _count_served(monkeypatch)
+    with torch.inference_mode():
+        output = block(x, pair, condition, mask)
+
+    assert served == [True]
+    assert torch.isfinite(output).all()
+    assert torch.count_nonzero(output[~mask]) == 0
 
 
 def _sm8x_token_width_tiles() -> list[tuple[int, int]]:

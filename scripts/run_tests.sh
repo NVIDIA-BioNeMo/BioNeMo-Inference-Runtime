@@ -281,7 +281,9 @@ if [[ "${TEST_PHASE}" == "all" || "${TEST_PHASE}" == "1" ]]; then
   # Node IDs are relative to tests/pytest.ini.
   phase1_addopts+=" --deselect=${TRIMUL_INT32_TESTS#tests/}"
   phase1_addopts+=" ${PHASE1_ADDOPTS:-}"
-  PYTEST_ADDOPTS="${phase1_addopts}" pytest -s -ra \
+  # Verbose progress prints each node ID when it starts, so a timed-out xdist
+  # run identifies every test that was still active instead of ending in dots.
+  PYTEST_ADDOPTS="${phase1_addopts}" pytest -v -s -ra \
     ${cov_opts[@]+"${cov_opts[@]}"} --junitxml="${REPORT_DIR}/junit-phase1.xml" \
     "${phase1_targets[@]}" || phase1_rc=$?
   lap "phase 1 (xdist bulk)"
@@ -299,7 +301,7 @@ if [[ "${TEST_PHASE}" == "all" || "${TEST_PHASE}" == "2" ]]; then
   # PHASE2_TARGETS is unquoted on purpose — it carries several paths. PHASE2_ADDOPTS
   # goes through PYTEST_ADDOPTS, which pytest shlex-parses, so a quoted -k survives.
   # shellcheck disable=SC2086
-  PYTEST_ADDOPTS="${PHASE2_ADDOPTS}" pytest -s -ra \
+  PYTEST_ADDOPTS="${PHASE2_ADDOPTS}" pytest -v -s -ra \
     ${cov_append_opts[@]+"${cov_append_opts[@]}"} \
     --junitxml="${REPORT_DIR}/junit-phase2.xml" \
     ${PHASE2_TARGETS} || phase2_rc=$?

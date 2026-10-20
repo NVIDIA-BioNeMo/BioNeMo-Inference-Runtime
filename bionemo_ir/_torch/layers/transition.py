@@ -293,6 +293,9 @@ class ConditionedTransitionBlock(nn.Module):
         buffer_key: str = "cond_trans_adaln",
         mask: torch.Tensor | None = None,
         residual: torch.Tensor | None = None,
+        excluded: torch.Tensor | None = None,
+        mask_value: torch.Tensor | None = None,
+        projected_condition: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """
         Args:
@@ -303,11 +306,25 @@ class ConditionedTransitionBlock(nn.Module):
             mask: optional binary mask ``[B, I]`` applied after AdaLN and
                 after the output gate.
             residual: optional tensor shaped like ``a``, added to the output.
+            excluded: optional ``~mask`` as a bool ``[B, I, 1]`` for the
+                AdaLN, precomputed by a caller that masks many layers.
+            mask_value: optional ``mask`` as ``[B, I, 1]`` in ``a``'s dtype,
+                precomputed likewise; the output gate then skips its cast.
+            projected_condition: the AdaLN's ``project_condition(s)``,
+                precomputed.
 
         Returns:
             a: [B, I, d]
         """
-        a = self.adaln(a, s, buffers=buffers, buffer_key=buffer_key, mask=mask)
+        a = self.adaln(
+            a,
+            s,
+            buffers=buffers,
+            buffer_key=buffer_key,
+            mask=mask,
+            excluded=excluded,
+            projected_condition=projected_condition,
+        )
         a = self._swiglu_mlp(a)
 
         # The gated-sigmoid op broadcasts `s` (gate) across the multiplicity
@@ -323,7 +340,7 @@ class ConditionedTransitionBlock(nn.Module):
             self.output_projection.bias,
             output=output,
             residual=residual,
-            mask=mask,
+            mask=mask if mask_value is None else mask_value,
         )
 
     def _swiglu_mlp(self, a: torch.Tensor) -> torch.Tensor:

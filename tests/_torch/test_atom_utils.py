@@ -25,6 +25,90 @@ from bionemo_ir._torch.layers.sequence_local_atom import (
     prepare_indexed_reduction,
     select_atoms_from_padded_tokens,
 )
+from bionemo_ir._torch.modules.rfproteina.atom_utils import (
+    angstrom_to_nanometer,
+    condition_pair,
+    nanometer_to_angstrom,
+    restore_conditioned_coordinates,
+)
+
+
+def test_coordinate_units_round_trip():
+    coordinates = torch.tensor([-10.0, 0.0, 25.0])
+    assert torch.equal(angstrom_to_nanometer(coordinates), torch.tensor([-1.0, 0.0, 2.5]))
+    assert torch.equal(
+        nanometer_to_angstrom(angstrom_to_nanometer(coordinates)),
+        coordinates,
+    )
+
+
+def test_condition_pair_requires_value_and_mask_together():
+    with pytest.raises(ValueError, match="value and mask"):
+        condition_pair({"value": torch.ones(1)}, "value", "mask")
+
+
+def test_condition_pair_uses_finite_coordinates_when_the_mask_is_absent():
+    coordinates = torch.full((1, 2, 3), torch.nan)
+    coordinates[0, 1] = torch.tensor([10.0, 0.0, 0.0])
+    values, mask = condition_pair(
+        {"coords": coordinates},
+        "coords",
+        "mask",
+        finite_marks_conditioned=True,
+    )
+    assert values is coordinates
+    assert torch.equal(mask, torch.tensor([[False, True]]))
+    explicit = torch.zeros(1, 2, dtype=torch.bool)
+    explicit[0, 0] = True
+    _, overridden = condition_pair(
+        {"coords": coordinates, "mask": explicit},
+        "coords",
+        "mask",
+        finite_marks_conditioned=True,
+    )
+    assert torch.equal(overridden, explicit)
+
+
+def test_condition_pair_treats_the_mask_token_as_unspecified_sequence():
+    sequence = torch.tensor([[0, 27, 0]])
+    values, mask = condition_pair(
+        {"sequence": sequence},
+        "sequence",
+        "mask",
+        unspecified_token=0,
+    )
+    assert values is sequence
+    assert torch.equal(mask, torch.tensor([[False, True, False]]))
+
+
+def test_restore_conditioned_coordinates_intersects_masks_and_converts_units():
+    generated = torch.zeros(1, 2, 2, 3)
+    conditioned = torch.full_like(generated, 10.0)
+    conditioned[0, 1, 1] = torch.nan
+    condition_mask = torch.tensor([[[True, True], [True, True]]])
+    atom_mask = torch.tensor([[[True, False], [True, False]]])
+
+    restored, effective_mask = restore_conditioned_coordinates(
+        generated,
+        conditioned,
+        condition_mask,
+        intersect_mask=atom_mask,
+    )
+
+    assert torch.equal(effective_mask, atom_mask)
+    assert torch.equal(restored[effective_mask], torch.ones_like(restored[effective_mask]))
+    assert torch.equal(restored[~effective_mask], torch.zeros_like(restored[~effective_mask]))
+
+
+def test_restore_conditioned_coordinates_rejects_active_nonfinite_values():
+    generated = torch.zeros(1, 1, 1, 3)
+    conditioned = torch.full_like(generated, torch.nan)
+    with pytest.raises(ValueError, match="non-finite"):
+        restore_conditioned_coordinates(
+            generated,
+            conditioned,
+            torch.ones(1, 1, 1, dtype=torch.bool),
+        )
 
 
 def test_ragged_token_atom_broadcast_static_index_matches_dynamic_path():

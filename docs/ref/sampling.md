@@ -27,10 +27,10 @@ iteration, random state, hooks, and integration algorithms.
 
 ```mermaid
 flowchart LR
-    M["Model<br/>Boltz / OpenFold3 / Protenix"]
+    M["Model<br/>Boltz / OpenFold3 / Protenix / RFProteína"]
     S["Model-specific sampler<br/>conditioning, reference draw, schedule, predict()"]
     R["GenerativeRunner<br/>seeded step loop"]
-    I["Concrete integrator<br/>AF3 / Boltz EDM<br/>flow matching"]
+    I["Concrete integrator<br/>AF3 / Boltz EDM<br/>default / RFProteína flow matching"]
     T["DenoiseIntegratorTemplate.step()<br/>fixed skeleton:<br/>prepare → hooks → predict → hooks → complete"]
     D["Denoiser / velocity network<br/>model-owned nn.Module"]
     O["Sampled coordinates or product-space state"]
@@ -44,7 +44,8 @@ The Template Method separates the invariant `step()` skeleton from
 algorithm- and model-specific operations. Each concrete integrator implements
 those operations directly. OpenFold3 and Protenix use `AF3EDMIntegrator` with
 tensor state, Boltz uses `BoltzEDMIntegrator` with structured state,
-and `FlowMatchingIntegrator` provides the default product-space flow.
+`FlowMatchingIntegrator` provides the default product-space flow, and
+RFProteína specializes it with `RFProteinaFlowMatchingIntegrator`.
 
 ## Ownership boundaries
 
@@ -114,6 +115,8 @@ Concrete integrators implement this contract directly:
   representations.
 - `FlowMatchingIntegrator` implements deterministic Euler over a dict of
   per-modality tensors with linear-interpolant clean endpoints.
+- `RFProteinaFlowMatchingIntegrator` subclasses `FlowMatchingIntegrator` to
+  supply mask-aware endpoints, the VF-TSR update, and rollout diagnostics.
 
 None reimplements `step()`. Each supplies the template's typed operations:
 initialization, step preparation, model inputs, prediction attachment, and the
@@ -241,6 +244,13 @@ decreasing noise levels. The clean endpoint is both a rollout output and, when
 zero-filled before the first prediction, so self-conditioning is inactive on
 step 0.
 
+`GenerativeRunner.run_segment()` resumes any global interval range with an
+explicit state. Continuation setup restores the caller's generator after
+integrator initialization, and the first resumed prediction receives either
+the parent's clean endpoint or explicit zeros according to
+`carry_self_condition`. This makes checkpointed search independent of how
+scoring work is chunked.
+
 Sampling is *product-space*: a model may evolve several modalities on their own
 time grids through one shared network evaluation, so states, times, and
 velocities are keyed by modality name. `FlowMatchingRolloutPlan` requires every
@@ -256,6 +266,58 @@ a way generic code cannot guess, so `FlowMatchingIntegrator` accepts an
 This keeps the two ends of the path in different layers: `_torch/sampling` owns
 the transport from `t = 0` to `t = 1`, and the model owns what `t = 0` means.
 
+### RFProteína
+
+RFProteína uses:
+
+- `RFProteinaProductSpaceFlowMatcher` for the `t = 0` draw;
+- `FlowMatchingRolloutPlan` with one `FlowMatchingSchedule` per modality
+  (`bb_ca` and `local_latents`), each carrying its own stochastic forcing rate;
+- `RFProteinaFlowMatchingIntegrator`;
+- a model-specific `predict` closure that builds representations from the
+  current product-space state before calling the velocity network.
+
+#### Product-space reference distribution
+
+`RFProteinaProductSpaceFlowMatcher` draws the reference state one modality at a
+time, in a fixed order, so a seed reproduces the same starting point exactly.
+
+The draw is more than a Gaussian, because RFProteína centers it. The backbone is
+projected onto the zero-center-of-mass subspace, since a translated backbone is
+the same structure and the network should never have to learn that. *Stochastic
+centering* then offsets tokens by a small random translation, which is what
+teaches the model that absolute position carries no meaning. A scope decides who
+moves together:
+
+- `all` applies one offset to every token;
+- `without_absolute_coords` leaves coordinate-conditioned tokens at the origin,
+  since moving them would break the conditioning they carry;
+- `per_group` gives each chain, molecule, or coordinate group its own offset, so
+  the components of a complex are placed independently.
+
+The `per_group` scope reads token groupings that `groups.py` extracts from the
+static features, keyed by `chain_iid`, `pn_unit_iid`, `molecule_iid`, or
+`coord_group`.
+
+Each modality configures its own reference block, so the released checkpoint
+centers the backbone and leaves the latents as plain masked noise. Latent width
+comes from the checkpoint rather than the config, so the two cannot disagree.
+
+#### Interval update
+
+The sampler's prediction closure converts
+`{modality: {"v": velocity}}` into the integrator's
+`{modality: velocity}` contract and captures the optional insertion head.
+`RFProteinaFlowMatchingIntegrator` specializes mask-aware clean endpoints, the
+released Euler or VF-TSR update, latent masking, and optional trajectory
+snapshots. Interval bookkeeping, self-conditioning handoff, iteration, and
+random state remain shared.
+
+The VF-TSR update is a stochastic extension of the Euler step above: it
+converts velocity to the interpolant score, rescales the score by a
+temperature ratio, and adds Brownian forcing on intervals where the time falls
+inside the configured stochastic window.
+
 ## Source layout
 
 ```text
@@ -268,4 +330,14 @@ bionemo_ir/_torch/sampling/
   flow_matching.py         flow schedule, math, and product-space integrator
 ```
 
-Model-specific rollout code lives directly beside its model.
+Model-specific rollout code lives directly beside its model. For RFProteína:
+
+```text
+bionemo_ir/_torch/modules/rfproteina/
+  sampler.py               RFProteinaProductSpaceSampler
+  flow_matcher.py          product-space reference distribution and centering
+  groups.py                token groupings for per-group centering
+  schedules.py             per-modality time grids and forcing rates
+  vf_tsr.py                velocity/score conversions and the VF-TSR step
+  rollout.py               RFProteinaFlowMatchingIntegrator
+```

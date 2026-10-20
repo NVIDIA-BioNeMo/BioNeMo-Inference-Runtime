@@ -294,7 +294,7 @@ requires-dist = [
     { name = "rdkit", specifier = "==2025.9.6" },
     { name = "scipy", specifier = "==1.13.1" },
     { name = "torch", specifier = ">=2.11" },
-    { name = "triton", specifier = ">=3.6.0,<3.8" },
+    { name = "triton", specifier = ">=3.6.0,<3.9" },
     { name = "urllib3", specifier = ">=2.8.0" },
     { name = "uvloop", specifier = "==0.21.0" },
     { name = "virtualenv", specifier = ">=21.14.5" },

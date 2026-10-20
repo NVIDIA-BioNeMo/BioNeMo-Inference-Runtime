@@ -38,7 +38,7 @@ dependencies = [
   "cuequivariance>=0.11.1,<0.14",
   "cuequivariance-ops-cu13>=0.11.1,<0.14",
   "cuequivariance-ops-torch-cu13>=0.11.1,<0.14",
-  "triton>=3.6.0,<3.8",
+  "triton>=3.6.0,<3.9",
   "biopython>=1.87",
   "ray[serve,data]==2.56.1",  # Installs pandas and pyarrow.
   # Security floors for transitive runtime dependencies.

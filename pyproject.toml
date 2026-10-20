@@ -58,10 +58,10 @@ dependencies = [
   "datasets==5.0.1",
   # hf_hub_download(), currently transitive through datasets.
   "huggingface_hub>=0.25,<2",
-  "PyYAML>=6.0.3",
+  "PyYAML>=6.0.1,<7",  # The NGC PyTorch image's apt copy is 6.0.1 and pip cannot uninstall it.
   "lru-dict==1.4.1",
   "kalign-python==3.6.0",
-  "scipy==1.13.1",
+  "scipy>=1.13.1,<2",
   "gemmi==0.6.5",
   "einops>=0.8",  # rearrange() and einsum() are imported directly.
   "pydantic>=2,<3",

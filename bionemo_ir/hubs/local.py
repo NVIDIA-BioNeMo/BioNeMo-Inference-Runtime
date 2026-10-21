@@ -215,40 +215,41 @@ def resolve_cached_checkpoint(name: str) -> str | None:
     return None
 
 
+def _resolve_checkpoint_path(checkpoint_path: str | Path | None, env_name: str, cache_name: str) -> Path | None:
+    if checkpoint_path is not None:
+        return Path(checkpoint_path)
+    filepath = os.getenv(env_name) or resolve_cached_checkpoint(cache_name)
+    return Path(filepath) if filepath else None
+
+
 def resolve_local_checkpoint_path(
     name: str,
     checkpoint_path: str | Path | None = None,
     repo_id: str | Path | None = None,
 ) -> Path | None:
     """Resolve a local checkpoint filepath for a registered model name."""
-    if checkpoint_path is not None:
-        return Path(checkpoint_path)
     checkpoint = LOCAL_CHECKPOINTS.get(name)
     if checkpoint is None:
-        return None
+        return Path(checkpoint_path) if checkpoint_path is not None else None
     env_name = repo_id if repo_id is not None else _checkpoint_env(checkpoint)
-    filepath = os.getenv(str(env_name))
-    return Path(filepath) if filepath else None
+    return _resolve_checkpoint_path(checkpoint_path, str(env_name), name)
 
 
 def resolve_rfproteina_checkpoint(checkpoint_path: str | Path | None = None) -> Path | None:
     """Resolve the RFProteina LDM checkpoint from an explicit path or
-    ``RFPROTEINA_LDM_CKPT``."""
+    ``RFPROTEINA_LDM_CKPT``, then the staged cache."""
     return resolve_local_checkpoint_path(GenSupMat.RFProteina, checkpoint_path=checkpoint_path)
 
 
 def resolve_rfproteina_autoencoder_checkpoint(checkpoint_path: str | Path | None = None) -> Path | None:
     """Resolve the RFProteina partial-autoencoder checkpoint from an explicit
-    path or ``RFPROTEINA_AE_CKPT``.
+    path, ``RFPROTEINA_AE_CKPT``, or the staged cache.
 
     The autoencoder ships separately from the LDM velocity checkpoint and
     carries the encoder and decoder that map structures to and from latents.
     """
-    if checkpoint_path is not None:
-        return Path(checkpoint_path)
     checkpoint = LOCAL_CHECKPOINTS[GenSupMat.RFProteina]
-    filepath = os.getenv(_checkpoint_env(checkpoint, index=1))
-    return Path(filepath) if filepath else None
+    return _resolve_checkpoint_path(checkpoint_path, _checkpoint_env(checkpoint, index=1), "rfproteina-ae")
 
 
 class Dummy:

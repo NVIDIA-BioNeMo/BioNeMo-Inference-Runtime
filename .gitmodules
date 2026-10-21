@@ -7,3 +7,6 @@
 [submodule "3rdparty/cutlass"]
 	path = 3rdparty/cutlass
 	url = https://github.com/NVIDIA/cutlass.git
+[submodule "3rdparty/RFD4-Proteina"]
+	path = 3rdparty/RFD4-Proteina
+	url = https://github.com/RosettaCommons/RFD4-Proteina.git

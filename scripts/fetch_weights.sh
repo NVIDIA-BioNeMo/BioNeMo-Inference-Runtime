@@ -54,7 +54,7 @@ NGC_TEAM="${BIOIR_NGC_TEAM:-}"
 # under --source public each file has its own URL in PUBLIC_URLS. A fetch pulls
 # only the files the active target needs — naming a family activates all of its
 # rows, naming a single weight activates just that one.
-FAMILIES=("alphafold2" "boltz" "openfold2" "openfold3" "protenix")
+FAMILIES=("alphafold2" "boltz" "openfold2" "openfold3" "protenix" "rfproteina")
 
 # One row per checkpoint file: "<family>|<filename>|<probe_dir>|<env_var>".
 #   family    — which FAMILIES model the file belongs to.
@@ -87,6 +87,8 @@ WEIGHTS=(
   "openfold2|finetuning_ptm_2.pt|openfold2_ptm_2|OPENFOLD2_PTM_2_CKPT"
   "openfold3|of3-p2-155k.pt|openfold3|OPENFOLD3_CKPT"
   "protenix|protenix-v2.pt|protenix-v2|PROTENIX_V2_CKPT"
+  "rfproteina|rfd4_proteina_flow-ema.ckpt|rfproteina|RFPROTEINA_LDM_CKPT"
+  "rfproteina|rfd4_proteina_ae-ema.ckpt|rfproteina-ae|RFPROTEINA_AE_CKPT"
 )
 
 # Non-checkpoint metadata files that live alongside checkpoints.
@@ -100,8 +102,8 @@ METADATA=(
 )
 
 # Public, no-credentials download URLs and the SHA-256 each must match, keyed
-# "<family>/<filename>". HuggingFace URLs name a commit, not `main`, and match
-# HF_REVISIONS in bionemo_ir/hubs/integrity.py. The OpenFold S3 bucket has no
+# "<family>/<filename>". HuggingFace URLs name immutable commits. Folding pins
+# match HF_REVISIONS in bionemo_ir/hubs/integrity.py. The OpenFold S3 bucket has no
 # versions, so its digests are the bytes of the pinned `nz/OpenFold` mirror.
 #
 # The AlphaFold2 rows are deliberately absent: DeepMind publishes JAX ``.npz``
@@ -129,6 +131,8 @@ PUBLIC_URLS=(
   # GATED: anonymous GET returns 401. Accept the terms on the model page and
   # export HF_TOKEN; without one the download degrades to a skip.
   "openfold3/of3-p2-155k.pt|https://huggingface.co/OpenFold/OpenFold3/resolve/33ffa390314567dd2d61bb635de52c7810e47056/checkpoints/of3-p2-155k.pt|af09eac4f29cef856633af07558cb143226fe95ebbef2c20921769d4a5f4bee4"
+  "rfproteina/rfd4_proteina_flow-ema.ckpt|https://huggingface.co/nvidia/RFD4-Proteina/resolve/48377e45eb25a4fce8d2aff56c1a659b726d2106/flow_checkpoints/rfd4_proteina_flow-ema.ckpt|c1c8b7068e87c41a334ec5b77e7d7cdda30bd31ed4504909d93bd72f7742afe4"
+  "rfproteina/rfd4_proteina_ae-ema.ckpt|https://huggingface.co/nvidia/RFD4-Proteina/resolve/48377e45eb25a4fce8d2aff56c1a659b726d2106/ae_checkpoints/rfd4_proteina_ae-ema.ckpt|24536372f3fc9a5083b6b813baa80630d2287a5d61fbf2f126c9735802e1d21a"
 )
 
 # Field accessors (keep the call sites readable).
@@ -227,6 +231,7 @@ or a single weight's hub/cache name.
 Staged weights resolve through the library's cache probe with no *_CKPT env var.
 Anything this script cannot fetch is reported and skipped; the tests that need it
 skip themselves.
+RFProteina always uses the pinned public release, including with --source ngc.
 
 Environment:
   MODEL_CACHE_DIR   where raw downloads land (default: <cache>/model_cache)
@@ -390,6 +395,9 @@ ngc_is_usable() {
 }
 
 resolve_source() {
+  if [[ "${FETCH_SOURCE}" != "none" && ${#ACTIVE_FAMILIES[@]} -eq 1 && "${ACTIVE_FAMILIES[0]}" == "rfproteina" ]]; then
+    FETCH_SOURCE="public"
+  fi
   case "${FETCH_SOURCE}" in
     none) return 0 ;;
     public) return 0 ;;
@@ -629,6 +637,7 @@ fetch_public_file() {
 public_targets() {
   local family row
   for family in "${ACTIVE_FAMILIES[@]}"; do
+    [[ "${FETCH_SOURCE}" == "ngc" && "${family}" != "rfproteina" ]] && continue
     for row in "${ACTIVE_ROWS[@]}" "${METADATA[@]}"; do
       [[ "$(row_family "${row}")" == "${family}" ]] || continue
       printf '%s|%s\n' "${family}" "$(row_file "${row}")"
@@ -725,6 +734,7 @@ weight_src() {
     printf '%s\n' "${candidate}"
     return 0
   }
+  [[ "${family}" == "rfproteina" ]] && return 1
   local dir_file="${MODEL_CACHE_DIR}/${family}_dir_path.txt"
   if [[ -f "${dir_file}" ]]; then
     candidate="$(<"${dir_file}")/${filename}"
@@ -906,18 +916,20 @@ if [[ "${FETCH_SOURCE}" == "ngc" ]]; then
   # concurrent invocations share no writes.
   fetch_pids=()
   for i in "${!ACTIVE_FAMILIES[@]}"; do
+    [[ "${ACTIVE_FAMILIES[$i]}" == "rfproteina" ]] && continue
     fetch_family_ngc "${ACTIVE_FAMILIES[$i]}" &
     fetch_pids["$i"]=$!
   done
   fetch_failed=0
-  for i in "${!ACTIVE_FAMILIES[@]}"; do
+  for i in "${!fetch_pids[@]}"; do
     if ! wait "${fetch_pids[$i]}"; then
       echo "checkpoint fetch failed for ${ACTIVE_FAMILIES[$i]}" >&2
       fetch_failed=1
     fi
   done
   ((fetch_failed)) && exit 1
-elif [[ "${FETCH_SOURCE}" != "none" ]]; then
+fi
+if [[ "${FETCH_SOURCE}" != "none" ]]; then
   fetch_public_all
 fi
 

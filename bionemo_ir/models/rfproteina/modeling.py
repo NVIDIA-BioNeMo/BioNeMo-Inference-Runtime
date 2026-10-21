@@ -89,11 +89,13 @@ from bionemo_ir.models.rfproteina.config import (
     trunk_graph_config,
 )
 from bionemo_ir.models.rfproteina.convert import (
+    RELEASED_LORA_ALPHA,
     load_rfproteina_checkpoint_state,
     load_rfproteina_decoder_checkpoint,
     load_rfproteina_encoder_checkpoint,
     load_rfproteina_representation_builder_checkpoint,
     load_rfproteina_trunk_checkpoint,
+    merge_rfproteina_lora,
     rfproteina_decoder_config_from_weights,
     rfproteina_encoder_config_from_checkpoint,
     rfproteina_encoder_config_from_weights,
@@ -257,8 +259,9 @@ class RFProteina(nn.Module, OptimizedModuleSetterMixin):
         sampling_config: RFProteinaSamplingConfig | None = None,
         device: torch.device | str | None = None,
         attention_backend: str | None = None,
-        noise_align_chirality: bool = False,
+        noise_align_chirality: bool = True,
         noise_align_chirality_translate: bool = False,
+        lora_alpha: float | None = RELEASED_LORA_ALPHA,
     ) -> "RFProteina":
         """Build a model from weights a host already holds, inferring every width.
 
@@ -278,16 +281,24 @@ class RFProteina(nn.Module, OptimizedModuleSetterMixin):
                 best one available for the execution dtype.
             noise_align_chirality: Whether the network was trained with its
                 chirality vectors rotated onto the noisy state, a checkpoint's
-                ``nn.noise_align_chirality``. The weights do not record it, and
-                leaving it off for a network trained with it changes every step's
-                ligand features.
+                ``nn.noise_align_chirality``. Defaults to ``True`` for the
+                released vocab-147 checkpoint. The weights do not record it;
+                pass the training setting explicitly for other checkpoints.
             noise_align_chirality_translate: Likewise for
-                ``nn.noise_align_chirality_translate``.
+                ``nn.noise_align_chirality_translate``. Defaults to ``False``
+                for the released vocab-147 checkpoint.
+            lora_alpha: ``lora_alpha`` used to fold PEFT adapters that
+                ``flow_state`` still carries, as the released vocab-147 flow
+                checkpoint does. The default is that release's value; a vocab-33
+                checkpoint has no adapters, so it is unused. ``None`` refuses
+                adapters instead of assuming a scale.
 
         Returns:
             A model whose four conversion reports cover the given weights.
         """
         flow = load_rfproteina_checkpoint_state(flow_state)
+        if lora_alpha is not None:
+            flow = merge_rfproteina_lora(flow, lora_alpha=lora_alpha)
         autoencoder = load_rfproteina_checkpoint_state(autoencoder_state)
         reference = cls.get_pretrained_config()
         if attention_backend is not None:

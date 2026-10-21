@@ -339,6 +339,12 @@ ship in the BioIR wheel or runtime container.
   - License: Apache-2.0; see [`LICENSE`][bioir-license]
   - Source and license: [Protenix commit][protenix]
 
+- **RFD4-Proteina**
+  - Commit: `9b9177c3bcd083cb9f6d0d022e948e3169b86b93`
+  - Copyright: Institute for Protein Design, University of Washington
+  - License: BSD-3-Clause; see [`LICENSES/BSD-3-Clause.txt`][bsd-3-clause]
+  - Source and license: [RFD4-Proteina v0.0.2][rfd4-proteina]
+
 ## Build and Development Dependencies
 
 These tools are used to build or test BioIR. They do not ship in the wheel or
@@ -404,6 +410,7 @@ resolved operating-system and base-image package closure.
 [parameterized]: https://github.com/wolever/parameterized
 [prek]: https://github.com/j178/prek
 [protenix]: https://github.com/bytedance/Protenix/tree/2475421477ab414b571149ad4a875c390ff8a35d
+[rfd4-proteina]: https://github.com/RosettaCommons/RFD4-Proteina/tree/9b9177c3bcd083cb9f6d0d022e948e3169b86b93
 [pydantic]: https://github.com/pydantic/pydantic
 [pytest]: https://github.com/pytest-dev/pytest
 [pytest-cov]: https://github.com/pytest-dev/pytest-cov

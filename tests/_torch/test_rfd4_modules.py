@@ -72,15 +72,16 @@ from bionemo_ir.models.rfproteina import (
     load_rfproteina_encoder_checkpoint,
     load_rfproteina_representation_builder_checkpoint,
     load_rfproteina_trunk_checkpoint,
+    merge_rfproteina_lora,
     rfproteina_decoder_config_from_checkpoint,
     rfproteina_encoder_config_from_checkpoint,
     rfproteina_encoder_config_from_weights,
     rfproteina_representation_config_from_weights,
-    rfproteina_trunk_config_from_checkpoint,
     rfproteina_trunk_config_from_weights,
 )
 from bionemo_ir.models.rfproteina import modeling as rfproteina_modeling
 from bionemo_ir.models.rfproteina.convert import (
+    RELEASED_LORA_ALPHA,
     _check_architecture,
     _convert_attention,
     _convert_encoder_inputs,
@@ -1314,6 +1315,41 @@ def test_rfproteina_trunk_config_derived_from_weights(pair_dim: int, trimul_hidd
     assert config.dtype == "float32"
 
 
+def _with_lora_on_qkv(weights: dict[str, torch.Tensor], rank: int) -> dict[str, torch.Tensor]:
+    """The released PEFT layout for one layer: ``base_layer`` plus ``lora_A``/``lora_B``, no plain ``weight``."""
+    adapted = dict(weights)
+    name = "nn.transformer_layers.0.mhba.mha.to_qkv"
+    base = adapted.pop(f"{name}.weight")
+    adapted[f"{name}.base_layer.weight"] = torch.randn_like(base)
+    adapted[f"{name}.lora_A.default.weight"] = torch.randn(rank, base.shape[1])
+    adapted[f"{name}.lora_B.default.weight"] = torch.randn(base.shape[0], rank)
+    return adapted
+
+
+def test_rfproteina_unmerged_lora_is_rejected_not_dropped_or_a_missing_key() -> None:
+    shapes = _oss_trunk_shapes(768, 384, 256, 32, 14, 12, 2, 256, 4, 2, 2)
+    adapted = _with_lora_on_qkv(shapes, rank=4)
+
+    with pytest.raises(ValueError, match=r"unmerged PEFT LoRA.*merge_rfproteina_lora"):
+        rfproteina_trunk_config_from_weights(adapted)
+
+
+def test_merge_rfproteina_lora_folds_the_adapter_into_the_base_weight() -> None:
+    shapes = _oss_trunk_shapes(768, 384, 256, 32, 14, 12, 2, 256, 4, 2, 2)
+    adapted = _with_lora_on_qkv(shapes, rank=4)
+    name = "nn.transformer_layers.0.mhba.mha.to_qkv"
+
+    merged = merge_rfproteina_lora(adapted, lora_alpha=8.0)
+
+    expected = adapted[f"{name}.base_layer.weight"] + 2.0 * (
+        adapted[f"{name}.lora_B.default.weight"] @ adapted[f"{name}.lora_A.default.weight"]
+    )
+    torch.testing.assert_close(merged[f"{name}.weight"], expected)
+    assert not [key for key in merged if "lora_" in key or "base_layer" in key]
+    config = rfproteina_trunk_config_from_weights(merged)
+    assert (config.token_dim, config.latent_dim) == (768, 32)
+
+
 def test_rfproteina_trunk_config_mismatch_names_the_wrong_fields() -> None:
     # Legacy tensor headers must identify every architecture mismatch against
     # the September z12 defaults.
@@ -1950,22 +1986,23 @@ def test_rfproteina_released_checkpoint_conversion() -> None:
     if checkpoint is None or not checkpoint.is_file():
         pytest.skip("RFPROTEINA_LDM_CKPT is not set to the released checkpoint")
 
-    trunk_config = rfproteina_trunk_config_from_checkpoint(checkpoint)
+    state = merge_rfproteina_lora(load_rfproteina_checkpoint_state(checkpoint), lora_alpha=RELEASED_LORA_ALPHA)
+    trunk_config = rfproteina_trunk_config_from_weights(state)
     module = LocalLatentsTransformer(trunk_config)
-    report = load_rfproteina_trunk_checkpoint(module, checkpoint)
+    report = load_rfproteina_trunk_checkpoint(module, state)
     assert not report.missing_target_keys
     assert len(report.loaded_keys) == len(module.state_dict())
     assert any(key.startswith("init_repr_factory") for key in report.ignored_source_keys)
 
     # Read the feature schema off the checkpoint, so a release that moves it still loads.
     representation_config = rfproteina_representation_config_from_weights(
-        load_rfproteina_checkpoint_state(checkpoint),
+        state,
         latent_dim=trunk_config.latent_dim,
         dtype="float32",
         pair_adaln_dtype=trunk_config.dtype,
     )
     representation_builder = RFProteinaRepresentationBuilder(representation_config, trunk_config)
-    representation_report = load_rfproteina_representation_builder_checkpoint(representation_builder, checkpoint)
+    representation_report = load_rfproteina_representation_builder_checkpoint(representation_builder, state)
     assert not representation_report.missing_target_keys
     assert len(representation_report.loaded_keys) == len(representation_builder.state_dict())
 

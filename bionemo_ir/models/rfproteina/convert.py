@@ -298,6 +298,7 @@ def convert_rfproteina_trunk_torch(
         Flat state dict keyed by ``LocalLatentsTransformer`` parameter names —
         load with ``module.load_state_dict(result)``.
     """
+    _reject_unmerged_lora(weights)
     dtype = config.torch_dtype
     out: dict[str, torch.Tensor] = {}
 
@@ -345,6 +346,7 @@ def convert_rfproteina_representation_builder_torch(
     embeddings, projections, pair norms, and pair-conditioning AdaLN into the
     native :class:`RFProteinaRepresentationBuilder`.
     """
+    _reject_unmerged_lora(weights)
     dtype = config.torch_dtype
     pair_adaln_dtype = str_dtype_to_torch(config.pair_adaln_dtype)
     out: dict[str, torch.Tensor] = {}
@@ -518,6 +520,7 @@ def convert_rfproteina_encoder_torch(
 
     See :func:`_convert_encoder_inputs` for how per-atom chemistry is folded into the single projection.
     """
+    _reject_unmerged_lora(weights)
     dtype = config.torch_dtype
     transformer_dtype = str_dtype_to_torch(config.transformer_dtype)
     out: dict[str, torch.Tensor] = {}
@@ -571,6 +574,7 @@ def convert_rfproteina_decoder_torch(
     Returns:
         Flat state dict keyed by ``RFProteinaLatentDecoder`` parameter names.
     """
+    _reject_unmerged_lora(weights)
     dtype = config.torch_dtype
     transformer_dtype = str_dtype_to_torch(config.transformer_dtype)
     out: dict[str, torch.Tensor] = {}
@@ -623,6 +627,78 @@ def convert_rfproteina_decoder_torch(
     return out
 
 
+#: ``lora_alpha`` of the released vocab-147 flow checkpoint's adapter (rank 32, so scaling 2.0). The tensors do not record it.
+RELEASED_LORA_ALPHA = 64.0
+
+_LORA_KEY = re.compile(r"^(?P<module>.+)\.lora_A\.(?P<adapter>[^.]+)\.weight$")
+
+
+def _lora_modules(weights: Mapping[str, torch.Tensor]) -> list[str]:
+    return sorted({m["module"] for key in weights if (m := _LORA_KEY.match(key))})
+
+
+def _reject_unmerged_lora(weights: Mapping[str, torch.Tensor]) -> None:
+    """Refuse PEFT LoRA tensors instead of failing later on a missing plain ``weight``, or dropping them."""
+    modules = _lora_modules(weights)
+    if modules:
+        raise ValueError(
+            f"RFProteína weights hold {len(modules)} unmerged PEFT LoRA adapters (e.g. '{modules[0]}.lora_A'); BioIR "
+            "converts plain weight/bias entries. Fold them first with "
+            "merge_rfproteina_lora(weights, lora_alpha=...), or pass the state dict of a model whose adapters are "
+            "already merged. The released flow checkpoint uses rank 32 and lora_alpha=64.0 (scaling 2.0), recorded "
+            "in the Hub bundle's adapter/adapter_config.json."
+        )
+
+
+def merge_rfproteina_lora(
+    weights: Mapping[str, torch.Tensor], *, lora_alpha: float, use_rslora: bool = False
+) -> dict[str, torch.Tensor]:
+    """Fold PEFT LoRA adapters into their base layers.
+
+    An adapted layer ``m`` stores ``m.base_layer.{weight,bias}`` and ``m.lora_{A,B}.<adapter>.weight``; it computes
+    ``W + scaling * B @ A``, with ``scaling = lora_alpha / r`` (``lora_alpha / sqrt(r)`` for rsLoRA). The result holds
+    that sum as plain ``m.weight`` and ``m.bias``, with no adapter or ``base_layer`` key left.
+
+    Args:
+        weights: released checkpoint state dict that contains adapters.
+        lora_alpha: the adapter's ``lora_alpha``. The tensors do not record it.
+        use_rslora: whether the adapter used rank-stabilised scaling.
+
+    Returns:
+        A new dict; tensors that are not part of an adapted layer pass through unchanged.
+
+    Raises:
+        ValueError: on a layer with several adapters, or adapter tensors without their base weight.
+    """
+    out = dict(weights)
+    for module in _lora_modules(weights):
+        names = {m["adapter"] for key in weights if (m := _LORA_KEY.match(key)) and m["module"] == module}
+        if len(names) != 1:
+            raise ValueError(f"BioIR merges one LoRA adapter per layer; {module!r} has {sorted(names)}")
+        (adapter,) = names
+        a, b = weights[f"{module}.lora_A.{adapter}.weight"], weights[f"{module}.lora_B.{adapter}.weight"]
+        base = weights.get(f"{module}.base_layer.weight")
+        if base is None:
+            raise ValueError(f"LoRA tensors under {module!r} have no '{module}.base_layer.weight' to merge into")
+        rank = a.shape[0]
+        scaling = lora_alpha / (rank**0.5 if use_rslora else rank)
+        delta = (b.to(torch.float32) @ a.to(torch.float32)) * scaling
+        out[f"{module}.weight"] = (base.to(torch.float32) + delta).to(base.dtype)
+        if f"{module}.base_layer.bias" in weights:
+            out[f"{module}.bias"] = weights[f"{module}.base_layer.bias"]
+        for key in (
+            f"{module}.base_layer.weight",
+            f"{module}.base_layer.bias",
+            f"{module}.lora_A.{adapter}.weight",
+            f"{module}.lora_B.{adapter}.weight",
+        ):
+            out.pop(key, None)
+    leftover = [key for key in out if ".lora_" in key]
+    if leftover:
+        raise ValueError(f"LoRA tensors outside a mergeable layer: {leftover[:3]}")
+    return out
+
+
 def _block_indices(weights: Mapping[str, torch.Tensor], prefix: str, group: str) -> list[int]:
     """Sorted block indices present under ``<prefix>.<group>.<i>.``."""
     pattern = re.compile(rf"^{re.escape(_join(prefix, group))}\.(\d+)\.")
@@ -648,6 +724,7 @@ def rfproteina_trunk_config_from_weights(
     Returns:
         A :class:`~...config.RFProteinaTrunkConfig` matching ``weights``.
     """
+    _reject_unmerged_lora(weights)
 
     def shape(rest: str) -> tuple[int, ...]:
         return tuple(weights[_join(prefix, rest)].shape)
@@ -748,6 +825,7 @@ def rfproteina_representation_config_from_weights(
     ``latent_dim`` is taken from the trunk head unless the caller passes it.
     The returned config's input widths have to match the checkpoint projections.
     """
+    _reject_unmerged_lora(weights)
     latent_dim = overrides.pop("latent_dim", None)
     if latent_dim is None:
         latent_dim = int(weights[_join(prefix, "local_latents_linear.1.weight")].shape[0])
@@ -793,6 +871,7 @@ def rfproteina_encoder_config_from_weights(
     weights: Mapping[str, torch.Tensor], prefix: str = _ENCODER_SOURCE_PREFIX, **overrides
 ) -> RFProteinaEncoderConfig:
     """Derive the released autoencoder encoder architecture from its tensors."""
+    _reject_unmerged_lora(weights)
 
     def shape(rest: str) -> tuple[int, ...]:
         return tuple(weights[_join(prefix, rest)].shape)
@@ -940,6 +1019,7 @@ def rfproteina_decoder_config_from_weights(
     Returns:
         A :class:`~...config.RFProteinaDecoderConfig` matching ``weights``.
     """
+    _reject_unmerged_lora(weights)
 
     def shape(rest: str) -> tuple[int, ...]:
         return tuple(weights[_join(prefix, rest)].shape)

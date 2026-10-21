@@ -608,7 +608,7 @@ def _launch_layer_norm_transpose(
         HAS_WEIGHT=has_weight,
         HAS_BIAS=has_bias,
         RMS_NORM=rms_norm,
-        LAYOUT=layout,
+        LAYOUT=int(layout),
         SINGLE_TILE=single_tile,
         NEEDS_INT64=_needs_int64(B, N, D, tile_d),
         N_IN=0 if token_pad is None else token_pad.tokens_in,

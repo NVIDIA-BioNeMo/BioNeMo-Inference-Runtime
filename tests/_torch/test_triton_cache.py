@@ -52,6 +52,7 @@ from bionemo_ir.dsl_kernels.triton.fused_ln_proj_moveaxis_pad import (
     fused_ln_proj_moveaxis_pad,
 )
 from bionemo_ir.dsl_kernels.triton.fused_swiglu import FusedSwiGLU, _fused_swiglu_kernel
+from bionemo_ir.dsl_kernels.triton.ln_pair_bias import LNPairBias
 from bionemo_ir.dsl_kernels.triton.moveaxis_pad import MoveaxisPad, _moveaxis_pad_kernel
 from bionemo_ir.dsl_kernels.triton.quaternion_rotation import _quaternion_rotation_kernel, quaternion_matrix
 from bionemo_ir.dsl_kernels.triton_cache import (
@@ -568,6 +569,74 @@ def test_moveaxis_pad_rejects_more_heads_than_compiled_for() -> None:
     too_many = torch.randn(1, 8, 30, 8, device="cuda", dtype=torch.bfloat16)
     with pytest.raises(ValueError, match="heads"):
         op(too_many, multiple=8)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
+@pytest.mark.parametrize(
+    "build",
+    [
+        pytest.param(lambda: MoveaxisPad(H=4, dtype=torch.bfloat16), id="moveaxis_pad"),
+        pytest.param(lambda: FusedSwiGLU(d=128, three_way=False, dtype=torch.bfloat16), id="fused_swiglu"),
+        pytest.param(lambda: FusedLNProjMoveaxisPad(D=128, H=4, dtype=torch.bfloat16), id="fused_ln_proj"),
+        pytest.param(
+            lambda: LNPairBias(128, 4, dtype=torch.bfloat16),
+            id="ln_pair_bias",
+            marks=pytest.mark.skipif(
+                not torch.cuda.is_available() or torch.cuda.get_device_capability()[0] < 8,
+                reason="LNPairBias compiles only on SM80+",
+            ),
+        ),
+    ],
+)
+def test_compilation_does_not_launch_on_dummy_tensors(
+    monkeypatch: pytest.MonkeyPatch, build: Callable[[], TritonKernelCache]
+) -> None:
+    """Regression: a compile-time launch reads the ``torch.empty`` dummies, which
+    compute-sanitizer initcheck reports as uninitialized global reads.
+
+    Every tensor dummy is filled with a distinct value; a launch would overwrite the
+    output dummy with values computed from the inputs. The grid handed to the
+    cold-cache warmup subprocess must be empty too, because that process rebuilds
+    the dummies with ``torch.empty``.
+    """
+    for cls in (MoveaxisPad, FusedSwiGLU, FusedLNProjMoveaxisPad, LNPairBias):
+        monkeypatch.setattr(cls, "_global_cache", {})
+    dummies: list[tuple[torch.Tensor, torch.Tensor]] = []
+    compile_for_dtypes = TritonKernelCache.compile_for_dtypes
+
+    def recording(
+        self: TritonKernelCache,
+        jit_fn: object,
+        dtypes: list[torch.dtype],
+        make_dummy_args: Callable[[torch.dtype], tuple],
+        **kwargs: object,
+    ) -> dict[torch.dtype, CachedKernel]:
+        def make(dtype: torch.dtype) -> tuple:
+            args = make_dummy_args(dtype)
+            tensors = [arg for arg in args if isinstance(arg, torch.Tensor)]
+            for value, tensor in enumerate(tensors, start=1):
+                tensor.fill_(value)
+            # Snapshot after every fill: LNPairBias passes one dummy as both LayerNorm weight and bias.
+            dummies.extend((tensor, tensor.clone()) for tensor in tensors)
+            return args
+
+        return compile_for_dtypes(self, jit_fn, dtypes, make, **kwargs)
+
+    monkeypatch.setattr(TritonKernelCache, "compile_for_dtypes", recording)
+    # Take the cold-cache path without spawning it; record the grid the warmup subprocess would get.
+    warmup_grids: list[tuple[int, ...]] = []
+    monkeypatch.setattr("bionemo_ir.dsl_kernels.triton_cache._triton_cache_was_cold", lambda: True)
+    monkeypatch.setattr(
+        "bionemo_ir.dsl_kernels.triton_cache._compile_in_subprocess",
+        lambda jit_fn, dummy_args_by_dtype, grid, constexpr_kwargs: warmup_grids.append(grid),
+    )
+    build()
+    torch.cuda.synchronize()
+
+    assert dummies, "nothing was compiled"
+    for tensor, snapshot in dummies:
+        assert torch.equal(tensor, snapshot), "compilation launched a kernel on its dummy tensors"
+    assert warmup_grids and all(0 in grid for grid in warmup_grids), "the warmup subprocess would launch"
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")

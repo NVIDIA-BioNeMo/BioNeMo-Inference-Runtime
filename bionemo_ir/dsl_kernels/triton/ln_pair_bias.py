@@ -150,7 +150,9 @@ class LNPairBias(TritonKernelCache):
                 _ln_pair_bias_kernel,
                 dtypes=[self._dtype],
                 make_dummy_args=self._make_dummy_args,
-                grid=(1,),
+                # Compile without launching: a cold-cache warmup subprocess rebuilds
+                # these dummies with torch.empty and launches with this grid.
+                grid=(0,),
                 C=self._channels,
                 H=self._heads,
                 BLOCK_M=_BLOCK_M,

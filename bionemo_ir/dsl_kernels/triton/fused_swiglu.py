@@ -150,7 +150,8 @@ class FusedSwiGLU(TritonKernelCache):
                 torch.empty(1, mul * d, dtype=dt, device="cuda"),
                 mul * d,
             ),
-            grid=(1, self._tiles),
+            # Compile without touching uninitialized dummy tensors.
+            grid=(0,),
             d=d,
             THREE_WAY=self.three_way,
             BLOCK_SIZE=bs,

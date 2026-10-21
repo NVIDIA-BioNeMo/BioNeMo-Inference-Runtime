@@ -144,7 +144,8 @@ class MoveaxisPad(TritonKernelCache):
             _moveaxis_pad_kernel,
             dtypes=[self._dtype, torch.float32, torch.bfloat16, torch.float16],
             make_dummy_args=lambda dt: self._make_dummy_args(dt),
-            grid=(1, 2, 1),
+            # Compile without touching uninitialized dummy tensors.
+            grid=(0,),
             BLOCK_J=bj,
             BLOCK_H=bh,
         )

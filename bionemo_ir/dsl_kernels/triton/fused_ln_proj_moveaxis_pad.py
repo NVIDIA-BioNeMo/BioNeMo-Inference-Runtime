@@ -473,14 +473,15 @@ class FusedLNProjMoveaxisPad(TritonKernelCache):
                 _fused_ln_proj_moveaxis_pad_kernel,
                 dtypes=dtypes,
                 make_dummy_args=lambda dt: self._make_dummy_args(dt),
-                grid=(1, 2, 1),
+                # Compile without touching uninitialized dummy tensors.
+                grid=(0,),
                 **common_kwargs,
             )
             mixed_result = self.compile_for_dtypes(
                 _fused_ln_proj_moveaxis_pad_kernel,
                 dtypes=[dt for dt in dtypes if dt != torch.float32],
                 make_dummy_args=lambda dt: self._make_dummy_args(dt, ln_dtype=torch.float32),
-                grid=(1, 2, 1),
+                grid=(0,),
                 **common_kwargs,
             )
             result.update(
@@ -556,7 +557,8 @@ class FusedLNProjMoveaxisPad(TritonKernelCache):
             _fused_ln_proj_moveaxis_pad_streaming_kernel,
             dtypes=dtypes,
             make_dummy_args=make_dummy_args,
-            grid=(1,),
+            # Compile without touching uninitialized dummy tensors.
+            grid=(0,),
             **kwargs,
         )
         registers = torch.cuda.get_device_properties(torch.cuda.current_device()).regs_per_multiprocessor
@@ -568,7 +570,7 @@ class FusedLNProjMoveaxisPad(TritonKernelCache):
                     _fused_ln_proj_moveaxis_pad_streaming_kernel,
                     dtypes=heavy,
                     make_dummy_args=make_dummy_args,
-                    grid=(1,),
+                    grid=(0,),
                     maxnreg=budget,
                     **kwargs,
                 )

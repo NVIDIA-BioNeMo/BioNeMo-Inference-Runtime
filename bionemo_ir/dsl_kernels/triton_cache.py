@@ -29,7 +29,7 @@ Usage::
                 make_dummy_args=lambda dtype: (
                     torch.empty(1, dtype=dtype, device="cuda"),
                 ),
-                grid=(1,),
+                grid=(0,),
                 BLOCK_SIZE=128,
             )
 
@@ -426,7 +426,7 @@ class TritonKernelCache(KernelCacheBase):
         dtypes: Sequence[torch.dtype],
         make_dummy_args,
         *,
-        grid: tuple[int, ...] = (1,),
+        grid: tuple[int, ...] = (0,),
         **constexpr_kwargs: Any,
     ) -> dict[torch.dtype, CachedKernel]:
         """Compile one kernel for each dtype.
@@ -435,7 +435,9 @@ class TritonKernelCache(KernelCacheBase):
             jit_fn: A ``@triton.jit`` decorated function.
             dtypes: Sequence of dtypes to compile for.
             make_dummy_args: Callable returning positional arguments by dtype.
-            grid: Compilation grid.
+            grid: Compilation grid. An empty grid, the default, compiles and loads
+                the kernel without launching it, here and in the cold-cache warmup
+                subprocess, which rebuilds the tensor dummies with ``torch.empty``.
             **constexpr_kwargs: Constexpr keyword arguments.
 
         Returns:

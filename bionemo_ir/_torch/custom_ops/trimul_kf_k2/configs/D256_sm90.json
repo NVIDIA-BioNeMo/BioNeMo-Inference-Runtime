@@ -32,6 +32,13 @@
         {"kernel_variant": "K2_0", "tile_n": 256, "cluster_m": 2, "defer_kmin": 0, "split_epi": true},
         {"kernel_variant": "K2_0", "tile_n": 192, "cluster_m": 1, "defer_kmin": 0, "split_epi": true}
       ]
+    },
+    "S=1200": {
+      "out": [
+        {"kernel_variant": "K2_0", "tile_n": 256, "cluster_m": 2, "defer_kmin": 4, "split_epi": false},
+        {"kernel_variant": "K2_0", "tile_n": 224, "cluster_m": 2, "defer_kmin": 0, "split_epi": true}
+      ],
+      "in": {"kernel_variant": "K2_0", "tile_n": 256, "cluster_m": 2, "defer_kmin": 0, "split_epi": true}
     }
   }
 }

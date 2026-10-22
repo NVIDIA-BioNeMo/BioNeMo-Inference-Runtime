@@ -151,6 +151,17 @@
   },
   "variants": [
     {
+      "executable": "e8330f2837139772e5e11aa50a88979e0a62f6f7a505e857bf63e6a0c723e16f",
+      "runtime_metadata": {
+        "C": 32,
+        "D": 32,
+        "kernel_variant": 1,
+        "num_threads": 512,
+        "padded": true
+      },
+      "variant_id": "29eb7ec35f206e8f6f1e"
+    },
+    {
       "executable": "561965e7af57e1f04e428bd08d9163a2649679bdfea6ea7cd23f80b76d2b54c4",
       "runtime_metadata": {
         "C": 64,
@@ -160,6 +171,17 @@
         "padded": false
       },
       "variant_id": "2df27e48652640f09230"
+    },
+    {
+      "executable": "4547aa433cf3fb3f26f8cf17f3ab3a724807bea2d9993e252da3ba0d8fafdf66",
+      "runtime_metadata": {
+        "C": 64,
+        "D": 64,
+        "kernel_variant": 1,
+        "num_threads": 512,
+        "padded": true
+      },
+      "variant_id": "2ee38e039a47223f7b58"
     }
   ]
 }

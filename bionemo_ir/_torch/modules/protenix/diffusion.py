@@ -300,15 +300,14 @@ class ProtenixDiffusionModule(nn.Module):
                 input_feature_dict["atom_to_token_idx"], s_trunk.shape[-2]
             ),
         }
-        # Both atom transformers condition on the step-invariant c_l: project it once per rollout
-        # (one batch row, so that it broadcasts over the samples).
-        if atom_c_l.shape[0] == 1:
-            cache["atom_encoder_conditioning"] = self.atom_attention_encoder.prepare_conditioning(
-                atom_c_l, num_blocks, attn_metadata
-            )
-            cache["atom_decoder_conditioning"] = self.atom_attention_decoder.prepare_conditioning(
-                atom_c_l, num_blocks, attn_metadata
-            )
+        # Both atom transformers condition on the step-invariant c_l: project it once per rollout,
+        # one row per batch item, which the item's samples share.
+        cache["atom_encoder_conditioning"] = self.atom_attention_encoder.prepare_conditioning(
+            atom_c_l, num_blocks, attn_metadata
+        )
+        cache["atom_decoder_conditioning"] = self.atom_attention_decoder.prepare_conditioning(
+            atom_c_l, num_blocks, attn_metadata
+        )
         # A wrapped or engine-backed token transformer keeps its own bias path.
         if isinstance(self.diffusion_transformer, ProtenixDiffusionTransformer):
             cache["token_pair_biases"] = self.diffusion_transformer.prepare_pair_biases(pair_z)

@@ -296,6 +296,27 @@ class DiffusionTransformerLayer(nn.Module):
         return a
 
 
+class _WindowAttentionLayers:
+    """Windowed attention for a layer stack; see :meth:`AttentionPairBias.enable_window_attention`."""
+
+    layers: nn.ModuleList
+
+    @property
+    def window_attention_enabled(self) -> bool:
+        """Whether every layer has a windowed attention backend."""
+        return bool(self.layers) and all(layer.pair_bias_attn.window_attention is not None for layer in self.layers)
+
+    def enable_window_attention(self, n_queries: int, n_keys: int) -> None:
+        """Run every layer's sequence-local calls with key-masked prepared biases on a windowed backend."""
+        for layer in self.layers:
+            layer.pair_bias_attn.enable_window_attention(n_queries, n_keys)
+
+    def disable_window_attention(self) -> None:
+        """Run every layer's calls on the attention backend."""
+        for layer in self.layers:
+            layer.pair_bias_attn.disable_window_attention()
+
+
 # a/s (-2), z (-2 and -3), and mask (-1) carry ``num_tokens`` on the inputs; the
 # single returned atom representation carries it at -2. Shared by both diffusion
 # (token) transformers, which have the same forward signature and token ties.
@@ -322,7 +343,7 @@ _TOKEN_TRANSFORMER_DIMS = (
     # eager.
     input_acceptance_dim_spec=InputAcceptanceDimSpec(name="num_tokens", dim_len_max=1024),
 )
-class BoltzDiffusionTransformer(nn.Module):
+class BoltzDiffusionTransformer(_WindowAttentionLayers, nn.Module):
     def __init__(self, config: BaseConfig):
         """
         Args:
@@ -456,7 +477,7 @@ class BoltzDiffusionTransformer(nn.Module):
     # eager.
     input_acceptance_dim_spec=InputAcceptanceDimSpec(name="num_tokens", dim_len_max=1024),
 )
-class OpenFold3DiffusionTransformer(nn.Module):
+class OpenFold3DiffusionTransformer(_WindowAttentionLayers, nn.Module):
     def __init__(self, config: BaseConfig):
         """
         Args:
@@ -737,7 +758,7 @@ def _conditioned_local_layer(
     # eager.
     input_acceptance_dim_spec=InputAcceptanceDimSpec(name="num_tokens", dim_len_max=1024),
 )
-class ProtenixDiffusionTransformer(nn.Module):
+class ProtenixDiffusionTransformer(_WindowAttentionLayers, nn.Module):
     """Protenix transformer for local atom and global token diffusion.
 
     Pass ``n_queries`` and ``n_keys`` for windowed atom attention; omit both for
@@ -915,7 +936,7 @@ class ProtenixDiffusionTransformer(nn.Module):
         own modules (query and key AdaLNs, output gate, transition AdaLN).
 
         Args:
-            s: ``[B, N, c]`` conditioning, as :meth:`forward` takes it on the local path.
+            s: ``[B, N, c]`` conditioning of the batch items the prepared biases cover; each item's samples share it.
             n_queries: Window size ``W``.
             num_blocks: Window count ``K``.
             attn_metadata: Local-window metadata whose ``query_to_keys`` gathers the keys.
@@ -937,16 +958,19 @@ class ProtenixDiffusionTransformer(nn.Module):
                 return None
         s = s.to(self.dtype)
         s_q = to_blocks(s, num_blocks, n_queries).unsqueeze(1)  # [B, 1, K, W, c]
-        s_k = attn_metadata.query_to_keys(s_q)  # [B, 1, K, H, c]
+        # Key conditioning in each layer's key rows: the query rows on the windowed kernel, else the gathered
+        # key windows.
+        windowed = [layer.pair_bias_attn.window_attention is not None for layer in self.layers]
+        s_k = None if all(windowed) else attn_metadata.query_to_keys(s_q)  # [B, 1, K, H, c]
         conditioning = []
-        for layer in self.layers:
+        for layer, layer_windowed in zip(self.layers, windowed, strict=True):
             attention, transition = layer.pair_bias_attn, layer.transition
 
             def project(adaln: AdaLN, rows: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
                 return adaln.fused_s_scale_s_bias(adaln.s_norm(rows)).split([adaln.dim, adaln.dim], dim=-1)
 
             q_scale, q_shift = project(attention.layer_norm_a_q, s_q)
-            k_scale, k_shift = project(attention.layer_norm_a_k, s_k)
+            k_scale, k_shift = project(attention.layer_norm_a_k, s_q if layer_windowed else s_k)
             transition_scale, transition_shift = project(transition.adaln, s_q)
             conditioning.append(
                 tuple(
@@ -1012,10 +1036,12 @@ class ProtenixDiffusionTransformer(nn.Module):
             n_queries / n_keys: window sizes; both enable the local path.
             attn_metadata: optional local gather metadata.
             buffers: optional shared layer-stack buffers.
-            prepared_pair_biases: projected biases; local windows include a singleton sample axis.
+            prepared_pair_biases: projected biases; local windows include a singleton sample axis. Locally they
+                may cover fewer batch items than ``a``, ``B = items * samples`` with each item's samples
+                consecutive; ``z`` then only gives the window count.
             prepared_conditioning_weights: the token path's :meth:`conditioning_weights` of this rollout.
-            prepared_conditioning: the atom path's :meth:`prepare_local_conditioning` of ``s``; ``s`` may then
-                be ``None``.
+            prepared_conditioning: the atom path's :meth:`prepare_local_conditioning` of ``s`` for the items of
+                ``prepared_pair_biases``; ``s`` may then be ``None``.
 
         Returns:
             Updated representation with the same shape as ``a``.
@@ -1026,17 +1052,21 @@ class ProtenixDiffusionTransformer(nn.Module):
             W, K = n_queries, z.shape[1]
             if attn_metadata is None:
                 attn_metadata = self.build_attn_metadata(K, n_queries, n_keys, a.device)
-            a_in = to_blocks(a, K, W).unsqueeze(1)  # [B, 1, K, W, c_a]
             # Prepared conditioning needs prepared biases that carry the key mask.
             if prepared_conditioning is not None and (prepared_pair_biases is None or mask is not None):
                 if s is None:
                     raise ValueError("prepared conditioning without s needs prepared pair biases that carry the mask")
                 prepared_conditioning = None
-            s_in = None if prepared_conditioning is not None else to_blocks(s, K, W).unsqueeze(1)  # [B, 1, K, W, c_a]
+            # Each batch item's samples take the sample axis, over which its prepared bias and conditioning
+            # broadcast.
+            items = B if prepared_pair_biases is None else prepared_pair_biases[0].shape[0]
+            blocks = (items, B // items, K, W)
+            a_in = to_blocks(a, K, W).view(*blocks, -1)  # [items, samples, K, W, c_a]
+            s_in = None if prepared_conditioning is not None else to_blocks(s, K, W).view(*blocks, -1)
             z_in = z.unsqueeze(1)  # [B, 1, K, W, H, c_z]
             mask_in = None
             if mask is not None:
-                mask_in = to_blocks(mask.unsqueeze(-1).to(a.dtype), K, W).squeeze(-1).unsqueeze(1)  # [B, 1, K, W]
+                mask_in = to_blocks(mask.unsqueeze(-1).to(a.dtype), K, W).view(blocks)  # [items, samples, K, W]
         else:
             # Global self-attention: no windowing, full pair bias, no gather.
             a_in, s_in, z_in, mask_in = a, s, z, mask

@@ -139,6 +139,9 @@ def test_cached_decoder_biases(dtype: str, batch_size: int, n_sample: int, preco
         dtype=dtype,
     )
     model = ProtenixAtomAttentionDecoder(config).to(device).eval()
+    # Both paths on the attention backend, so that only the bias preparation differs; the windowed kernel has
+    # its own parity test.
+    model.atom_transformer.disable_window_attention()
     with torch.no_grad():
         for name, param in model.named_parameters():
             if param.ndim > 1:
@@ -193,7 +196,6 @@ def test_cached_decoder_hands_c_skip_on_when_its_transformer_declines_the_cache(
 
     class Recorder(torch.nn.Module):
         dtype = torch.float32
-        window_attention_enabled = False
 
         def forward(self, q, c, *args, prepared_conditioning=None, **kwargs):
             seen.append((c is not None, prepared_conditioning is not None))
@@ -210,3 +212,107 @@ def test_cached_decoder_hands_c_skip_on_when_its_transformer_declines_the_cache(
         with torch.autocast("cuda", dtype=torch.bfloat16):
             model(a2t, a, q_skip, c_skip, p_lm, metadata, **cached)
     assert seen == [(False, True), (True, False)]
+
+
+@pytest.mark.parametrize("n_sample", [1, 3])
+def test_windowed_prepared_decoder_matches_per_step_path(n_sample: int) -> None:
+    """With prepared biases, with or without the prepared conditioning, the decoder's attention runs on the windowed
+    kernel, reading q, k and v in place and the samples' shared bias; it matches the per-step path (gathered key
+    windows, per-sample biases)."""
+    from bionemo_ir._torch.attention_backend.window_attention import window_attention_supported
+
+    if not torch.cuda.is_available() or not window_attention_supported(torch.bfloat16, 32, 32, 128):
+        pytest.skip("no windowed attention kernel for this device")
+    torch.manual_seed(42)
+    sc = Scenario(dtype="bfloat16", n_atoms=200, n_token=50)
+    device = torch.device("cuda")
+    config = AtomAttentionDecoderConfig(
+        c_token=sc.c_token,
+        c_atom=sc.c_atom,
+        c_atompair=sc.c_atompair,
+        n_queries=sc.n_queries,
+        n_keys=sc.n_keys,
+        dtype="bfloat16",
+    )
+    model = ProtenixAtomAttentionDecoder(config).to(device).eval()
+    assert model.atom_transformer.window_attention_enabled
+    with torch.no_grad():
+        for name, param in model.named_parameters():
+            if param.ndim > 1:
+                param.normal_(std=0.1)
+            elif name.endswith("weight"):
+                param.fill_(1)
+            else:
+                param.zero_()
+
+    K = math.ceil(sc.n_atoms / sc.n_queries)
+    a2t = (torch.arange(sc.n_atoms, device=device) // (sc.n_atoms // sc.n_token)).expand(n_sample, -1)
+    a = torch.randn(n_sample, sc.n_token, sc.c_token, device=device, dtype=torch.bfloat16)
+    q_skip = torch.randn(n_sample, sc.n_atoms, sc.c_atom, device=device, dtype=torch.bfloat16)
+    c_shared = torch.randn(1, sc.n_atoms, sc.c_atom, device=device, dtype=torch.bfloat16)
+    p_lm = torch.randn(1, K, sc.n_queries, sc.n_keys, sc.c_atompair, device=device, dtype=torch.bfloat16)
+    c_skip = c_shared.expand(n_sample, -1, -1).contiguous()
+    p_skip = p_lm.expand(n_sample, *p_lm.shape[1:]).contiguous()
+    windowed = []
+    run_windowed = AttentionPairBias._windowed_attention
+
+    def counted(self, *args):
+        windowed.append(args[0].shape)
+        return run_windowed(self, *args)
+
+    with torch.inference_mode():
+        metadata = model.atom_transformer.build_attn_metadata(K, sc.n_queries, sc.n_keys, device)
+        biases = model.prepare_pair_biases(p_lm, sc.n_atoms, metadata)
+        conditioning = model.prepare_conditioning(c_shared, K, metadata)
+        expected = model(a2t, a, q_skip, c_skip, p_skip)
+        assert not windowed
+        with patch.object(AttentionPairBias, "_windowed_attention", counted):
+            actual = [
+                model(a2t, a, q_skip, c_skip, p_skip, prepared_pair_biases=biases, **cached)
+                for cached in ({}, {"prepared_conditioning": conditioning})
+            ]
+    assert len(windowed) == 2 * len(model.atom_transformer.layers)
+    for result in actual:
+        assert _rmse_ratio(result, expected) < 2e-2
+        torch.testing.assert_close(result, expected, atol=5e-2, rtol=5e-2)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
+def test_cached_decoder_hands_the_samples_shared_biases_on() -> None:
+    """The cached decoder hands its transformer one bias per batch item, which the item's samples share, also when
+    the transformer declines the prepared conditioning under CUDA autocast. (A stand-in transformer records its
+    inputs.)"""
+    torch.manual_seed(0)
+    sc = Scenario(dtype="float32")
+    device = torch.device("cuda")
+    config = AtomAttentionDecoderConfig(
+        c_token=sc.c_token, c_atom=sc.c_atom, c_atompair=sc.c_atompair, n_queries=sc.n_queries, n_keys=sc.n_keys
+    )
+    model = ProtenixAtomAttentionDecoder(config).to(device).eval()
+    n_sample, K = 3, math.ceil(sc.n_atoms / sc.n_queries)
+    a2t = (torch.arange(sc.n_atoms, device=device) // (sc.n_atoms // sc.n_token)).expand(n_sample, -1)
+    a = torch.randn(n_sample, sc.n_token, sc.c_token, device=device)
+    q_skip = torch.randn(n_sample, sc.n_atoms, sc.c_atom, device=device)
+    c_shared = torch.randn(1, sc.n_atoms, sc.c_atom, device=device)
+    p_lm = torch.randn(1, K, sc.n_queries, sc.n_keys, sc.c_atompair, device=device)
+    seen = []
+
+    class Recorder(torch.nn.Module):
+        dtype = torch.float32
+
+        def forward(self, q, c, *args, prepared_pair_biases=None, prepared_conditioning=None, **kwargs):
+            seen.append(({bias.shape[0] for bias in prepared_pair_biases}, prepared_conditioning is not None))
+            return q
+
+    with torch.inference_mode():
+        metadata = model.atom_transformer.build_attn_metadata(K, sc.n_queries, sc.n_keys, device)
+        biases = model.prepare_pair_biases(p_lm, sc.n_atoms, metadata)
+        conditioning = model.prepare_conditioning(c_shared, K, metadata)
+        assert conditioning is not None, "the prepared conditioning did not engage"
+        model.atom_transformer = Recorder()
+        c_skip = c_shared.expand(n_sample, -1, -1)
+        cached = {"prepared_pair_biases": biases, "prepared_conditioning": conditioning}
+        model(a2t, a, q_skip, c_skip, p_lm, metadata, **cached)
+        with torch.autocast("cuda", dtype=torch.bfloat16):
+            model(a2t, a, q_skip, c_skip, p_lm, metadata, **cached)
+    assert seen == [({1}, True), ({1}, False)]

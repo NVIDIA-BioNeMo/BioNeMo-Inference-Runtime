@@ -227,6 +227,9 @@ def test_cached_atom_biases(dtype: str, batch_size: int, n_sample: int, precompu
         dtype=dtype,
     )
     model = ProtenixAtomAttentionEncoder(config).cuda().eval()
+    # Both paths on the attention backend, so that only the bias preparation differs; the windowed kernel has
+    # its own parity test.
+    model.atom_transformer.disable_window_attention()
     with torch.no_grad():
         for name, param in model.named_parameters():
             if param.ndim > 1:
@@ -299,3 +302,180 @@ def test_atom_windows_preserve_valid_pair_offsets(length):
             assert torch.equal(window["d_lm"][0, block, query, key_slot], torch.zeros(3))
             assert window["v_lm"][0, block, query, key_slot, 0]
     assert int(window["pad_info"]["mask_trunked"].sum()) >= length
+
+
+@pytest.mark.parametrize("n_sample", [1, 3])
+def test_windowed_prepared_encoder_matches_per_step_path(n_sample: int) -> None:
+    """With prepared biases, with or without the prepared conditioning, the encoder's attention runs on the windowed
+    kernel, reading q, k and v in place and the samples' shared bias; it matches the per-step path (gathered key
+    windows, per-sample biases)."""
+    from bionemo_ir._torch.attention_backend.window_attention import window_attention_supported
+    from bionemo_ir._torch.layers.attention import AttentionPairBias
+
+    if not torch.cuda.is_available() or not window_attention_supported(torch.bfloat16, 32, 32, 128):
+        pytest.skip("no windowed attention kernel for this device")
+    torch.manual_seed(42)
+    sc = Scenario(dtype="bfloat16", n_atom=200, n_token=50)
+    config = DiffusionAtomAttentionEncoderConfig(
+        c_token=sc.c_token,
+        c_atom=sc.c_atom,
+        c_atompair=sc.c_atompair,
+        c_s=sc.c_s,
+        c_z=sc.c_z,
+        n_queries=sc.n_queries,
+        n_keys=sc.n_keys,
+        atom_transformer_config=_atom_transformer_config(sc),
+        dtype="bfloat16",
+    )
+    model = ProtenixAtomAttentionEncoder(config).cuda().eval()
+    assert model.atom_transformer.window_attention_enabled
+    with torch.no_grad():
+        for name, param in model.named_parameters():
+            if param.ndim > 1:
+                param.normal_(std=0.02)
+            elif name.endswith("weight"):
+                param.fill_(1)
+            else:
+                param.zero_()
+    feats = _make_features(torch.device("cuda"), sc.n_atom, sc.n_token)
+    args = {
+        key: value.unsqueeze(0).contiguous() if isinstance(value, torch.Tensor) else value
+        for key, value in atom_encoder_kwargs(feats).items()
+    }
+    s = torch.randn(1, sc.n_token, sc.c_s, device="cuda")
+    z = torch.randn(1, sc.n_token, sc.n_token, sc.c_z, device="cuda")
+    windowed = []
+    run_windowed = AttentionPairBias._windowed_attention
+
+    def counted(self, *call_args):
+        windowed.append(call_args[0].shape)
+        return run_windowed(self, *call_args)
+
+    with torch.inference_mode():
+        cl, plm, metadata = model.prepare_coords_cache(**args, s=s, z=z)
+        biases = model.prepare_pair_biases(plm, sc.n_atom, metadata)
+        conditioning = model.prepare_conditioning(cl, plm.shape[1], metadata)
+        coords = torch.randn(1, n_sample, sc.n_atom, 3, device="cuda")
+        run = (args["atom_to_token_idx"], cl, plm, coords, sc.n_token, metadata)
+        expected = model.run_coords_cached(*run)
+        assert not windowed
+        with patch.object(AttentionPairBias, "_windowed_attention", counted):
+            actual = [
+                model.run_coords_cached(*run, prepared_pair_biases=biases, **cached)
+                for cached in ({}, {"prepared_conditioning": conditioning})
+            ]
+    assert len(windowed) == 2 * len(model.atom_transformer.layers)
+    for outputs in actual:
+        for name, result, reference in zip(("a", "q_l", "c_l", "p_lm"), outputs, expected, strict=True):
+            assert _rmse_ratio(result, reference) < 2e-2, name
+            torch.testing.assert_close(result.float(), reference.float(), atol=5e-2, rtol=5e-2, msg=name)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
+def test_cached_encoder_hands_the_samples_shared_biases_on() -> None:
+    """The cached encoder hands its transformer one bias per batch item, which the item's samples share; when the
+    transformer declines the prepared conditioning under CUDA autocast, it also gets ``c_l``. (A stand-in transformer
+    records its inputs.)"""
+    torch.manual_seed(42)
+    sc = Scenario(n_sample=3)
+    config = DiffusionAtomAttentionEncoderConfig(
+        c_token=sc.c_token,
+        c_atom=sc.c_atom,
+        c_atompair=sc.c_atompair,
+        c_s=sc.c_s,
+        c_z=sc.c_z,
+        n_queries=sc.n_queries,
+        n_keys=sc.n_keys,
+        atom_transformer_config=_atom_transformer_config(sc),
+        dtype=sc.dtype,
+    )
+    model = ProtenixAtomAttentionEncoder(config).cuda().eval()
+    feats = _make_features(torch.device("cuda"), sc.n_atom, sc.n_token)
+    args = {
+        key: value.unsqueeze(0).contiguous() if isinstance(value, torch.Tensor) else value
+        for key, value in atom_encoder_kwargs(feats).items()
+    }
+    s = torch.randn(1, sc.n_token, sc.c_s, device="cuda")
+    z = torch.randn(1, sc.n_token, sc.n_token, sc.c_z, device="cuda")
+    seen = []
+
+    class Recorder(torch.nn.Module):
+        dtype = torch.float32
+
+        def forward(self, q, c, *args, prepared_pair_biases=None, prepared_conditioning=None, **kwargs):
+            sizes = {bias.shape[0] for bias in prepared_pair_biases}
+            seen.append((sizes, c is not None, prepared_conditioning is not None))
+            return q
+
+    with torch.inference_mode():
+        cl, plm, metadata = model.prepare_coords_cache(**args, s=s, z=z)
+        biases = model.prepare_pair_biases(plm, sc.n_atom, metadata)
+        conditioning = model.prepare_conditioning(cl, plm.shape[1], metadata)
+        assert conditioning is not None, "the prepared conditioning did not engage"
+        model.atom_transformer = Recorder()
+        coords = torch.randn(1, sc.n_sample, sc.n_atom, 3, device="cuda")
+        run = (args["atom_to_token_idx"], cl, plm, coords, sc.n_token, metadata)
+        cached = {"prepared_pair_biases": biases, "prepared_conditioning": conditioning}
+        model.run_coords_cached(*run, **cached)
+        with torch.autocast("cuda", dtype=torch.bfloat16):
+            model.run_coords_cached(*run, **cached)
+    assert seen == [({1}, False, True), ({1}, True, False)]
+
+
+def test_window_route_follows_the_device(monkeypatch) -> None:
+    """The window route is chosen again whenever the module moves: off the GPU, or on a device without the kernel,
+    the layers lose it and a cached step runs on the attention backend; back on a serving GPU they get it."""
+    from bionemo_ir._torch.attention_backend.window_attention import window_attention_supported
+    from bionemo_ir._torch.layers import attention
+
+    if not torch.cuda.is_available() or not window_attention_supported(torch.bfloat16, 32, 32, 128):
+        pytest.skip("no windowed attention kernel for this device")
+    torch.manual_seed(42)
+    sc = Scenario(dtype="bfloat16", n_atom=200, n_token=50)
+    config = DiffusionAtomAttentionEncoderConfig(
+        c_token=sc.c_token,
+        c_atom=sc.c_atom,
+        c_atompair=sc.c_atompair,
+        c_s=sc.c_s,
+        c_z=sc.c_z,
+        n_queries=sc.n_queries,
+        n_keys=sc.n_keys,
+        atom_transformer_config=_atom_transformer_config(sc),
+        dtype="bfloat16",
+    )
+    model = ProtenixAtomAttentionEncoder(config).cuda().eval()
+    transformer = model.atom_transformer
+    assert transformer.window_attention_enabled
+    model.cpu()
+    assert not transformer.window_attention_enabled
+    model.cuda()
+    assert transformer.window_attention_enabled
+    monkeypatch.setattr(attention, "auto_select_window_attention_backend", lambda *args, **kwargs: None)
+    model.cuda()
+    assert all(layer.pair_bias_attn.window_attention is None for layer in transformer.layers)
+
+    with torch.no_grad():
+        for name, param in model.named_parameters():
+            if param.ndim > 1:
+                param.normal_(std=0.02)
+            elif name.endswith("weight"):
+                param.fill_(1)
+            else:
+                param.zero_()
+    feats = _make_features(torch.device("cuda"), sc.n_atom, sc.n_token)
+    args = {
+        key: value.unsqueeze(0).contiguous() if isinstance(value, torch.Tensor) else value
+        for key, value in atom_encoder_kwargs(feats).items()
+    }
+    s = torch.randn(1, sc.n_token, sc.c_s, device="cuda")
+    z = torch.randn(1, sc.n_token, sc.n_token, sc.c_z, device="cuda")
+    with torch.inference_mode():
+        cl, plm, metadata = model.prepare_coords_cache(**args, s=s, z=z)
+        biases = model.prepare_pair_biases(plm, sc.n_atom, metadata)
+        conditioning = model.prepare_conditioning(cl, plm.shape[1], metadata)
+        coords = torch.randn(1, 3, sc.n_atom, 3, device="cuda")
+        run = (args["atom_to_token_idx"], cl, plm, coords, sc.n_token, metadata)
+        expected = model.run_coords_cached(*run, prepared_pair_biases=biases)
+        actual = model.run_coords_cached(*run, prepared_pair_biases=biases, prepared_conditioning=conditioning)
+    for name, result, reference in zip(("a", "q_l", "c_l", "p_lm"), actual, expected, strict=True):
+        torch.testing.assert_close(result.float(), reference.float(), atol=5e-2, rtol=5e-2, msg=name)

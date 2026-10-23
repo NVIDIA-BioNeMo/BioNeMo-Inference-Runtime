@@ -100,6 +100,55 @@ def test_triangle_auto_select_rejects_unsupported_blackwell_head_dim(monkeypatch
     assert attention_backend.auto_select_triangle_attention_backend(torch.bfloat16, head_dim=256) == "SDPA"
 
 
+def test_window_auto_select_uses_cutedsl_where_its_kernel_serves(monkeypatch):
+    asked = []
+
+    def supported(*args):
+        asked.append(args)
+        return True
+
+    monkeypatch.setattr(attention_utils, "window_attention_supported", supported)
+    select = attention_backend.auto_select_window_attention_backend
+
+    assert select(torch.bfloat16, 32, 32, 128) == "CuTeDSL"
+    assert select(torch.bfloat16, 32, 32, 128, torch.device("cuda", 1)) == "CuTeDSL"
+    assert asked == [(torch.bfloat16, 32, 32, 128, None), (torch.bfloat16, 32, 32, 128, 1)]
+
+
+def test_window_auto_select_finds_no_backend_where_the_kernel_does_not_serve(monkeypatch):
+    monkeypatch.setattr(attention_utils, "window_attention_supported", lambda *args: False)
+
+    assert attention_backend.auto_select_window_attention_backend(torch.float32, 32, 32, 128) is None
+
+
+@pytest.mark.parametrize("device", ["cpu", "meta"])
+def test_window_auto_select_finds_no_backend_off_cuda(monkeypatch, device):
+    monkeypatch.setattr(attention_utils, "window_attention_supported", lambda *args: pytest.fail("asked the kernel"))
+    select = attention_backend.auto_select_window_attention_backend
+
+    assert select(torch.bfloat16, 32, 32, 128, torch.device(device)) is None
+
+
+def test_create_window_attention_binds_the_window_shape(monkeypatch):
+    calls = []
+    monkeypatch.setattr(attention_utils, "window_attention", lambda *args, **kwargs: calls.append((args, kwargs)))
+
+    bound = attention_backend.create_window_attention("CuTeDSL", 32, 128)
+    bound("q", "k", "v", "bias")
+    bound("q", "k", "v", "bias", 0.5)
+
+    window = {"n_queries": 32, "n_keys": 128}
+    assert calls == [
+        (("q", "k", "v", "bias"), {**window, "scale": None}),
+        (("q", "k", "v", "bias"), {**window, "scale": 0.5}),
+    ]
+
+
+def test_create_window_attention_rejects_unknown_backends():
+    with pytest.raises(ValueError, match=r"'SDPA'.*\['CuTeDSL'\]"):
+        attention_backend.create_window_attention("SDPA", 32, 128)
+
+
 @pytest.mark.parametrize("backend_name", ["VANILLA", "SDPA", "CUEQUIV"])
 def test_triangle_default_mask_precompute_registry(backend_name):
     pair_mask = make_left_aligned_pair_mask(1, 8, dtype=torch.float32, device="cpu")

@@ -279,6 +279,14 @@ Because the choice is a plain config field, overriding it is a one-line edit
 (`config.trunk.set_triangle_attention_backend("SDPA")`) applied after the
 pretrained config is built.
 
+Sequence-local atom attention on prepared pair biases can also run on a windowed
+attention backend, which the layer picks rather than the config.
+`enable_window_attention` asks
+`auto_select_window_attention_backend(dtype, head_dim, n_queries, n_keys, device)`
+for a name, again whenever the module moves, and
+`create_window_attention(name, n_queries, n_keys)` binds it. Layers without one,
+and calls it does not serve, keep the pairwise backend.
+
 One consequence worth knowing: the **mask representation is
 backend-dependent**. `precompute_pair_masks` / `precompute_single_masks` build
 the per-row mask once before the layer loop rather than per layer, and what

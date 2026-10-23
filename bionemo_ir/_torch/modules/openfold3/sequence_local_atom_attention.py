@@ -611,6 +611,7 @@ class AtomAttentionEncoder(nn.Module):
         if getattr(atom_transformer_config, "pairwise_attention_backend", "") == "CuTeDSL":
             atom_transformer_config.pairwise_attention_backend = "SDPA"
         self.atom_transformer = DiffusionTransformer(config=atom_transformer_config)
+        self.atom_transformer.enable_window_attention(n_query, n_key)
 
         self.c_token = c_token
         # Its ReLU runs inside the token reduction; the index keeps the weight key.
@@ -879,6 +880,7 @@ class AtomAttentionDecoder(nn.Module):
         if getattr(atom_attn_decoder_config, "pairwise_attention_backend", "") == "CuTeDSL":
             atom_attn_decoder_config.pairwise_attention_backend = "SDPA"
         self.atom_transformer = DiffusionTransformer(config=atom_attn_decoder_config)
+        self.atom_transformer.enable_window_attention(n_query, n_key)
 
         self.layer_norm = nn.LayerNorm(c_atom, bias=False, dtype=self.dtype, eps=eps)
         self.linear_q_out = Linear(c_atom, 3, bias=False, dtype=dtype, skip_create_weights=skip_create_weights)

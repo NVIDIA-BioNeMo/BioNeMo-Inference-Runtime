@@ -245,6 +245,7 @@ class ProtenixAtomAttentionEncoder(nn.Module):
             update={"dtype": config.atom_transformer_dtype or config.dtype, "skip_create_weights": skip}
         )
         self.atom_transformer = ProtenixDiffusionTransformer(atc)
+        self.atom_transformer.enable_window_attention(self.n_queries, self.n_keys)
         self.linear_no_bias_q = Linear(c_atom, c_token, bias=False, dtype=dtype, skip_create_weights=skip)
 
     def prepare_reduction(self, atom_to_token_idx: torch.Tensor, n_token: int) -> IndexedReduction | None:
@@ -579,8 +580,7 @@ class ProtenixAtomAttentionEncoder(nn.Module):
         c_l = _expand_bs(c_l, B, S)
         a2t = _expand_bs(atom_to_token_idx, B, S)
         if prepared_pair_biases is not None:
-            prepared_pair_biases = [_expand_bs(bias, B, S) for bias in prepared_pair_biases]
-            # Prepared biases replace p_lm, which then only gives the window count.
+            # Prepared biases replace p_lm, which then only gives the window count; the samples share them.
             p_lm_run = p_lm
             p_lm = p_lm.unsqueeze(1).expand(B, S, *p_lm.shape[1:])
         else:
@@ -640,6 +640,7 @@ class ProtenixAtomAttentionDecoder(nn.Module):
             update={"dtype": config.atom_transformer_dtype or config.dtype, "skip_create_weights": skip}
         )
         self.atom_transformer = ProtenixDiffusionTransformer(atc)
+        self.atom_transformer.enable_window_attention(self.n_queries, self.n_keys)
         # OSS layernorm_q is create_offset=False -> scale-only.
         self.layernorm_q = nn.LayerNorm(c_atom, bias=False, eps=config.norm_epsilon, dtype=dtype)
         self.linear_no_bias_out = Linear(c_atom, 3, bias=False, dtype=dtype, skip_create_weights=skip)
@@ -714,10 +715,6 @@ class ProtenixAtomAttentionDecoder(nn.Module):
         if attn_metadata is None:
             attn_metadata = self.atom_transformer.build_attn_metadata(K, self.n_queries, self.n_keys, q.device)
         atom_mask = q.new_ones(*q.shape[:-1])
-        if prepared_pair_biases is not None:
-            batch = prepared_pair_biases[0].shape[0]
-            samples = q.shape[0] // batch
-            prepared_pair_biases = [_expand_bs(bias, batch, samples) for bias in prepared_pair_biases]
         q = _run_atom_transformer(
             self.atom_transformer,
             self.dtype,

@@ -249,23 +249,32 @@ def test_of3_prepared_atom_conditioning_matches_uncached_step(_of3_diffusion_cap
     for key in _PREPARED_KEYS:
         kwargs.pop(key, None)
     module = module.eval()
-    with torch.no_grad():
-        uncached = module(**kwargs).clone()
-        pair = module.diffusion_conditioning.prepare_pair(batch=kwargs["batch"], zij_trunk=kwargs["zij_trunk"])
-        atom_cache = _prepare_atom_cache(module, kwargs, pair)
-        biases = {key: atom_cache.pop(key) for key in _BIAS_KEYS}
-        cached = module(**kwargs, prepared_zij=pair, **atom_cache)
-        cached_biases = module(**kwargs, prepared_zij=pair, **atom_cache, **biases)
-        token_biases = _prepare_token_biases(module, pair)
-        cached_token = module(**kwargs, prepared_zij=pair, **atom_cache, **biases, **token_biases)
-        cached_single = module(
-            **kwargs,
-            prepared_zij=pair,
-            prepared_si=_prepare_single(module, kwargs),
-            **atom_cache,
-            **biases,
-            **token_biases,
-        )
+    # Both paths on the attention backend, so that only the preparation differs; the windowed kernel, which takes
+    # the prepared atom biases, has its own parity test. The module is shared, so its window route comes back.
+    atom_blocks = (module.atom_attn_enc, module.atom_attn_dec)
+    for block in atom_blocks:
+        block.atom_transformer.disable_window_attention()
+    try:
+        with torch.no_grad():
+            uncached = module(**kwargs).clone()
+            pair = module.diffusion_conditioning.prepare_pair(batch=kwargs["batch"], zij_trunk=kwargs["zij_trunk"])
+            atom_cache = _prepare_atom_cache(module, kwargs, pair)
+            biases = {key: atom_cache.pop(key) for key in _BIAS_KEYS}
+            cached = module(**kwargs, prepared_zij=pair, **atom_cache)
+            cached_biases = module(**kwargs, prepared_zij=pair, **atom_cache, **biases)
+            token_biases = _prepare_token_biases(module, pair)
+            cached_token = module(**kwargs, prepared_zij=pair, **atom_cache, **biases, **token_biases)
+            cached_single = module(
+                **kwargs,
+                prepared_zij=pair,
+                prepared_si=_prepare_single(module, kwargs),
+                **atom_cache,
+                **biases,
+                **token_biases,
+            )
+    finally:
+        for block in atom_blocks:
+            block.atom_transformer.enable_window_attention(block.n_query, block.n_key)
     assert torch.equal(cached, uncached)
     assert torch.equal(cached_biases, uncached)
     assert torch.equal(cached_token, uncached)

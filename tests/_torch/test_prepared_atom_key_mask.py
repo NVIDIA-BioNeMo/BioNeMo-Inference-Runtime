@@ -91,6 +91,8 @@ def _case(model_type: type, dtype: str, batch: int, samples: int):
             diffusion_transformer_cls=BoltzDiffusionTransformer,
         )
     )
+    # Both masks on the attention backend; the windowed kernel, which takes the prepared biases, has its own tests.
+    model.diffusion_transformer.disable_window_attention()
     q = torch.randn(batch, samples, atoms, DIM, device="cuda", dtype=td)
     bias = torch.randn(batch, atoms, KEYS, 2 * HEADS, device="cuda", dtype=td)
     kwargs = {"q": q, "c": torch.randn(batch, atoms, DIM, device="cuda", dtype=td), "bias": bias}

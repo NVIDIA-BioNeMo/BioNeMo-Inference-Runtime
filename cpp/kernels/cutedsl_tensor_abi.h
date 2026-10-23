@@ -115,6 +115,14 @@ extern "C"
     int64_t dynamic_strides[3];
   } cute_tensor_s3_d3_t;
 
+  /* Three dynamic extents and four independently dynamic outer strides. */
+  typedef struct
+  {
+    CUdeviceptr data;
+    int32_t dynamic_shapes[3];
+    int64_t dynamic_strides[4];
+  } cute_tensor_s3_d4_t;
+
   /* Four dynamic extents and three dynamic outer strides. */
   typedef struct
   {
@@ -138,6 +146,9 @@ extern "C"
   CUTE_ABI_ASSERT(sizeof(cute_tensor_s3_d3_t) == 48, "unexpected CuTe tensor s3_d3 ABI");
   CUTE_ABI_ASSERT(CUTE_ABI_ALIGNOF(cute_tensor_s3_d3_t) == 8, "unexpected CuTe tensor s3_d3 alignment");
   CUTE_ABI_ASSERT(offsetof(cute_tensor_s3_d3_t, dynamic_strides) == 24, "unexpected CuTe tensor s3_d3 stride offset");
+  CUTE_ABI_ASSERT(sizeof(cute_tensor_s3_d4_t) == 56, "unexpected CuTe tensor s3_d4 ABI");
+  CUTE_ABI_ASSERT(CUTE_ABI_ALIGNOF(cute_tensor_s3_d4_t) == 8, "unexpected CuTe tensor s3_d4 alignment");
+  CUTE_ABI_ASSERT(offsetof(cute_tensor_s3_d4_t, dynamic_strides) == 24, "unexpected CuTe tensor s3_d4 stride offset");
   CUTE_ABI_ASSERT(sizeof(cute_tensor_s4_d3_t) == 48, "unexpected CuTe tensor s4_d3 ABI");
   CUTE_ABI_ASSERT(offsetof(cute_tensor_s4_d3_t, dynamic_strides) == 24, "unexpected CuTe tensor s4_d3 stride offset");
 
@@ -195,6 +206,7 @@ using Tensor1View = TensorView<1>;
 using Tensor2View = TensorView<2>;
 using Tensor3View = TensorView<3>;
 using Tensor4View = TensorView<4>;
+using Tensor5View = TensorView<5>;
 
 /* Host-side view of one flat, contiguous operand whose element count may pass int32. */
 struct FlatTensorView

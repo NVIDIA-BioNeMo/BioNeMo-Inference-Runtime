@@ -30,6 +30,7 @@ from .triangle_attention import (
     TriangleAttentionCuTeLeftMask,
     VanillaTriangleAttention,
 )
+from .window_attention import window_attention, window_attention_supported
 
 
 def auto_select_triangle_attention_backend(
@@ -110,6 +111,32 @@ def auto_select_pairwise_attention_backend(
     return "SDPA"
 
 
+def auto_select_window_attention_backend(
+    dtype: torch.dtype,
+    head_dim: int,
+    n_queries: int,
+    n_keys: int,
+    device: torch.device | None = None,
+) -> str | None:
+    """Return the windowed attention backend for this configuration, or ``None`` to keep the pairwise backend.
+
+    **CuTeDSL** serves fp16 and bf16 ``D=32`` heads in 32-query windows over 128 keys on SM80/86/89/90/100/103.
+    Its kernel is loaded here, so the forward pass neither compiles nor loads it.
+
+    Args:
+        dtype: Operand dtype.
+        head_dim: Head dimension.
+        n_queries: Query window size.
+        n_keys: Key window size.
+        device: Operand device; defaults to the current CUDA device.
+    """
+    if device is not None and device.type != "cuda":
+        return None
+    if window_attention_supported(dtype, head_dim, n_queries, n_keys, None if device is None else device.index):
+        return "CuTeDSL"
+    return None
+
+
 def get_attention_backend(
     backend_name: str, attention_type: AttentionType = AttentionType.TRIANGLE
 ) -> type[AttentionBackend]:
@@ -151,6 +178,22 @@ def create_attention(
     """Create an attention backend based on the backend name and attention type."""
     attn_cls = get_attention_backend(backend_name, attention_type)
     return attn_cls(layer_idx, num_heads, head_dim, num_kv_heads)
+
+
+def create_window_attention(backend_name: str, n_queries: int, n_keys: int) -> Callable[..., torch.Tensor]:
+    """Bind a windowed attention backend to one window shape; the result takes ``(q, k, v, bias, scale=None)``."""
+    backends = {"CuTeDSL": window_attention}
+    try:
+        backend = backends[backend_name]
+    except KeyError as error:
+        raise ValueError(f"Invalid window attention backend {backend_name!r}; available: {sorted(backends)}") from error
+
+    def bound_window_attention(
+        q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, bias: torch.Tensor, scale: float | None = None
+    ) -> torch.Tensor:
+        return backend(q, k, v, bias, n_queries=n_queries, n_keys=n_keys, scale=scale)
+
+    return bound_window_attention
 
 
 # ---------------------------------------------------------------------------

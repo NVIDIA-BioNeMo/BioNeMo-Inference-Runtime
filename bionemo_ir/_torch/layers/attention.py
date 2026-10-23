@@ -14,6 +14,7 @@
 # limitations under the License.
 
 import math
+from collections.abc import Callable
 
 import torch
 import torch.nn as nn
@@ -28,7 +29,13 @@ from bionemo_ir._torch.utils import ChunkPolicy, chunk_apply, iter_chunks, permu
 from bionemo_ir.runtime.buffers import PreallocatedBuffers, ensure_buffer
 
 from ..attention_backend import AttentionMetadata, AttentionType
-from ..attention_backend.utils import backend_uses_left_mask, create_attention, triangle_bias_pad_multiple
+from ..attention_backend.utils import (
+    auto_select_window_attention_backend,
+    backend_uses_left_mask,
+    create_attention,
+    create_window_attention,
+    triangle_bias_pad_multiple,
+)
 
 
 def _make_norm(norm_type: str, dim: int, eps: float = 1e-5, dtype: torch.dtype = None, bias: bool = True) -> nn.Module:
@@ -424,6 +431,10 @@ class AttentionPairBias(nn.Module):
 
     With `chain_kv_norm=True`, local key/value inputs are gathered from the
     query-normalized representation before applying their AdaLN.
+
+    After `enable_window_attention`, sequence-local calls whose pair bias
+    carries the key mask (see `add_key_mask`) run on a windowed attention
+    backend, which reads the key windows in place instead of gathering them.
     """
 
     def __init__(
@@ -594,6 +605,43 @@ class AttentionPairBias(nn.Module):
             if self.bias_proj
             else None
         )
+        # (n_queries, n_keys) from enable_window_attention, and the windowed backend selected for the layer's
+        # dtype and device; None keeps every call on the attention backend.
+        self._window_shape: tuple[int, int] | None = None
+        self.window_attention: Callable[..., torch.Tensor] | None = None
+
+    def enable_window_attention(self, n_queries: int, n_keys: int) -> None:
+        """Run sequence-local calls whose pair bias carries the key mask on a windowed attention backend.
+
+        The backend is selected for ``in_proj``'s dtype and device, again whenever the module moves; where none
+        serves them, those calls keep the attention backend.
+
+        Args:
+            n_queries: Query window size ``W``.
+            n_keys: Key window size of ``query_to_keys``.
+        """
+        self._window_shape = (n_queries, n_keys)
+        self._select_window_attention()
+
+    def disable_window_attention(self) -> None:
+        """Run every call on the attention backend."""
+        self._window_shape = None
+        self.window_attention = None
+
+    def _select_window_attention(self) -> None:
+        weight = getattr(self.in_proj, "weight", None)
+        backend = None
+        if weight is not None:
+            backend = auto_select_window_attention_backend(
+                weight.dtype, self.head_dim, *self._window_shape, weight.device
+            )
+        self.window_attention = None if backend is None else create_window_attention(backend, *self._window_shape)
+
+    def _apply(self, fn, recurse=True):
+        module = super()._apply(fn, recurse=recurse)
+        if self._window_shape is not None:
+            self._select_window_attention()
+        return module
 
     def _prep_inputs(
         self,
@@ -604,6 +652,7 @@ class AttentionPairBias(nn.Module):
         mask_bias: torch.Tensor | None,
         mask_bias_local: torch.Tensor | None,
         adaln_conditioning: tuple[torch.Tensor, ...] | None = None,
+        windowed: bool = False,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor | None]:
         """Normalize *s*, derive *kv_in*, and route masks through ``query_to_keys``.
 
@@ -637,6 +686,9 @@ class AttentionPairBias(nn.Module):
             mask_bias_local: Optional precomputed mask bias already gathered
                 via ``query_to_keys``.  When provided, skips re-gathering
                 *mask* and uses this directly.
+            adaln_conditioning: Projected AdaLN conditions; see ``forward``.
+            windowed: The call runs on :attr:`window_attention`: *kv_in*
+                keeps the query rows instead of gathering the key windows.
 
         Returns:
             ``(s, kv_in, mask, mask_bias)`` ready for the projection and
@@ -657,24 +709,31 @@ class AttentionPairBias(nn.Module):
                 elif mask is not None:
                     mask = query_to_keys(mask.unsqueeze(-1)).squeeze(-1)
                     mask_bias = None
+
+                def key_rows(x: torch.Tensor) -> torch.Tensor:
+                    # The gather commutes with every per-row norm and projection below, so the windowed kernel
+                    # reads the key windows from the query rows instead.
+                    return x if windowed else query_to_keys(x)
+
                 if self.use_separate_layer_norm and self.chain_kv_norm:
                     # Gather commutes with the per-row query AdaLN.
                     assert self.use_ada_layer_norm, "chain_kv_norm requires use_ada_layer_norm"
                     if adaln_conditioning is not None:
-                        # Projected query and gathered-key conditions (q scale, q shift, k scale, k shift).
+                        # Projected query and key conditions (q scale, q shift, k scale, k shift), the key
+                        # conditions in the key rows.
                         q_scale, q_shift, k_scale, k_shift = adaln_conditioning
                         s = self.layer_norm_a_q.normalize(s, q_scale, q_shift)
-                        kv_in = self.layer_norm_a_k.normalize(query_to_keys(s), k_scale, k_shift)
+                        kv_in = self.layer_norm_a_k.normalize(key_rows(s), k_scale, k_shift)
                         return s, kv_in, mask, mask_bias
                     assert single_embedding is not None, "single_embedding is required for AdaLN"
                     s = self.layer_norm_a_q(s, single_embedding)
-                    kv_in = self.layer_norm_a_k(query_to_keys(s), query_to_keys(single_embedding))
+                    kv_in = self.layer_norm_a_k(key_rows(s), key_rows(single_embedding))
                 else:
-                    kv_in = query_to_keys(s)
+                    kv_in = key_rows(s)
                     if self.use_separate_layer_norm:
                         if self.use_ada_layer_norm:
                             assert single_embedding is not None, "single_embedding is required for AdaLN"
-                            single_embedding_kv = query_to_keys(single_embedding)
+                            single_embedding_kv = key_rows(single_embedding)
                             s = self.layer_norm_a_q(s, single_embedding)
                             kv_in = self.layer_norm_a_k(kv_in, single_embedding_kv)
                         else:
@@ -687,8 +746,12 @@ class AttentionPairBias(nn.Module):
         self,
         s: torch.Tensor,
         kv_in: torch.Tensor,
+        local_keys: bool = False,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """Project Q and the gate from *s* and K/V from *kv_in*.
+
+        Local keys, gathered or read in place by the windowed kernel, take
+        ``in_proj``'s k/v bias only under ``kv_bias``, even when *kv_in* is *s*.
 
         Returns:
             (q, k, v, g) — non-contiguous views of the projection output (the
@@ -696,7 +759,7 @@ class AttentionPairBias(nn.Module):
             is set, q and k are whole-vector normed, which also makes them
             contiguous.
         """
-        if kv_in is s:
+        if kv_in is s and not local_keys:
             q, g, k, v = self.in_proj(s).split(self._in_proj_sizes, dim=-1)
         else:
             # Slice per call: in_proj's parameters may be created or replaced after __init__.
@@ -916,22 +979,47 @@ class AttentionPairBias(nn.Module):
             output_gate_logits: ``output_projection(single_embedding)``, when the
                 caller already projected it; it then replaces that projection.
             adaln_conditioning: For chained local AdaLNs, the projected query and
-                gathered-key conditions ``(q_scale, q_shift, k_scale, k_shift)``
-                from ``single_embedding``; they replace its two AdaLN projections.
+                key conditions ``(q_scale, q_shift, k_scale, k_shift)`` from
+                ``single_embedding``; they replace its two AdaLN projections.
+                The key conditions are gathered, or in the query rows when this
+                call runs on :attr:`window_attention`.
 
         Returns:
             Output tensor with the same shape as *s*.
         """
         if self.output_projection is not None and single_embedding is None and output_gate_logits is None:
             raise ValueError("the output gate needs single_embedding")
-        s, kv_in, mask, mask_bias = self._prep_inputs(
-            s, mask, single_embedding, attn_metadata, mask_bias, mask_bias_local, adaln_conditioning
+        local = attn_metadata is not None and attn_metadata.query_to_keys is not None
+        # The windowed kernel serves sequence-local calls whose pair bias carries the key mask.
+        windowed = (
+            self.window_attention is not None
+            and local
+            and z is not None
+            and mask is None
+            and mask_bias is None
+            and mask_bias_local is None
         )
-
-        q, k, v, g = self._prep_qkvg(s, kv_in)
-
+        s, kv_in, mask, mask_bias = self._prep_inputs(
+            s, mask, single_embedding, attn_metadata, mask_bias, mask_bias_local, adaln_conditioning, windowed
+        )
+        q, k, v, g = self._prep_qkvg(s, kv_in, local_keys=local)
         biases = self._prep_mask_bias(s, z, mask, mask_bias)
+        if windowed:
+            mha_o = self._windowed_attention(q, k, v, biases[0])
+        else:
+            mha_o = self._backend_attention(q, k, v, biases, attn_metadata, buffers)
+        return self._attention_output(mha_o, g, residual, single_embedding, output_gate_logits)
 
+    def _backend_attention(
+        self,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        biases: list[torch.Tensor],
+        attn_metadata: AttentionMetadata | None,
+        buffers: PreallocatedBuffers | None,
+    ) -> torch.Tensor:
+        """The attention core on the attention backend."""
         # CuTeDSL kernels are fp16/bf16 only; restore attn_in_dtype after the kernel.
         attn_in_dtype = q.dtype
         if self.attn_backend == "CuTeDSL":
@@ -955,6 +1043,31 @@ class AttentionPairBias(nn.Module):
         mha_o = self.attn.forward(q, k, v, biases=biases, metadata=attn_metadata, output=attn_buf)
         if mha_o.dtype != attn_in_dtype:
             mha_o = mha_o.to(dtype=attn_in_dtype)
+        return mha_o
+
+    def _windowed_attention(
+        self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, bias: torch.Tensor
+    ) -> torch.Tensor:
+        """The attention core on :attr:`window_attention`.
+
+        ``q``/``k``/``v`` are ``[B, mult, K, W, H * D]`` blocks, the keys in the query rows; ``bias`` is the
+        ``[B, 1 or mult, K, H, W, n_keys]`` pair bias carrying the key mask. Returns ``[B, mult, K, W, H, D]``.
+        """
+        *lead, windows, width, _ = q.shape
+        rows = (-1, windows * width, self.num_heads, self.head_dim)
+        bias = bias.reshape(-1, windows, self.num_heads, width, bias.shape[-1])
+        out = self.window_attention(q.reshape(rows), k.reshape(rows), v.reshape(rows), bias)
+        return out.view(*lead, windows, width, self.num_heads, self.head_dim)
+
+    def _attention_output(
+        self,
+        mha_o: torch.Tensor,
+        g: torch.Tensor,
+        residual: torch.Tensor | None,
+        single_embedding: torch.Tensor | None,
+        output_gate_logits: torch.Tensor | None,
+    ) -> torch.Tensor:
+        """Gate, project, output-gate and add the residual to the attention core's output."""
         if residual is not None and self._epilogue is not None:
             fused = self._fused_output(mha_o, g, residual, single_embedding, output_gate_logits)
             if fused is not None:

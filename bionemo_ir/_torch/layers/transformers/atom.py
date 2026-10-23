@@ -95,6 +95,7 @@ class AtomTransformer(nn.Module):
         if getattr(diffusion_transformer_config, "pairwise_attention_backend", "") == "CuTeDSL":
             diffusion_transformer_config.pairwise_attention_backend = "SDPA"
         self.diffusion_transformer: nn.Module = diffusion_transformer_cls(diffusion_transformer_config)
+        self.diffusion_transformer.enable_window_attention(attn_window_queries, attn_window_keys)
 
     def load_weights(self, weights: dict):
         self.diffusion_transformer.load_weights(weights["diffusion_transformer"])

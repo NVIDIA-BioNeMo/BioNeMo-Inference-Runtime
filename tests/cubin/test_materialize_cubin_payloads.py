@@ -60,6 +60,7 @@ FAMILIES = (
     "trimul_kf_k1",
     "trimul_kf_k2",
     "trimul_kf_k3",
+    "window_attention",
 )
 _BF16_ONLY_FAMILIES = {"transition_mlp", "trimul_kf_k1", "trimul_kf_k2", "trimul_kf_k3"}
 # Operand names, TMA rank (per operand where they differ), whether an epilogue tile is recorded,
@@ -116,6 +117,7 @@ def _aliases(family: str) -> list[dict[str, object]]:
         "trimul_kf_k1": [{"C": 128, "D": 128, "bucket": 256}],
         "trimul_kf_k2": [{"D": 128, "bucket": 384, "outgoing": True}],
         "trimul_kf_k3": [{"C": 128, "D": 128, "bucket": 128, "residual": True}],
+        "window_attention": [{"head_dim": 32, "n_queries": 32, "n_keys": 128}],
     }[family]
 
 
@@ -162,7 +164,8 @@ def _sm100_launch(family: str, dtype: str) -> dict[str, object]:
 def _metadata(family: str, dtype: str, kernel_sm: int) -> dict[str, object]:
     common: dict[str, object] = {
         "dynamic_smem_bytes": 4096,
-        "non_portable_cluster_size_allowed": kernel_sm in {90, 100} and family != "adaln_layernorm_sigmoid",
+        "non_portable_cluster_size_allowed": kernel_sm in {90, 100}
+        and family not in {"adaln_layernorm_sigmoid", "window_attention"},
     }
     concrete: dict[str, object]
     if family == "adaln_layernorm_sigmoid":
@@ -299,6 +302,14 @@ def _metadata(family: str, dtype: str, kernel_sm: int) -> dict[str, object]:
             "tile_j": 64,
             "num_threads": 384,
             "sm90_launch": _sm90_launch(family, dtype) if kernel_sm == 90 else None,
+        }
+    elif family == "window_attention":
+        concrete = {
+            "is_bfloat16": dtype == "bf16",
+            "head_dim": 32,
+            "n_queries": 32,
+            "n_keys": 128,
+            "num_threads": 128 if kernel_sm == 90 else 64,
         }
     else:
         concrete = {
@@ -636,6 +647,20 @@ def test_sm90_registry_renders_per_operand_tma_ranks(tmp_path: Path, family: str
     rendered = [int(line.strip().rstrip("U,")) for line in source.splitlines() if line.strip() in {"2U,", "3U,"}]
     assert rendered == list(ranks)
     assert "CU_TENSOR_MAP_DATA_TYPE_BFLOAT16" in source
+
+
+def test_window_attention_sm90_registry_has_no_tma_metadata(tmp_path: Path) -> None:
+    """The cp.async + WGMMA image takes raw pointers and strides, so its record carries no SM90 launch info."""
+    family = "window_attention"
+    index = _write_case(tmp_path / "source", family, kernel_sm=90)
+    result = materializer.materialize([(family, index)], tmp_path / "build")
+    header = (result.output_dir / f"{family}_registry.h").read_text()
+    source = (result.output_dir / f"{family}_registry.cpp").read_text()
+
+    assert "SM90LaunchInfo" not in header
+    assert "TmaDescriptorInfo" not in header
+    assert '"window_attention_sm90"' in source
+    assert "    128U,\n" in source
 
 
 def test_trimul_kf_records_predating_new_axes_keep_their_meaning(tmp_path: Path) -> None:

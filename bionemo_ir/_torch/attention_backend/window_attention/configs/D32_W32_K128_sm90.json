@@ -1,0 +1,6 @@
+{
+  "kernel_abi": "sm90",
+  "configs": {
+    "default": {}
+  }
+}

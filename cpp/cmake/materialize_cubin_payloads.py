@@ -53,6 +53,7 @@ _FAMILIES = frozenset(
         "trimul_kf_k1",
         "trimul_kf_k2",
         "trimul_kf_k3",
+        "window_attention",
     }
 )
 # Public build-contract tests use this exact baseline while the protected
@@ -70,6 +71,9 @@ _PREVIOUS_FAMILIES = frozenset(
         "pairwise_attention",
         "transition_mlp",
         "triangle_attention",
+        "trimul_kf_k1",
+        "trimul_kf_k2",
+        "trimul_kf_k3",
     }
 )
 _BF16_ONLY_FAMILIES = frozenset({"transition_mlp", "trimul_kf_k1", "trimul_kf_k2", "trimul_kf_k3"})
@@ -475,6 +479,17 @@ _FAMILY_SPECS: dict[str, _FamilySpec] = {
         runtime_key=("is_bfloat16", "C", "D", "kernel_variant", "residual"),
         sm90=_Sm90Spec("enabled", ("prod", "x", "w_out", "w_gate", "output"), ranks=(3, 2, 2, 2, 2)),
     ),
+    # The SM90 image loads with cp.async, not TMA, so neither ABI records tensor maps.
+    "window_attention": _FamilySpec(
+        fields=(
+            _Field("is_bfloat16", _BOOL, "bool is_bfloat16;"),
+            _Field("head_dim", _POSITIVE, "std::int32_t head_dim;"),
+            _Field("n_queries", _POSITIVE, "std::int32_t n_queries;"),
+            _Field("n_keys", _POSITIVE, "std::int32_t n_keys;"),
+            _Field("num_threads", _POSITIVE, "std::uint32_t num_threads;", suffix="U"),
+        ),
+        runtime_key=("is_bfloat16", "head_dim", "n_queries", "n_keys"),
+    ),
 }
 
 # Public tuning aliases are index records, not launch metadata: each family
@@ -514,6 +529,7 @@ _PUBLIC_ALIAS_FIELDS: dict[str, tuple[tuple[str, int | None], ...]] = {
     "trimul_kf_k1": (("C", 1), ("D", 1), ("bucket", 1)),
     "trimul_kf_k2": (("D", 1), ("bucket", 1), ("outgoing", None)),
     "trimul_kf_k3": (("C", 1), ("D", 1), ("bucket", 1), ("residual", None)),
+    "window_attention": (("head_dim", 1), ("n_queries", 1), ("n_keys", 1)),
 }
 # Implementation changes must remain buildable with the last protected artifact
 # corpus. The previous dual-GEMM index predates asymmetric K1: public aliases

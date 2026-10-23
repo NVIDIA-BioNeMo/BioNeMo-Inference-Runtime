@@ -121,6 +121,13 @@ void bind(nb::module_& module);
 
 } // namespace bioir::cutedsl::trimul_kf_k3
 
+namespace bioir::cutedsl::window_attention
+{
+
+void bind(nb::module_& module);
+
+} // namespace bioir::cutedsl::window_attention
+
 #if defined(BIOIR_WITH_CLAUDE_KIT)
 namespace bioir::claude_kit_triangle_attention_sm90_d32
 {
@@ -189,6 +196,7 @@ NB_MODULE(_cutedsl_kernels, module)
   bind_tensor_view<2>(module, "Tensor2View");
   bind_tensor_view<3>(module, "Tensor3View");
   bind_tensor_view<4>(module, "Tensor4View");
+  bind_tensor_view<5>(module, "Tensor5View");
   nb::class_<FlatTensorView>(module, "FlatTensorView")
     .def(nb::init<std::uint64_t, std::int64_t, std::int32_t>(), "data"_a, "extent"_a, "device"_a = kUnknownDevice)
     .def_rw("data", &FlatTensorView::data)
@@ -217,6 +225,7 @@ NB_MODULE(_cutedsl_kernels, module)
   trimul_kf_k1::bind(module);
   trimul_kf_k2::bind(module);
   trimul_kf_k3::bind(module);
+  window_attention::bind(module);
 #if defined(BIOIR_WITH_CLAUDE_KIT)
   bioir::claude_kit_triangle_attention_sm90_d32::bind(module);
 #endif

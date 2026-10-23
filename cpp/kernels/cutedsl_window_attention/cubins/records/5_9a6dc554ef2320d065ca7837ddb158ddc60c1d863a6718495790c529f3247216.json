@@ -1,0 +1,20 @@
+{
+  "executables": {
+    "577e0dc224cf9f34460b00279bd92fb4b147db7712bfa875ca9d33bcaa068f7a": {
+      "dtype": "bf16",
+      "dynamic_smem_bytes": 34816,
+      "image_sha256": "d8fcf53590e1cd292c658e0970ea4990d77bbee4c5519b99f32aebbd5bacfd57",
+      "image_size": 22536,
+      "kernel_sm": 90,
+      "kernel_symbol": "3f59ae011b783f91f94f81ed7eb1a57c93aec77a43c2a4bee82239911cb33912",
+      "launch_abi": "window_attention_sm90_v1",
+      "target_arch": "sm_90a",
+      "target_sm": 90
+    }
+  },
+  "kernel_symbols": {
+    "5d11df7357e2ddbf8446284a81e25f883e0bef8f63e61093bdaf3289a83f06aa": "k5e353bed978def07d1531c2099621c64c0a46e1f3f7fe1a12612a73aa26db18d____________________________________________________________________________________________________________________________"
+  },
+  "sm90_launches": {},
+  "variants": []
+}

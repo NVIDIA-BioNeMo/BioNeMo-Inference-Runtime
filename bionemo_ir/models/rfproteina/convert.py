@@ -1249,21 +1249,39 @@ def load_rfproteina_checkpoint_state(checkpoint: str | Path | Mapping[str, torch
     return tensors
 
 
+def _load_state_folding_lora(
+    checkpoint: str | Path | Mapping[str, torch.Tensor], lora_alpha: float | None
+) -> Mapping[str, torch.Tensor]:
+    """Read a released state dict, folding PEFT adapters first when ``lora_alpha`` is given."""
+    state = load_rfproteina_checkpoint_state(checkpoint)
+    return state if lora_alpha is None else merge_rfproteina_lora(state, lora_alpha=lora_alpha)
+
+
 def load_rfproteina_trunk_checkpoint(
     module: nn.Module,
     checkpoint: str | Path | Mapping[str, torch.Tensor],
     strict: bool = True,
+    lora_alpha: float | None = None,
 ) -> RFProteinaConversionReport:
     """Load a released checkpoint into the RFProteína Torch trunk.
 
     Builds the target state dict via :func:`convert_rfproteina_trunk_torch`
     (driven by ``module.config``), loads it, and returns a coverage report.
 
+    Args:
+        module: the trunk to fill.
+        checkpoint: released checkpoint path, or its state dict.
+        strict: require every target key to load.
+        lora_alpha: fold PEFT adapters the checkpoint still carries with this
+            ``lora_alpha`` (``RELEASED_LORA_ALPHA`` for the released flow
+            checkpoint). ``None`` refuses adapters instead of assuming a scale.
+
     Raises:
         ValueError: if ``module.config`` describes a different architecture
-            than the checkpoint.
+            than the checkpoint, or the checkpoint holds adapters and
+            ``lora_alpha`` is ``None``.
     """
-    state = load_rfproteina_checkpoint_state(checkpoint)
+    state = _load_state_folding_lora(checkpoint, lora_alpha)
     _check_architecture(module.config, state, _SOURCE_PREFIX)
 
     weights = _AccessTrackingDict(state)
@@ -1275,9 +1293,14 @@ def load_rfproteina_representation_builder_checkpoint(
     module: nn.Module,
     checkpoint: str | Path | Mapping[str, torch.Tensor],
     strict: bool = True,
+    lora_alpha: float | None = None,
 ) -> RFProteinaConversionReport:
-    """Load learned score-network feature factories into the native builder."""
-    weights = _AccessTrackingDict(load_rfproteina_checkpoint_state(checkpoint))
+    """Load learned score-network feature factories into the native builder.
+
+    ``lora_alpha`` folds PEFT adapters the checkpoint still carries, as in
+    :func:`load_rfproteina_trunk_checkpoint`.
+    """
+    weights = _AccessTrackingDict(_load_state_folding_lora(checkpoint, lora_alpha))
     converted = convert_rfproteina_representation_builder_torch(module.config, weights)
     return _load_converted(module, weights, converted, _SOURCE_PREFIX, "representation builder", strict)
 

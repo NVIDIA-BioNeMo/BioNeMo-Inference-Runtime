@@ -231,7 +231,6 @@ or a single weight's hub/cache name.
 Staged weights resolve through the library's cache probe with no *_CKPT env var.
 Anything this script cannot fetch is reported and skipped; the tests that need it
 skip themselves.
-RFProteina always uses the pinned public release, including with --source ngc.
 
 Environment:
   MODEL_CACHE_DIR   where raw downloads land (default: <cache>/model_cache)
@@ -395,9 +394,6 @@ ngc_is_usable() {
 }
 
 resolve_source() {
-  if [[ "${FETCH_SOURCE}" != "none" && ${#ACTIVE_FAMILIES[@]} -eq 1 && "${ACTIVE_FAMILIES[0]}" == "rfproteina" ]]; then
-    FETCH_SOURCE="public"
-  fi
   case "${FETCH_SOURCE}" in
     none) return 0 ;;
     public) return 0 ;;
@@ -637,7 +633,7 @@ fetch_public_file() {
 public_targets() {
   local family row
   for family in "${ACTIVE_FAMILIES[@]}"; do
-    [[ "${FETCH_SOURCE}" == "ngc" && "${family}" != "rfproteina" ]] && continue
+    [[ "${FETCH_SOURCE}" == "ngc" ]] && continue
     for row in "${ACTIVE_ROWS[@]}" "${METADATA[@]}"; do
       [[ "$(row_family "${row}")" == "${family}" ]] || continue
       printf '%s|%s\n' "${family}" "$(row_file "${row}")"
@@ -734,7 +730,6 @@ weight_src() {
     printf '%s\n' "${candidate}"
     return 0
   }
-  [[ "${family}" == "rfproteina" ]] && return 1
   local dir_file="${MODEL_CACHE_DIR}/${family}_dir_path.txt"
   if [[ -f "${dir_file}" ]]; then
     candidate="$(<"${dir_file}")/${filename}"
@@ -916,7 +911,6 @@ if [[ "${FETCH_SOURCE}" == "ngc" ]]; then
   # concurrent invocations share no writes.
   fetch_pids=()
   for i in "${!ACTIVE_FAMILIES[@]}"; do
-    [[ "${ACTIVE_FAMILIES[$i]}" == "rfproteina" ]] && continue
     fetch_family_ngc "${ACTIVE_FAMILIES[$i]}" &
     fetch_pids["$i"]=$!
   done

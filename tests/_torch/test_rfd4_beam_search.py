@@ -27,6 +27,7 @@ from bionemo_ir._torch.modules.rfproteina.metrics import (
     MOTIF_RMSD_METRIC_KEY,
     SEQUENCE_ADHERENCE_METRIC_KEY,
 )
+from bionemo_ir._torch.modules.rfproteina.representation_builder import SEQUENCE_PROBABILITY_TOKENS
 from bionemo_ir._torch.sampling.contracts import SamplingContext
 from bionemo_ir._torch.search import SEARCH_REWARD_KEY, MetricEvaluationContext
 from bionemo_ir.data.schemas import (
@@ -47,6 +48,7 @@ from bionemo_ir.models.rfproteina import (
     RFProteinaPartialSimulationConfig,
     RFProteinaRepresentations,
     RFProteinaSearchRewardConfig,
+    load_rfproteina_checkpoint_state,
 )
 from bionemo_ir.models.rfproteina.modeling import _resolve_runtime_masks
 from bionemo_ir.oracles import (
@@ -474,19 +476,22 @@ def test_rfproteina_released_checkpoint_search_smoke() -> None:
     if checkpoint is None or autoencoder is None:
         pytest.skip("released RFProteína checkpoints are not available")
     sampling = _deterministic_sampling_config(num_steps=2)
-    config = RFProteina.get_pretrained_config()
-    config.sampling = sampling
-    model = RFProteina(
-        config,
-        checkpoint_path=checkpoint,
-        autoencoder_checkpoint_path=autoencoder,
-        include_load_weights=True,
+    # The released flow checkpoint carries unmerged LoRA adapters; this entry point folds them and sizes the model.
+    model = RFProteina.from_reference_state_dicts(
+        load_rfproteina_checkpoint_state(checkpoint),
+        load_rfproteina_checkpoint_state(autoencoder),
+        sampling_config=sampling,
     )
     model.sampler = type(model.sampler)(sampling, latent_dim=model.config.trunk.latent_dim)
     model = model.cuda().eval()
     mask = torch.ones(1, 8, dtype=torch.bool, device="cuda")
+    static_features = _native_static_features(mask)
+    # The released network reads per-residue sequence probabilities; NaN leaves a residue unspecified.
+    for token in SEQUENCE_PROBABILITY_TOKENS:
+        key = f"condition_sequence-probability-{token}_1_residue"
+        static_features[key] = torch.full(mask.shape, torch.nan, device=mask.device)
     result = model.search(
-        _native_static_features(mask),
+        static_features,
         _clash_search_config(2, step_checkpoints=[0, 2], n_branch=1, beam_width=1),
         seed=0,
     )

@@ -452,6 +452,7 @@ class RFProteina(nn.Module, OptimizedModuleSetterMixin):
         checkpoint_path: str | Path | None = None,
         include_load_weights: bool = False,
         autoencoder_checkpoint_path: str | Path | None = None,
+        lora_alpha: float | None = RELEASED_LORA_ALPHA,
     ) -> None:
         super().__init__()
         self.model_name = MODEL_NAME
@@ -496,7 +497,7 @@ class RFProteina(nn.Module, OptimizedModuleSetterMixin):
         self.encoder_conversion_report: RFProteinaConversionReport | None = None
 
         if include_load_weights:
-            self.load_weights(resolved_checkpoint)
+            self.load_weights(resolved_checkpoint, lora_alpha=lora_alpha)
             self.load_decoder_weights(resolved_autoencoder_checkpoint)
             if self.encoder is not None:
                 self.load_encoder_weights(resolved_autoencoder_checkpoint)
@@ -506,7 +507,9 @@ class RFProteina(nn.Module, OptimizedModuleSetterMixin):
                 replace_with_fused_layernorm(module)
                 replace_with_fused_rmsnorm(module)
 
-    def load_weights(self, checkpoint_path: str | Path) -> RFProteinaConversionReport:
+    def load_weights(
+        self, checkpoint_path: str | Path, lora_alpha: float | None = RELEASED_LORA_ALPHA
+    ) -> RFProteinaConversionReport:
         """Load the released score network and representation-builder weights.
 
         The trunk goes first because its loader validates the architecture
@@ -514,16 +517,26 @@ class RFProteina(nn.Module, OptimizedModuleSetterMixin):
         from ``config.trunk``, so leading with it turns a config/checkpoint
         mismatch into one message naming the offending field instead of a wall
         of per-tensor size errors from the builder.
+
+        Args:
+            checkpoint_path: Released score-network checkpoint.
+            lora_alpha: ``lora_alpha`` used to fold PEFT adapters the checkpoint
+                still carries, as the released vocab-147 flow checkpoint does.
+                The default is that release's value; a checkpoint without
+                adapters ignores it. ``None`` refuses adapters instead of
+                assuming a scale.
         """
         self.conversion_report = load_rfproteina_trunk_checkpoint(
             self.velocity_model,
             checkpoint_path,
             strict=True,
+            lora_alpha=lora_alpha,
         )
         self.representation_conversion_report = load_rfproteina_representation_builder_checkpoint(
             self.representation_builder,
             checkpoint_path,
             strict=True,
+            lora_alpha=lora_alpha,
         )
         return self.conversion_report
 

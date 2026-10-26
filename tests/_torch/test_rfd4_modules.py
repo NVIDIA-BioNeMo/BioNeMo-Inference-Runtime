@@ -278,7 +278,7 @@ def test_rfproteina_constructs_and_loads_both_checkpoints(monkeypatch: pytest.Mo
     decoder_report = RFProteinaConversionReport(("decoder",), (), ())
     loaded = {}
 
-    def load_trunk(module, checkpoint_path, strict):
+    def load_trunk(module, checkpoint_path, strict, lora_alpha):
         loaded["trunk"] = (module, checkpoint_path, strict)
         return trunk_report
 
@@ -286,7 +286,7 @@ def test_rfproteina_constructs_and_loads_both_checkpoints(monkeypatch: pytest.Mo
         loaded["decoder"] = (module, checkpoint_path, strict)
         return decoder_report
 
-    def load_representation(module, checkpoint_path, strict):
+    def load_representation(module, checkpoint_path, strict, lora_alpha):
         loaded["representation"] = (module, checkpoint_path, strict)
         return representation_report
 
@@ -1981,6 +1981,29 @@ def test_rfproteina_local_latents_transformer_token_padding_fuses_trimul_residua
         torch.testing.assert_close(actual[head][key], expected[head][key], atol=2e-3, rtol=1.6e-2)
 
 
+def test_rfproteina_load_weights_folds_released_lora_by_path() -> None:
+    flow = resolve_rfproteina_checkpoint()
+    autoencoder = resolve_rfproteina_autoencoder_checkpoint()
+    if flow is None or not flow.is_file() or autoencoder is None or not autoencoder.is_file():
+        pytest.skip("RFPROTEINA_LDM_CKPT and RFPROTEINA_AE_CKPT are not set to the released checkpoints")
+
+    # The in-memory entry point sizes the model from the weights; the path loader must then reach the same tensors.
+    flow_state = load_rfproteina_checkpoint_state(flow)
+    model = RFProteina.from_reference_state_dicts(flow_state, load_rfproteina_checkpoint_state(autoencoder))
+    expected = {key: value.clone() for key, value in model.velocity_model.state_dict().items()}
+    with torch.no_grad():
+        for value in model.velocity_model.parameters():
+            value.zero_()
+
+    report = model.load_weights(flow)
+
+    assert not report.missing_target_keys
+    for key, value in model.velocity_model.state_dict().items():
+        torch.testing.assert_close(value, expected[key], atol=0, rtol=0, msg=key)
+    with pytest.raises(ValueError, match="unmerged PEFT LoRA"):
+        model.load_weights(flow, lora_alpha=None)
+
+
 def test_rfproteina_released_checkpoint_conversion() -> None:
     checkpoint = resolve_rfproteina_checkpoint()
     if checkpoint is None or not checkpoint.is_file():
@@ -2973,7 +2996,7 @@ def test_rfproteina_autoencoder_encoder_conversion(transformer_dtype: str) -> No
         768,
         256,
         12,
-        329,
+        1587,
         0,
     )
     assert config.input_schema == "unified"
@@ -3038,6 +3061,11 @@ def test_rfproteina_encoder_matches_oss_release(monkeypatch: pytest.MonkeyPatch)
     torch.manual_seed(31)
     coordinates_nm = torch.randn(1, 8, 37, 3, device="cuda") * 0.2 * atom_mask.unsqueeze(-1)
     token_index = torch.tensor([[1, 2, 3, 4, 1, 2, 3, 4]], device="cuda")
+    # The released network reads per-atom chemistry; draw it the way the OSS feature factory expects it.
+    chemistry = torch.Generator().manual_seed(32)
+    element = torch.randint(1, config.num_elements, (1, 8, 37), generator=chemistry).cuda()
+    charge = torch.randint(-1, 2, (1, 8, 37), generator=chemistry).cuda()
+    bond_counts = torch.randint(0, 4, (1, 8, 37, config.incident_bond_type_bins), generator=chemistry).float().cuda()
     batch = {
         "padding_mask": mask,
         "has_known_index": mask,
@@ -3051,6 +3079,16 @@ def test_rfproteina_encoder_matches_oss_release(monkeypatch: pytest.MonkeyPatch)
         "atom37_mask": atom_mask,
         "within_index_group_res_idx": token_index,
         "condition_index-group_1_token": torch.zeros_like(token_index),
+        "is_in_context_conditioning": torch.zeros_like(mask),
+        "supports_local_latent": mask,
+        "ground_truth_element": element,
+        "charge": charge,
+        "incident_bond_type_counts": bond_counts,
+    }
+    chemistry_inputs = {
+        "atom37_element": element,
+        "atom37_charge": charge,
+        "incident_bond_type_counts": bond_counts,
     }
     with torch.inference_mode():
         oss_single = oss.init_repr_factory(batch)
@@ -3062,13 +3100,17 @@ def test_rfproteina_encoder_matches_oss_release(monkeypatch: pytest.MonkeyPatch)
             token_type=batch["token_type"],
             token_index=token_index,
             chain_iid=batch["chain_iid"],
+            **chemistry_inputs,
         )
         torch.manual_seed(77)
         oss_output = oss(batch)
         torch.manual_seed(77)
-        native_output = native(coordinates_nm, atom_mask, residue_type, mask, token_index=token_index)
+        native_output = native(
+            coordinates_nm, atom_mask, residue_type, mask, token_index=token_index, **chemistry_inputs
+        )
 
-    torch.testing.assert_close(native_single, oss_single, atol=0, rtol=0)
+    # The chemistry lookups are folded into products, so the single track differs by float rounding only.
+    torch.testing.assert_close(native_single, oss_single, atol=2e-5 * oss_single.abs().max().item(), rtol=2e-5)
     assert native_pair is None
     for key in ("mean", "log_scale", "z_latent"):
         torch.testing.assert_close(native_output[key], oss_output[key], atol=6e-4, rtol=3e-4)
@@ -3098,8 +3140,8 @@ def test_rfproteina_autoencoder_decoder_conversion(use_pretrained_config: bool) 
     assert (config.token_dim, config.pair_dim, config.num_layers) == (768, 256, 12)
     assert (config.input_schema, config.latent_dim, config.single_input_dim, config.pair_input_dim) == (
         "unified",
-        12,
-        80,
+        32,
+        214,
         0,
     )
     assert not config.use_pair_bias

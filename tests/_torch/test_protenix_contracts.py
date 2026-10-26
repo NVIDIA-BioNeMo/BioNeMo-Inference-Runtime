@@ -131,8 +131,6 @@ def test_protenix_load_weight_attribute_names(structural_model):
         assert hasattr(model, name), name
     assert hasattr(model.diffusion_sampler, "diffusion_module")
     assert hasattr(model.diffusion_sampler.diffusion_module, "diffusion_transformer")
-    registry = model.get_optimized_modules({})
-    assert "token_transformer" in registry.get_accelerated_modules()
 
 
 def test_protenix_inference_precision_defaults(structural_model):

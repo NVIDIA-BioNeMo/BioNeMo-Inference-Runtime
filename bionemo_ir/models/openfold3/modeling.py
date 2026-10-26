@@ -22,7 +22,6 @@ from bionemo_ir._torch.attention_backend import (
     auto_select_triangle_attention_backend,
 )
 from bionemo_ir._torch.graph_optimization import GraphRegion
-from bionemo_ir._torch.graph_optimization.cuda_graph.runtime import CUDAGraphOptimizationTracker
 from bionemo_ir._torch.layers.linear import Linear
 from bionemo_ir._torch.layers.normalization import (
     HighPrecisionLayerNorm,
@@ -64,29 +63,15 @@ from bionemo_ir.models.openfold3.config import PRETRAINED_CONFIG_REGISTRY
 from bionemo_ir.models.openfold3.convert import convert_hf_openfold3_torch
 from bionemo_ir.registry import SupMat
 
-from ..optimize_module_setter import AcceleratedConfig, DiscoveredModuleRegistry, OptimizedModuleSetterMixin
+from ..optimize_module_setter import OptimizedModuleSetterMixin
 
 
 class OpenFold3(nn.Module, OptimizedModuleSetterMixin):
-    # Whitelist gating modules discovered generically via
-    # ``@support_graph_optimization``.
-    GRAPH_OPT_ENABLED_MODULES = {
-        "structure_pairformer": "pairformer_stack",
-        "token_transformer": "diffusion_sampler.diffusion_module.diffusion_transformer",
-    }
     GRAPH_REGIONS = {
         "trunk": "trunk_graph",
         "diffusion_module": "diffusion_sampler.graph",
         "confidence_pairformer": "aux_heads.pairformer_embedding.pairformer_graph",
     }
-
-    def get_optimized_modules(self, accelerated_configs: dict[str, AcceleratedConfig]) -> DiscoveredModuleRegistry:
-        return DiscoveredModuleRegistry(
-            self,
-            accelerated_configs,
-            role_aliases=self.GRAPH_OPT_ENABLED_MODULES,
-            graph_optimization_cls=CUDAGraphOptimizationTracker,
-        )
 
     def __init__(
         self,

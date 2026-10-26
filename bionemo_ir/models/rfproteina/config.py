@@ -18,8 +18,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from bionemo_ir._torch.graph_optimization.config import CUDAGraphOptimizationConfig
-from bionemo_ir._torch.graph_optimization.decorator import NamedDimTies
+from bionemo_ir._torch.graph_optimization.config import CUDAGraphOptimizationConfig, NamedDimTies
 from bionemo_ir._torch.graph_optimization.graph_policy import exact_graph_config
 from bionemo_ir._torch.modules.rfproteina.groups import GROUP_KEYS
 from bionemo_ir._torch.search import WeightedObjective, build_weighted_objective

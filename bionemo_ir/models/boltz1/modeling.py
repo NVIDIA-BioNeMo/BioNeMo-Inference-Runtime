@@ -22,7 +22,6 @@ from bionemo_ir._torch.attention_backend import (
     auto_select_pairwise_attention_backend,
     auto_select_triangle_attention_backend,
 )
-from bionemo_ir._torch.graph_optimization.cuda_graph.runtime import CUDAGraphOptimizationTracker
 from bionemo_ir._torch.layers.distogram import DistogramModule
 from bionemo_ir._torch.layers.linear import Linear
 from bionemo_ir._torch.layers.normalization import replace_with_fused_layernorm
@@ -45,7 +44,7 @@ from bionemo_ir.logger import logger
 from bionemo_ir.pipeline.models.boltz2.const import num_pocket_contact_info, num_tokens
 from bionemo_ir.utils import str_dtype_to_torch
 
-from ..optimize_module_setter import AcceleratedConfig, DiscoveredModuleRegistry, OptimizedModuleSetterMixin
+from ..optimize_module_setter import OptimizedModuleSetterMixin
 from .config import PRETRAINED_CONFIG_REGISTRY
 from .convert import (
     convert_hf_confidence_torch,
@@ -58,20 +57,7 @@ from .convert import (
 
 
 class Boltz1(nn.Module, OptimizedModuleSetterMixin):
-    # Whitelists gating modules are discovered generically
-    # via ``@support_graph_optimization``.
-    GRAPH_OPT_ENABLED_MODULES = {
-        "token_transformer": "diffusion_sampler.diffusion_module.token_transformer",
-    }
     GRAPH_REGIONS = {"diffusion_module": "diffusion_sampler.graph"}
-
-    def get_optimized_modules(self, accelerated_configs: dict[str, AcceleratedConfig]) -> DiscoveredModuleRegistry:
-        return DiscoveredModuleRegistry(
-            self,
-            accelerated_configs,
-            role_aliases=self.GRAPH_OPT_ENABLED_MODULES,
-            graph_optimization_cls=CUDAGraphOptimizationTracker,
-        )
 
     def __init__(self, config: BaseConfig = None, include_load_weights: bool = True, model_name: str | None = None):
         super().__init__()

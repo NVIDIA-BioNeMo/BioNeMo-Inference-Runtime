@@ -791,14 +791,10 @@ model.optimize()  # enables the trunk region again
 Without an argument, `optimize` re-enables every graph region that has a policy.
 A mapping such as `{"trunk": AcceleratedConfig(backend="torch")}` enables the
 regions it names, by role or region path; `{}` does nothing. To replace a
-region's policy, pass `default=BaseConfig(graph_optimization_config=...)`. Other
-keys select modules decorated with `@support_graph_optimization` and wrap each
-in a CUDA-graph tracker. A key that matches neither raises `ValueError`.
-
-A decorated module inside an enabled region, such as `token_transformer`
-inside `diffusion_module` or OpenFold3 `structure_pairformer` inside
-`trunk`, runs eagerly while the region captures and uses its own graph only
-when the region runs eagerly.
+region's policy, pass `default=BaseConfig(graph_optimization_config=...)`. A
+key that names no region raises `ValueError`, and nothing is enabled. A
+submodule inside a region, such as the diffusion token transformer inside
+`diffusion_module`, is captured as part of the region.
 
 ## Custom Architectures
 
@@ -868,8 +864,8 @@ A typical conversion:
    extra sample/batch axes, `bool` vs `float` valid-masks).
 4. Replace the original submodule on a live model.
 5. Compare block-level then stack-level numerics against the original.
-6. Optionally call `model.optimize(...)` for CUDA graphs on modules that
-   declare graph optimization.
+6. Optionally capture a swapped block in a CUDA graph with
+   `with_cuda_graph(block)`.
 
 Fused kernels on supported SKUs:
 [support matrix — fused kernels](support-matrix.md#fused-kernels).

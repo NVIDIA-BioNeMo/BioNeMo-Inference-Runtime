@@ -757,66 +757,13 @@ def test_sample_coords_drop_consumed_features(real_case):
     )
 
 
-def test_protenix_module_registry_wiring(structural_model):
-    """Check token-transformer CUDA-graph discovery wiring.
-
-    Discovery is generic rather than per-model: modules opt in via
-    ``@support_graph_optimization``, so the ``token_transformer`` role alias
-    resolves to the decorated ``diffusion_transformer`` by qualified path,
-    and the getter/setter use ``get_submodule`` / ``set_submodule``.
-    """
-    import torch.nn as nn
-
-    from bionemo_ir.models.protenix import Protenix
-
-    model = structural_model(Protenix, config=Protenix.get_pretrained_config("protenix-v2"), include_load_weights=False)
-    reg = model.get_optimized_modules({})
-    spec = reg.get_accelerated_modules()["token_transformer"]
-    assert spec.graph_optimization_cls is CUDAGraphOptimizationTracker
-
-    path = "diffusion_sampler.diffusion_module.diffusion_transformer"
-    assert reg._name_to_path["token_transformer"] == path
-    assert spec.getter(model) is model.get_submodule(path)
-
-    replacement = nn.Identity()
-    spec.setter(model, replacement)
-    assert model.get_submodule(path) is replacement
-
-
-def test_enabled_modules_act_as_cudagraph_whitelist(structural_model):
-    """``GRAPH_OPT_ENABLED_MODULES`` is a whitelist: a module may be cuda-graphed
-    only if its path is a value in the alias map. The recycling-trunk and
-    confidence-head pairformers are decorated (``@support_graph_optimization``)
-    and so are discoverable by qualified path, but their CUDA-graph replay
-    produces NaN and they are deliberately not aliased — configuring them must
-    be refused rather than silently graphed."""
-    from bionemo_ir.configs import AcceleratedConfig, BackendType
-    from bionemo_ir.models.protenix import Protenix
-
-    model = structural_model(Protenix, config=Protenix.get_pretrained_config("protenix-v2"), include_load_weights=False)
-
-    def cfg():
-        return AcceleratedConfig(backend=BackendType.TORCH)
-
-    # A decorated-but-non-whitelisted path is rejected...
-    for bad in ("trunk.pairformer_stack", "confidence_head.pairformer_stack"):
-        with pytest.raises(ValueError, match="non-whitelisted"):
-            model.get_optimized_modules({bad: cfg()})
-
-    # ...while both the alias name and its resolved value-path are accepted.
-    resolved = "diffusion_sampler.diffusion_module.diffusion_transformer"
-    for good in ("token_transformer", resolved):
-        reg = model.get_optimized_modules({good: cfg()})
-        assert reg.get_module_names() == [good]
-
-
 def test_token_transformer_cudagraph_parity(real_case):
     """Check CUDA-graph capture, replay, and rollout parity."""
     torch.backends.cuda.matmul.allow_tf32 = False
     torch.backends.cudnn.allow_tf32 = False
     sc = Scenario(dtype="float32", token_dtype="bfloat16", enc_dtype="bfloat16", dec_dtype="bfloat16")
     model, batch, s_inputs, s_trunk, z_trunk, _ = _real_bioir_module(sc, real_case)
-    # Keep the denoising-step region eager: the decorated token transformer is under test.
+    # Keep the denoising-step region eager: the token transformer's own graph is under test.
     model.config.graph_optimization_config = None
     n_sample = Scenario().n_sample
 

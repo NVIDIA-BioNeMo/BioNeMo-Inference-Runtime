@@ -35,6 +35,7 @@ from bionemo_ir._torch.graph_optimization.config import (
     InputRoutingConfig,
     InputRoutingConfigFactory,
     NamedDimTies,
+    effective_ranges,
 )
 from bionemo_ir._torch.graph_optimization.cuda_graph.runtime import CUDAGraphOptimizationTracker
 
@@ -182,3 +183,30 @@ def test_rejected_when_any_single_input_over_limit():
     tracker = _tracker(_factory_pairformer_rule(1024).export_config())
     args, kwargs = _pairformer_inputs(512, pair_mask_tokens=1025)
     assert _accepted(tracker, *args, **kwargs) is False
+
+
+def _factory_with_tie() -> InputRoutingConfigFactory:
+    factory = InputRoutingConfigFactory()
+    factory.set_named_dim_ties([NamedDimTies(name="num_tokens", input_dims=(("s", (-2,)),))])
+    return factory
+
+
+def test_export_rejects_acceptance_above_largest_bucket():
+    factory = _factory_with_tie()
+    factory.set_input_acceptance_dim("num_tokens", 2048)  # above largest bucket
+    factory.set_padded_dim("num_tokens", dim_len_min=1, dim_len_max=1024, num_intervals=8, multiple_of=128)
+    with pytest.raises(ValueError, match="exceeds its largest capture bucket"):
+        factory.export_config()
+
+
+def test_effective_ranges_reports_live_max_and_covering_bucket():
+    # Acceptance 300, buckets 1..1024 snapped to /128 -> covering bucket 384.
+    factory = _factory_with_tie()
+    factory.set_input_acceptance_dim("num_tokens", 300)
+    factory.set_padded_dim(
+        "num_tokens", dim_len_min=1, dim_len_max=1024, num_intervals=8, multiple_of=128, spacing_method="linear"
+    )
+    ranges = effective_ranges(factory.export_config())["num_tokens"]
+    assert ranges["live_max"] == 300
+    assert ranges["largest_bucket"] == 1024
+    assert ranges["covering_bucket"] == 384  # smallest /128 bucket >= 300

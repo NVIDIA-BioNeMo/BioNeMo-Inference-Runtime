@@ -56,11 +56,9 @@ class BaseConfig(BaseModel):
     pairwise_attention_backend: str = "SDPA"
     support_batch: bool = True
     backend: str | BackendType = BackendType.TORCH
-    # Opt-in CUDA-graph compilation for this module. Holds a
+    # CUDA-graph policy of the graph region this config's module owns. Holds a
     # ``None | GraphOptimizationConfig`` (typed ``Any`` to avoid a config <->
-    # graph_optimization import cycle). ``None`` means "leave eager"; a config
-    # marks this module for wrapping by ``bioir_apply_graph_optimization`` /
-    # ``OptimizedModuleSetterMixin.optimize`` when ``backend == TORCH``.
+    # graph_optimization import cycle). ``None`` keeps the region eager.
     graph_optimization_config: Any | None = None
     # This function is used to determine if the module needs to fallback to the torch backend based on the input arguments
     need_fallback: Callable | None = Field(exclude=True, default=None)

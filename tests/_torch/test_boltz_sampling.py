@@ -169,13 +169,11 @@ def test_boltz_sampler_maps_converted_score_model_weights(monkeypatch):
     assert captured == {"diffusion_module.token_transformer": converted_weight}
 
 
-def test_boltz_discovery_aliases_target_sampler_diffusion_module():
+def test_boltz_diffusion_region_targets_sampler_graph():
     from bionemo_ir.models.boltz1.modeling import Boltz1
     from bionemo_ir.models.boltz2.modeling import Boltz2
 
     for model_cls in (Boltz1, Boltz2):
-        aliases = model_cls.GRAPH_OPT_ENABLED_MODULES
-        assert aliases["token_transformer"] == ("diffusion_sampler.diffusion_module.token_transformer")
         assert model_cls.GRAPH_REGIONS["diffusion_module"] == "diffusion_sampler.graph"
 
 

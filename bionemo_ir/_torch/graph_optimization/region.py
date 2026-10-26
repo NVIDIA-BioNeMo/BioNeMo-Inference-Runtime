@@ -17,15 +17,58 @@
 from __future__ import annotations
 
 import inspect
+import re
 import weakref
 from typing import Any
 
 from torch import nn
 
-from bionemo_ir._torch.graph_optimization.config import CUDAGraphOptimizationConfig, GraphOptimizationMode
+from bionemo_ir._torch.graph_optimization.config import (
+    CUDAGraphOptimizationConfig,
+    GraphOptimizationMode,
+    InputRoutingConfig,
+)
 from bionemo_ir._torch.graph_optimization.cuda_graph.memory import container_device
 from bionemo_ir._torch.graph_optimization.cuda_graph.runtime import CUDAGraphOptimizationTracker
-from bionemo_ir._torch.graph_optimization.decorator import _validate_routing_against_signature
+
+# A positional input routes by its parameter's name; one past the named parameters, which only
+# ``*args`` takes, routes as ``arg{i}`` (``GraphOptimizationTracker._positional_param_names``).
+_POSITIONAL_NAME = re.compile(r"^arg(\d+)$")
+
+
+def _validate_routing_against_signature(sig: inspect.Signature, routing: InputRoutingConfig | None, owner: str) -> None:
+    """Reject routed names that reach no input of ``sig``: a parameter, ``**kwargs`` or an ``*args`` position."""
+    param_names = set(sig.parameters)
+    kinds = [p.kind for p in sig.parameters.values()]
+    has_var_keyword = inspect.Parameter.VAR_KEYWORD in kinds
+    has_var_positional = inspect.Parameter.VAR_POSITIONAL in kinds
+    num_named_positional = sum(
+        kind in (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD) for kind in kinds
+    )
+
+    def _check(name: str, kind: str) -> None:
+        if name in param_names or has_var_keyword:
+            return
+        positional = _POSITIONAL_NAME.match(name)
+        if positional is not None and has_var_positional and int(positional.group(1)) >= num_named_positional:
+            return
+        raise ValueError(
+            f"{owner}: {kind} {name!r} is not a parameter of forward {tuple(n for n in param_names if n != 'self')}"
+        )
+
+    named_dim_ties = routing.named_dim_ties if routing is not None else ()
+    workspace_kwargs = routing.internal_workspace_kwargs if routing is not None else ()
+    stable_kwargs = routing.stable_input_kwargs if routing is not None else ()
+    static_args = routing.static_args if routing is not None else ()
+    for dim in named_dim_ties:
+        for tensor_name, _axes in dim.input_dims:
+            _check(tensor_name, "input-tie tensor")
+    for name in workspace_kwargs:
+        _check(name, "workspace kwarg")
+    for name in stable_kwargs:
+        _check(name, "stable kwarg")
+    for name in static_args:
+        _check(name, "static arg")
 
 
 class _OwnerCall(nn.Module):

@@ -319,38 +319,29 @@ packaged path, reproducing what a released artifact executes.
 A `GraphRegion` captures one repeated call in place, so the model keeps its
 modules and state-dict keys; a region whose config carries a policy captures
 by default. `optimize()` re-enables regions (every region when called without
-configs) and can replace a region's policy. For other keys, it swaps each
-requested decorated submodule for a `CUDAGraphOptimizationTracker` that keeps
-the original as its eager `inner_module` and fallback.
+configs) and can replace a region's policy. A key that names no region
+raises.
 
 ```mermaid
 flowchart TB
     CFG["engine_kwargs['accelerated_configs']<br/>dict[str, AcceleratedConfig]"]
     CFG --> OPT["model.optimize(configs)"]
-    OPT --> ROLE{"key names a GraphRegion<br/>role or path?"}
-    ROLE -->|yes| ENABLE["enable the region"]
-    ROLE -->|no| REG["get_optimized_modules()<br/>DiscoveredModuleRegistry"]
-    REG --> WALK["walk the module tree for<br/>@support_graph_optimization"]
-    WALK --> MATCH{"config key matches a<br/>qualified path or role alias?"}
-    MATCH -->|no| ERR["raise — a typo is never<br/>read as 'nothing to do'"]
-    MATCH -->|yes| WRAP["wrap in CUDAGraphOptimizationTracker"]
-    ENABLE --> RUN["replay the captured graph"]
-    WRAP --> RUN
-    WRAP -.->|"need_fallback"| EAGER["run the eager inner_module"]
+    OPT --> ROLE{"every key names a GraphRegion<br/>role or path?"}
+    ROLE -->|no| ERR["raise — a typo is never<br/>read as 'nothing to do'"]
+    ROLE -->|yes| ENABLE["enable each region,<br/>under the key's policy if given"]
+    ENABLE --> RUN["capture once per shape,<br/>then replay the graph"]
+    RUN -.->|"capture or replay fails"| EAGER["run that shape eagerly"]
 ```
 
 Three things follow:
 
-- **Regions are declared; decorated targets are discovered.** A model names
-  its regions in `GRAPH_REGIONS` (`"trunk"`, `"diffusion_module"`,
-  `"confidence_pairformer"`); `config.disable_cuda_graphs()` or a `None`
-  policy keeps them eager. Decorated candidates are submodules carrying
-  the decorator, keyed by qualified path; a model's
-  `GRAPH_OPT_ENABLED_MODULES` adds friendly aliases (`"token_transformer"`,
-  …) and, when declared, acts as a whitelist.
-- **Opting out is per key.** `AcceleratedConfig` carries `checkpoint`,
-  `backend`, `default`, `warmup`, `compile`, and `need_fallback`, so one
-  submodule can skip the path without a global switch.
+- **Regions are declared.** A model names its regions in `GRAPH_REGIONS`
+  (`"trunk"`, `"diffusion_module"`, `"confidence_pairformer"`); a submodule
+  inside a region, such as the diffusion token transformer, is captured as
+  part of it.
+- **Opting out is per region.** `config.disable_cuda_graphs()` keeps every
+  region eager; a `None` policy in the model config, or `enabled = False` on a
+  live region, keeps one region eager without a global switch.
 - **Capture follows repeated compute.** Boltz-1/2, OpenFold3, and Protenix
   capture diffusion across sampling steps. Boltz-2, OpenFold3, and Protenix
   also capture recycle trunks and repeated confidence Pairformers. OpenFold2
@@ -445,7 +436,7 @@ pydantic `*Spec` objects that declare them in order.
 
 `bionemo_ir/models/<family>/` is the **compute path** — how features
 become coordinates. It holds `modeling.py` (the top-level module, its
-`load_weights`, `get_optimized_modules`, `get_pretrained_config`), `config.py`
+`load_weights`, `get_pretrained_config`), `config.py`
 (the config tree and `PRETRAINED_CONFIG_REGISTRY`), and `convert.py` (upstream
 checkpoint names → internal ones).
 

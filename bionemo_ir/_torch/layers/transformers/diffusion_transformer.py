@@ -23,12 +23,6 @@ import torch.nn.functional as F
 
 from bionemo_ir._torch.attention_backend import AttentionMetadata
 from bionemo_ir._torch.attention_backend.utils import PrecomputedSingleMasks, precompute_single_masks
-from bionemo_ir._torch.graph_optimization.config import (
-    GraphOptimizationMode,
-    InputAcceptanceDimSpec,
-    InputKeyMethod,
-)
-from bionemo_ir._torch.graph_optimization.decorator import NamedDimTies, support_graph_optimization
 from bionemo_ir._torch.layers.attention import AttentionPairBias
 from bionemo_ir._torch.layers.normalization import AdaLN, FusedLayerNorm
 from bionemo_ir._torch.layers.sequence_local_atom import build_local_attn_metadata, to_blocks
@@ -317,32 +311,6 @@ class _WindowAttentionLayers:
             layer.pair_bias_attn.disable_window_attention()
 
 
-# a/s (-2), z (-2 and -3), and mask (-1) carry ``num_tokens`` on the inputs; the
-# single returned atom representation carries it at -2. Shared by both diffusion
-# (token) transformers, which have the same forward signature and token ties.
-_TOKEN_TRANSFORMER_DIMS = (
-    NamedDimTies(
-        name="num_tokens",
-        input_dims=(
-            ("a", (-2,)),
-            ("s", (-2,)),
-            ("z", (-2, -3)),
-            ("mask", (-1,)),
-        ),
-        output_dims=((0, (-2,)),),
-    ),
-)
-
-
-@support_graph_optimization(
-    named_dims=_TOKEN_TRANSFORMER_DIMS,
-    workspace_kwargs=("buffers",),
-    graph_optimization_mode=GraphOptimizationMode.CUDA_GRAPH_VIA_TORCH,
-    input_key_method=InputKeyMethod.EXACT,
-    # Default input management: accept up to 1024 tokens before falling back to
-    # eager.
-    input_acceptance_dim_spec=InputAcceptanceDimSpec(name="num_tokens", dim_len_max=1024),
-)
 class BoltzDiffusionTransformer(_WindowAttentionLayers, nn.Module):
     def __init__(self, config: BaseConfig):
         """
@@ -468,15 +436,6 @@ class BoltzDiffusionTransformer(_WindowAttentionLayers, nn.Module):
         return a
 
 
-@support_graph_optimization(
-    named_dims=_TOKEN_TRANSFORMER_DIMS,
-    workspace_kwargs=("buffers",),
-    graph_optimization_mode=GraphOptimizationMode.CUDA_GRAPH_VIA_TORCH,
-    input_key_method=InputKeyMethod.EXACT,
-    # Default input management: accept up to 1024 tokens before falling back to
-    # eager.
-    input_acceptance_dim_spec=InputAcceptanceDimSpec(name="num_tokens", dim_len_max=1024),
-)
 class OpenFold3DiffusionTransformer(_WindowAttentionLayers, nn.Module):
     def __init__(self, config: BaseConfig):
         """
@@ -749,15 +708,6 @@ def _conditioned_local_layer(
     )
 
 
-@support_graph_optimization(
-    named_dims=_TOKEN_TRANSFORMER_DIMS,
-    workspace_kwargs=("buffers",),
-    graph_optimization_mode=GraphOptimizationMode.CUDA_GRAPH_VIA_TORCH,
-    input_key_method=InputKeyMethod.EXACT,
-    # Default input management: accept up to 1024 tokens before falling back to
-    # eager.
-    input_acceptance_dim_spec=InputAcceptanceDimSpec(name="num_tokens", dim_len_max=1024),
-)
 class ProtenixDiffusionTransformer(_WindowAttentionLayers, nn.Module):
     """Protenix transformer for local atom and global token diffusion.
 

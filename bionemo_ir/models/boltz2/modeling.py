@@ -54,7 +54,7 @@ from bionemo_ir.hubs import FoldingSupportMatrix as SupMat
 from bionemo_ir.hubs import load_weights as load_weights_from_hubs
 from bionemo_ir.pipeline.models.boltz2.const import contact_conditioning_info, num_bond_types
 
-from ..optimize_module_setter import AcceleratedConfig, DiscoveredModuleRegistry, OptimizedModuleSetterMixin
+from ..optimize_module_setter import OptimizedModuleSetterMixin
 from .config import PRETRAINED_CONFIG_REGISTRY, Boltz2AffinityConfig
 from .convert import (
     convert_hf_affinity_module_torch,
@@ -68,14 +68,8 @@ from .convert import (
 )
 # isort: on
 
-from bionemo_ir._torch.graph_optimization.cuda_graph.runtime import CUDAGraphOptimizationTracker
-
 
 class Boltz2(nn.Module, OptimizedModuleSetterMixin):
-    # Whitelist gating modules discovered via ``@support_graph_optimization``.
-    GRAPH_OPT_ENABLED_MODULES = {
-        "token_transformer": "diffusion_sampler.diffusion_module.token_transformer",
-    }
     GRAPH_REGIONS = {
         "trunk": "trunk.graph",
         "diffusion_module": "diffusion_sampler.graph",
@@ -215,14 +209,6 @@ class Boltz2(nn.Module, OptimizedModuleSetterMixin):
     def diffusion_module(self) -> DiffusionModule:
         """Model-owned denoiser exposed through the composed sampler."""
         return self.diffusion_sampler.diffusion_module
-
-    def get_optimized_modules(self, accelerated_configs: dict[str, AcceleratedConfig]) -> DiscoveredModuleRegistry:
-        return DiscoveredModuleRegistry(
-            self,
-            accelerated_configs,
-            role_aliases=self.GRAPH_OPT_ENABLED_MODULES,
-            graph_optimization_cls=CUDAGraphOptimizationTracker,
-        )
 
     @staticmethod
     def get_pretrained_config(model_name: str = SupMat.Boltz2) -> BaseConfig:

@@ -30,7 +30,7 @@ from bionemo_ir._torch.attention_backend import (
     auto_select_pairwise_attention_backend,
     auto_select_triangle_attention_backend,
 )
-from bionemo_ir._torch.graph_optimization.cuda_graph.runtime import CUDAGraphOptimizationTracker, eager_graphs
+from bionemo_ir._torch.graph_optimization.cuda_graph.runtime import eager_graphs
 from bionemo_ir._torch.graph_optimization.graph_policy import _release_unused_graphs
 from bionemo_ir._torch.layers.linear import Linear
 from bionemo_ir._torch.layers.normalization import replace_with_fused_layernorm
@@ -51,7 +51,7 @@ from bionemo_ir._torch.modules.protenix.atom_attention import atom_windows
 from bionemo_ir.hubs import FoldingSupportMatrix as SupMat
 from bionemo_ir.hubs import load_weights as load_weights_from_hubs
 
-from ..optimize_module_setter import AcceleratedConfig, DiscoveredModuleRegistry, OptimizedModuleSetterMixin
+from ..optimize_module_setter import OptimizedModuleSetterMixin
 from .config import PRETRAINED_CONFIG_REGISTRY
 from .convert import (
     convert_confidence_head_torch,
@@ -164,33 +164,11 @@ def _configure_inference_precision(config: BaseConfig) -> BaseConfig:
 class Protenix(nn.Module, OptimizedModuleSetterMixin):
     """ProtenixV2 model — input embedder + trunk + diffusion + heads."""
 
-    # Whitelist gating modules discover with ``@support_graph_optimization``
-    #
-    # WARNING: do NOT graph-optimize the recycling-trunk pairformer
-    # (``trunk.pairformer_stack``) — its CUDA-graph replay produces NaN. It is a
-    # ``PairformerModule``, so ``@support_graph_optimization`` marks it and
-    # generic discovery *sees* it as a candidate by qualified path; it is left
-    # out of the aliases below on purpose and must never be given an
-    # ``accelerated_configs`` entry (by role or by the ``trunk.pairformer_stack``
-    # path). The same applies to ``confidence_head.pairformer_stack``. The
-    # ``trunk`` and ``confidence_pairformer`` graph regions capture these stacks
-    # instead, inside a verified exact policy.
-    GRAPH_OPT_ENABLED_MODULES = {
-        "token_transformer": "diffusion_sampler.diffusion_module.diffusion_transformer",
-    }
     GRAPH_REGIONS = {
         "trunk": "trunk.graph",
         "diffusion_module": "diffusion_sampler.graph",
         "confidence_pairformer": "confidence_head.pairformer_graph",
     }
-
-    def get_optimized_modules(self, accelerated_configs: dict[str, AcceleratedConfig]) -> DiscoveredModuleRegistry:
-        return DiscoveredModuleRegistry(
-            self,
-            accelerated_configs,
-            role_aliases=self.GRAPH_OPT_ENABLED_MODULES,
-            graph_optimization_cls=CUDAGraphOptimizationTracker,
-        )
 
     def __init__(
         self, config: BaseConfig = None, model_name: str | None = None, include_load_weights: bool = False

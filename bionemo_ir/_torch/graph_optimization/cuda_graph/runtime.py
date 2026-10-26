@@ -40,7 +40,6 @@ from bionemo_ir._torch.graph_optimization.cuda_graph.memory import (
     container_device,
     tensor_bytes,
 )
-from bionemo_ir._torch.graph_optimization.decorator import GRAPH_OPT_DEFAULT_ATTR
 from bionemo_ir._torch.graph_optimization.tensor_copy_utils import (
     _assert_equal_but_distinct,
     _clone_tensors,
@@ -635,17 +634,9 @@ class CUDAGraphOptimizationTracker(GraphOptimizationTracker):
                 state.stable_sources[name] = _leaf_sources(value)
 
     def _stable_input_kwargs(self) -> frozenset:
-        """Return the kwargs whose unchanged tensors skip replay copies.
-
-        A config that routes none inherits the wrapped module's declared ones: they
-        describe how its caller passes inputs, not a tuning choice.
-        """
+        """Return the kwargs whose unchanged tensors skip replay copies."""
         routing = self.graph_optimization_config.input_routing_config
-        if routing is not None and routing.stable_input_kwargs:
-            return frozenset(routing.stable_input_kwargs)
-        declared = getattr(self.inner_module, GRAPH_OPT_DEFAULT_ATTR, None)
-        declared_routing = declared.input_routing_config if declared is not None else None
-        return frozenset(declared_routing.stable_input_kwargs) if declared_routing is not None else frozenset()
+        return frozenset(routing.stable_input_kwargs) if routing is not None else frozenset()
 
     def _evict_key(self, key: str) -> None:
         """Free and remove a key's cached graph state.

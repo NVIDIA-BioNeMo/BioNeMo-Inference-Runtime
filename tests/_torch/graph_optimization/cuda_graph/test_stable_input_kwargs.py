@@ -19,17 +19,11 @@ import torch
 import torch.nn as nn
 
 import bionemo_ir._torch.graph_optimization.cuda_graph.runtime as trk
-from bionemo_ir._torch.graph_optimization.config import (
-    CUDAGraphOptimizationConfig,
-    GraphOptimizationMode,
-    InputKeyMethod,
-    InputRoutingConfig,
-)
+from bionemo_ir._torch.graph_optimization.config import CUDAGraphOptimizationConfig, InputRoutingConfig
 from bionemo_ir._torch.graph_optimization.cuda_graph.runtime import (
     CUDAGraphOptimizationTracker,
     CUDAGraphPreparationState,
 )
-from bionemo_ir._torch.graph_optimization.decorator import support_graph_optimization
 from bionemo_ir._torch.graph_optimization.tensor_copy_utils import _tensor_leaves
 
 pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA-graph tests require CUDA")
@@ -139,39 +133,3 @@ def test_release_forgets_stable_sources():
     assert state.stable_sources
     state.release()
     assert state.stable_sources == {}
-
-
-@support_graph_optimization(
-    named_dims=(),
-    graph_optimization_mode=GraphOptimizationMode.CUDA_GRAPH_VIA_TORCH,
-    input_key_method=InputKeyMethod.EXACT,
-    stable_kwargs=("cond",),
-)
-class _DeclaresStableCondition(_Conditioned):
-    pass
-
-
-def test_config_without_routing_inherits_declared_stable_kwargs(copied):
-    tracker = CUDAGraphOptimizationTracker(
-        CUDAGraphOptimizationConfig(), inner_module=_DeclaresStableCondition().cuda()
-    ).eval()
-    x, cond, scale = _inputs(0)
-    with torch.no_grad():
-        _capture(tracker, x, cond, scale)
-        copied.clear()
-        torch.testing.assert_close(tracker(x, cond=cond, scale=scale), _reference(x, cond, scale))
-    assert not {id(t) for t in cond.values()} & set(copied)
-
-
-def test_decorator_rejects_an_unknown_stable_kwarg():
-    with pytest.raises(ValueError, match="stable kwarg 'missing'"):
-
-        @support_graph_optimization(
-            named_dims=(),
-            graph_optimization_mode=GraphOptimizationMode.CUDA_GRAPH_VIA_TORCH,
-            input_key_method=InputKeyMethod.EXACT,
-            stable_kwargs=("missing",),
-        )
-        class _Module(nn.Module):
-            def forward(self, x: torch.Tensor) -> torch.Tensor:
-                return x

@@ -49,7 +49,7 @@ from bionemo_ir.configs import BaseConfig
 from bionemo_ir.hubs import FoldingSupportMatrix as SupMat
 from bionemo_ir.hubs import load_weights as load_weights_from_hubs
 
-from ..optimize_module_setter import AcceleratedConfig, DiscoveredModuleRegistry, OptimizedModuleSetterMixin
+from ..optimize_module_setter import OptimizedModuleSetterMixin
 from .config import PRETRAINED_CONFIG_REGISTRY
 from .convert import (
     convert_hf_confidence_module_torch,
@@ -107,11 +107,6 @@ class OpenFold2(nn.Module, OptimizedModuleSetterMixin):
         if include_load_weights:
             self.load_weights()
         replace_with_fused_layernorm(self)
-
-    def get_optimized_modules(self, accelerated_configs: dict[str, AcceleratedConfig]) -> DiscoveredModuleRegistry:
-        # OpenFold2 has no ``@support_graph_optimization`` modules; ``optimize()``
-        # only enables its trunk graph region.
-        return DiscoveredModuleRegistry(self, accelerated_configs)
 
     def load_weights(self, weights: dict = None):
         if weights is None:

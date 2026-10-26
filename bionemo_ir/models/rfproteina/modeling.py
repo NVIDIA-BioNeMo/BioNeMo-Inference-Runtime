@@ -78,6 +78,7 @@ from bionemo_ir._torch.modules.rfproteina.search import run_rfproteina_beam_sear
 from bionemo_ir._torch.sampling.contracts import SamplingContext
 from bionemo_ir._torch.sampling.flow_matching import FlowMatchingSchedule
 from bionemo_ir._torch.search import CompositeMetricEvaluator, MetricEvaluatorLike, derive_search_seed
+from bionemo_ir.configs import AcceleratedConfig, BackendType, BaseConfig
 from bionemo_ir.hubs import resolve_rfproteina_autoencoder_checkpoint, resolve_rfproteina_checkpoint
 from bionemo_ir.hubs.support_matrix import GenerativeSupportMatrix as SupMat
 from bionemo_ir.models.rfproteina.config import (
@@ -105,13 +106,7 @@ from bionemo_ir.models.rfproteina.convert import (
 from bionemo_ir.runtime.buffers import PreallocatedBuffers
 from bionemo_ir.utils import str_dtype_to_torch
 
-from ..optimize_module_setter import (
-    AcceleratedConfig,
-    BackendType,
-    BaseConfig,
-    DiscoveredModuleRegistry,
-    OptimizedModuleSetterMixin,
-)
+from ..optimize_module_setter import OptimizedModuleSetterMixin
 
 MODEL_NAME = "RFProteína"
 
@@ -237,18 +232,9 @@ class RFProteina(nn.Module, OptimizedModuleSetterMixin):
 
     # Only the velocity trunk is graph-optimized. It runs once per sampling
     # step with stable shapes; the one-shot decoder is intentionally excluded.
-    GRAPH_OPT_ENABLED_MODULES = {"velocity_model": "velocity_model"}
     # The trunk's repeated computation is one recycle step, not the whole
     # forward, so a shape captures once instead of once per recycle depth.
     GRAPH_REGIONS = {"velocity_model": "velocity_model.trunk_graph"}
-
-    def get_optimized_modules(self, accelerated_configs: dict[str, AcceleratedConfig]) -> DiscoveredModuleRegistry:
-        return DiscoveredModuleRegistry(
-            self,
-            accelerated_configs,
-            role_aliases=self.GRAPH_OPT_ENABLED_MODULES,
-            graph_optimization_cls=CUDAGraphOptimizationTracker,
-        )
 
     @classmethod
     def from_reference_state_dicts(

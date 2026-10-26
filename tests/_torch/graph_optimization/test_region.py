@@ -16,6 +16,7 @@
 
 import copy
 import gc
+import inspect
 import pickle
 import subprocess
 import sys
@@ -27,11 +28,16 @@ import torch
 from torch import nn
 
 from bionemo_ir._torch.graph_optimization import GraphRegion, eager_graphs, graph_policy
-from bionemo_ir._torch.graph_optimization.config import NamedDimTies
+from bionemo_ir._torch.graph_optimization.config import (
+    CUDAGraphOptimizationConfig,
+    InputRoutingConfig,
+    NamedDimTies,
+)
 from bionemo_ir._torch.graph_optimization.graph_policy import _release_unused_graphs, exact_graph_config
+from bionemo_ir._torch.graph_optimization.region import _validate_routing_against_signature
 from bionemo_ir.configs import AcceleratedConfig, BaseConfig
 from bionemo_ir.models.openfold2.modeling import OpenFold2
-from bionemo_ir.models.optimize_module_setter import DiscoveredModuleRegistry, OptimizedModuleSetterMixin
+from bionemo_ir.models.optimize_module_setter import OptimizedModuleSetterMixin
 
 
 def _policy(max_tokens: int):
@@ -49,9 +55,6 @@ class _Model(nn.Module, OptimizedModuleSetterMixin):
         super().__init__()
         self.weight = nn.Parameter(torch.arange(1, 5, dtype=torch.float32))
         self.graph = GraphRegion(self, "step", _policy(max_tokens))
-
-    def get_optimized_modules(self, accelerated_configs):
-        return DiscoveredModuleRegistry(self, accelerated_configs)
 
     def step(self, x: torch.Tensor, *, scale: float = 1.0) -> torch.Tensor:
         return x * self.weight * scale
@@ -100,8 +103,44 @@ def test_regions_capture_by_default_and_optimize_enables_selected_ones() -> None
         assert model.graph.policy is override
     with pytest.raises(ValueError, match="torch backend"):
         _Model().optimize({"region": AcceleratedConfig(backend="tensorrt")})
-    with pytest.raises(ValueError, match="no decorated, discoverable target"):
-        _Model().optimize({"regoin": AcceleratedConfig(backend="torch")})
+    model = _Model()
+    model.graph.enabled = False
+    with pytest.raises(ValueError, match=r"No graph region named \['regoin'\]"):
+        model.optimize({"region": AcceleratedConfig(backend="torch"), "regoin": AcceleratedConfig(backend="torch")})
+    # A misspelled keyword is an error, not a call that re-enables every region.
+    with pytest.raises(TypeError, match="accelerated_config"):
+        model.optimize(accelerated_config={"region": AcceleratedConfig(backend="torch")})
+    # A region that would be left without a policy rejects the whole request up front.
+    model.plain = GraphRegion(model, "step", None)
+    override = _policy(4)
+    with pytest.raises(ValueError, match="'plain' has no CUDA-graph policy"):
+        model.optimize(
+            {
+                "region": AcceleratedConfig(backend="torch", default=BaseConfig(graph_optimization_config=override)),
+                "plain": AcceleratedConfig(backend="torch"),
+            }
+        )
+    assert model.graph.policy is not override
+    # A rejected request enables nothing.
+    assert not model.graph.enabled
+
+
+def test_optimize_converts_mapping_policies_and_rejects_other_values() -> None:
+    model = _Model()
+    mapping = _policy(4).model_dump()
+    model.optimize(
+        {"region": AcceleratedConfig(backend="torch", default=BaseConfig(graph_optimization_config=mapping))}
+    )
+    assert isinstance(model.graph.policy, CUDAGraphOptimizationConfig)
+    assert model.graph.policy == _policy(4)
+    policy = model.graph.policy
+    model.graph.enabled = False
+    with pytest.raises(TypeError, match="needs a CUDAGraphOptimizationConfig policy, got str"):
+        model.optimize(
+            {"region": AcceleratedConfig(backend="torch", default=BaseConfig(graph_optimization_config="x"))}
+        )
+    assert model.graph.policy is policy
+    assert not model.graph.enabled
 
 
 def test_cpu_inputs_and_autograd_run_eagerly() -> None:
@@ -145,6 +184,37 @@ def cuda_model() -> _Model:
     if not torch.cuda.is_available():
         pytest.skip("CUDA required")
     return _Model().cuda().eval().optimize()
+
+
+@pytest.mark.parametrize(
+    ("routing", "message"),
+    [
+        ({"named_dims": (NamedDimTies(name="num_tokens", input_dims=(("y", (-2,)),)),)}, "input-tie tensor 'y'"),
+        ({"named_dims": (), "stable_kwargs": ("missing",)}, "stable kwarg 'missing'"),
+    ],
+)
+def test_routed_names_must_be_parameters_of_the_region_target(cuda_model: _Model, routing, message) -> None:
+    cuda_model.graph.enable(exact_graph_config(max_tokens=8, **routing))
+    with pytest.raises(ValueError, match=f"{message} is not a parameter of forward"):
+        cuda_model(torch.ones(1, 4, 4, device="cuda"))
+
+
+@pytest.mark.parametrize(
+    ("target", "name", "reaches"),
+    [
+        (lambda x, *rest: x, "arg0", False),  # position 0 routes as ``x``
+        (lambda x, *rest: x, "arg1", True),  # the first ``*rest`` element
+        (lambda x, y: x, "arg1", False),  # no ``*args`` takes a position past ``y``
+        (lambda x, **kwargs: x, "arg0", True),  # a keyword named ``arg0``
+    ],
+)
+def test_positional_routing_names_reach_only_star_args_positions(target, name, reaches) -> None:
+    routing = InputRoutingConfig(named_dim_ties=[NamedDimTies(name="num_tokens", input_dims=((name, (-1,)),))])
+    if reaches:
+        _validate_routing_against_signature(inspect.signature(target), routing, "GraphRegion")
+    else:
+        with pytest.raises(ValueError, match=f"'{name}' is not a parameter of forward"):
+            _validate_routing_against_signature(inspect.signature(target), routing, "GraphRegion")
 
 
 @torch.inference_mode()

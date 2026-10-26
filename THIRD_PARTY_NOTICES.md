@@ -203,6 +203,26 @@ wheel. Their package-provided license and notice files remain authoritative.
   - License: MIT; see [`LICENSES/MIT.txt`][mit]
   - Source and license: [urllib3][urllib3]
 
+- **aiohttp**
+  - Copyright: aio-libs contributors
+  - License: Apache-2.0; see [`LICENSE`][bioir-license]
+  - Source and license: [aiohttp][aiohttp]
+
+- **certifi**
+  - Copyright: Mozilla Foundation and certifi contributors
+  - License: MPL-2.0; see [`LICENSES/MPL-2.0.txt`][mpl-2]
+  - Source and license: [certifi][certifi]
+
+- **filelock**
+  - Copyright: Bernát Gábor and contributors
+  - License: MIT; see [`LICENSES/MIT.txt`][mit]
+  - Source and license: [filelock][filelock]
+
+- **opentelemetry-api**
+  - Copyright: OpenTelemetry Authors
+  - License: Apache-2.0; see [`LICENSE`][bioir-license]
+  - Source and license: [OpenTelemetry Python][opentelemetry-api]
+
 - **fsspec**
   - Copyright: Martin Durant and fsspec contributors
   - License: BSD-3-Clause; see
@@ -372,6 +392,7 @@ The image-provided OSS notices and license files must remain in derivative
 images. The release SBOM, rather than this repository inventory, records the
 resolved operating-system and base-image package closure.
 
+[aiohttp]: https://raw.githubusercontent.com/aio-libs/aiohttp/master/LICENSE.txt
 [alphafold]: https://github.com/google-deepmind/alphafold
 [apache-tvm-ffi]: https://github.com/apache/tvm-ffi
 [bioir-license]: LICENSE
@@ -381,6 +402,7 @@ resolved operating-system and base-image package closure.
 [biotraj]: https://github.com/biotite-dev/biotraj
 [bsd-3-clause]: LICENSES/BSD-3-Clause.txt
 [cccl]: https://github.com/NVIDIA/cccl
+[certifi]: https://raw.githubusercontent.com/certifi/python-certifi/master/LICENSE
 [cmake]: https://github.com/Kitware/CMake
 [cuda-python]: https://pypi.org/project/cuda-python/
 [cudnn-frontend]: https://github.com/NVIDIA/cudnn-frontend/tree/v1.23.0
@@ -392,6 +414,7 @@ resolved operating-system and base-image package closure.
 [cutlass-dsl-license]: https://docs.nvidia.com/cutlass/latest/media/docs/pythonDSL/license.html
 [datasets]: https://github.com/huggingface/datasets
 [einops]: https://github.com/arogozhnikov/einops
+[filelock]: https://raw.githubusercontent.com/tox-dev/filelock/main/LICENSE
 [flash-attention-cute]: https://github.com/Dao-AILab/flash-attention/tree/main/flash_attn/cute
 [fsspec]: https://github.com/fsspec/filesystem_spec
 [gemmi]: https://github.com/project-gemmi/gemmi
@@ -407,6 +430,7 @@ resolved operating-system and base-image package closure.
 [nanobind]: https://github.com/wjakob/nanobind/tree/v2.10.2
 [openfold]: https://github.com/aqlaboratory/openfold
 [openfold3]: https://github.com/aqlaboratory/openfold-3/tree/0bb17be5199846e806b6347b6e17c6249c88ff1b
+[opentelemetry-api]: https://raw.githubusercontent.com/open-telemetry/opentelemetry-python/main/LICENSE
 [parameterized]: https://github.com/wolever/parameterized
 [prek]: https://github.com/j178/prek
 [protenix]: https://github.com/bytedance/Protenix/tree/2475421477ab414b571149ad4a875c390ff8a35d

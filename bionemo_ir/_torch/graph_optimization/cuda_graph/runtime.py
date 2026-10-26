@@ -73,6 +73,26 @@ def eager_graphs(enabled: bool = True) -> Iterator[None]:
         _EAGER.reset(token)
 
 
+@contextmanager
+def graph_owned_cublas_workspace() -> Iterator[None]:
+    """Make a capture allocate its cuBLAS workspace in its own pool, out of reach of later work.
+
+    PyTorch caches one cuBLAS workspace per (handle, stream) and frees a stream's entry
+    when any graph captured on that stream is destroyed. A capture that reuses a cached
+    workspace keeps its address, and graph states draw their streams from torch's recycled
+    pool, so evicting one graph freed the workspace another live graph still replayed
+    into: an illegal address once the allocator returned it, or silent writes into
+    whatever reused it. With the cache empty, the capture allocates a fresh workspace in
+    its private pool; emptying it again afterwards keeps that workspace from being handed
+    to eager calls or later captures. torch's cudagraph trees do the same around capture.
+    """
+    torch._C._cuda_clearCublasWorkspaces()
+    try:
+        yield
+    finally:
+        torch._C._cuda_clearCublasWorkspaces()
+
+
 class CUDAGraphPreparationState(enum.Enum):
     """Per-key warmup-to-replay state."""
 
@@ -522,7 +542,7 @@ class CUDAGraphOptimizationTracker(GraphOptimizationTracker):
         # Capture on the warmup stream to preserve allocator stream ownership.
         graph = torch.cuda.CUDAGraph()
         try:
-            with torch.cuda.graph(graph, stream=state.warmup_stream):
+            with graph_owned_cublas_workspace(), torch.cuda.graph(graph, stream=state.warmup_stream):
                 state.static_output = self._f_capture(
                     state.static_input_arg,
                     state.static_input_kwargs,

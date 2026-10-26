@@ -19,6 +19,9 @@ replay failure — plus the grad/training guard — and asserts the captured
 path matches eager.
 """
 
+import os
+import re
+
 import pytest
 import torch
 import torch.nn as nn
@@ -429,6 +432,47 @@ def test_lru_overflow_releases_the_evicted_graph():
     assert _key(tracker, first) not in tracker.graph_state_by_key
     assert evicted.graph is None
     assert evicted.static_output is None
+
+
+def _cublas_workspace_bytes() -> int:
+    """Size of torch's cached cuBLAS workspace (``parseChosenWorkspaceSize`` in CublasHandlePool.cpp)."""
+    config = os.environ.get("CUBLAS_WORKSPACE_CONFIG")
+    if config:
+        return sum(int(size) * 1024 * int(count) for size, count in re.findall(r":([0-9]+):([0-9]+)", config))
+    if torch.cuda.get_device_capability()[0] in (9, 10, 12):
+        return 4096 * 8 * 1024
+    return 4096 * 1024 * 2 + 16 * 1024 * 8
+
+
+def test_eviction_leaves_the_cublas_workspace_of_a_graph_on_the_same_stream(monkeypatch):
+    # Graph states draw streams from torch's recycled pool, and destroying a graph frees
+    # the cuBLAS workspace torch caches for its stream. A graph captured on the same
+    # stream with that cached workspace replayed into the freed block: a fault once
+    # released, otherwise silent writes into whatever took it over.
+    stream = torch.cuda.Stream()
+    monkeypatch.setattr(torch.cuda, "Stream", lambda *args, **kwargs: stream)
+    # A long reduction makes cuBLAS split K through its workspace.
+    linear = nn.Linear(65536, 64, bias=False).cuda()
+    tracker = CUDAGraphOptimizationTracker(_early_config(), inner_module=linear).eval()
+    first = torch.randn(64, 65536, device="cuda")
+    second = torch.randn(65, 65536, device="cuda")
+    with torch.inference_mode():
+        expected = linear(second)
+        tracker(first)
+        (first_key,) = tracker.graph_state_by_key.keys()
+        tracker(second)
+        tracker._evict_key(first_key)
+        # Take over the block the eviction freed, if any, with a sentinel.
+        with torch.cuda.stream(stream):
+            sentinel = torch.full((_cublas_workspace_bytes() // 4,), 7.0, device="cuda")
+        # Replay runs on the current stream: order it after the fill, which could mask its writes.
+        torch.cuda.current_stream().wait_stream(stream)
+        replay = tracker(second)
+    torch.cuda.synchronize()
+
+    assert tracker.execution_counts["replay"] == 1
+    assert torch.equal(sentinel, torch.full_like(sentinel, 7.0))
+    torch.testing.assert_close(replay, expected)
 
 
 def test_evict_key_tolerates_an_already_evicted_key():

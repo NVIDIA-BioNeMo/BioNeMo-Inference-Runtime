@@ -88,7 +88,7 @@ Credentials are **not** uniform across the two halves, and the split matters:
 
 - **structures need nothing.** RCSB is anonymous; `--structures-only` runs on
   a machine with no credentials at all and produces 35 of the 83 files.
-- **alignments need `NGC_API_KEY`** for the MSA NIM (`--api-key` overrides).
+- **alignments need `NGC_API_KEY`** for the MSA NIM.
   Get one at [build.nvidia.com](https://build.nvidia.com/).
 
 Never write a token into the skill, a harness, notes, or a repo file.

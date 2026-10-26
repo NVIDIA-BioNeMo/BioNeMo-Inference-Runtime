@@ -132,6 +132,15 @@ _SUFFIXED = re.compile(r"^([0-9][A-Za-z0-9]{3})_.+$")
 # --------------------------------------------------------------------------- io
 
 
+def dataset_path(data: Path, rel: str | Path) -> Path:
+    """Resolve a path strictly inside the dataset."""
+    root = data.resolve()
+    path = (root / rel).resolve()
+    if root not in path.parents:
+        raise ValueError(f"Dataset path escapes data root: {rel}")
+    return path
+
+
 def sha256(path: Path) -> str:
     h = hashlib.sha256()
     with path.open("rb") as fh:
@@ -443,7 +452,7 @@ def _one_a3m(node) -> str:
 def load_specs(data: Path) -> list[dict]:
     items: dict[str, dict] = {}
     for name in SPECS:
-        path = data / name
+        path = dataset_path(data, name)
         if not path.is_file():
             raise SystemExit(f"missing {path} — run this script from the bundle it ships in")
         for item in json.loads(path.read_text())["items"]:
@@ -485,7 +494,7 @@ def plan(items: list[dict]) -> tuple[dict[str, dict], list[dict]]:
 
 def fetch_structure(data: Path, rel: str, assembly, manifest: dict, force: bool) -> tuple[str, str]:
     """-> (status, note). status in {ok, cached, revised, archived, MISMATCH, ERROR}."""
-    dest = data / rel
+    dest = dataset_path(data, rel)
     dest.parent.mkdir(parents=True, exist_ok=True)
     want = manifest.get(rel, {}).get("sha256")
     if dest.is_file() and not force:
@@ -534,7 +543,10 @@ def fetch_structure(data: Path, rel: str, assembly, manifest: dict, force: bool)
 def fetch_msas(data: Path, work: dict, client: MsaClient, strategy: str, force: bool) -> list[tuple[str, str, str]]:
     """-> [(rel, status, note)] for one item's chains."""
     out: list[tuple[str, str, str]] = []
-    todo = {id(c) for c in work["chains"] if force or not (data / c["unpaired"]).is_file()}
+    paths = {
+        rel: dataset_path(data, rel) for chain in work["chains"] for rel in (chain["unpaired"], chain["paired"]) if rel
+    }
+    todo = {id(c) for c in work["chains"] if force or not paths[c["unpaired"]].is_file()}
     for chain in work["chains"]:
         rel = chain["unpaired"]
         if id(chain) not in todo:
@@ -545,12 +557,12 @@ def fetch_msas(data: Path, work: dict, client: MsaClient, strategy: str, force: 
         except Exception as e:  # noqa: BLE001
             out.append((rel, "ERROR", str(e)))
             continue
-        (data / rel).parent.mkdir(parents=True, exist_ok=True)
-        (data / rel).write_text(a3m)
+        paths[rel].parent.mkdir(parents=True, exist_ok=True)
+        paths[rel].write_text(a3m)
         out.append((rel, "ok", f"{a3m.count('>')} seqs"))
 
     paired = [c for c in work["chains"] if c["paired"]]
-    if paired and (force or not all((data / c["paired"]).is_file() for c in paired)):
+    if paired and (force or not all(paths[c["paired"]].is_file() for c in paired)):
         try:
             blocks = client.paired([c["sequence"] for c in paired], strategy)
         except Exception as e:  # noqa: BLE001
@@ -560,8 +572,8 @@ def fetch_msas(data: Path, work: dict, client: MsaClient, strategy: str, force: 
         # MsaClient.paired refuses a response whose block count disagrees -- so a
         # silent short zip here would mean that check had been removed.
         for chain, a3m in zip(paired, blocks, strict=True):
-            (data / chain["paired"]).parent.mkdir(parents=True, exist_ok=True)
-            (data / chain["paired"]).write_text(a3m)
+            paths[chain["paired"]].parent.mkdir(parents=True, exist_ok=True)
+            paths[chain["paired"]].write_text(a3m)
             out.append((chain["paired"], "ok", f"{a3m.count('>')} seqs"))
     elif paired:
         out.extend((c["paired"], "cached", "") for c in paired)
@@ -580,9 +592,10 @@ def write_manifest(data: Path, structures: Iterable[str], msa_rels: Iterable[str
     beside them, and `--verify` would fail on a build that is fine. Same fields
     the reference build writes, so the two are readable side by side.
     """
+    dest = dataset_path(data, "MANIFEST.json")
     files = {}
     for rel in sorted(list(structures) + list(msa_rels) + list(SPECS)):
-        path = data / rel
+        path = dataset_path(data, rel)
         if not path.is_file():
             raise SystemExit(f"cannot write a manifest: {rel} is missing")
         rec = {"sha256": sha256(path), "bytes": path.stat().st_size}
@@ -594,7 +607,7 @@ def write_manifest(data: Path, structures: Iterable[str], msa_rels: Iterable[str
             rec["depth"] = depth(path)
         files[rel] = rec
     out = {"files": files, "total_bytes": sum(v["bytes"] for v in files.values()), "file_count": len(files)}
-    (data / "MANIFEST.json").write_text(json.dumps(out, indent=1) + "\n")
+    dest.write_text(json.dumps(out, indent=1) + "\n")
     return out
 
 
@@ -615,7 +628,7 @@ def check_depth(data: Path, manifest: dict, rels: Iterable[str]) -> list[tuple[s
     out = []
     for rel in sorted(rels):
         want = manifest.get(rel, {}).get("depth")
-        path = data / rel
+        path = dataset_path(data, rel)
         if not want or not path.is_file():
             continue
         got = depth(path)
@@ -628,7 +641,7 @@ def report(data: Path, manifest: dict, rels: Iterable[str]) -> dict:
     """sha256 of what is on disk now, next to what MANIFEST expected."""
     files, drift = {}, []
     for rel in sorted(rels):
-        path = data / rel
+        path = dataset_path(data, rel)
         if not path.is_file():
             files[rel] = {"sha256": None, "bytes": None}
             continue
@@ -663,7 +676,6 @@ def main() -> int:
     )
     ap.add_argument("--force", action="store_true", help="refetch files already present")
     ap.add_argument("--jobs", type=int, default=2, help="parallel MSA searches (default: %(default)s)")
-    ap.add_argument("--api-key", default=os.environ.get("NGC_API_KEY", ""))
     ap.add_argument("--msa-url", default=MSA_BASE)
     ap.add_argument("--pairing-strategy", default="greedy", choices=["greedy", "complete"])
     ap.add_argument("--max-msa-sequences", type=int, help="cap passed to the NIM; leave unset to take its default")
@@ -674,10 +686,13 @@ def main() -> int:
         "on disk — for publishing a rebuild as its own release",
     )
     ap.add_argument("--dry-run", action="store_true")
-    args = ap.parse_args()
+    args, unknown = ap.parse_known_args()
+    if unknown:
+        # Removed credential arguments must stay undisclosed.
+        ap.error("unrecognized arguments; use --help")
 
     data = args.data.resolve()
-    manifest = json.loads((data / "MANIFEST.json").read_text())["files"]
+    manifest = json.loads(dataset_path(data, "MANIFEST.json").read_text())["files"]
     items = load_specs(data)
     if args.only:
         want = {s.strip() for s in args.only.split(",") if s.strip()}
@@ -688,6 +703,9 @@ def main() -> int:
 
     structures, msa_work = plan(items)
     msa_rels = [r for w in msa_work for c in w["chains"] for r in (c["unpaired"], c["paired"]) if r]
+
+    for rel in list(structures) + msa_rels:
+        dataset_path(data, rel)
 
     if args.verify:
         rep = report(data, manifest, list(structures) + msa_rels)
@@ -710,6 +728,14 @@ def main() -> int:
             print(f"  {rel:34s} <- {args.msa_url}{'/paired' if rel.endswith('_paired.a3m') else ''}/predict")
         return 0
 
+    build_path = dataset_path(data, "BUILD.json")
+    if args.write_manifest:
+        dataset_path(data, "MANIFEST.json")
+
+    api_key = os.environ.get("NGC_API_KEY", "")
+    if not args.structures_only and msa_work and not api_key:
+        raise SystemExit("NGC_API_KEY missing; set it or use --structures-only")
+
     failures: list[str] = []
     revised: list[str] = []
     archived: list[str] = []
@@ -730,17 +756,13 @@ def main() -> int:
                 archived.append(rel)
 
     if not args.structures_only and msa_work:
-        if not args.api_key:
-            raise SystemExit(
-                "no API key — pass --api-key or set NGC_API_KEY, or use "
-                "--structures-only. Get one at https://build.nvidia.com/"
-            )
-        client = MsaClient(args.api_key, args.msa_url, max_sequences=args.max_msa_sequences)
+        client = MsaClient(api_key, args.msa_url, max_sequences=args.max_msa_sequences)
         print(f"\nalignments (MSA Search NIM, {', '.join(DATABASES)})")
         with futures.ThreadPoolExecutor(max_workers=max(1, args.jobs)) as pool:
             pending = {pool.submit(fetch_msas, data, w, client, args.pairing_strategy, args.force): w for w in msa_work}
             for fut in futures.as_completed(pending):
                 for rel, status, note in fut.result():
+                    note = note.replace(api_key, "[redacted]")
                     mark = {"ok": "+", "cached": "="}.get(status, "!")
                     print(f"  {mark} {rel:34s} {status}{'  ' + note if note else ''}")
                     if status == "ERROR":
@@ -761,7 +783,7 @@ def main() -> int:
         },
         "files": rep["files"],
     }
-    (data / "BUILD.json").write_text(json.dumps(build, indent=1) + "\n")
+    build_path.write_text(json.dumps(build, indent=1) + "\n")
 
     if args.write_manifest and not failures:
         new = write_manifest(data, structures, msa_rels)

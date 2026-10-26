@@ -17,6 +17,7 @@
 import gzip
 import hashlib
 import importlib.util
+import sys
 from pathlib import Path
 
 import pytest
@@ -122,3 +123,24 @@ def test_annotation_only_change_is_accepted(tmp_path, monkeypatch, text):
     status, _ = rebuild.fetch_structure(tmp_path, rel, 1, _manifest(rel, MEASURED), force=False)
 
     assert status == ("ok" if text == MEASURED else "revised")
+
+
+def test_removed_key_argument(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture) -> None:
+    monkeypatch.setattr(sys, "argv", [str(SCRIPT), "--api-key", "secret-test-value"])
+    with pytest.raises(SystemExit) as error:
+        rebuild.main()
+    assert error.value.code == 2
+    captured = capsys.readouterr()
+    assert "secret-test-value" not in captured.out + captured.err
+    assert "unrecognized arguments" in captured.err
+
+
+def test_symlink_escape_rejected(tmp_path: Path) -> None:
+    data = tmp_path / "data"
+    data.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (data / "ground_truth").symlink_to(outside, target_is_directory=True)
+    with pytest.raises(ValueError, match="Dataset path escapes data root"):
+        rebuild.fetch_structure(data, "ground_truth/7PV5.cif", None, {}, False)
+    assert not (outside / "7PV5.cif").exists()

@@ -18,6 +18,7 @@ import datetime
 import inspect
 import math
 import pickle
+import sys
 from pathlib import Path
 
 import numpy as np
@@ -90,6 +91,14 @@ from bionemo_ir.models.rfproteina.convert import (
     load_rfproteina_checkpoint_state,
 )
 from tests._torch import SM_VERSION, init_module_weights, skip_if_cutedsl, skip_if_no_cutedsl
+
+# The parity tests below import the upstream ``rfproteina`` package. Read it from
+# the 3rdparty/RFD4-Proteina submodule when it is checked out, and leave the path
+# alone otherwise so those tests keep skipping. Appended, not prepended, so an
+# installed copy still wins.
+_RFD4_PROTEINA_SRC = Path(__file__).resolve().parents[2] / "3rdparty" / "RFD4-Proteina" / "src"
+if _RFD4_PROTEINA_SRC.is_dir() and str(_RFD4_PROTEINA_SRC) not in sys.path:
+    sys.path.append(str(_RFD4_PROTEINA_SRC))
 
 
 def test_rfproteina_runtime_contracts_have_one_canonical_definition() -> None:

@@ -27,7 +27,9 @@ permissions:
 jobs:
   wheel:
     name: wheel
-    runs-on: ubuntu-latest
+    # Not ubuntu-latest: that image moved to 26.04, whose CUDA apt repository
+    # has no 13.0 packages, so the toolkit step below fails to install nvcc.
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
       # `lfs: true` would pull every LFS object in the repo -- measured at

@@ -196,6 +196,17 @@ def pdb_to_cif_file(content: str) -> "CIFFile":
     return CIFFile({source.name: block})
 
 
+def _polymer_entity(structure: "gemmi.Structure", chain: "gemmi.Chain", polymer: "gemmi.ResidueSpan") -> "gemmi.Entity":
+    """Return the entity of ``chain``'s polymer, raising ``ValueError`` when gemmi assigned none."""
+    entity = structure.get_entity_of(polymer)
+    if entity is not None:
+        return entity
+    if not chain.name:
+        # gemmi assigns no entity to a chain with a blank ID, as in CASP model files.
+        raise ValueError("Template polymer chain has a blank chain ID; set a chain ID for every polymer chain")
+    raise ValueError(f"Template polymer chain {chain.name!r} has no entity")
+
+
 def _pdb_to_document(content: str) -> "gemmi.cif.Document":
     try:
         structure = read_gemmi_structure(content, "pdb", from_content=True)
@@ -210,7 +221,7 @@ def _pdb_to_document(content: str) -> "gemmi.cif.Document":
         polymer = chain.get_polymer()
         if not polymer:
             continue
-        entity = structure.get_entity_of(polymer)
+        entity = _polymer_entity(structure, chain, polymer)
         sequence = entity.full_sequence
         if not sequence:
             sequence = polymer.extract_sequence()
@@ -240,7 +251,8 @@ def normalize_gemmi_structure(st) -> None:
     Removes waters/hydrogens/altconfs/empty chains, then synthesizes an entity
     sequence from observed residues ONLY when gemmi has none — keeping any
     existing SEQRES, since overwriting it renumbers res_idx and shifts the
-    alignment offset (off-by-N).
+    alignment offset (off-by-N). Raises ``ValueError`` for a polymer chain gemmi
+    leaves without an entity, such as one with a blank chain ID.
     """
     st.merge_chain_parts()
     st.remove_waters()
@@ -252,6 +264,6 @@ def normalize_gemmi_structure(st) -> None:
         poly = chain.get_polymer()
         if len(poly) == 0:
             continue
-        ent = st.get_entity_of(poly)
+        ent = _polymer_entity(st, chain, poly)
         if not ent.full_sequence:
             ent.full_sequence = [res.name for res in poly]

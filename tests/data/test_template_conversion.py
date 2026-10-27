@@ -14,6 +14,7 @@
 # limitations under the License.
 
 import io
+from collections.abc import Callable
 from pathlib import Path
 
 import numpy as np
@@ -54,3 +55,11 @@ def test_conversion_parity(variant: str) -> None:
     assert get_structure(actual, model=1, use_author_fields=False, altloc="occupancy") == get_structure(
         expected, model=1, use_author_fields=False, altloc="occupancy"
     )
+
+
+@pytest.mark.parametrize("convert", [pdb_to_cif, pdb_to_cif_file])
+def test_blank_chain_id_is_rejected(convert: Callable[[str], object]) -> None:
+    # gemmi assigns no entity to a blank-ID chain, which CASP model files use.
+    content = "\n".join(line[:21] + " " + line[22:] for line in _FIXTURE.read_text().splitlines())
+    with pytest.raises(ValueError, match="blank chain ID"):
+        convert(content)

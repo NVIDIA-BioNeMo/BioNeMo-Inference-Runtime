@@ -46,6 +46,8 @@ _REPO = Path(__file__).resolve().parents[4]
 # Small committed template CIF (chain A, 211 protein residues); parses without
 # any CCD mol data (mol_dir defaults to None for standard protein residues).
 _CIF_8WLE = _REPO / "examples/data/samples/monomers/templates/8wle_A.cif"
+# Two-residue chain-A PDB shared with the OpenFold2 template tests.
+_PDB_MINIMAL = _REPO / "tests/pipeline/models/openfold2/data/minimal_template.pdb"
 
 # Two deterministic, dissimilar protein sequences (real amino acids).
 SEQ_A = "MKTAYIAKQRQISFVKSHFSRQLEERLGLIEVQAPILSRVGDGTQDNLSGAEK"
@@ -217,3 +219,10 @@ def test_parse_then_self_align_is_full_coverage_offset_zero():
     r = recs[0]
     assert r.template_st - r.query_st == 0
     assert r.query_en - r.query_st == len(seq)
+
+
+def test_parse_template_structure_rejects_blank_chain_id():
+    """gemmi assigns no entity to a blank-ID chain; parsing must raise ValueError."""
+    content = "\n".join(line[:21] + " " + line[22:] for line in _PDB_MINIMAL.read_text().splitlines())
+    with pytest.raises(ValueError, match="blank chain ID"):
+        parse_template_structure(content, fmt="pdb", from_content=True)

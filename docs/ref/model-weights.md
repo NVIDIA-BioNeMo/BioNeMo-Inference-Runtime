@@ -226,11 +226,11 @@ that is all `huggingface_hub`. OpenFold3 is gated and an anonymous request gets
 export HF_TOKEN=hf_...
 ```
 
-`fetch_weights.sh` passes it to HuggingFace downloads and the library's own Hub
-fallback picks it up too. Without it the OpenFold3 tests skip with
-`GatedRepoError` in the skip reason; nothing else in the suite needs it.
-Alternatively stage the file and set `OPENFOLD3_CKPT` so resolution never hits
-the Hub. The grant is per account — CI needs its own.
+`fetch_weights.sh` reads only `HF_TOKEN` and passes it to HuggingFace downloads.
+The library's own Hub fallback accepts any of the three. Without a token the
+OpenFold3 tests skip with `GatedRepoError` in the skip reason; nothing else in
+the suite needs it. Alternatively stage the file and set `OPENFOLD3_CKPT` so
+resolution never hits the Hub. The grant is per account — CI needs its own.
 
 ## Metadata Assets
 

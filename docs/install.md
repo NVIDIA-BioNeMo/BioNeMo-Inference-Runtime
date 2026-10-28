@@ -22,12 +22,13 @@ The release wheel has the following software and hardware requirements:
 - **GPU:** An NVIDIA GPU listed in the [support matrix][support-matrix].
 - **NVIDIA Driver:** [580][driver-580] or higher.
 - **Python:** Python 3.12. Release wheels are tagged `cp312`.
-- **aarch64 build tools:** A C/C++ compiler and Python 3.12 development
-  headers. Some transitive dependencies build from source on aarch64.
+- **Build tools:** A C/C++ compiler and the Python 3.12 development headers.
+  See [Install Build Tools][build-tools].
 
 [linux-requirements]: https://docs.nvidia.com/datacenter/tesla/driver-installation-guide/latest/introduction.html#linux-system-requirements
 [support-matrix]: ref/support-matrix.md#gpus
 [driver-580]: https://docs.nvidia.com/datacenter/tesla/tesla-release-notes-580-65-06
+[build-tools]: #install-build-tools
 
 Use the commands in [Collecting System Information][system-information] to
 verify these requirements. If the installed NVIDIA driver is older than version
@@ -83,18 +84,6 @@ supported CPU architecture. pip selects the wheel that matches the host.
 
 [pypi]: https://pypi.org/project/bionemo-ir/
 
-### Install aarch64 Build Prerequisites
-
-On Ubuntu 24.04 aarch64, install the compiler toolchain and Python headers used
-to build transitive dependencies:
-
-```bash
-sudo apt-get update
-sudo apt-get install --yes build-essential python3.12-dev
-```
-
-The `python3.12-dev` package provides `Python.h`.
-
 ### Create a Python Environment
 
 The release wheel requires Python 3.12 (`cp312`). A dedicated Python
@@ -109,15 +98,19 @@ Choose one of the following methods to create and activate an environment:
 <Tabs>
 <Tab title="uv (recommended)">
 
-[Install `uv`][uv-install], then run:
+[Install `uv`][uv-install]. Its installer script needs `curl` or `wget`; on
+Ubuntu, install `curl` with
+`sudo apt-get update && sudo apt-get install --yes curl`. Open a new shell so
+`uv` is on `PATH`, then run:
 
 ```bash
-uv venv --python 3.12 --seed .venv
+uv venv --python 3.12 --managed-python --seed .venv
 source .venv/bin/activate
 ```
 
-The `--seed` flag installs `pip` in the environment for the shared install
-commands below.
+The `--managed-python` flag uses a uv-managed Python, which includes the
+`Python.h` headers, instead of a system Python. The `--seed` flag installs
+`pip` in the environment for the shared install commands below.
 
 </Tab>
 <Tab title="conda">
@@ -136,7 +129,14 @@ in a separate package; without it, `python3.12 -m venv` fails with
 administrator access:
 
 ```bash
-sudo apt-get install --yes python3.12-venv
+sudo apt-get update
+sudo apt-get install --yes python3.12 python3.12-venv
+```
+
+On RHEL-family systems, the `python3.12` package includes `venv`:
+
+```bash
+sudo dnf install --assumeyes python3.12
 ```
 
 Then create and activate an environment with Python's built-in `venv` module:
@@ -160,6 +160,85 @@ python --version
 python -m pip install --upgrade pip
 ```
 
+### Install Build Tools
+
+Every host needs a C compiler and the `Python.h` headers of the environment's
+Python interpreter. Triton, a PyTorch dependency, compiles a small C launcher
+with them the first time BioIR runs a model.
+
+pip also builds a dependency from source when PyPI has no wheel for the
+environment's Python version and CPU architecture. These dependencies compile
+native code and add minutes to the install:
+
+| Python | x86_64                       | aarch64                                       |
+| ------ | ---------------------------- | --------------------------------------------- |
+| 3.12   | None                         | `gemmi`, `kalign-python`, `biotraj`           |
+| 3.13   | `gemmi`                      | `gemmi`, `kalign-python`, `biotraj`           |
+| 3.14   | `gemmi`, `biotraj`, `uvloop` | `gemmi`, `kalign-python`, `biotraj`, `uvloop` |
+
+pip builds `ihm` from source on every host. Its C extension is optional, so
+`ihm` installs without a compiler.
+
+uv-managed and conda Pythons include `Python.h`. A Python 3.12 from the
+distribution's package manager needs its development package as well. Check
+the environment's interpreter:
+
+```bash
+python -c "import pathlib, sysconfig; print(pathlib.Path(sysconfig.get_path('include'), 'Python.h').is_file())"
+```
+
+Install the compilers, then the development package only when the check
+prints `False`:
+
+<Tabs>
+<Tab title="Ubuntu">
+
+```bash
+sudo apt-get update
+sudo apt-get install --yes build-essential
+```
+
+```bash
+sudo apt-get install --yes python3.12-dev
+```
+
+</Tab>
+<Tab title="RHEL family">
+
+```bash
+sudo dnf install --assumeyes gcc gcc-c++ make
+```
+
+```bash
+sudo dnf install --assumeyes python3.12-devel
+```
+
+</Tab>
+</Tabs>
+
+To list the dependencies that build from source on this host, run the
+following check before installing BioIR. It compiles nothing:
+
+```bash
+python -m pip install --dry-run --only-binary=:all: --no-binary=ihm bionemo-ir
+```
+
+The result means:
+
+- **Ends with `Would install`:** Every dependency except `ihm` installs from a
+  wheel.
+- **`ResolutionImpossible`:** The lines under `The conflict is caused by:`
+  name a dependency that builds from source, such as `kalign-python`.
+- **`No matching distribution found for bionemo-ir`:** The Python version or
+  glibc does not match the release wheel. Check the
+  [requirements][requirements].
+- **`No matching distribution found for` another package:** That dependency
+  builds from source.
+
+pip names only the first dependency that builds from source.
+
+[requirements]: #requirements-to-install-the-bioir-wheel
+
 ### Install the Package
 
 The [external materials notice][external-materials] applies to the dependencies
@@ -174,8 +253,20 @@ python -m pip install bionemo-ir
 ```
 
 pip resolves PyTorch, the CUDA libraries, and the remaining dependencies from
-the same index. The wheel carries the GPU kernels precompiled, so the install
-builds no CUDA code and running it needs only the driver's `libcuda.so.1`.
+the same index. The wheel carries the GPU kernels precompiled, so neither
+installing nor running BioIR needs `nvcc` or the CUDA Toolkit.
+
+If pip fails to build a dependency, or the first prediction fails to compile
+Triton's launcher, match the error to the [build tools][build-tools] it needs:
+
+- `fatal error: Python.h: No such file or directory`,
+  `Could NOT find Python (missing: ... Development.Module)`, or
+  `Imported target "pybind11::module" includes non-existent path`: Install
+  `python3.12-dev` or `python3.12-devel`. During a prediction, the first
+  error appears above a `CalledProcessError` naming Triton's `driver.c`.
+- `Failed to find C compiler`, `No such file or directory: 'gcc'` or `'cc'`,
+  `no acceptable C compiler found`, or a CMake error naming
+  `CMAKE_C_COMPILER` or `CMAKE_CXX_COMPILER`: Install the compilers.
 
 Verify the install:
 

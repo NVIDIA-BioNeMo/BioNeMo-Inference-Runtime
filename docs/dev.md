@@ -47,7 +47,8 @@ Verify these requirements with the commands in
 not met, follow the [GPU Stack][gpu-stack] guide.
 
 The kernels are **precompiled**. Neither building the wheel nor running it needs
-`nvcc` — only the driver's `libcuda.so.1`.
+`nvcc`. Running needs the driver's `libcuda.so.1`, plus a C compiler and
+`Python.h` for Triton's launcher.
 
 Host and development-container commands use uv and the committed lock. The
 container reuses its preinstalled locked dependencies for native rebuilds.
@@ -264,37 +265,37 @@ selected.
 
 ### Data Dependencies
 
-Two things are needed:
-
 The commands below use the configured-host form. Inside the development
-container, omit the `uv run --locked` prefix.
+container, omit the `uv run --locked` prefix. In a release-wheel environment,
+also omit it and run the script from a checkout with the environment
+activated, for example `scripts/fetch_weights.sh --model boltz-2`:
+`uv run --locked` builds BioIR from source. The script needs `bash` and `curl`.
+
+Two things are needed:
 
 - **Inputs**: `examples/data/samples/` carries small, real inputs — monomers,
   heterooligomers, `RNA/DNA/ligand` complexes, MSAs, and templates — so both
   routes below have something to fold without assembling your own data.
 
-- **Weights**: pull the Boltz-2 checkpoint into the shared cache.
+- **Weights**: pull the Boltz-2 and OpenFold2 checkpoints into the shared
+  cache.
 
   ```bash
   uv run --locked scripts/fetch_weights.sh --model boltz-2
+  uv run --locked scripts/fetch_weights.sh --model openfold2
   ```
 
   OpenFold3 uses a gated Hugging Face checkpoint. Create a Hugging Face account,
   request access and accept the terms on [`OpenFold/OpenFold3`][openfold3-hf],
-  then authenticate and fetch the checkpoint:
-
-  ```bash
-  uv run --locked hf auth login
-  uv run --locked scripts/fetch_weights.sh --model openfold3
-  ```
-
-  For a non-interactive environment, export `HF_TOKEN` instead of running
-  `hf auth login`:
+  then export a token and fetch the checkpoint:
 
   ```bash
   export HF_TOKEN=hf_...
   uv run --locked scripts/fetch_weights.sh --model openfold3
   ```
+
+  The script reads only `HF_TOKEN`. A token stored by `hf auth login` covers
+  only the automatic download on the first prediction.
 
   Refer to [Model Weights](ref/model-weights.md) for the other
   families, cache layout, token alternatives, and manual checkpoint staging.
@@ -303,7 +304,10 @@ container, omit the `uv run --locked` prefix.
 
 The wheel is self-contained: the CUBINs are compiled into the extension, so
 running needs no source checkout, no CMake, and no CUDA toolkit — only a driver
-providing `libcuda.so.1`.
+providing `libcuda.so.1` and the [build tools][install-build-tools] Triton uses
+for its launcher.
+
+[install-build-tools]: install.md#install-build-tools
 
 In the dev image every dependency is already installed, so build the venv on top
 of them and install the wheel alone:

@@ -61,12 +61,13 @@ if torch is not None:
         torch.backends.cuda.matmul.fp32_precision = "ieee"
 
 
-# The two suites that assert on build inputs rather than running a kernel:
-# tests/contract/ reads text, tests/cubin/ drives cpp/cmake/ by file path. Neither
-# imports torch or bionemo_ir, so both must stay collectable with no extension
-# built. Every other suite needs the launcher and has to be told when it is absent.
+# Build and CI tests need no launcher.
 _TESTS_DIR = Path(__file__).resolve().parent
-_LAUNCHER_FREE_DIRS = (_TESTS_DIR / "contract", _TESTS_DIR / "cubin")
+_LAUNCHER_FREE_DIRS = (
+    _TESTS_DIR / "contract",
+    _TESTS_DIR / "cubin",
+    _TESTS_DIR.parent / ".gitlab" / "ci" / "scripts",
+)
 
 
 def _is_launcher_free_only(config: pytest.Config) -> bool:

@@ -254,7 +254,7 @@ def test_full_cmake_build_consumes_synthetic_materialization(tmp_path: Path) -> 
     )
 
     extensions = list(library.glob("_cutedsl_kernels*.so"))
-    assert len(extensions) == 1
+    assert [path.name for path in extensions] == ["_cutedsl_kernels.abi3.so"]
     extension_bytes = extensions[0].read_bytes()
     for family in ACTIVE_FAMILIES:
         assert extension_bytes.count(b"\x7fELF" + family.encode()) == 1

@@ -13,12 +13,16 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-nanobind_add_module(_cutedsl_kernels bindings.cpp cubin_runtime.cpp)
+nanobind_add_module(_cutedsl_kernels STABLE_ABI bindings.cpp cubin_runtime.cpp)
+# Driver libraries resolve on the recipient host.
+set_target_properties(_cutedsl_kernels PROPERTIES SKIP_BUILD_RPATH TRUE
+                                                INSTALL_RPATH ""
+                                                CUDA_RUNTIME_LIBRARY Static)
 target_include_directories(_cutedsl_kernels PRIVATE "${CMAKE_CURRENT_LIST_DIR}")
 target_link_libraries(_cutedsl_kernels PRIVATE CUDA::cuda_driver)
 
 if(BIOIR_BUILD_CLAUDE_KIT_KERNELS)
-  target_link_libraries(_cutedsl_kernels PRIVATE CUDA::cudart
+  target_link_libraries(_cutedsl_kernels PRIVATE CUDA::cudart_static
                                                    bioir_cutlass_headers)
   set(BIOIR_CLAUDE_KIT_TRIATTN_DIR
       "${CMAKE_CURRENT_LIST_DIR}/claude_kit_triangle_attention_sm90_D32")

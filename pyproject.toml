@@ -30,7 +30,7 @@ namespaces = false
 [project]
 name = "bionemo-ir"
 description = "BioNeMo Inference Runtime: GPU accelerated framework for protein folding"
-requires-python = ">=3.12,<4.0"
+requires-python = ">=3.12,<3.15"
 authors = [{ name = "NVIDIA-BioNeMo team" }]
 dependencies = [
   "cuda-python>=13",
@@ -51,7 +51,9 @@ dependencies = [
   "urllib3>=2.8.0",
   "virtualenv>=21.14.5",
   # uvloop 0.22 breaks Ray Serve: https://github.com/ray-project/ray/issues/57992
-  "uvloop==0.21.0",
+  # 0.21.0 has no cp314 wheels; Python 3.14 takes the release the wheel jobs test.
+  "uvloop==0.21.0; python_version < '3.14'",
+  "uvloop==0.23.0; python_version >= '3.14'",
   "modelcif==1.6",  # Needed for CIFWriter.
   "rdkit==2025.9.6",  # Needed for the Boltz2 data pipeline.
   "nvidia-cudnn-frontend==1.23.0",
@@ -64,7 +66,7 @@ dependencies = [
   "lru-dict==1.4.1",
   "kalign-python==3.6.0",
   "scipy>=1.13.1,<2",
-  "gemmi==0.6.5",
+  "gemmi==0.7.5",  # First release with cp313/cp314 and aarch64 wheels; README links its source.
   "einops>=0.8",  # rearrange() and einsum() are imported directly.
   "pydantic>=2,<3",
 ]
@@ -108,6 +110,7 @@ release = [
   { include-group = "build" },
   # Tools used after the build stay here rather than in the default developer
   # environment. Release CI syncs this complete group from uv.lock.
+  "abi3audit==0.0.26",
   "auditwheel==6.8.0",
   "build==1.5.0",
   # Match the digest-pinned NGC base: DALI 2.1.0 requires packaging<=26.0.
@@ -170,10 +173,27 @@ build-constraint-dependencies = [
 environments = [
   "sys_platform == 'linux' and platform_machine == 'x86_64' and python_version == '3.12'",
   "sys_platform == 'linux' and platform_machine == 'aarch64' and python_version == '3.12'",
+  "sys_platform == 'linux' and platform_machine == 'x86_64' and python_version == '3.13'",
+  "sys_platform == 'linux' and platform_machine == 'aarch64' and python_version == '3.13'",
+  "sys_platform == 'linux' and platform_machine == 'x86_64' and python_version == '3.14'",
+  "sys_platform == 'linux' and platform_machine == 'aarch64' and python_version == '3.14'",
 ]
 required-environments = [
   "sys_platform == 'linux' and platform_machine == 'x86_64' and python_version == '3.12'",
   "sys_platform == 'linux' and platform_machine == 'aarch64' and python_version == '3.12'",
+  "sys_platform == 'linux' and platform_machine == 'x86_64' and python_version == '3.13'",
+  "sys_platform == 'linux' and platform_machine == 'aarch64' and python_version == '3.13'",
+  "sys_platform == 'linux' and platform_machine == 'x86_64' and python_version == '3.14'",
+  "sys_platform == 'linux' and platform_machine == 'aarch64' and python_version == '3.14'",
+]
+# Lock-only floors: the first NumPy and SciPy releases with wheels for each
+# newer Python. Without them, uv reuses the Python 3.12 versions, which need a
+# Fortran source build there. .gitlab/ci/scripts/source_builds.py checks this.
+constraint-dependencies = [
+  "numpy>=2.1.0; python_version == '3.13'",
+  "numpy>=2.3.2; python_version >= '3.14'",
+  "scipy>=1.14.1; python_version == '3.13'",
+  "scipy>=1.16.1; python_version >= '3.14'",
 ]
 # uv otherwise notices only Python packaging metadata. These inputs and
 # environment variables also determine the editable native extension.

@@ -31,8 +31,11 @@ API, refer to [Python API](ref/api.md).
     docker is not used.
 
 - **Python**: 3.12 for source development. `.python-version` selects the latest
-  3.12 patch through uv, the extension is built `cp312`, and the published
-  package metadata remains `requires-python >=3.12,<4.0`.
+  3.12 patch through uv, and the extension targets `cp312-abi3`. The package
+  metadata declares `requires-python >=3.12,<3.15`; `uv.lock` resolves Python
+  3.12, 3.13 and 3.14 on x86_64 and aarch64, and CI installs and tests the
+  release wheel on each. Lift the cap only after the dependencies publish wheels
+  for the next Python and CI tests it.
 
 - **uv**: 0.13.x on a configured host. [Install uv][uv-install] if it is not
   already available. The development image includes the repository's minimum
@@ -135,7 +138,7 @@ make -C docker wheel
 ls dist
 ```
 
-The artifact is `bionemo_ir-<version>+cu<xyz>-cp312-cp312-linux_<arch>.whl`.
+The artifact is `bionemo_ir-<version>+cu<xyz>-cp312-abi3-linux_<arch>.whl`.
 
 To build directly on a configured host or inside the development container, use
 the lock-constrained repository wrapper:
@@ -177,10 +180,12 @@ uv lock --check
 uv pip install --no-deps -e .
 ```
 
-Both paths compile `bionemo_ir.libs._cutedsl_kernels`, a nanobind extension
-embedding verified CUBIN build artifacts. Generated packs and records are
-excluded from Git. Before an isolated build, obtain the matching complete
-`build/cubin_corpus` artifact from CI and select its extracted directory:
+Both paths compile `bionemo_ir.libs._cutedsl_kernels`, a CPython 3.12 stable ABI
+(`.abi3.so`) nanobind extension embedding verified CUBIN build artifacts.
+ClaudeKit links the CUDA runtime statically; the host supplies `libcuda.so.1`.
+Generated packs and records are excluded from Git. Before an isolated build,
+obtain the matching complete `build/cubin_corpus` artifact from CI and select
+its extracted directory:
 
 ```bash
 export BIOIR_CUBIN_ARTIFACT_ROOT="$PWD/build/cubin_corpus"
@@ -415,6 +420,14 @@ Inside the development container, use the equivalent bare `prek` commands.
 Both CI systems run their CPU gates through `scripts/ci/`: `style.sh` wraps the
 hooks above, and `contract.sh` runs the build-contract and CUBIN suites with no
 GPU and no built extension.
+
+Release CI checks the installed wheel's dependencies without modifying their
+metadata. It treats the known cuSPARSELt ARM64 wheel-tag defect as a warning
+because PyTorch's exact dependency pin excludes the corrected post-release.
+Every other dependency-check failure blocks wheel acceptance. See the
+[installation note][wheel-installation].
+
+[wheel-installation]: install.md#install-the-package
 
 ## Open a Pull Request
 

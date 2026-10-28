@@ -243,7 +243,7 @@ Distribution compliance material is available here:
 
 - [Third-party notices and attributions][third-party-notices]
 - [Full third-party license texts][third-party-licenses]
-- [Gemmi 0.6.5 corresponding source][gemmi-source], licensed under MPL-2.0 or
+- [Gemmi 0.7.5 corresponding source][gemmi-source], licensed under MPL-2.0 or
   LGPL-3.0-or-later; BioIR distributes it under the MPL-2.0 option
 
 ## Notice and Disclaimer
@@ -263,7 +263,7 @@ assumes no liability for any losses, damages, liabilities or legal consequences
 from your use or inability to use this software or any retrieved materials. Use
 this software and the retrieved materials at your own risk.
 
-[gemmi-source]: https://github.com/project-gemmi/gemmi/tree/v0.6.5
+[gemmi-source]: https://github.com/project-gemmi/gemmi/tree/v0.7.5
 [cuda-badge]:
 https://img.shields.io/badge/CUDA-13.2-76B900.svg?style=flat&logo=nvidia&logoColor=white
 [cuda-downloads]: https://developer.nvidia.com/cuda-downloads

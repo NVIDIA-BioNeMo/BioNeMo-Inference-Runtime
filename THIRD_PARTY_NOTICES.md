@@ -152,6 +152,14 @@ this software and the retrieved materials at your own risk.
   - Distribution: statically compiled into BioIR extension modules
   - Modifications: none
 
+- **NVIDIA CUDA Runtime**
+  - Copyright: NVIDIA Corporation
+  - License: NVIDIA CUDA Toolkit End User License Agreement
+  - Terms: [CUDA runtime license][cuda-eula]
+  - Distribution: `libcudart_static.a` is linked into the extension for
+    ClaudeKit; the CUDA driver remains external
+  - Modifications: none
+
 ## Runtime Dependencies
 
 These direct runtime dependencies are downloaded separately by the recipient's
@@ -447,3 +455,4 @@ resolved operating-system and base-image package closure.
 [uvloop]: https://github.com/MagicStack/uvloop
 [virtualenv]: https://github.com/pypa/virtualenv
 [vllm]: https://github.com/vllm-project/vllm
+[cuda-eula]: https://docs.nvidia.com/cuda/eula/index.html

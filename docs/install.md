@@ -274,6 +274,14 @@ Verify the install:
 python -c "import bionemo_ir; print(bionemo_ir.__version__)"
 ```
 
+<Note>
+On aarch64, `python -m pip check` can report
+`nvidia-cusparselt-cu13 0.8.1 is not supported on this platform` because the
+upstream cuSPARSELt wheel declares an incorrect internal platform tag. This
+warning does not prevent installation or package imports. No post-install
+repair is required.
+</Note>
+
 ## Next Steps
 
 - Run your first Boltz-2 prediction in the [Quickstart][quickstart].

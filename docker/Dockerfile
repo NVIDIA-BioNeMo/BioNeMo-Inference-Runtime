@@ -225,8 +225,8 @@ COPY --from=wheel /dist/ /
 FROM ${RUNTIME_IMAGE}:${RUNTIME_TAG} AS runtime
 #
 # Deliberately a `base` CUDA image, not `runtime` or `devel`:
-#   * the extension needs libcuda.so.1 from the host and libcudart from the
-#     CUDA base for the default source-built ClaudeKit kernel;
+#   * the extension needs libcuda.so.1 from the host; ClaudeKit links
+#     the CUDA runtime statically;
 #   * it loads already-compiled CUBINs via cuModuleLoadData, so the driver never
 #     JITs and neither nvrtc nor nvJitLink is needed;
 #   * torch brings its own cudart/cublas/cudnn as PyPI wheels, so a CUDA
@@ -300,7 +300,7 @@ RUN set -eux; \
         echo "extension has unresolved runtime dependencies" >&2; \
         exit 1; \
     fi; \
-    if echo "${deps}" | grep -Eq 'lib(cublas|cublasLt|cudnn|nvrtc|nvJitLink|cufft|curand|cusparse|cusolver)\.so'; then \
+    if echo "${deps}" | grep -Eq 'lib(cudart|cublas|cublasLt|cudnn|nvrtc|nvJitLink|cufft|curand|cusparse|cusolver)\.so'; then \
         echo "extension links a CUDA library this image does not ship" >&2; \
         exit 1; \
     fi; \

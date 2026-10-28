@@ -428,8 +428,8 @@ def _long_description() -> str:
 class CMakeExtension(Extension):
     """A setuptools extension whose implementation is built by CMake."""
 
-    def __init__(self, name: str, source_dir: Path):
-        super().__init__(name, sources=[])
+    def __init__(self, name: str, source_dir: Path) -> None:
+        super().__init__(name, sources=[], py_limited_api=True)
         self.source_dir = source_dir.resolve()
 
 
@@ -539,4 +539,5 @@ setup(
         [CMakeExtension("bionemo_ir.libs._cutedsl_kernels", ROOT_DIR / "cpp")] if _BUILD_CUTEDSL_KERNELS else []
     ),
     cmdclass={"build_ext": CMakeBuild, "sdist": CUBINSdist},
+    options={"bdist_wheel": {"py_limited_api": "cp312"}},
 )

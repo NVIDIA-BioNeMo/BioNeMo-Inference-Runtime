@@ -27,6 +27,10 @@
 #include <cstdint>
 #include <vector>
 
+#if !defined(Py_LIMITED_API) || Py_LIMITED_API != 0x030C0000
+#error "BioIR requires the CPython 3.12 limited API"
+#endif
+
 namespace nb = nanobind;
 using namespace nb::literals;
 

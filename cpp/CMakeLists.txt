@@ -36,7 +36,8 @@ get_filename_component(BIOIR_REPO_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/.."
 set(BIOIR_CPP_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
 set(BIOIR_PYTHON_PACKAGE_DIR "${BIOIR_REPO_ROOT}/bionemo_ir")
 
-find_package(Python 3.10 REQUIRED COMPONENTS Interpreter Development.Module)
+find_package(Python 3.12 REQUIRED COMPONENTS Interpreter Development.Module
+                                            Development.SABIModule)
 include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/setup_dependencies.cmake")
 
 add_subdirectory(kernels)

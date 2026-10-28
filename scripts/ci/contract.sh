@@ -27,4 +27,4 @@ cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.."
 # shellcheck source=/dev/null
 source scripts/ci/uv_env.sh
 
-uv run --locked --only-group test pytest tests/contract tests/cubin
+uv run --locked --only-group test pytest -c tests/pytest.ini tests/contract tests/cubin "$@"

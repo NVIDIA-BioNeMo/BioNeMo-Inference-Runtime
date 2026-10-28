@@ -158,11 +158,6 @@ These direct runtime dependencies are downloaded separately by the recipient's
 package installer and are not included in the BioIR source distribution or
 wheel. Their package-provided license and notice files remain authoritative.
 
-- **apache-tvm-ffi**
-  - Copyright: Apache TVM contributors
-  - License: Apache-2.0; see [`LICENSE`][bioir-license]
-  - Source and license: [Apache TVM FFI][apache-tvm-ffi]
-
 - **torch**
   - Copyright: PyTorch contributors
   - License: compound upstream license bundle, including Apache-2.0,
@@ -324,8 +319,6 @@ distribution.
   [package][cueq-ops-cu13]
 - **cuequivariance-ops-torch-cu13** —
   LicenseRef-NVIDIA-MATH-LIBRARIES-SDK; [package][cueq-ops-torch-cu13]
-- **nvidia-cutlass-dsl** — LicenseRef-NVIDIA-SOFTWARE-LICENSE;
-  [package and terms][cutlass-dsl-license]
 
 ## Build Submodules
 
@@ -394,7 +387,6 @@ resolved operating-system and base-image package closure.
 
 [aiohttp]: https://raw.githubusercontent.com/aio-libs/aiohttp/master/LICENSE.txt
 [alphafold]: https://github.com/google-deepmind/alphafold
-[apache-tvm-ffi]: https://github.com/apache/tvm-ffi
 [bioir-license]: LICENSE
 [biopython]: https://github.com/biopython/biopython
 [biopython-license]: LICENSES/Biopython-License-Agreement.txt

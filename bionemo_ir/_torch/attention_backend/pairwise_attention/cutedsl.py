@@ -34,12 +34,13 @@ import math
 from dataclasses import dataclass
 from typing import Any
 
-import cutlass
 import torch
 import torch.nn.functional as F
 
 from bionemo_ir._torch.utils.kernel import (
     CuTeDSLKernelLibraryError,
+    CutlassNumeric,
+    cute_numeric,
     launch_compiled_kernel,
     load_source_module,
     populate_compiled_cache_from_library,
@@ -51,8 +52,6 @@ from ..interface import AttentionBackend, AttentionMetadata
 from ._config import (
     _PW_CONFIGS_DIR,
     PairwiseAttentionLeftMaskKernelConfig,
-    _build_sm80_config,
-    _build_sm90_config,
     get_kernel_config,
     get_nearest_bucket,
 )
@@ -63,16 +62,11 @@ __all__ = [
     "PairwiseAttentionCuTeLeftMaskMetadata",
     "PairwiseAttentionLeftMaskKernelConfig",
     "_PW_CONFIGS_DIR",
-    "_build_sm80_config",
-    "_build_sm90_config",
     "get_kernel_config",
     "get_nearest_bucket",
 ]
 
-_TORCH_TO_CUTLASS_DTYPE = {
-    torch.float16: cutlass.Float16,
-    torch.bfloat16: cutlass.BFloat16,
-}
+_DTYPES = (torch.float16, torch.bfloat16)
 
 
 class PairwiseAttentionCuTeLeftMaskMetadata(AttentionMetadata):
@@ -101,7 +95,6 @@ class _PairwiseAttentionLaunchInputs:
     output: torch.Tensor
     lse: torch.Tensor
     variant: _PairwiseAttentionVariant
-    ct_dtype: type[cutlass.Numeric]
     align_elems: int
     softmax_scale: float
     batch_shape: tuple[int, ...]
@@ -124,13 +117,6 @@ def _pad_last_dim(t: torch.Tensor, new_size: int, value: float = 0.0) -> torch.T
     if cur >= new_size:
         return t
     return F.pad(t, (0, new_size - cur), value=value)
-
-
-def _cutlass_dtype(t: torch.Tensor) -> type[cutlass.Numeric]:
-    ty = _TORCH_TO_CUTLASS_DTYPE.get(t.dtype)
-    if ty is None:
-        raise TypeError(f"Pairwise attention expects float16 or bfloat16; got {t.dtype}")
-    return ty
 
 
 def _resolve_lse_buffer(
@@ -225,7 +211,7 @@ class PairwiseAttentionCuTeLeftMask(CuteKernelCache, AttentionBackend[PairwiseAt
     def _resolve_source_kernel(
         self,
         variant: _PairwiseAttentionVariant,
-        ct_dtype: type[cutlass.Numeric],
+        ct_dtype: CutlassNumeric,
     ) -> tuple[PairwiseAttentionLeftMaskKernelConfig, Any]:
         config = get_kernel_config(self._sm_version, variant.head_dim, variant.bucket)
         if not config.can_implement(ct_dtype, variant.head_dim):
@@ -281,7 +267,7 @@ class PairwiseAttentionCuTeLeftMask(CuteKernelCache, AttentionBackend[PairwiseAt
         config: PairwiseAttentionLeftMaskKernelConfig,
         kernel,
         compile_source: Any,
-        ct_dtype: type[cutlass.Numeric],
+        ct_dtype: CutlassNumeric,
         align_elems: int,
         sm_scale: float,
         mult: int,
@@ -324,7 +310,6 @@ class PairwiseAttentionCuTeLeftMask(CuteKernelCache, AttentionBackend[PairwiseAt
     def _get_executable(
         self,
         variant: _PairwiseAttentionVariant,
-        ct_dtype: type[cutlass.Numeric],
         align_elems: int,
         sm_scale: float,
         mult: int,
@@ -339,6 +324,7 @@ class PairwiseAttentionCuTeLeftMask(CuteKernelCache, AttentionBackend[PairwiseAt
 
         try:
             source = load_source_module(__package__)
+            ct_dtype = cute_numeric(variant.dtype)
             config, kernel = self._resolve_source_kernel(variant, ct_dtype)
         except ImportError as source_error:
             return self._load_cubin_executable(variant, source_error)
@@ -386,8 +372,9 @@ class PairwiseAttentionCuTeLeftMask(CuteKernelCache, AttentionBackend[PairwiseAt
         if k.shape != v.shape:
             raise ValueError("K and V must have the same shape")
 
-        ct_dtype = _cutlass_dtype(q)
-        align_elems = 128 // ct_dtype.width
+        if q.dtype not in _DTYPES:
+            raise TypeError(f"Pairwise attention expects float16 or bfloat16; got {q.dtype}")
+        align_elems = 128 // torch.finfo(q.dtype).bits
         q_flat = q.reshape(batch_flat, seqlen_q, num_heads, padded_head_dim)
         k_flat = k.reshape(batch_flat, seqlen_kv, num_heads, padded_head_dim)
         v_flat = v.reshape(batch_flat, seqlen_kv, num_heads, padded_head_dim)
@@ -444,7 +431,6 @@ class PairwiseAttentionCuTeLeftMask(CuteKernelCache, AttentionBackend[PairwiseAt
             output=output_flat,
             lse=lse_flat,
             variant=variant,
-            ct_dtype=ct_dtype,
             align_elems=align_elems,
             softmax_scale=float(self.head_dim**-0.5),
             batch_shape=batch_shape,
@@ -507,7 +493,6 @@ class PairwiseAttentionCuTeLeftMask(CuteKernelCache, AttentionBackend[PairwiseAt
         else:
             executable = self._get_executable(
                 launch_inputs.variant,
-                launch_inputs.ct_dtype,
                 launch_inputs.align_elems,
                 launch_inputs.softmax_scale,
                 launch_inputs.mult,

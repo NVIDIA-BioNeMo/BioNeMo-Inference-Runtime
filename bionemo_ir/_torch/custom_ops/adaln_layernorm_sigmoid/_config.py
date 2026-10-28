@@ -18,16 +18,11 @@ from __future__ import annotations
 
 import os
 
-import cutlass
 import torch
 
 from bionemo_ir._torch.utils.kernel import get_config_file_name, load_kernel_configs
 
-_TORCH_TO_CUTLASS_DTYPE = {
-    torch.float16: cutlass.Float16,
-    torch.bfloat16: cutlass.BFloat16,
-    torch.float32: cutlass.Float32,
-}
+_DTYPES = (torch.float16, torch.bfloat16, torch.float32)
 
 # Architectures with shipped payloads.
 SUPPORTED_SMS = (80, 86, 89, 90, 100, 103)
@@ -128,10 +123,3 @@ def select_bucket(sm_version: int, N: int, M: int) -> tuple[dict, tuple[int, int
         if m_max is None or M <= m_max:
             return cfg, geometry
     raise RuntimeError(f"No bucket matched M={M} (last bucket must be catch-all)")
-
-
-def cutlass_dtype(t: torch.Tensor) -> type:
-    ty = _TORCH_TO_CUTLASS_DTYPE.get(t.dtype)
-    if ty is None:
-        raise TypeError(f"AdaLN layernorm-sigmoid kernel expects float16, bfloat16 or float32; got {t.dtype}")
-    return ty

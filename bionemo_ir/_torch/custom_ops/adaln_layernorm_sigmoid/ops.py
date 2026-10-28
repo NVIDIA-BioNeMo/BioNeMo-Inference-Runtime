@@ -23,7 +23,7 @@ import torch
 
 from bionemo_ir.utils import get_sm_version
 
-from ._config import _TORCH_TO_CUTLASS_DTYPE, SHIPPED_N, SUPPORTED_SMS
+from ._config import _DTYPES, SHIPPED_N, SUPPORTED_SMS
 
 _adaln_lns_cute_instances: dict[bool, Callable] = {}
 
@@ -50,7 +50,7 @@ def _invoke_vanilla_adaln_layernorm_sigmoid(
 
 def get_adaln_layernorm_sigmoid_op(dtype: torch.dtype, N: int, rms_norm: bool = False) -> Callable:
     """Return the fused CuTeDSL LayerNorm or RMSNorm op."""
-    if get_sm_version() not in SUPPORTED_SMS or dtype not in _TORCH_TO_CUTLASS_DTYPE or N not in SHIPPED_N:
+    if get_sm_version() not in SUPPORTED_SMS or dtype not in _DTYPES or N not in SHIPPED_N:
         if rms_norm:
             return partial(_invoke_vanilla_adaln_layernorm_sigmoid, rms_norm=True)
         return _invoke_vanilla_adaln_layernorm_sigmoid

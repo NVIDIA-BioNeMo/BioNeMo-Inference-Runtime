@@ -197,6 +197,13 @@ python -c "import bionemo_ir.libs._cutedsl_kernels; print('ok')"
 
 ### CuTeDSL Compiler
 
+The compiler and its TVM-FFI launcher live in the `cutedsl` dependency group,
+which `dev` includes. The package itself does not depend on them. Without the
+compiler, supported variants launch their shipped CUBINs, as a source-free
+build does. Configurations without a shipped CUBIN use the operator's fallback
+where available, such as AdaLN's vanilla PyTorch implementation. Only functions
+that compile from source import the compiler.
+
 `nvidia-cutlass-dsl[cu13]` installs both `nvidia-cutlass-dsl-libs-base` and
 `nvidia-cutlass-dsl-libs-cu13`. The two wheels ship the same native compiler
 module, each embedding its own ptxas (CUDA 12.9 and 13.1), and whichever unpacks
@@ -241,11 +248,10 @@ remain immediately visible through the editable install.
 
 ### Change dependencies
 
-Consumer dependency ranges live in `[project.dependencies]` in
-`pyproject.toml`. Development-only requirements live in
-`[dependency-groups]`. The focused `build` group pins PEP 517 requirements;
-`release` adds artifact inspection tools and is not installed in the default
-environment.
+Consumer dependency ranges live in `[project.dependencies]` in `pyproject.toml`.
+Development-only requirements live in `[dependency-groups]`. The focused `build`
+group pins PEP 517 requirements; `cutedsl` holds the kernel compiler; `release`
+adds artifact inspection tools and is not installed in the default environment.
 
 Regenerate and verify the exact development resolution after either dependency
 source changes:

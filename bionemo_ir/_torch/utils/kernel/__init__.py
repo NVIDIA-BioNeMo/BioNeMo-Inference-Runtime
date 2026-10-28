@@ -36,9 +36,10 @@ from ._kernel_config_loader import (
     load_kernel_configs,
     resolve_implementation,
 )
-from ._kernel_source_loader import KernelSourceUnavailable, load_source_module
+from ._kernel_source_loader import CutlassNumeric, KernelSourceUnavailable, cute_numeric, load_source_module
 
 __all__ = [
+    "CutlassNumeric",
     "CuTeDSLKernelLibraryError",
     "CuTeDSLKernelLibraryExecutable",
     "CuTeDSLKernelLibraryUnavailable",
@@ -46,6 +47,7 @@ __all__ = [
     "KernelConfigBundle",
     "KernelSourceUnavailable",
     "current_stream_handle",
+    "cute_numeric",
     "get_config_file_name",
     "launch_compiled_kernel",
     "load_kernel_configs",

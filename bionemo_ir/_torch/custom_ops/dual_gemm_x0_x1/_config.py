@@ -25,8 +25,6 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
-import cutlass.utils as utils
-
 from bionemo_ir._torch.utils.kernel import (
     get_config_file_name,
     load_kernel_configs,
@@ -43,6 +41,13 @@ _VARIANT_KEY_RE = re.compile(r"^S=(?P<s>\d+)(?:\|b=(?P<b>[01]))?$")
 # SM80/86/89 use Ampere split-K, SM90 Hopper ping-pong, and SM100/103 Blackwell 2-SM UMMA.
 _TUNED_SMS: tuple[int, ...] = (80, 86, 89, 90, 100, 103)
 _FALLBACK_SM: int = 80
+
+
+def _smem_capacity(sm_version: int) -> int:
+    """Shared-memory bytes per block, from the CuTeDSL compiler's tables."""
+    import cutlass.utils as utils
+
+    return int(utils.get_smem_capacity_in_bytes(f"sm_{sm_version}"))
 
 
 @dataclass(frozen=True)
@@ -168,7 +173,7 @@ def _build_kernel_config(
                 tuple(full_params["cta_tiler"]),
                 int(full_params["num_stages"]),
             )
-            return smem_bytes <= int(utils.get_smem_capacity_in_bytes(f"sm_{sm_version}"))
+            return smem_bytes <= _smem_capacity(sm_version)
         return bool(
             kernel_cls.can_implement(
                 ct_dtype,
@@ -226,7 +231,7 @@ def sm80_residual_tile_params(
     adjusted = dict(tile_params)
     bM, bN, bK = (int(extent) for extent in adjusted["cta_tiler"])
     itemsize = 2 if dtype_str in ("fp16", "bf16") else 4
-    capacity = int(utils.get_smem_capacity_in_bytes(f"sm_{sm_version}"))
+    capacity = _smem_capacity(sm_version)
     while True:
         stages = int(adjusted["num_stages"])
         mainloop_factor = 1 if asymmetric else 2

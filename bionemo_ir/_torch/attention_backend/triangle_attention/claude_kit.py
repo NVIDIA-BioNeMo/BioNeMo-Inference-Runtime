@@ -151,12 +151,11 @@ class ClaudeKitTriangleAttentionSM90D32(TriangleAttentionCuTeLeftMask):
     def _get_executable(
         self,
         variant: _TriangleAttentionVariant,
-        ct_dtype: object,
         align_elems: int,
         sm_scale: float,
         i_dim: int,
     ) -> _ClaudeKitExecutable:
-        del ct_dtype, align_elems, sm_scale, i_dim
+        del align_elems, sm_scale, i_dim
         if not self.supports(self._sm_version, variant.dtype, self.head_dim):
             raise ValueError(
                 "ClaudeKit triangle attention requires SM90, bfloat16, and head_dim=32; "

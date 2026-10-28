@@ -19,7 +19,6 @@ from __future__ import annotations
 from typing import Any
 
 import torch
-from cutlass.cute.runtime import make_fake_stream
 
 from bionemo_ir._torch.utils.kernel import (
     CuTeDSLKernelLibraryError,
@@ -88,6 +87,8 @@ class WindowAttentionCuTe(CuteKernelCache):
         disk_key = ("window_attention_cute", 2, self._sm_version, kernel_abi, self._dtype_str, *self._shape)
         executable = self.load_from_cache(disk_key)
         if executable is None:
+            from cutlass.cute.runtime import make_fake_stream
+
             logger.info(f"CuTeDSL window attention: compiling the {kernel_abi} kernel for {self._describe()}")
             kernel = source.make_kernel(kernel_abi, *self._shape)
             executable = source.compile_window_attention_source(

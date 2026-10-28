@@ -54,9 +54,7 @@ dependencies = [
   "uvloop==0.21.0",
   "modelcif==1.6",  # Needed for CIFWriter.
   "rdkit==2025.9.6",  # Needed for the Boltz2 data pipeline.
-  "nvidia-cutlass-dsl[cu13]==4.5.2",
   "nvidia-cudnn-frontend==1.23.0",
-  "apache-tvm-ffi>=0.1.6,<0.2",
   "biotite==1.6.0",
   # https://github.com/huggingface/datasets/issues/7344
   "datasets==5.0.1",
@@ -96,6 +94,12 @@ build = [
 ]
 coverage = [
   "coverage[toml]>=7.10.6",
+]
+# The CuTeDSL compiler and its TVM-FFI launcher. Only kernel source builds and
+# CUBIN generation use them; the package launches the embedded CUBINs without.
+cutedsl = [
+  "nvidia-cutlass-dsl[cu13]==4.5.2",
+  "apache-tvm-ffi>=0.1.6,<0.2",
 ]
 lint = [
   "prek==0.4.12",  # Pinned for reproducible hook runs.
@@ -142,6 +146,7 @@ test = [
   "assertpy>=1.1,<2",
 ]
 dev = [
+  { include-group = "cutedsl" },
   { include-group = "lint" },
   { include-group = "test" },
 ]

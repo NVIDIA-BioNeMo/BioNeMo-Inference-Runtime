@@ -37,6 +37,9 @@ last two are in there.
 Inherits from :class:`~.cache_base.KernelCacheBase` for the unified
 compile / save / load interface shared with the Triton backend.
 
+The CuTeDSL compiler is imported on first compile or cache load, so a
+source-free install that only launches packaged CUBINs never needs it.
+
 Usage::
 
     class MyKernel(CuteKernelCache):
@@ -70,10 +73,8 @@ import sys
 import tempfile
 import time
 from pathlib import Path
+from types import ModuleType
 from typing import TYPE_CHECKING, Any
-
-import cutlass
-import cutlass.cute as cute
 
 if TYPE_CHECKING:
     from cutlass.cutlass_dsl.tvm_ffi_provider import TVMFFIJitCompiledFunction
@@ -105,6 +106,13 @@ COMPILE_WAIT_TIMEOUT = 600
 
 # Compile locks this process holds, by key hash, from a cache miss to its save.
 _compile_claims: dict[str, int] = {}
+
+
+def _cute() -> ModuleType:
+    """Import the CuTeDSL compiler, which only the source path needs."""
+    import cutlass.cute as cute
+
+    return cute
 
 
 def get_cache_dir() -> Path:
@@ -173,6 +181,8 @@ def _hash_source_dir(h: hashlib._Hash, root: Path) -> None:
 @functools.lru_cache(maxsize=1)
 def _compute_source_fingerprint() -> str:
     """Hash kernel source dirs plus runtime ABI stamps into a fingerprint."""
+    import cutlass
+
     h = hashlib.sha256()
     h.update(f"py{sys.version_info.major}.{sys.version_info.minor}".encode())
     h.update(f"cutlass={cutlass.__version__}".encode() if hasattr(cutlass, "__version__") else b"cutlass=unknown")
@@ -394,7 +404,7 @@ class CuteKernelCache(KernelCacheBase):
         Returns:
             The compiled ``TVMFFIJitCompiledFunction``.
         """
-        return cute.compile(kernel_callable, *fake_tensors, options=options, **kwargs)
+        return _cute().compile(kernel_callable, *fake_tensors, options=options, **kwargs)
 
     def save_to_cache(self, key: tuple, artifact: Any) -> None:
         """Export compiled kernel as ``.o`` to disk cache.
@@ -492,7 +502,7 @@ class CuteKernelCache(KernelCacheBase):
                 if not _is_owned_object(o_path):
                     return None
                 try:
-                    m = cute.runtime.load_module(str(o_path), enable_tvm_ffi=True)
+                    m = _cute().runtime.load_module(str(o_path), enable_tvm_ffi=True)
                 except Exception:
                     # A .o that fails to load is corrupt (e.g. a truncated
                     # artifact left by an older build predating the atomic-write

@@ -23,6 +23,7 @@ caller can handle.
 """
 
 import fcntl
+import importlib.util
 import os
 import stat
 import threading
@@ -30,10 +31,11 @@ import time
 
 import pytest
 
-# Importing the cache pulls in cutlass; skip cleanly where it is unavailable
-# (e.g. a CPU-only dev box) rather than erroring at collection.
-cute_cache = pytest.importorskip("bionemo_ir.dsl_kernels.cute_cache")
+from bionemo_ir.dsl_kernels import cute_cache
+
 DiskCache = cute_cache.DiskCache
+# Fingerprinting and loading a cached object import the CuTeDSL compiler.
+requires_compiler = pytest.mark.skipif(importlib.util.find_spec("cutlass") is None, reason="CuTeDSL is not installed")
 
 
 class _FakeArtifact:
@@ -75,6 +77,7 @@ def _tmp_files(root):
     return list(root.rglob("*.o.tmp"))
 
 
+@requires_compiler
 def test_crashed_export_publishes_no_partial_object(cache_dir):
     """A writer killed mid-export must not leave a canonical ``.o`` behind."""
     cache = cute_cache.CuteKernelCache()
@@ -88,6 +91,7 @@ def test_crashed_export_publishes_no_partial_object(cache_dir):
     assert _tmp_files(cache_dir) == [], "staging temp file was not cleaned up"
 
 
+@requires_compiler
 def test_successful_export_publishes_complete_object(cache_dir, monkeypatch):
     """A clean export publishes exactly the full artifact, and load returns it."""
     cache = cute_cache.CuteKernelCache()
@@ -103,7 +107,7 @@ def test_successful_export_publishes_complete_object(cache_dir, monkeypatch):
 
     sentinel = object()
     monkeypatch.setattr(
-        cute_cache.cute.runtime, "load_module", lambda path, enable_tvm_ffi: {cute_cache.EXPORT_FUNC_NAME: sentinel}
+        cute_cache._cute().runtime, "load_module", lambda path, enable_tvm_ffi: {cute_cache.EXPORT_FUNC_NAME: sentinel}
     )
     assert cache.load_from_cache(key) is sentinel
 
@@ -135,17 +139,19 @@ def test_secure_cache_dir_rejects_symlinked_directory(tmp_path):
     assert stat.S_IMODE(target.stat().st_mode) == 0o777
 
 
+@requires_compiler
 def test_load_rejects_unowned_object(cache_dir, monkeypatch):
     """An object this user does not own is never handed to ``load_module``."""
     cache = cute_cache.CuteKernelCache()
     key = ("adaln", "float16", 128, "unowned")
     cache.save_to_cache(key, _FakeArtifact(b"OBJECT"))
     monkeypatch.setattr(cute_cache, "_is_owned_object", lambda path: False)
-    monkeypatch.setattr(cute_cache.cute.runtime, "load_module", pytest.fail)
+    monkeypatch.setattr(cute_cache._cute().runtime, "load_module", pytest.fail)
 
     assert cache.load_from_cache(key) is None
 
 
+@requires_compiler
 def test_load_purges_corrupt_object(cache_dir, monkeypatch):
     """A ``.o`` that fails to load is deleted so peers recompile, not re-crash."""
     cache = cute_cache.CuteKernelCache()
@@ -160,12 +166,13 @@ def test_load_purges_corrupt_object(cache_dir, monkeypatch):
     def _boom(path, enable_tvm_ffi):
         raise RuntimeError("corrupt object file")
 
-    monkeypatch.setattr(cute_cache.cute.runtime, "load_module", _boom)
+    monkeypatch.setattr(cute_cache._cute().runtime, "load_module", _boom)
 
     assert cache.load_from_cache(key) is None
     assert not o_path.exists(), "corrupt .o was not purged on load failure"
 
 
+@requires_compiler
 def test_source_cache_separates_host_isa(cache_dir, monkeypatch):
     """A host wrapper compiled for one CPU ISA must miss on another ISA."""
     monkeypatch.setattr(cute_cache, "_device_sm_count", lambda: 132)
@@ -175,7 +182,7 @@ def test_source_cache_separates_host_isa(cache_dir, monkeypatch):
     load_calls = []
     sentinel = object()
     monkeypatch.setattr(
-        cute_cache.cute.runtime,
+        cute_cache._cute().runtime,
         "load_module",
         lambda path, enable_tvm_ffi: load_calls.append(path) or {cute_cache.EXPORT_FUNC_NAME: sentinel},
     )
@@ -263,6 +270,7 @@ flags : avx2 avx512f
     assert "nonshareable=" not in uniform
 
 
+@requires_compiler
 def test_miss_claims_the_key_until_save(cache_dir):
     """A miss locks the key for its compiler; the save releases it."""
     cache = cute_cache.CuteKernelCache()
@@ -275,6 +283,7 @@ def test_miss_claims_the_key_until_save(cache_dir):
     assert sha not in cute_cache._compile_claims
 
 
+@requires_compiler
 def test_miss_waits_for_a_peer_compile(cache_dir, monkeypatch):
     """A miss while a peer compiles the key loads the peer's object instead."""
     cache = cute_cache.CuteKernelCache()
@@ -282,7 +291,7 @@ def test_miss_waits_for_a_peer_compile(cache_dir, monkeypatch):
     sha = cute_cache._key_to_hash(key)
     sentinel = object()
     monkeypatch.setattr(
-        cute_cache.cute.runtime, "load_module", lambda path, enable_tvm_ffi: {cute_cache.EXPORT_FUNC_NAME: sentinel}
+        cute_cache._cute().runtime, "load_module", lambda path, enable_tvm_ffi: {cute_cache.EXPORT_FUNC_NAME: sentinel}
     )
     cache_path = cute_cache._secure_cache_dir(cache_dir / cute_cache._compute_source_fingerprint())
     peer = os.open(cache_path / f"{sha}.compile", os.O_WRONLY | os.O_CREAT)

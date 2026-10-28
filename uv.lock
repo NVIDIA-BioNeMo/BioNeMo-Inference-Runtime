@@ -293,7 +293,6 @@ name = "bionemo-ir"
 source = { editable = "." }
 dependencies = [
     { name = "aiohttp" },
-    { name = "apache-tvm-ffi" },
     { name = "biopython" },
     { name = "biotite" },
     { name = "certifi" },
@@ -312,7 +311,6 @@ dependencies = [
     { name = "modelcif" },
     { name = "multidict" },
     { name = "nvidia-cudnn-frontend" },
-    { name = "nvidia-cutlass-dsl", extra = ["cu13"] },
     { name = "opentelemetry-api" },
     { name = "pydantic" },
     { name = "pyyaml" },
@@ -335,8 +333,13 @@ build = [
 coverage = [
     { name = "coverage" },
 ]
+cutedsl = [
+    { name = "apache-tvm-ffi" },
+    { name = "nvidia-cutlass-dsl", extra = ["cu13"] },
+]
 dev = [
     { name = "anarcii" },
+    { name = "apache-tvm-ffi" },
     { name = "assertpy" },
     { name = "atomworks" },
     { name = "beartype" },
@@ -348,6 +351,7 @@ dev = [
     { name = "lightning" },
     { name = "loguru" },
     { name = "ml-collections" },
+    { name = "nvidia-cutlass-dsl", extra = ["cu13"] },
     { name = "parameterized" },
     { name = "peft" },
     { name = "prek" },
@@ -400,7 +404,6 @@ test = [
 [package.metadata]
 requires-dist = [
     { name = "aiohttp", specifier = ">=3.14.5,<4" },
-    { name = "apache-tvm-ffi", specifier = ">=0.1.6,<0.2" },
     { name = "biopython", specifier = ">=1.87" },
     { name = "biotite", specifier = "==1.6.0" },
     { name = "certifi", specifier = ">=2026.10.23" },
@@ -419,7 +422,6 @@ requires-dist = [
     { name = "modelcif", specifier = "==1.6" },
     { name = "multidict", specifier = ">=6.9.1" },
     { name = "nvidia-cudnn-frontend", specifier = "==1.23.0" },
-    { name = "nvidia-cutlass-dsl", extras = ["cu13"], specifier = "==4.5.2" },
     { name = "opentelemetry-api", specifier = ">=1.45.1" },
     { name = "pydantic", specifier = ">=2,<3" },
     { name = "pyyaml", specifier = ">=6.0.1,<7" },
@@ -440,8 +442,13 @@ build = [
     { name = "setuptools", specifier = "==81.0.0" },
 ]
 coverage = [{ name = "coverage", extras = ["toml"], specifier = ">=7.10.6" }]
+cutedsl = [
+    { name = "apache-tvm-ffi", specifier = ">=0.1.6,<0.2" },
+    { name = "nvidia-cutlass-dsl", extras = ["cu13"], specifier = "==4.5.2" },
+]
 dev = [
     { name = "anarcii", specifier = ">=2.0.8,<3" },
+    { name = "apache-tvm-ffi", specifier = ">=0.1.6,<0.2" },
     { name = "assertpy", specifier = ">=1.1,<2" },
     { name = "atomworks", specifier = ">=3.0.4,<4" },
     { name = "beartype", specifier = ">=0.18.0,<1" },
@@ -453,6 +460,7 @@ dev = [
     { name = "lightning", specifier = ">=2.6.0,<3" },
     { name = "loguru", specifier = ">=0.7,<1" },
     { name = "ml-collections", specifier = "==1.1.0" },
+    { name = "nvidia-cutlass-dsl", extras = ["cu13"], specifier = "==4.5.2" },
     { name = "parameterized", specifier = ">=0.9,<1" },
     { name = "peft", specifier = ">=0.21.2,<0.22" },
     { name = "prek", specifier = "==0.4.12" },

@@ -46,6 +46,7 @@ from bionemo_ir._torch.custom_ops.adaln_layernorm_sigmoid.ops import (
     _invoke_vanilla_adaln_layernorm_sigmoid,
 )
 from bionemo_ir._torch.layers.normalization import AdaLN
+from bionemo_ir._torch.utils.kernel import cute_numeric
 from bionemo_ir.utils import str_dtype_to_torch
 from tests._torch import SM_VERSION, cutedsl_test_modes, run_cutedsl_test_mode
 
@@ -219,14 +220,13 @@ def test_adaln_source_and_cubin(mode, rms_norm, dtype, M, N, monkeypatch):
 
 def test_adaln_force_cubin_ignores_warmed_source(monkeypatch):
     backend = AdaLNLayerNormSigmoidCuTe()
-    ct_dtype = type("FakeDType", (), {})
     geometry = (256, 256, 256)
-    key = (backend._sm_version, ct_dtype.__name__, 256, False, geometry, adaln_config_identity({}))
+    key = (backend._sm_version, torch.bfloat16, 256, False, geometry, adaln_config_identity({}))
     cached_source, cubin = object(), object()
     monkeypatch.setattr(AdaLNLayerNormSigmoidCuTe, "_compiled_cache", {key: cached_source})
     monkeypatch.setattr(backend, "force_cubin", lambda: True)
     monkeypatch.setattr(backend, "_load_cubin_executable", lambda *_args, **_kwargs: cubin)
-    assert backend._compile_bucket(ct_dtype, torch.bfloat16, 256, {}, geometry) is cubin
+    assert backend._compile_bucket(torch.bfloat16, 256, {}, geometry) is cubin
 
 
 def test_adaln_selector_rejects_unshipped_targets(monkeypatch):
@@ -591,10 +591,8 @@ _SMEM_N = [128, 1024, 8192]
 
 
 def _make_fusion(dtype: torch.dtype, N: int, **kwargs):
-    from bionemo_ir._torch.custom_ops.adaln_layernorm_sigmoid.cutedsl import _TORCH_TO_CUTLASS_DTYPE
-
     source = _require_source()
-    return source.kernel_cls(_TORCH_TO_CUTLASS_DTYPE[dtype], N, **kwargs)
+    return source.kernel_cls(cute_numeric(dtype), N, **kwargs)
 
 
 def _reduction_only_bytes(kernel) -> int:
@@ -744,10 +742,7 @@ def test_distinct_configs_do_not_share_a_compiled_cache_entry():
     test fails if the key ever drops back to ``(dtype, N, geometry)``.
     """
     from bionemo_ir._torch.custom_ops.adaln_layernorm_sigmoid._config import resolve_geometry
-    from bionemo_ir._torch.custom_ops.adaln_layernorm_sigmoid.cutedsl import (
-        _TORCH_TO_CUTLASS_DTYPE,
-        AdaLNLayerNormSigmoidCuTe,
-    )
+    from bionemo_ir._torch.custom_ops.adaln_layernorm_sigmoid.cutedsl import AdaLNLayerNormSigmoidCuTe
 
     _require_source()
     force_cubin_env = adaln_cutedsl.FORCE_CUBIN_ENV
@@ -760,13 +755,12 @@ def test_distinct_configs_do_not_share_a_compiled_cache_entry():
     geometry = resolve_geometry(N, default_cfg)
     assert geometry == resolve_geometry(N, tuned_cfg), "geometry alone cannot tell them apart"
 
-    ct_dtype = _TORCH_TO_CUTLASS_DTYPE[torch.bfloat16]
     cache = AdaLNLayerNormSigmoidCuTe()
     saved = dict(AdaLNLayerNormSigmoidCuTe._compiled_cache)
     AdaLNLayerNormSigmoidCuTe._compiled_cache.clear()
     try:
-        first = cache._compile_bucket(ct_dtype, torch.bfloat16, N, default_cfg, geometry)
-        second = cache._compile_bucket(ct_dtype, torch.bfloat16, N, tuned_cfg, geometry)
+        first = cache._compile_bucket(torch.bfloat16, N, default_cfg, geometry)
+        second = cache._compile_bucket(torch.bfloat16, N, tuned_cfg, geometry)
         assert len(AdaLNLayerNormSigmoidCuTe._compiled_cache) == 2, (
             "both configs landed on one cache entry; the second reused the first's kernel"
         )

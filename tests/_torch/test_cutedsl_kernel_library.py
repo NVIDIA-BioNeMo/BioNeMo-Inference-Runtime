@@ -382,10 +382,10 @@ def test_triangle_attention_cache_separates_source_and_forced_cubin(monkeypatch)
     )
 
     monkeypatch.setenv(triangle_cutedsl.FORCE_CUBIN_ENV, "1")
-    assert backend._get_executable(variant, object(), 8, 1.0, 1) is cubin_executable
+    assert backend._get_executable(variant, 8, 1.0, 1) is cubin_executable
 
     monkeypatch.delenv(triangle_cutedsl.FORCE_CUBIN_ENV)
-    assert backend._get_executable(variant, object(), 8, 1.0, 1) is source_executable
+    assert backend._get_executable(variant, 8, 1.0, 1) is source_executable
 
 
 def test_triangle_attention_forward_rechecks_forced_mode(monkeypatch):

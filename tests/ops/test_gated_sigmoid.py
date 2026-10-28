@@ -135,7 +135,7 @@ def test_gated_sigmoid_force_cubin_ignores_warmed_source(monkeypatch):
     monkeypatch.setattr(backend, "force_cubin", lambda: True)
     monkeypatch.setattr(backend, "_load_cubin_executable", lambda *_args, **_kwargs: cubin)
     executable = backend._get_or_compile(
-        object, torch.bfloat16, has_bias=True, has_residual=False, has_mask=False, K=128, N=256, M=65, key=key
+        torch.bfloat16, has_bias=True, has_residual=False, has_mask=False, K=128, N=256, M=65, key=key
     )
     assert executable is cubin
 

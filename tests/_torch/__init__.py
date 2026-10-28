@@ -16,6 +16,7 @@
 import contextlib
 import importlib.util
 import os
+import sys
 from collections.abc import Callable, Iterator
 from types import ModuleType
 
@@ -90,6 +91,7 @@ _CUTEDSL_OP_SUPPORTED_SM: "dict[str, tuple[int, ...]]" = {
 
 CUTEDSL_TEST_MODES_ENV = "BIOIR_TEST_CUTEDSL_MODES"
 _CUTEDSL_TEST_MODES = ("source", "cubin")
+_COMPILER_MODULES = ("cutlass", "tvm_ffi")
 _CUTEDSL_MODE_CACHES: dict[tuple[type, str], dict] = {}
 
 
@@ -97,11 +99,16 @@ def source_module_available(source_module: str | None) -> bool:
     """Whether ``source_module`` can be imported in this build.
 
     A public checkout has no ``_source`` adapter — the sync withholds
-    ``**/_source.py`` — so anything that reaches one has to be skipped rather
-    than fail there.
+    ``**/_source.py`` — and an environment without the ``cutedsl`` dependency
+    group cannot compile one, so anything that reaches one has to be skipped
+    rather than fail there.
     """
     try:
-        return source_module is not None and importlib.util.find_spec(source_module) is not None
+        return (
+            source_module is not None
+            and importlib.util.find_spec(source_module) is not None
+            and importlib.util.find_spec("cutlass") is not None
+        )
     except (ImportError, ModuleNotFoundError):
         return False
 
@@ -171,6 +178,10 @@ def run_cutedsl_test_mode(
     if mode == "cubin":
         monkeypatch.setenv("CUTEDSL_FORCE_CUBIN", "1")
         monkeypatch.setattr(library_runtime, "_kernel_library", None)
+        # The CUBIN path must run without the CuTeDSL compiler installed.
+        compiler = [name for name in sys.modules if name.partition(".")[0] in _COMPILER_MODULES]
+        for name in {*compiler, *_COMPILER_MODULES}:
+            monkeypatch.setitem(sys.modules, name, None)
     else:
 
         def reject_cubin(*_args, **_kwargs):

@@ -23,6 +23,7 @@ import torch
 from bionemo_ir._torch.utils.kernel import (
     CuTeDSLKernelLibraryError,
     CuTeDSLKernelLibraryExecutable,
+    cute_numeric,
     launch_compiled_kernel,
     load_source_module,
     populate_compiled_cache_from_library,
@@ -32,7 +33,7 @@ from bionemo_ir.logger import logger
 
 from ._config import (
     _BUCKET_BIG_M,
-    _TORCH_TO_CUTLASS_DTYPE,
+    _DTYPES,
     SHIPPED_N,
     SUPPORTED_SMS,
     bucket_variants,
@@ -47,7 +48,6 @@ __all__ = [
     "SHIPPED_N",
     "SUPPORTED_SMS",
     "_BUCKET_BIG_M",
-    "_TORCH_TO_CUTLASS_DTYPE",
     "_invoke_vanilla_adaln_layernorm_sigmoid",
 ]
 
@@ -165,9 +165,9 @@ class AdaLNLayerNormSigmoidCuTe(CuteKernelCache):
         logger.info("CuTeDSL adaln_layernorm_sigmoid: compilation done")
         return executable
 
-    def _compile_bucket(self, ct_dtype: type, dtype: torch.dtype, N: int, cfg: dict, geometry: tuple[int, int]) -> Any:
+    def _compile_bucket(self, dtype: torch.dtype, N: int, cfg: dict, geometry: tuple[int, int]) -> Any:
         # Include all config knobs, not only resolved launch geometry.
-        key = (self._sm_version, ct_dtype.__name__, N, self._rms_norm, geometry, config_identity(cfg))
+        key = (self._sm_version, dtype, N, self._rms_norm, geometry, config_identity(cfg))
         executable = AdaLNLayerNormSigmoidCuTe._compiled_cache.get(key)
         force_cubin = self.force_cubin()
         if executable is not None and (not force_cubin or isinstance(executable, CuTeDSLKernelLibraryExecutable)):
@@ -181,17 +181,18 @@ class AdaLNLayerNormSigmoidCuTe(CuteKernelCache):
             make_kernel, compile_source = self._resolve_source_tools()
         except ImportError as source_error:
             return self._load_cubin_executable(key, dtype, N, geometry, source_error, cfg=cfg)
-        return self._load_or_compile_source(key, ct_dtype, N, cfg, make_kernel, compile_source)
+        return self._load_or_compile_source(key, cute_numeric(dtype), N, cfg, make_kernel, compile_source)
 
     def _get_or_build_schedule(self, dtype: torch.dtype, N: int) -> list[tuple[int | None, Any]]:
+        if dtype not in _DTYPES:
+            raise TypeError(f"adaln_layernorm_sigmoid expects float16, bfloat16 or float32; got {dtype}")
         shape_key = (self._sm_version, dtype, N, self._rms_norm, self.force_cubin())
         cached = self._schedule_cache.get(shape_key)
         if cached is not None:
             return cached
-        ct_dtype = _TORCH_TO_CUTLASS_DTYPE[dtype]
         schedule: list[tuple[int | None, Any]] = []
         for m_max, cfg, geometry in bucket_variants(self._sm_version, N):
-            schedule.append((m_max, self._compile_bucket(ct_dtype, dtype, N, cfg, geometry)))
+            schedule.append((m_max, self._compile_bucket(dtype, N, cfg, geometry)))
         self._schedule_cache[shape_key] = schedule
         return schedule
 

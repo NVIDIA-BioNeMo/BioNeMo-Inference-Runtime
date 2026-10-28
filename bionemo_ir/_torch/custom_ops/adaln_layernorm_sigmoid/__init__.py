@@ -22,7 +22,6 @@ absent.
 
 from ._config import (
     _BUCKET_BIG_M,
-    _TORCH_TO_CUTLASS_DTYPE,
     SHIPPED_N,
     SUPPORTED_SMS,
     bucket_variants,
@@ -37,7 +36,6 @@ __all__ = [
     "SHIPPED_N",
     "SUPPORTED_SMS",
     "_BUCKET_BIG_M",
-    "_TORCH_TO_CUTLASS_DTYPE",
     "_invoke_vanilla_adaln_layernorm_sigmoid",
     "bucket_variants",
     "get_adaln_layernorm_sigmoid_op",

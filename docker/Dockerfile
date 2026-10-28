@@ -91,7 +91,6 @@ WORKDIR /opt/bioir-deps
 # with hashes. Reinstall PyYAML because the base's distro-owned copy has no pip
 # RECORD metadata and cannot be upgraded in place.
 COPY pyproject.toml uv.lock ./
-# CUDA 13 must own overlapping CuTe files.
 RUN --mount=type=cache,target=/cache/uv \
     uv export --quiet --locked --no-dev --no-emit-project \
         --prune torch --prune triton \
@@ -103,9 +102,6 @@ RUN --mount=type=cache,target=/cache/uv \
         --requirements /tmp/bioir-runtime.txt \
     && uv pip install --system --no-deps --require-hashes \
         --requirements /tmp/bioir-build.txt \
-    && uv pip install --system --no-deps --require-hashes \
-        --reinstall-package nvidia-cutlass-dsl-libs-cu13 \
-        --requirements /tmp/bioir-runtime.txt \
     && rm -f /tmp/bioir-runtime.txt /tmp/bioir-build.txt
 
 # Export the complete PyPI runtime closure for the minimal runtime image. This
@@ -128,11 +124,16 @@ FROM deps AS devdeps
 # that exact base, so the digest is pinned here rather than derived at build
 # time.
 ENV BIOIR_CUBIN_COMPILE_ENVIRONMENT=sha256:222d8b18e671be5c3ef91cb41727a2572a0b23f59ded6c39f373a96946f6f2ba
+# The dev group carries the CuTeDSL compiler; CUDA 13 must own overlapping CuTe
+# files.
 RUN --mount=type=cache,target=/cache/uv \
     uv export --quiet --locked --only-group dev --no-emit-project \
         --prune torch --prune triton \
         --output-file /tmp/bioir-dev.txt \
     && uv pip install --system --no-deps --require-hashes \
+        --requirements /tmp/bioir-dev.txt \
+    && uv pip install --system --no-deps --require-hashes \
+        --reinstall-package nvidia-cutlass-dsl-libs-cu13 \
         --requirements /tmp/bioir-dev.txt \
     && rm -f /tmp/bioir-dev.txt
 

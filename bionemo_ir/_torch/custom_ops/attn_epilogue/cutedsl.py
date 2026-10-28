@@ -20,7 +20,6 @@ import json
 from typing import Any
 
 import torch
-from cutlass.cute.runtime import make_fake_stream
 
 from bionemo_ir._torch.utils.kernel import (
     CuTeDSLKernelLibraryError,
@@ -131,6 +130,8 @@ class AttnEpilogueCuTe(CuteKernelCache):
         )
         executable = self.load_from_cache(disk_key)
         if executable is None:
+            from cutlass.cute.runtime import make_fake_stream
+
             logger.info(f"CuTeDSL attention epilogue: compiling kernel for {self._describe()}")
             # The kernel sizes its persistent grid from the device it is built on.
             with torch.cuda.device(device_index):

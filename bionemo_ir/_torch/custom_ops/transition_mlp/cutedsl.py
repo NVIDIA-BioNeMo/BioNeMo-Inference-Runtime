@@ -20,12 +20,12 @@ import contextlib
 from dataclasses import dataclass
 from typing import Any
 
-import cutlass
 import torch
 
 from bionemo_ir._torch.utils.kernel import (
     CuTeDSLKernelLibraryError,
     CuTeDSLKernelLibraryExecutable,
+    cute_numeric,
     launch_compiled_kernel,
     load_source_module,
     populate_compiled_cache_from_library,
@@ -47,7 +47,7 @@ from ._cubin import TransitionMlpCubinExecutable
 
 __all__ = ["TransitionMlpCuTe", "TransitionMlpOp"]
 
-_TORCH_TO_CUTLASS_DTYPE = {torch.bfloat16: cutlass.BFloat16}
+_DTYPES = (torch.bfloat16,)
 # TMA and cp.async move these operands in 16-byte vectors, so base addresses and row strides need 16 bytes.
 _ROW_ALIGNMENT_BYTES = 16
 
@@ -169,7 +169,7 @@ class TransitionMlpCuTe(CuteKernelCache):
         if executable is None:
             logger.info(f"CuTeDSL transition MLP: compiling kernel for SM{self._sm_version}, {variant}, {tile_params}")
             executable = source.compile_transition_mlp_source(
-                self.compile, _TORCH_TO_CUTLASS_DTYPE[dtype], variant, tile_params, kernel_abi
+                self.compile, cute_numeric(dtype), variant, tile_params, kernel_abi
             )
             self.save_to_cache(disk_key, executable)
         TransitionMlpCuTe._compiled_cache[disk_key] = executable
@@ -196,7 +196,7 @@ class TransitionMlpCuTe(CuteKernelCache):
         if (
             variant not in self._variants
             or not like.is_cuda
-            or dtype not in _TORCH_TO_CUTLASS_DTYPE
+            or dtype not in _DTYPES
             or like.shape[-1] != width
             or w1.shape != (w1_rows(variant), width)
             or w2.shape != (width, hidden)

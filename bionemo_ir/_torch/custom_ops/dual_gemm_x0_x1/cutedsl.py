@@ -19,12 +19,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-import cutlass
 import torch
 
 from bionemo_ir._torch.utils.kernel import (
     CuTeDSLKernelLibraryError,
     CuTeDSLKernelLibraryExecutable,
+    cute_numeric,
     launch_compiled_kernel,
     load_source_module,
     populate_compiled_cache_from_library,
@@ -56,17 +56,6 @@ _TORCH_TO_DTYPE_STR = {
     torch.float16: "fp16",
     torch.bfloat16: "bf16",
 }
-_TORCH_TO_CUTLASS_DTYPE = {
-    torch.float16: cutlass.Float16,
-    torch.bfloat16: cutlass.BFloat16,
-}
-
-
-def _cutlass_dtype(tensor: torch.Tensor) -> type:
-    dtype = _TORCH_TO_CUTLASS_DTYPE.get(tensor.dtype)
-    if dtype is None:
-        raise TypeError(f"dual_gemm x0_x1 CuTe expects float16 or bfloat16; got {tensor.dtype}")
-    return dtype
 
 
 def _dtype_str(dtype: torch.dtype) -> str:
@@ -262,7 +251,7 @@ class DualGemmX0X1CuTe(CuteKernelCache):
         logger.info("CuTeDSL dual_gemm x0_x1: compilation done")
         return executable
 
-    def _get_executable(self, variant: _DualGemmX0X1Variant, ct_dtype: type, dtype_str: str):
+    def _get_executable(self, variant: _DualGemmX0X1Variant, dtype_str: str):
         cache_key = (self._sm_version, variant)
         executable = DualGemmX0X1CuTe._compiled_cache.get(cache_key)
         if executable is not None:
@@ -273,6 +262,7 @@ class DualGemmX0X1CuTe(CuteKernelCache):
 
         try:
             source = load_source_module(__package__)
+            ct_dtype = cute_numeric(variant.dtype)
             config, kernel = self._resolve_source_kernel(variant, ct_dtype, dtype_str)
         except ImportError as source_error:
             return self._load_cubin_executable(variant, source_error)
@@ -408,7 +398,7 @@ class DualGemmX0X1CuTe(CuteKernelCache):
         if variant == self._last_variant:
             exe = self._last_exe
         else:
-            exe = self._get_executable(variant, _cutlass_dtype(X0), dtype_str)
+            exe = self._get_executable(variant, dtype_str)
             self._last_variant = variant
             self._last_exe = exe
 

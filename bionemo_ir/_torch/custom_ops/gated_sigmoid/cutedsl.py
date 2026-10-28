@@ -18,12 +18,12 @@ from __future__ import annotations
 
 from typing import Any
 
-import cutlass
 import torch
 
 from bionemo_ir._torch.utils.kernel import (
     CuTeDSLKernelLibraryError,
     CuTeDSLKernelLibraryExecutable,
+    cute_numeric,
     launch_compiled_kernel,
     load_source_module,
     populate_compiled_cache_from_library,
@@ -63,17 +63,7 @@ __all__ = [
     "get_kernel_config",
 ]
 
-_TORCH_TO_CUTLASS_DTYPE = {
-    torch.float16: cutlass.Float16,
-    torch.bfloat16: cutlass.BFloat16,
-}
-
-
-def _cutlass_dtype(t: torch.Tensor) -> type:
-    ty = _TORCH_TO_CUTLASS_DTYPE.get(t.dtype)
-    if ty is None:
-        raise TypeError(f"SM80 gated sigmoid expects float16 or bfloat16; got {t.dtype}")
-    return ty
+_DTYPES = (torch.float16, torch.bfloat16)
 
 
 class GatedSigmoidCuTe(CuteKernelCache):
@@ -190,7 +180,6 @@ class GatedSigmoidCuTe(CuteKernelCache):
 
     def _get_or_compile(
         self,
-        ct_dtype: type,
         dtype: torch.dtype,
         has_bias: bool,
         has_residual: bool,
@@ -211,6 +200,7 @@ class GatedSigmoidCuTe(CuteKernelCache):
             return self._load_cubin_executable(key, *flags)
 
         try:
+            ct_dtype = cute_numeric(dtype)
             kernel, compile_source, kernel_abi = self._resolve_source_kernel(
                 ct_dtype, has_bias, has_residual, has_mask, K, N, M
             )
@@ -349,8 +339,9 @@ class GatedSigmoidCuTe(CuteKernelCache):
         ):
             exe = self._last_exe
         else:
-            ct_dtype = _cutlass_dtype(s_2d)
-            exe = self._get_or_compile(ct_dtype, s.dtype, has_bias, has_residual, has_mask, K, N_out, M_s, compile_key)
+            if s.dtype not in _DTYPES:
+                raise TypeError(f"SM80 gated sigmoid expects float16 or bfloat16; got {s.dtype}")
+            exe = self._get_or_compile(s.dtype, has_bias, has_residual, has_mask, K, N_out, M_s, compile_key)
             self._last_key = compile_key
             self._last_exe = exe
             self._last_abi = get_kernel_abi(self._sm_version, K, N_out)

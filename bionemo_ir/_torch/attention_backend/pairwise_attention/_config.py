@@ -22,9 +22,8 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
-import cutlass
-
 from bionemo_ir._torch.utils.kernel import (
+    CutlassNumeric,
     get_config_file_name,
     load_kernel_configs,
     load_source_module,
@@ -40,83 +39,7 @@ class PairwiseAttentionLeftMaskKernelConfig:
 
     arch: str
     kernel_factory: Callable[[int], Any]
-    can_implement: Callable[[type, int], bool]
-
-
-def _build_sm80_config(
-    kernel_cls: type,
-    m_block_size: int,
-    n_block_size: int,
-    sm_version: int,
-    num_threads: int = 128,
-    swizzle_b: int = 3,
-    load_bias_before_gemm: bool = True,
-) -> PairwiseAttentionLeftMaskKernelConfig:
-    """Bind an Ampere kernel class to one tuned tile configuration."""
-
-    def factory(head_dim: int):
-        return kernel_cls(
-            head_dim,
-            m_block_size,
-            n_block_size,
-            num_threads,
-            swizzle_b=swizzle_b,
-            load_bias_before_gemm=load_bias_before_gemm,
-        )
-
-    def can_impl(ct_dtype: type, head_dim: int) -> bool:
-        return kernel_cls.can_implement(
-            ct_dtype,
-            head_dim,
-            m_block_size,
-            n_block_size,
-            num_threads,
-            sm_version,
-        )
-
-    return PairwiseAttentionLeftMaskKernelConfig(arch="sm80", kernel_factory=factory, can_implement=can_impl)
-
-
-def _build_sm90_config(
-    kernel_cls: type,
-    mma_tiler_mn: tuple[int, int],
-    is_persistent: bool,
-    kv_stage: int = 5,
-    raster_factor: int = 0,
-    qk_acc_dtype: type = cutlass.Float32,
-    pv_acc_dtype: type = cutlass.Float32,
-) -> PairwiseAttentionLeftMaskKernelConfig:
-    """Bind a Hopper kernel class to one tuned tile configuration."""
-    mma_mn_tuple = tuple(mma_tiler_mn)
-
-    def factory(head_dim: int):
-        return kernel_cls(
-            qk_acc_dtype,
-            pv_acc_dtype,
-            (mma_mn_tuple[0], mma_mn_tuple[1], head_dim),
-            is_persistent,
-            kv_stage=kv_stage,
-            raster_factor=raster_factor,
-        )
-
-    def can_impl(ct_dtype: type, head_dim: int) -> bool:
-        # Shape-independent config validation still needs representative
-        # shapes that satisfy Hopper's batch/head divisibility checks.
-        ok, _ = kernel_cls.can_implement(
-            (1, 64, 1, head_dim),
-            (1, 64, 1, head_dim),
-            ct_dtype,
-            qk_acc_dtype,
-            pv_acc_dtype,
-            mma_mn_tuple,
-            is_persistent,
-            1.0,
-            1,
-            kv_stage=kv_stage,
-        )
-        return ok
-
-    return PairwiseAttentionLeftMaskKernelConfig(arch="sm90", kernel_factory=factory, can_implement=can_impl)
+    can_implement: Callable[[CutlassNumeric, int], bool]
 
 
 _PW_CONFIGS_DIR = os.path.join(os.path.dirname(__file__), "configs")
@@ -164,10 +87,9 @@ def get_kernel_config(
     """Resolve the source kernel at the nearest tuned ``S`` anchor."""
     bundle = _load_config_bundle(sm_version, head_dim)
     _, tile_params = _nearest_variant(bundle.configs, S)
-    implementation = load_source_module(__package__).source_implementation(
-        bundle.kernel_abi, None, bundle.kernel_variant
-    )
+    source = load_source_module(__package__)
+    implementation = source.source_implementation(bundle.kernel_abi, None, bundle.kernel_variant)
     kernel_cls = resolve_implementation(implementation)
     if "mma_tiler_mn" in tile_params:
-        return _build_sm90_config(kernel_cls, **tile_params)
-    return _build_sm80_config(kernel_cls, sm_version=sm_version, **tile_params)
+        return source._build_sm90_config(kernel_cls, **tile_params)
+    return source._build_sm80_config(kernel_cls, sm_version=sm_version, **tile_params)

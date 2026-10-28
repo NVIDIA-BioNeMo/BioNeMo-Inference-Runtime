@@ -39,12 +39,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-import cutlass
 import torch
 import torch.nn.functional as F
 
 from bionemo_ir._torch.utils.kernel import (
     CuTeDSLKernelLibraryError,
+    CutlassNumeric,
+    cute_numeric,
     launch_compiled_kernel,
     load_source_module,
     populate_compiled_cache_from_library,
@@ -56,9 +57,6 @@ from ..interface import AttentionBackend, AttentionMetadata
 from ._config import (
     _TRI_CONFIGS_DIR,
     TriangleAttentionLeftMaskKernelConfig,
-    _build_sm80_config,
-    _build_sm90_config,
-    _build_sm100_config,
     get_kernel_config,
     get_nearest_bucket,
 )
@@ -69,16 +67,10 @@ __all__ = [
     "TriangleAttentionCuTeLeftMaskMetadata",
     "TriangleAttentionLeftMaskKernelConfig",
     "_TRI_CONFIGS_DIR",
-    "_build_sm80_config",
-    "_build_sm90_config",
-    "_build_sm100_config",
     "get_kernel_config",
 ]
 
-_TORCH_TO_CUTLASS_DTYPE = {
-    torch.float16: cutlass.Float16,
-    torch.bfloat16: cutlass.BFloat16,
-}
+_DTYPES = (torch.float16, torch.bfloat16)
 
 
 class TriangleAttentionCuTeLeftMaskMetadata(AttentionMetadata):
@@ -108,7 +100,6 @@ class _TriangleAttentionLaunchInputs:
     output_target: torch.Tensor | None
     lse: torch.Tensor
     variant: _TriangleAttentionVariant
-    ct_dtype: type[cutlass.Numeric]
     align_elems: int
     softmax_scale: float
     batch_size: int
@@ -126,13 +117,6 @@ def _pad_last_dim(t: torch.Tensor, new_size: int, value: float = 0.0) -> torch.T
     if cur >= new_size:
         return t
     return F.pad(t, (0, new_size - cur), value=value)
-
-
-def _cutlass_dtype(t: torch.Tensor) -> type[cutlass.Numeric]:
-    ty = _TORCH_TO_CUTLASS_DTYPE.get(t.dtype)
-    if ty is None:
-        raise TypeError(f"CuTeDSL triangle attention expects float16 or bfloat16; got {t.dtype}")
-    return ty
 
 
 @functools.lru_cache(maxsize=1)
@@ -303,7 +287,7 @@ class TriangleAttentionCuTeLeftMask(CuteKernelCache, AttentionBackend[TriangleAt
     def _resolve_source_kernel(
         self,
         variant: _TriangleAttentionVariant,
-        ct_dtype: type[cutlass.Numeric],
+        ct_dtype: CutlassNumeric,
     ) -> tuple[TriangleAttentionLeftMaskKernelConfig, Any]:
         config = get_kernel_config(self._sm_version, variant.head_dim, variant.bucket)
         if not config.can_implement(ct_dtype, variant.head_dim):
@@ -359,7 +343,7 @@ class TriangleAttentionCuTeLeftMask(CuteKernelCache, AttentionBackend[TriangleAt
         config: TriangleAttentionLeftMaskKernelConfig,
         kernel,
         compile_source: Any,
-        ct_dtype: type[cutlass.Numeric],
+        ct_dtype: CutlassNumeric,
         align_elems: int,
         sm_scale: float,
         i_dim: int,
@@ -408,7 +392,6 @@ class TriangleAttentionCuTeLeftMask(CuteKernelCache, AttentionBackend[TriangleAt
     def _get_executable(
         self,
         variant: _TriangleAttentionVariant,
-        ct_dtype: type[cutlass.Numeric],
         align_elems: int,
         sm_scale: float,
         i_dim: int,
@@ -421,6 +404,7 @@ class TriangleAttentionCuTeLeftMask(CuteKernelCache, AttentionBackend[TriangleAt
 
         try:
             source = load_source_module(__package__)
+            ct_dtype = cute_numeric(variant.dtype)
             config, kernel = self._resolve_source_kernel(variant, ct_dtype)
         except ImportError as source_error:
             executable = TriangleAttentionCuTeLeftMask._compiled_cache.get(self._cubin_cache_key(variant))
@@ -455,7 +439,8 @@ class TriangleAttentionCuTeLeftMask(CuteKernelCache, AttentionBackend[TriangleAt
         if k.shape != q.shape or v.shape != q.shape:
             raise ValueError("Q, K, and V must have the same shape")
 
-        ct_dtype = _cutlass_dtype(q)
+        if q.dtype not in _DTYPES:
+            raise TypeError(f"CuTeDSL triangle attention expects float16 or bfloat16; got {q.dtype}")
         for name, tensor in (("K", k), ("V", v), ("pair_bias", bias)):
             if tensor.dtype != q.dtype:
                 raise TypeError(f"{name} must have dtype {q.dtype}; got {tensor.dtype}")
@@ -486,7 +471,7 @@ class TriangleAttentionCuTeLeftMask(CuteKernelCache, AttentionBackend[TriangleAt
         if num_heads != self.num_heads:
             raise ValueError(f"num_heads mismatch: tensor H={num_heads}, expected {self.num_heads}")
 
-        align_elems = 128 // ct_dtype.width
+        align_elems = 128 // torch.finfo(q.dtype).bits
         padded_seqlen = _align_up(seqlen, align_elems)
         bias_shape = tuple(bias.shape)
         expected_bias_prefix = (batch_size, num_heads, seqlen)
@@ -609,7 +594,6 @@ class TriangleAttentionCuTeLeftMask(CuteKernelCache, AttentionBackend[TriangleAt
             output_target=output_target,
             lse=lse_flat,
             variant=variant,
-            ct_dtype=ct_dtype,
             align_elems=align_elems,
             softmax_scale=float(self.head_dim**-0.5),
             batch_size=batch_size,
@@ -672,7 +656,6 @@ class TriangleAttentionCuTeLeftMask(CuteKernelCache, AttentionBackend[TriangleAt
         else:
             executable = self._get_executable(
                 launch_inputs.variant,
-                launch_inputs.ct_dtype,
                 launch_inputs.align_elems,
                 launch_inputs.softmax_scale,
                 launch_inputs.i_dim,

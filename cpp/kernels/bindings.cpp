@@ -171,6 +171,8 @@ NB_MODULE(_cutedsl_kernels, module)
   using namespace bioir::cutedsl;
 
   module.doc() = "CUDA Driver runtime for precompiled BioIR CuTeDSL kernels";
+  // Python-side executable caches live until interpreter teardown.
+  nb::set_leak_warnings(false);
 
   nb::class_<EmbeddedCubinImage>(module, "Cubin")
     .def_ro("target_sm", &EmbeddedCubinImage::target_sm)

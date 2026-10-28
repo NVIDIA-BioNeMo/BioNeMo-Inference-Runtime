@@ -329,3 +329,10 @@ BioIR folding pipeline are not part of the current mechanism. A future
 pipeline adapter can populate `OracleRequest.input_request` and return its
 `FoldingOutput` as `OracleResponse.folding_output` without adding another
 molecular schema.
+
+## Approximate options
+
+Approximate speed options, such as Protenix [frame-aware
+prediction reuse](sampling.md#frame-aware-prediction-reuse-protenix-opt-in),
+are judged on paired lDDT and DockQ against the exact rollout of the same
+input and seed, not on bit equality.

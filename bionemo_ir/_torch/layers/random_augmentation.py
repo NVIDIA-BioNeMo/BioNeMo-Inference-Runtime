@@ -20,6 +20,7 @@
 # Source: https://github.com/facebookresearch/pytorch3d/blob/main/pytorch3d/transforms/rotation_conversions.py
 
 import math
+from typing import NamedTuple
 
 import torch
 
@@ -224,6 +225,50 @@ def broadcast_atom_mask(positions: torch.Tensor, atom_mask: torch.Tensor) -> tor
     ).to(positions.dtype)
 
 
+class RigidFrame(NamedTuple):
+    """The centring, rotation and translation one augmentation applied to ``[..., N_atom, 3]`` coordinates."""
+
+    centre: torch.Tensor
+    rotation: torch.Tensor
+    translation: torch.Tensor
+    mask: torch.Tensor | None
+
+    def apply(self, coordinates: torch.Tensor) -> torch.Tensor:
+        """Map coordinates given in the pre-augmentation frame into the augmented frame."""
+        x = (coordinates - self.centre) @ self.rotation.transpose(-1, -2) + self.translation[..., None, :]
+        if self.mask is not None:
+            x = x * broadcast_atom_mask(x, self.mask)
+        return x
+
+
+def centre_random_augmentation_with_frame(
+    x: torch.Tensor,
+    mask: torch.Tensor | None = None,
+    s_trans: float = 1.0,
+    generator: torch.Generator | None = None,
+    normalize_quaternions_first: bool = False,
+    mask_denominator_min: float = 1e-7,
+) -> tuple[torch.Tensor, RigidFrame]:
+    """:func:`centre_random_augmentation`, also returning the rigid map it applied."""
+    lead = x.shape[:-2]
+    n = math.prod(lead) if lead else 1
+    rots = random_rotations(
+        n,
+        dtype=x.dtype,
+        device=x.device,
+        generator=generator,
+        normalize_quaternions_first=normalize_quaternions_first,
+    ).reshape(*lead, 3, 3)
+    trans = s_trans * torch.randn((*lead, 3), dtype=x.dtype, device=x.device, generator=generator)
+    if mask is None:
+        centre = x.mean(dim=-2, keepdim=True)
+    else:
+        m = broadcast_atom_mask(x, mask)
+        centre = (x * m).sum(dim=-2, keepdim=True) / m.sum(dim=-2, keepdim=True).clamp(min=mask_denominator_min)
+    frame = RigidFrame(centre, rots, trans, mask)
+    return frame.apply(x), frame
+
+
 def centre_random_augmentation(
     x: torch.Tensor,
     mask: torch.Tensor | None = None,
@@ -240,22 +285,6 @@ def centre_random_augmentation(
 
     ``normalize_quaternions_first`` is forwarded to :func:`random_rotations`.
     """
-    lead = x.shape[:-2]
-    n = math.prod(lead) if lead else 1
-    rots = random_rotations(
-        n,
-        dtype=x.dtype,
-        device=x.device,
-        generator=generator,
-        normalize_quaternions_first=normalize_quaternions_first,
-    ).reshape(*lead, 3, 3)
-    trans = s_trans * torch.randn((*lead, 3), dtype=x.dtype, device=x.device, generator=generator)
-    if mask is None:
-        centre = x.mean(dim=-2, keepdim=True)
-    else:
-        m = broadcast_atom_mask(x, mask)
-        centre = (x * m).sum(dim=-2, keepdim=True) / m.sum(dim=-2, keepdim=True).clamp(min=mask_denominator_min)
-    x = (x - centre) @ rots.transpose(-1, -2) + trans[..., None, :]
-    if mask is not None:
-        x = x * broadcast_atom_mask(x, mask)
-    return x
+    return centre_random_augmentation_with_frame(
+        x, mask, s_trans, generator, normalize_quaternions_first, mask_denominator_min
+    )[0]

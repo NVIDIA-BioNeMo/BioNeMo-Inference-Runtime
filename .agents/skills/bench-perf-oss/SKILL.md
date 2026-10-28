@@ -187,7 +187,9 @@ claim a complete bench.
    config—for example Boltz-2 custom templates require
    `trunk.use_templates_v2=True`. In that case call
    `get_pretrained_config`, change only the documented flag, pass that
-   config, and record the exception. See [`docs/ref/api.md`][api].
+   config, and record the exception. An approximate option a profile
+   turns on by default is the same kind of exception
+   ([approximate options](#approximate-options)). See [`docs/ref/api.md`][api].
 1. **Serial, one GPU, one sample per call.**
    `executor_backend=None`. Pin `CUDA_VISIBLE_DEVICES` to one device.
    Loop the in-scope manifest and call `processor([one_record])` (or
@@ -241,6 +243,32 @@ claim a complete bench.
    recorded. Do not `continue` past it silently.
 1. **Implementation notes are mandatory.** Keep
    `$WORKDIR/implementation-notes.md` current as work happens.
+
+## Approximate options
+
+Some BioIR options are approximate: they change the sampled coordinates
+instead of reproducing the exact path bit for bit. Protenix-v2
+`edm_sampling_config.frame_reuse_period` is one. A profile marks each
+such option as **default on** when the locked config is the one the option
+was evaluated with. Rules:
+
+1. **Default on for Protenix-v2.** The profile locks 200 diffusion steps,
+   the schedule the option was evaluated with, so the BioIR arm runs with
+   `frame_reuse_period = 4`. Build it from `Protenix.get_pretrained_config`,
+   change only that field, and record the exception and the value in
+   `bench_config.json`. The harness written in Phase 3 takes an `--exact`
+   switch that leaves the pretrained config unchanged. Any other step count
+   must run exact: the option rejects it.
+1. **Run the exact arm as well.** Add one BioIR column with the option off
+   (same seed, same inputs, same GPU), time it like every other column, and
+   report the approximate column's speedup against it and against OSS.
+1. **Judge fidelity on paired scores, not equality.** Score both BioIR
+   columns with the same lDDT and DockQ scorers and report the paired
+   per-sample difference (approximate minus exact) next to each speedup. Bit
+   equality is required only of the exact column and of the option when off.
+1. **Label the column.** Name the column `bioir_approx_<option>` and list
+   the option and value in the table caption. Never present the approximate
+   column as the exact BioIR result.
 
 ## MSA and template contract
 

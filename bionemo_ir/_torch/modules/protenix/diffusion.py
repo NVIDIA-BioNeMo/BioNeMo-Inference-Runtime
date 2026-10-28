@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 import torch
@@ -39,10 +40,13 @@ from bionemo_ir._torch.sampling.edm import (
     EDMRolloutPlan,
     EDMScheduleConfig,
 )
+from bionemo_ir._torch.sampling.frame_reuse import FrameReuseEDMIntegrator, FrameReuseSchedule
 from bionemo_ir._torch.sampling.runner import GenerativeRunner
 from bionemo_ir._torch.utils import CHUNK_REGISTRY, DIFFUSION_PAIR_TRANSITION
 from bionemo_ir.configs import BaseConfig
 from bionemo_ir.utils import str_dtype_to_torch
+
+logger = logging.getLogger(__name__)
 
 
 class ProtenixDiffusionConditioning(nn.Module):
@@ -480,6 +484,7 @@ class ProtenixDiffusionSampler(nn.Module):
         rho: float = 7.0,
         n_step: int = 200,
         use_cache: bool = False,
+        frame_reuse_period: int = 0,
     ) -> None:
         super().__init__()
         self.diffusion_module = diffusion_module
@@ -495,6 +500,9 @@ class ProtenixDiffusionSampler(nn.Module):
         # OSS enable_diffusion_shared_vars_cache: precompute step-invariant
         # conditioning / reference base once per rollout.
         self.use_cache = use_cache
+        # Opt-in approximation: from step 160 on, evaluate the denoiser every ``frame_reuse_period``
+        # steps and map the previous prediction through each step's augmentation in between (0: off).
+        self._frame_reuse = FrameReuseSchedule(frame_reuse_period) if frame_reuse_period else None
 
     def denoise(
         self,
@@ -600,7 +608,7 @@ class ProtenixDiffusionSampler(nn.Module):
             integrator_config=self.integrator.config,
         )
 
-        def predict(x_noisy: torch.Tensor, sigma_hat: torch.Tensor) -> torch.Tensor:
+        def evaluate(x_noisy: torch.Tensor, sigma_hat: torch.Tensor) -> torch.Tensor:
             return self.denoise(
                 x_noisy,
                 sigma_hat,
@@ -614,8 +622,17 @@ class ProtenixDiffusionSampler(nn.Module):
                 cache=cache,
             )
 
+        integrator, predict = self.integrator, evaluate
+        if self._frame_reuse is not None:
+            if self.training or torch.is_grad_enabled():
+                raise ValueError("Frame prediction reuse is inference-only")
+            integrator = FrameReuseEDMIntegrator(self.integrator, self._frame_reuse)
+            predict = integrator.bind(evaluate)
+
         with SamplingContext.graph_safe(device, seed) as context:
-            coords = self.runner.run(self.integrator, plan, predict, context).final_state
+            coords = self.runner.run(integrator, plan, predict, context).final_state
+        if self._frame_reuse is not None:
+            logger.debug("Frame reuse rollout: %s", integrator.receipt)
         # Uncached rollout reads relp every step — free only after the loop.
         if not self.use_cache:
             if drop_consumed_features:

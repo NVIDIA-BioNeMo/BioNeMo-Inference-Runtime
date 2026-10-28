@@ -18,7 +18,7 @@ Defaults track the ``protenix-v2`` checkpoint (ByteDance OSS
 ``configs_base.py`` + ``configs_model_type.py`` overrides).
 """
 
-from pydantic import Field
+from pydantic import Field, field_validator, model_validator
 
 from bionemo_ir._torch.graph_optimization.config import CUDAGraphOptimizationConfig, NamedDimTies
 from bionemo_ir._torch.graph_optimization.graph_policy import (
@@ -27,6 +27,7 @@ from bionemo_ir._torch.graph_optimization.graph_policy import (
     pairformer_graph_config,
     trunk_graph_config,
 )
+from bionemo_ir._torch.sampling.frame_reuse import require_evaluated_steps
 from bionemo_ir.configs import (
     BaseConfig,
     DiffusionTransformerConfig,
@@ -269,6 +270,27 @@ class EDMSamplingConfig(BaseConfig):
     noise_scale_lambda: float = 1.003
     step_scale_eta: float = 1.5
     enable_diffusion_shared_vars_cache: bool = True
+    frame_reuse_period: int = Field(
+        default=0,
+        ge=0,
+        description=(
+            "Opt-in approximation: from step 160 on, run the denoiser every this many steps and map the previous"
+            " prediction through each step's augmentation in between (4: 172 fresh + 28 mapped calls of 200); 0 is off."
+        ),
+    )
+
+    @field_validator("frame_reuse_period")
+    @classmethod
+    def _frame_reuse_period_is_off_or_at_least_two(cls, period: int) -> int:
+        if period == 1:
+            raise ValueError("frame_reuse_period must be 0 (off) or at least 2")
+        return period
+
+    @model_validator(mode="after")
+    def _frame_reuse_window_needs_the_evaluated_step_count(self) -> "EDMSamplingConfig":
+        if self.frame_reuse_period:
+            require_evaluated_steps(self.n_step)
+        return self
 
 
 class DiffusionModuleConfig(BaseConfig):

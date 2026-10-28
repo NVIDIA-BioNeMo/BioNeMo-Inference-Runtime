@@ -214,6 +214,7 @@ class Protenix(nn.Module, OptimizedModuleSetterMixin):
             rho=sd.rho,
             n_step=sd.n_step,
             use_cache=sd.enable_diffusion_shared_vars_cache,
+            frame_reuse_period=sd.frame_reuse_period,
         )
 
         # Distogram head runs in fp32 (OSS disables autocast).

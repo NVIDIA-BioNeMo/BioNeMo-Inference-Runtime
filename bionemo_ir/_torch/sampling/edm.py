@@ -325,6 +325,12 @@ class AF3EDMIntegrator(
         noise = torch.randn(plan.coords_shape, device=plan.device, dtype=plan.dtype, generator=context.generator)
         return plan.schedule[0] * noise
 
+    def augment_state(
+        self, step_index: int, state: torch.Tensor, plan: EDMRolloutPlan, context: SamplingContext
+    ) -> torch.Tensor:
+        """Apply the step's rigid augmentation to the persistent coordinates."""
+        return centre_random_augmentation(state, plan.atom_mask, generator=context.generator)
+
     def prepare_denoise_step(
         self,
         step_index: int,
@@ -333,11 +339,7 @@ class AF3EDMIntegrator(
         context: SamplingContext,
     ) -> EDMDenoiseStep:
         if plan.augment_coordinates:
-            state = centre_random_augmentation(
-                state,
-                plan.atom_mask,
-                generator=context.generator,
-            ).to(plan.dtype)
+            state = self.augment_state(step_index, state, plan, context).to(plan.dtype)
 
         if plan.churn_levels is not None and plan.churn_levels.config == self.config:
             sigma_last, sigma_next, sigma_hat = plan.churn_levels.tensor_steps[step_index]

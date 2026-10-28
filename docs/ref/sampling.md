@@ -200,6 +200,87 @@ OpenFold3 and Protenix use:
 Their differences remain in denoiser signatures, conditioning, schedule
 termination, and optional caches.
 
+### Frame-aware prediction reuse (Protenix, opt-in)
+
+Protenix can skip some denoiser calls near the end of the rollout. This is an
+**approximation of the denoiser**, not of the integration: every EDM update,
+rigid augmentation and churn draw still happens, so the random streams are
+unchanged. It is **off by default**, and its window (steps 160 to 197) is fixed
+and was **only evaluated with the 200-step schedule** used in production.
+
+Turn it on with the config field, and only there:
+
+```python
+config = Protenix.get_pretrained_config("protenix-v2")
+config.edm_sampling_config.frame_reuse_period = 4  # 0 (default) is off; 1 is invalid
+model = Protenix(model_name="protenix-v2", config=config, include_load_weights=True)
+```
+
+With `frame_reuse_period = p`, steps $160 \le i \le 197$ evaluate the network
+when $(i - 160) \bmod p = 0$ and reuse the previous prediction otherwise. For
+$p = 4$ that is 172 network calls and 28 reused predictions out of 200. Steps
+before 160 (where churn injects noise) and the last two steps always evaluate
+the network. Any other step count raises
+`frame_reuse_period was only evaluated with 200 sampling steps; got N` before
+the rollout starts, and so does a plan with coordinate augmentation off.
+
+Ending the window at step 198 instead of 197 gave the same accuracy on 99 PDB
+entries (median rms 0.0293 against 0.0292 Å versus the exact rollout), so
+step 198 stays fresh only by convention; step 199, whose next noise level is 0,
+has an error gain six times larger than its neighbours and stays fresh.
+
+**What is reused.** Each step first applies a fresh rigid augmentation
+$T_i(\boldsymbol{x}) = R_i(\boldsymbol{x} - \boldsymbol{c}_i) + \boldsymbol{t}_i$
+to the persistent coordinates. The denoiser is equivariant, so its previous
+output, given in the previous step's frame, is mapped through the current step's
+$T_i$ instead of being recomputed. Only Cartesian coordinates are mapped; no
+learned feature channel is reused.
+
+```python
+for i in range(n_steps):
+    x, T_i = augment(x)                       # same random draws as without reuse
+    x_hat = x + noise_i                       # churn is zero at every reused step
+    if reuses(i):                             # start <= i <= end and (i - start) % p != 0
+        D = T_i(D_prev)                       # map the previous prediction, no network call
+    else:
+        D = network(x_hat, sigma_hat_i)
+    d = (x_hat - D) / sigma_hat_i
+    x = x_hat + eta * (sigma_next_i - sigma_hat_i) * d
+    D_prev = D                                # a mapped prediction is cached again
+```
+
+**Why the error stays small.** A prediction error $\varepsilon_i$ at step $i$
+moves the next state by $a_i \varepsilon_i$ with
+
+$$
+a_i = \eta \left(1 - \frac{\sigma_{i+1}}{\hat{\sigma}_i}\right),
+$$
+
+and late steps have $\sigma_{i+1} \approx \hat{\sigma}_i$, so $a_i$ is small.
+The staleness error $\varepsilon_i$ is the difference between the mapped
+previous prediction and the one the network would give. If the remaining steps
+do not amplify a perturbation (gain at most 1), the final coordinates differ
+from the exact rollout by at most
+
+$$
+B = \sqrt{f^2 + \Big(\sum_{i \in \text{reused}} a_i \, \varepsilon_i\Big)^2},
+$$
+
+where $f$ is the numerical floor: any perturbation at steps $\ge 160$ re-rolls
+TF32 rounding and moves the output by about 0.01 to 0.016 Å rms. The
+$\varepsilon_i$ are measured per sample, so $B$ is a per-sample check, not a
+guarantee; on the benchmark inputs and on 99 further PDB entries it held for
+every sample. It bounds the rms displacement; it says nothing about single
+atoms, a few of which can move by more than 1 Å (noise alone does this
+for a fraction of samples too).
+
+**Expected effect.** About 3 to 12 percent faster `model.forward` on the
+benchmark inputs, less on large inputs (the saving is a fixed 28 denoiser
+calls). Output is approximate: it is judged on paired lDDT / DockQ against
+the exact rollout, not on bit equality
+([oracles.md](oracles.md#approximate-options)). With the option off the output
+is bit-identical to the exact sampler.
+
 ### Boltz
 
 Boltz uses:
@@ -327,6 +408,7 @@ bionemo_ir/_torch/sampling/
   denoise_integrator.py    invariant denoiser-step ordering
   hooks.py                 ordered before/after-denoise hooks
   edm.py                   EDM schedule, math, and tensor integrator
+  frame_reuse.py           opt-in frame-aware prediction reuse for Protenix
   flow_matching.py         flow schedule, math, and product-space integrator
 ```
 

@@ -98,6 +98,19 @@ one discarded warmup, and one measured forward. The release declares no
 RNA A3Ms; do not enable RNA-MSA search or invent one. There is no Amber
 relaxation stage in this path.
 
+## Approximate option: frame-aware prediction reuse (default on)
+
+The 200-step lock above is the only schedule `frame_reuse_period` was
+evaluated with, so the BioIR column runs with
+`edm_sampling_config.frame_reuse_period = 4` by default (about 3-12 percent
+faster, less on large inputs), and a second, exact BioIR column
+(`frame_reuse_period = 0`) runs for the paired comparison.
+Follow [Approximate options](../SKILL.md#approximate-options): construct from
+`Protenix.get_pretrained_config("protenix-v2")`, set only that field, record
+it in `bench_config.json`, and report the paired lDDT/DockQ difference. The
+harness's `--exact` switch disables it. See `docs/ref/sampling.md` for what it
+does.
+
 ## OSS inference path and effective config
 
 Base the harness on `3rdparty/protenix/runner/inference.py`:

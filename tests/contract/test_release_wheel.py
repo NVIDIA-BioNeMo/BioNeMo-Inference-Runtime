@@ -16,13 +16,17 @@
 """Release ABI and dynamic-loader regressions."""
 
 import hashlib
+import importlib.util
 import struct
 from pathlib import Path
 from zipfile import ZipFile
 
 import pytest
 
-from cpp.tools.check_release_wheel import check_cubins, check_dynamic, check_wheel
+if not all(importlib.util.find_spec(name) for name in ("cpp", "cpp.tools", "cpp.tools.check_release_wheel")):
+    pytest.skip("Release wheel tools are unavailable in this checkout.", allow_module_level=True)
+
+_CHECK = importlib.import_module("cpp.tools.check_release_wheel")
 
 _PLATFORM = "manylinux_2_34_x86_64"
 _DRIVER = "0x0000000000000001 (NEEDED) Shared library: [libcuda.so.1]\n"
@@ -46,7 +50,7 @@ def _write_wheel(
 
 
 def test_stable_wheel(tmp_path: Path) -> None:
-    assert check_wheel(_write_wheel(tmp_path), _PLATFORM) == b"extension"
+    assert _CHECK.check_wheel(_write_wheel(tmp_path), _PLATFORM) == b"extension"
 
 
 @pytest.mark.parametrize(
@@ -59,7 +63,7 @@ def test_stable_wheel(tmp_path: Path) -> None:
 )
 def test_reject_abi_drift(tmp_path: Path, options: dict[str, str]) -> None:
     with pytest.raises(ValueError):
-        check_wheel(_write_wheel(tmp_path, **options), _PLATFORM)
+        _CHECK.check_wheel(_write_wheel(tmp_path, **options), _PLATFORM)
 
 
 @pytest.mark.parametrize("tag", ["RUNPATH", "RPATH"])
@@ -79,26 +83,26 @@ def test_reject_abi_drift(tmp_path: Path, options: dict[str, str]) -> None:
 )
 def test_reject_loader_paths(tag: str, path: str) -> None:
     with pytest.raises(ValueError, match="nonportable loader path"):
-        check_dynamic(_DRIVER + f"0x1 ({tag}) Library path: [{path}]")
+        _CHECK.check_dynamic(_DRIVER + f"0x1 ({tag}) Library path: [{path}]")
 
 
 @pytest.mark.parametrize("library", ["libcudart.so.13", "libnvrtc.so.13", "/opt/libcuda.so.1"])
 def test_reject_toolkit_link(library: str) -> None:
     with pytest.raises(ValueError, match="non-system libraries"):
-        check_dynamic(_DRIVER + f"0x1 (NEEDED) Shared library: [{library}]")
+        _CHECK.check_dynamic(_DRIVER + f"0x1 (NEEDED) Shared library: [{library}]")
 
 
 @pytest.mark.parametrize("tag", ["RUNPATH", "RPATH"])
 @pytest.mark.parametrize("path", ["$ORIGIN", "$ORIGIN/../lib", "$ORIGIN/../..", "$ORIGIN/nested/../../lib"])
 def test_portable_loader_paths(tag: str, path: str) -> None:
-    check_dynamic(_DRIVER + f"0x1 ({tag}) Library path: [{path}]")
+    _CHECK.check_dynamic(_DRIVER + f"0x1 ({tag}) Library path: [{path}]")
 
 
 def test_external_driver() -> None:
     with pytest.raises(ValueError, match="external CUDA driver"):
-        check_dynamic("0x1 (NEEDED) Shared library: [libc.so.6]")
-    check_dynamic(_DRIVER)
-    check_dynamic(_DRIVER + "0x1 (RUNPATH) Library path: [$ORIGIN:$ORIGIN/../lib]")
+        _CHECK.check_dynamic("0x1 (NEEDED) Shared library: [libc.so.6]")
+    _CHECK.check_dynamic(_DRIVER)
+    _CHECK.check_dynamic(_DRIVER + "0x1 (RUNPATH) Library path: [$ORIGIN:$ORIGIN/../lib]")
 
 
 def test_cubin_identity(tmp_path: Path) -> None:
@@ -109,8 +113,8 @@ def test_cubin_identity(tmp_path: Path) -> None:
     struct.pack_into("<HH", cubin, 54, 56, 1)
     digest = hashlib.sha256(cubin).hexdigest()
     (tmp_path / f"{digest}.cubin").write_bytes(cubin)
-    check_cubins(b"prefix" + cubin + b"suffix", tmp_path)
+    _CHECK.check_cubins(b"prefix" + cubin + b"suffix", tmp_path)
     with pytest.raises(ValueError, match="1 missing"):
-        check_cubins(b"no images", tmp_path)
+        _CHECK.check_cubins(b"no images", tmp_path)
     with pytest.raises(ValueError, match="1 duplicated"):
-        check_cubins(bytes(cubin) * 2, tmp_path)
+        _CHECK.check_cubins(bytes(cubin) * 2, tmp_path)

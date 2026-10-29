@@ -24,7 +24,10 @@ from pathlib import Path
 import pytest
 
 _ROOT = Path(__file__).resolve().parents[2]
-_CHECK = runpy.run_path(str(_ROOT / ".gitlab/ci/scripts/check_wheel_dependencies.py"))
+_SCRIPT = _ROOT / ".gitlab/ci/scripts/check_wheel_dependencies.py"
+if not _SCRIPT.is_file():
+    pytest.skip("GitLab release tools are unavailable in this checkout.", allow_module_level=True)
+_CHECK = runpy.run_path(str(_SCRIPT))
 _KNOWN_ERROR = "nvidia-cusparselt-cu13 0.8.1 is not supported on this platform\n"
 
 

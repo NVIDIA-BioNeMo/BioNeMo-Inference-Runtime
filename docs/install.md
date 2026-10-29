@@ -21,8 +21,8 @@ The release wheel has the following software and hardware requirements:
 - **CPU architecture:** x86_64 (amd64) or aarch64 (arm64).
 - **GPU:** An NVIDIA GPU listed in the [support matrix][support-matrix].
 - **NVIDIA Driver:** [580][driver-580] or higher.
-- **Python:** Python 3.12. Release wheels are tagged `cp312`.
-- **Build tools:** A C/C++ compiler and the Python 3.12 development headers.
+- **Python:** CPython 3.12, 3.13, or 3.14. Release wheels use `cp312-abi3`.
+- **Build tools:** A C/C++ compiler and the active Python's development headers.
   See [Install Build Tools][build-tools].
 
 [linux-requirements]: https://docs.nvidia.com/datacenter/tesla/driver-installation-guide/latest/introduction.html#linux-system-requirements
@@ -51,9 +51,9 @@ each architecture.
 
 ### Driver Requirements
 
-Use NVIDIA driver 580 or newer. BioIR is built against CUDA 13.2, but the CUDA
-Toolkit does not need to be installed on the host. BioIR requires the
-driver-provided `libcuda.so.1`.
+Use NVIDIA driver 580 or newer. BioIR is built against CUDA 13.2, but the wheel
+does not need an NGC image or a CUDA Toolkit installed on the host. It requires
+the driver-provided `libcuda.so.1`.
 
 <Error>
 Drivers older than 580 are unsupported. The CUDA forward-compatibility shim
@@ -80,15 +80,17 @@ Choose one of the following installation methods based on your task:
 ## Install the Release Wheel
 
 BioIR is published on [PyPI][pypi] as `bionemo-ir`, with one wheel for each
-supported CPU architecture. pip selects the wheel that matches the host.
+supported CPU architecture. Each wheel supports CPython 3.12 through 3.14 using
+the Python stable ABI. pip selects the wheel that matches the host.
 
 [pypi]: https://pypi.org/project/bionemo-ir/
 
 ### Create a Python Environment
 
-The release wheel requires Python 3.12 (`cp312`). A dedicated Python
+The release wheel supports CPython 3.12 through 3.14. A dedicated Python
 environment is **strongly recommended**. It isolates BioIR and its dependencies
-from the system Python and other projects.
+from the system Python and other projects. The examples below use Python 3.12;
+replace `3.12` with `3.13` or `3.14` to use another supported version.
 
 Choose one of the following methods to create and activate an environment:
 
@@ -150,8 +152,8 @@ source .venv/bin/activate
 </Tabs>
 
 Keep the environment activated for the rest of this guide and for later work,
-including the [Quickstart][quickstart]. Confirm that it uses Python 3.12,
-then upgrade `pip`:
+including the [Quickstart][quickstart]. Confirm that it uses your chosen
+supported Python version, then upgrade `pip`:
 
 [quickstart]: quickstart.md
 
@@ -167,28 +169,30 @@ Python interpreter. Triton, a PyTorch dependency, compiles a small C launcher
 with them the first time BioIR runs a model.
 
 pip also builds a dependency from source when PyPI has no wheel for the
-environment's Python version and CPU architecture. These dependencies compile
-native code and add minutes to the install:
+environment's Python version and CPU architecture. The dependencies below need
+native build tools in the release's tested dependency set. Other resolutions may
+differ; source builds add minutes to the install.
 
-| Python | x86_64                       | aarch64                                       |
-| ------ | ---------------------------- | --------------------------------------------- |
-| 3.12   | None                         | `gemmi`, `kalign-python`, `biotraj`           |
-| 3.13   | `gemmi`                      | `gemmi`, `kalign-python`, `biotraj`           |
-| 3.14   | `gemmi`, `biotraj`, `uvloop` | `gemmi`, `kalign-python`, `biotraj`, `uvloop` |
+| Python | x86_64    | aarch64                    |
+| ------ | --------- | -------------------------- |
+| 3.12   | None      | `kalign-python`, `biotraj` |
+| 3.13   | None      | `kalign-python`, `biotraj` |
+| 3.14   | `biotraj` | `kalign-python`, `biotraj` |
 
 pip builds `ihm` from source on every host. Its C extension is optional, so
 `ihm` installs without a compiler.
 
-uv-managed and conda Pythons include `Python.h`. A Python 3.12 from the
-distribution's package manager needs its development package as well. Check
-the environment's interpreter:
+uv-managed and conda Pythons include `Python.h`. A Python from the
+distribution's package manager needs its matching development package as well.
+Check the environment's interpreter:
 
 ```bash
 python -c "import pathlib, sysconfig; print(pathlib.Path(sysconfig.get_path('include'), 'Python.h').is_file())"
 ```
 
 Install the compilers, then the development package only when the check
-prints `False`:
+prints `False`. The development package examples use Python 3.12; substitute
+your environment's Python minor version when it differs:
 
 <Tabs>
 <Tab title="Ubuntu">
@@ -262,8 +266,9 @@ Triton's launcher, match the error to the [build tools][build-tools] it needs:
 - `fatal error: Python.h: No such file or directory`,
   `Could NOT find Python (missing: ... Development.Module)`, or
   `Imported target "pybind11::module" includes non-existent path`: Install
-  `python3.12-dev` or `python3.12-devel`. During a prediction, the first
-  error appears above a `CalledProcessError` naming Triton's `driver.c`.
+  the `-dev` or `-devel` package for your Python version, for example
+  `python3.12-dev` or `python3.12-devel`. During a prediction, the first error
+  appears above a `CalledProcessError` naming Triton's `driver.c`.
 - `Failed to find C compiler`, `No such file or directory: 'gcc'` or `'cc'`,
   `no acceptable C compiler found`, or a CMake error naming
   `CMAKE_C_COMPILER` or `CMAKE_CXX_COMPILER`: Install the compilers.

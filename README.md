@@ -48,8 +48,8 @@ downloaded dependencies, model checkpoints, and metadata.
   An older driver runs it only through the forward-compatibility shim, which we
   have measured hanging and crashing part-way through a run rather than merely
   running slowly — results taken on one are discarded, not corrected.
-- **Python 3.12.** The released wheels are tagged `cp312`, so pip finds no
-  matching build on a newer interpreter.
+- **CPython 3.12, 3.13, or 3.14.** Each architecture's wheel uses the
+  `cp312-abi3` stable ABI and supports all three versions.
 - **Docker** and the **NVIDIA Container Toolkit**, to build from source in the
   dev container. Installing the wheel needs neither.
 
@@ -76,11 +76,12 @@ BioIR is published on PyPI, one wheel per CPU architecture:
 pip install bionemo-ir
 ```
 
-The wheel ships the kernels precompiled, so nothing in the install builds CUDA
-and running it needs only the driver's `libcuda.so.1`. That is the whole install
-if you are calling BioIR from your own code — the container below is for working
-on BioIR itself. [`docs/install.md`](docs/install.md) covers the environment
-setup and the requirements in full.
+The wheel ships the kernels precompiled. It needs the driver's `libcuda.so.1`,
+but no local CUDA Toolkit or NGC image. pip installs PyTorch, CUDA libraries,
+and other dependencies separately. Some dependencies build from source, and
+Triton needs a C compiler and Python headers on first use. See
+[`docs/install.md`](docs/install.md) for the full requirements. The container
+below is for working on BioIR itself.
 
 ### Build from source
 

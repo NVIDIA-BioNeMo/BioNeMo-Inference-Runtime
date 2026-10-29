@@ -14,6 +14,15 @@ Model keys are the strings in
 `bionemo_ir.hubs.FoldingSupportMatrix`. Pass them as
 `EngineProcessorConfig.model_source` or as `model_name=` on the constructor.
 
+## Wheel Compatibility
+
+- **OS:** Linux with glibc 2.34 or newer.
+- **CPU:** x86_64 (amd64) or aarch64 (arm64). Each architecture has its own
+  wheel, compatible with CPython 3.12, 3.13, and 3.14.
+- **GPU and driver:** An NVIDIA GPU listed below and driver 580 or newer.
+
+See [Installation](../install.md) for build tools, dependencies, and setup.
+
 ## Models and Data Pipeline
 
 Every model below runs on the **optimized PyTorch backend**.
@@ -170,7 +179,7 @@ projects through the Blackwell `x_x` kernels.
 LayerNorm and gated projections, K2 the triangle contraction, and K3 the output
 LayerNorm, projection, gate, and masked residual. The Boltz, Protenix, and
 OpenFold3 trunks run it in their MSA, template, and pairformer stacks; OpenFold2
-in its Evoformer and extra-MSA stacks; RFProteina in its velocity-network pair
+in its Evoformer and extra-MSA stacks; RFProteína in its velocity-network pair
 updates. Confidence heads, OpenFold2 templates, and calls whose token counts are
 not multiples of 8 take the dual-GEMM path.
 

@@ -232,7 +232,7 @@ def _write_release_notes(
         output.write("\n")
         for version in notes:
             released = dates.get(version)
-            suffix = f" — released {released}" if released else " — unreleased"
+            suffix = f" — released {released}" if released else ""
             output.write(f"- [{version}]({SITE_PREFIX}/{slug}/{NOTES_DIR}/{version}){suffix}\n")
     for version, note in notes.items():
         (directory / f"{version}.md").write_text(render_page(note, dates.get(version)), encoding="utf-8")

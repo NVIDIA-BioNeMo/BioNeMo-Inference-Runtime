@@ -23,13 +23,39 @@ from collections.abc import Mapping
 from pathlib import Path
 
 import pytest
-from check_fern_versions import Version, _tag_pages, _write_release_snapshot, _write_versions, sync_site
+from check_fern_versions import (
+    Version,
+    _tag_pages,
+    _write_release_notes,
+    _write_release_snapshot,
+    _write_versions,
+    sync_site,
+)
 from common import PAGE_ROUTES, REPO_ROOT
 from release_notes import CHANGELOG_HEADER, Note
 
 
 def _git(repo: Path, *args: str) -> None:
     subprocess.run(["git", "-C", str(repo), *args], check=True, capture_output=True)
+
+
+def test_release_notes_without_date_do_not_claim_unreleased(tmp_path: Path) -> None:
+    source_index = tmp_path / "index.md"
+    source_index.write_text("# Releases\n", encoding="utf-8")
+    notes = {
+        "0.2.1": Note("0.2.1", "## Changes\n\n- Update.", ()),
+        "0.2.0": Note("0.2.0", "## Changes\n\n- Earlier update.", ()),
+    }
+    _write_release_notes(tmp_path / "snapshot", notes, {"0.2.0": "2026-10-02"}, "main", source_index)
+
+    directory = tmp_path / "snapshot/release-notes"
+    index = (directory / "index.md").read_text(encoding="utf-8")
+    undated_page = (directory / "0.2.1.md").read_text(encoding="utf-8")
+    dated_page = (directory / "0.2.0.md").read_text(encoding="utf-8")
+    assert "unreleased" not in index.lower()
+    assert "unreleased" not in undated_page.lower()
+    assert "— released 2026-10-02" in index
+    assert "Released 2026-10-02." in dated_page
 
 
 @pytest.fixture

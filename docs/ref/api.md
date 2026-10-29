@@ -796,6 +796,20 @@ key that names no region raises `ValueError`, and nothing is enabled. A
 submodule inside a region, such as the diffusion token transformer inside
 `diffusion_module`, is captured as part of the region.
 
+If you previously passed module keys such as `token_transformer` or
+`structure_pairformer`, replace them with the enclosing region's role or path.
+For example, a Boltz-2 token transformer is inside `diffusion_module`:
+
+```python
+from bionemo_ir.configs import AcceleratedConfig
+
+model.optimize({"diffusion_module": AcceleratedConfig(backend="torch")})
+```
+
+The region captures the full denoising step, not just the token transformer.
+Check `model.GRAPH_REGIONS` for the roles available on your model. Former module
+keys and paths that do not name a region now raise `ValueError`.
+
 ## Custom Architectures
 
 ### Reusable inference blocks

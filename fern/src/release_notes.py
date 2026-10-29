@@ -199,14 +199,14 @@ def load_notes(source_root: Path) -> dict[str, Note]:
 
 def render_page(note: Note, released: str | None) -> str:
     """Render one note as a generated Fern page."""
-    status = f"Released {released}." if released else "Unreleased. This note describes changes under review."
+    status = f"Released {released}.\n\n" if released else ""
     return (
         "---\n"
         "# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.\n"
         "# SPDX-License-Identifier: Apache-2.0\n"
         f"title: {note.version}\n"
         "---\n\n"
-        f"{status}\n\n"
+        f"{status}"
         f"{note.sections}\n"
     )
 

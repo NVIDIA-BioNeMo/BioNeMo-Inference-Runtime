@@ -9,6 +9,43 @@
 Each final release of BioNeMo Inference Runtime, newest first. Release
 candidates are not listed.
 
+## 0.2.1
+
+### Compatibility
+
+- **Portable wheels.** Each Linux wheel supports CPython 3.12, 3.13, and
+  3.14 on its CPU architecture, either x86_64 or aarch64. The host needs
+  NVIDIA driver 580 or newer and glibc 2.34 or newer. An NGC image and a
+  local CUDA Toolkit are no longer required to install or run the wheel.
+  Some dependencies need build tools; Triton also needs a C compiler and
+  Python headers when it first runs a model.
+
+### Breaking Changes
+
+- **CUDA graph configuration.** `optimize()` accepts graph region roles
+  or paths. Former module keys such as `token_transformer` and
+  `structure_pairformer` now raise `ValueError`; use the enclosing
+  region's role or path instead.
+
+### Performance
+
+- **Protenix sampling.** An optional frame-reuse mode skips some denoiser
+  evaluations during a 200-step rollout. It is off by default and is an
+  approximation, so enabling it can change predictions.
+- **Attention.** Protenix atom attention and pair-biased attention use
+  faster paths for supported inputs.
+
+### Fixed Issues
+
+- **Graph replay.** Each CUDA graph owns its cuBLAS workspace, preventing
+  invalid memory access when another graph is evicted.
+- **RFProteína checkpoints.** Released checkpoints with LoRA adapters can
+  be loaded directly through `from_reference_state_dicts`.
+- **Template chain IDs.** Templates with blank PDB chain IDs now raise a
+  descriptive error instead of failing with an attribute error.
+- **Dependencies.** Runtime dependency minimum versions include fixes for
+  known security issues.
+
 ## 0.2.0
 
 ### Key Features and Enhancements

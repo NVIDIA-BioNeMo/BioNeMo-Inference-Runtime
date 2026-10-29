@@ -30,6 +30,7 @@ from .triangle_attention import (
     TriangleAttentionCuTeLeftMask,
     VanillaTriangleAttention,
 )
+from .triangle_attention.cuequiv import cuequiv_supports
 from .window_attention import window_attention, window_attention_supported
 
 
@@ -43,15 +44,16 @@ def auto_select_triangle_attention_backend(
       1. **Heuristic** — optimized router on
          SM80/SM86/SM89/SM90/SM100/SM103, fp16/bf16 only. It selects
          ``ClaudeKit`` for SM90 BF16 D=32 calls of at least 23M attention
-         scores and CuTeDSL otherwise.
-      2. **CUEQUIV** — all SKUs, all dtypes (fp32, fp16, bf16).
+         scores and CuTeDSL otherwise. A layer whose head dimension CuTeDSL
+         cannot pad to falls through to the backends below, as here.
+      2. **CUEQUIV** — all SKUs and dtypes, for head dims up to 128 in
+         fp16/bf16 and up to 32 in fp32.
       3. **SDPA** — PyTorch scaled-dot-product attention, all SKUs/dtypes.
 
     Args:
         dtype: Input tensor dtype.
         head_dim: Optional logical head dimension. Supplying it prevents
-            selection of an architecture whose CuTeDSL kernels cannot pad to
-            the requested dimension.
+            selection of a backend whose kernels cannot take it.
     """
     sm = get_sm_version()
     is_half = dtype in (torch.float16, torch.bfloat16)
@@ -63,14 +65,8 @@ def auto_select_triangle_attention_backend(
 
     if sm in (80, 86, 89, 90, 100, 103) and is_half and supports_head_dim:
         return "Heuristic"
-
-    try:
-        import cuequivariance_ops_torch  # noqa: F401
-
+    if cuequiv_supports(dtype, head_dim):
         return "CUEQUIV"
-    except ImportError:
-        pass
-
     return "SDPA"
 
 

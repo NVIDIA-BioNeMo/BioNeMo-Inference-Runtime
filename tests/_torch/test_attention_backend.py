@@ -25,6 +25,7 @@ import tests as tests_package
 from bionemo_ir._torch import attention_backend
 from bionemo_ir._torch.attention_backend import pairwise_attention, triangle_attention
 from bionemo_ir._torch.attention_backend import utils as attention_utils
+from bionemo_ir._torch.attention_backend.triangle_attention.cuequiv import cuequiv_supports
 from tests import require_public_cutedsl_library
 from tests._torch import CUTEDSL_TEST_MODES_ENV, cutedsl_test_modes, make_left_aligned_pair_mask
 
@@ -98,6 +99,20 @@ def test_triangle_auto_select_rejects_unsupported_blackwell_head_dim(monkeypatch
     monkeypatch.setitem(sys.modules, "cuequivariance_ops_torch", None)
 
     assert attention_backend.auto_select_triangle_attention_backend(torch.bfloat16, head_dim=256) == "SDPA"
+
+
+@pytest.mark.parametrize("sm", [100, 103])
+@pytest.mark.parametrize(
+    ("head_dim", "expected"),
+    [(None, "Heuristic"), (32, "Heuristic"), (64, "Heuristic"), (128, "Heuristic"), (96, "CUEQUIV"), (256, "SDPA")],
+)
+def test_triangle_auto_select_routes_blackwell_head_dims(monkeypatch, sm, head_dim, expected):
+    """D=32/64/128 keep the Heuristic router; cuEquivariance takes D=96 but raises past 128, so D=256 gets SDPA."""
+    if not cuequiv_supports(torch.bfloat16):
+        pytest.skip("cuEquivariance is not importable here")
+    monkeypatch.setattr(attention_utils, "get_sm_version", lambda: sm)
+
+    assert attention_backend.auto_select_triangle_attention_backend(torch.bfloat16, head_dim=head_dim) == expected
 
 
 def test_window_auto_select_uses_cutedsl_where_its_kernel_serves(monkeypatch):

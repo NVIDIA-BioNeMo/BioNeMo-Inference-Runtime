@@ -25,6 +25,54 @@ class CuEquivAttentionMetadata(AttentionMetadata):
     flip_mask: bool = True
 
 
+def _takes_kv_lengths(sm_version: int, dtype: torch.dtype, head_dim: int, keys: int) -> bool:
+    """Return whether cuEquivariance's SM100/SM103 per-row-length kernel takes this call."""
+    return (
+        sm_version in (100, 103)
+        and dtype in (torch.float16, torch.bfloat16)
+        and head_dim % 8 == 0
+        and head_dim <= 256
+        and keys > 0
+        and keys % 8 == 0
+    )
+
+
+def cuequiv_supports(
+    dtype: torch.dtype,
+    head_dim: int | None = None,
+    *,
+    sm_version: int | None = None,
+    keys: int | None = None,
+) -> bool:
+    """Return whether cuEquivariance is installed and its kernels take ``head_dim``.
+
+    With a dense row mask, its fp16/bf16 kernels take head dims up to 128 in
+    multiples of 8 and its fp32 kernels up to 32 in multiples of 4; they raise
+    on wider heads. On SM100 and SM103 its per-row-length kernel also takes
+    fp16/bf16 head dims up to 256 in multiples of 8, when the key count is a
+    multiple of 8 and the caller passes ``use_kv_lengths=True``.
+
+    Args:
+        dtype: Operand dtype.
+        head_dim: Logical head dimension, or ``None`` when the caller does not
+            know it.
+        sm_version: SM of the device; with ``keys``, admits the per-row-length
+            kernel.
+        keys: Key count along the attended axis.
+    """
+    try:
+        import cuequivariance_ops_torch  # noqa: F401
+    except ImportError:
+        return False
+    if head_dim is None:
+        return True
+    if sm_version is not None and keys is not None and _takes_kv_lengths(sm_version, dtype, head_dim, keys):
+        return True
+    if dtype in (torch.float16, torch.bfloat16):
+        return 0 < head_dim <= 128 and head_dim % 8 == 0
+    return 0 < head_dim <= 32 and head_dim % 4 == 0
+
+
 def _invoke_triangle_attention_kernel(
     q: torch.Tensor,
     k: torch.Tensor,
@@ -116,15 +164,7 @@ class CuEquivAttention(AttentionBackend[CuEquivAttentionMetadata]):
         v = v.view(*bijhd).flatten(0, n_batch_dims - 1)
         v = permute_final_dims(v, (0, 2, 1, 3))
 
-        use_kv_lengths = (
-            use_kv_lengths
-            and self._sm_version in (100, 103)
-            and q.dtype in (torch.float16, torch.bfloat16)
-            and d % 8 == 0
-            and d <= 256
-            and k.shape[3] > 0
-            and k.shape[3] % 8 == 0
-        )
+        use_kv_lengths = use_kv_lengths and _takes_kv_lengths(self._sm_version, q.dtype, d, k.shape[3])
         if not use_kv_lengths:
             q = q.contiguous()
             k = k.contiguous()

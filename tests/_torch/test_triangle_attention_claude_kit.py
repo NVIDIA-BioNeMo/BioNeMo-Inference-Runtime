@@ -15,6 +15,8 @@
 
 from __future__ import annotations
 
+import sys
+import warnings
 from types import SimpleNamespace
 
 import pytest
@@ -27,7 +29,13 @@ from bionemo_ir._torch.attention_backend.triangle_attention.claude_kit import (
     ClaudeKitTriangleAttentionSM90D32,
     ClaudeKitTriangleAttentionUnavailable,
 )
+from bionemo_ir._torch.attention_backend.triangle_attention.cuequiv import (
+    CuEquivAttention,
+    _invoke_triangle_attention_kernel,
+    cuequiv_supports,
+)
 from bionemo_ir._torch.attention_backend.triangle_attention.heuristic import HeuristicTriangleAttention
+from tests._torch import SM_VERSION
 
 
 class _RecordingDelegate:
@@ -241,6 +249,282 @@ def test_heuristic_reuses_cached_route_during_capture(monkeypatch: pytest.Monkey
 
     assert len(delegates["ClaudeKit"].calls) == 2
     assert len(backend._route_cache) == 1
+
+
+def _skip_without_cuequiv() -> None:
+    if not cuequiv_supports(torch.bfloat16):
+        pytest.skip("cuEquivariance is not importable here")
+
+
+@pytest.mark.parametrize("cuequiv", [True, False], ids=["cuequiv", "no_cuequiv"])
+@pytest.mark.parametrize("sm_version", [100, 103])
+@pytest.mark.parametrize(
+    ("head_dim", "odd_keys", "keys_of_8"),
+    [
+        (16, "CuTeDSL", "CuTeDSL"),
+        (32, "CuTeDSL", "CuTeDSL"),
+        (48, "CuTeDSL", "CuTeDSL"),
+        (64, "CuTeDSL", "CuTeDSL"),
+        (112, "CuTeDSL", "CuTeDSL"),
+        (128, "CuTeDSL", "CuTeDSL"),
+        (96, "CUEQUIV", "CUEQUIV"),
+        (160, "SDPA", "CUEQUIV"),
+        (256, "SDPA", "CUEQUIV"),
+        (288, "SDPA", "SDPA"),
+    ],
+)
+def test_heuristic_routes_blackwell_head_dims(
+    monkeypatch: pytest.MonkeyPatch, cuequiv: bool, sm_version: int, head_dim: int, odd_keys: str, keys_of_8: str
+):
+    """Head dims padding to 32, 64 or 128 keep the CuTeDSL kernel on SM100/103. Others, which pad to 96 or
+    past 128, take cuEquivariance where its kernels serve them (dense mask up to 128, per-row lengths up to 256
+    when the key count is a multiple of 8) and SDPA otherwise, instead of raising on the first call."""
+    if cuequiv:
+        _skip_without_cuequiv()
+    else:
+        monkeypatch.setitem(sys.modules, "cuequivariance_ops_torch", None)
+    backend = HeuristicTriangleAttention(0, 4, head_dim, 4)
+    backend._sm_version = sm_version
+    for dtype in (torch.float16, torch.bfloat16):
+        for batch, tokens, expected in ((1, 37, odd_keys), (5, 37, odd_keys), (1, 384, keys_of_8), (5, 960, keys_of_8)):
+            if not cuequiv and expected == "CUEQUIV":
+                expected = "SDPA"
+            key = heuristic_module._RouteKey(0, dtype, batch, tokens, tokens, False)
+            assert backend._select_backend_name(key) == expected
+
+
+@pytest.mark.parametrize("cuequiv", [True, False], ids=["cuequiv", "no_cuequiv"])
+def test_heuristic_fallback_warns_once_per_layer_and_route(monkeypatch: pytest.MonkeyPatch, cuequiv: bool):
+    """A layer that leaves ClaudeKit/CuTeDSL raises one ``RuntimeWarning`` per route it takes, however many
+    shapes take it; a layer the kernel serves raises none."""
+    if cuequiv:
+        _skip_without_cuequiv()
+    else:
+        monkeypatch.setitem(sys.modules, "cuequivariance_ops_torch", None)
+    keys = [heuristic_module._RouteKey(0, torch.bfloat16, 1, tokens, tokens, False) for tokens in (37, 41, 384, 960)]
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        for head_dim in (256, 256, 128):  # Two layers off the kernel, one on it.
+            backend = HeuristicTriangleAttention(0, 4, head_dim, 4)
+            backend._sm_version = 100
+            for key in keys + keys:
+                backend._select_backend_name(key)
+    routes = [str(w.message).rsplit(" ", 1)[-1] for w in caught if issubclass(w.category, RuntimeWarning)]
+    assert sorted(routes) == sorted((["SDPA", "CUEQUIV"] if cuequiv else ["SDPA"]) * 2)
+
+
+def test_heuristic_forward_keeps_its_own_route_when_calls_interleave(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A concurrent call that routes elsewhere must not change the route of a call already under way: a
+    D=256 call with 40 keys stays on cuEquivariance's per-row-length path while a 37-key call, routed to SDPA,
+    runs during its mask conversion."""
+    backend = HeuristicTriangleAttention(0, 4, 256, 4)
+    delegates = _install_fake_delegates(backend, monkeypatch)
+    backend._sm_version = 100
+    monkeypatch.setattr(
+        heuristic_module,
+        "cuequiv_supports",
+        lambda dtype, head_dim, *, sm_version, keys: keys % 8 == 0,
+    )
+
+    def call_inputs(tokens: int) -> tuple[torch.Tensor, list[torch.Tensor]]:
+        q = torch.zeros(1, 2, tokens, 4 * 256)
+        lengths = torch.full((1, 2), tokens, dtype=torch.int32)
+        return q, [lengths, torch.zeros(1, 4, tokens, (tokens + 7) // 8 * 8)]
+
+    (q40, biases40), (q37, biases37) = call_inputs(40), call_inputs(37)
+    convert = heuristic_module._dense_mask_biases
+    interleaved: list[str | None] = []
+
+    def convert_then_interleave(*args: object, **kwargs: object) -> list[torch.Tensor]:
+        converted = convert(*args, **kwargs)
+        if not interleaved:
+            interleaved.append(None)
+            backend.forward(q37, q37, q37, biases=biases37)
+            interleaved[0] = backend.last_backend_name
+        return converted
+
+    monkeypatch.setattr(heuristic_module, "_dense_mask_biases", convert_then_interleave)
+    backend.forward(q40, q40, q40, biases=biases40)
+
+    assert interleaved == ["SDPA"]
+    assert len(delegates["SDPA"].calls) == 1
+    assert [call.get("use_kv_lengths") for call in delegates["CUEQUIV"].calls] == [True]
+
+
+def _dense_reference(
+    q: torch.Tensor,
+    k: torch.Tensor,
+    v: torch.Tensor,
+    lengths: torch.Tensor,
+    pair_bias: torch.Tensor,
+    num_heads: int,
+    head_dim: int,
+) -> torch.Tensor:
+    """FP32 triangle attention over ``[B, I, J, H*D]`` with per-row key counts; returns ``[B, I, J, H, D]``."""
+    batch, i_dim, tokens, _ = q.shape
+
+    def heads(operand: torch.Tensor) -> torch.Tensor:
+        return operand.float().view(batch, i_dim, tokens, num_heads, head_dim).transpose(2, 3)
+
+    scores = heads(q) @ heads(k).transpose(-1, -2) * head_dim**-0.5 + pair_bias[..., :tokens].float()[:, None]
+    masked = torch.arange(tokens, device=q.device) >= lengths[..., None]
+    scores = scores.masked_fill(masked[:, :, None, None, :], float("-inf"))
+    return (scores.softmax(dim=-1) @ heads(v)).transpose(2, 3)
+
+
+@pytest.mark.skipif(SM_VERSION not in (80, 86, 89, 90, 100, 103), reason="Heuristic routes SM80-SM103 only")
+@pytest.mark.parametrize("graph", [False, True], ids=["eager", "graph"])
+@pytest.mark.parametrize("chunks", ["rows", "query_tiles"])
+@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16], ids=["bf16", "fp16"])
+@pytest.mark.parametrize(
+    ("head_dim", "cuequiv", "tokens", "fallback"),
+    [
+        (96, True, 37, "CUEQUIV"),
+        (96, True, 40, "CUEQUIV"),
+        (96, False, 37, "SDPA"),
+        (96, False, 40, "SDPA"),
+        (256, True, 37, "SDPA"),
+        (256, True, 40, "CUEQUIV"),
+        (288, True, 37, "SDPA"),
+        (288, True, 40, "SDPA"),
+    ],
+    ids=[
+        "d96-cuequiv-j37",
+        "d96-cuequiv-j40",
+        "d96-sdpa-j37",
+        "d96-sdpa-j40",
+        "d256-sdpa-j37",
+        "d256-cuequiv-j40",
+        "d288-sdpa-j37",
+        "d288-sdpa-j40",
+    ],
+)
+def test_heuristic_runs_uncovered_head_dims_on_the_dense_backends(
+    monkeypatch: pytest.MonkeyPatch,
+    head_dim: int,
+    cuequiv: bool,
+    tokens: int,
+    fallback: str,
+    dtype: torch.dtype,
+    chunks: str,
+    graph: bool,
+):
+    """Model callers select Heuristic without a head dim, so a layer whose head dim no kernel serves (D=96 and
+    D=288 anywhere, D=256 on SM100/103) used to raise on its first call. It now runs on cuEquivariance or on
+    row-chunked SDPA from the left-mask inputs a Heuristic stack prepares: per-row lengths, a pair bias padded
+    along the key axis and an output buffer, eagerly and under graph capture. The caller's ``use_kv_lengths``
+    does not matter: Heuristic masks are left-aligned."""
+    if head_dim == 256 and SM_VERSION not in (100, 103):
+        pytest.skip(f"the SM{SM_VERSION} CuTeDSL kernel serves head_dim={head_dim}")
+    if cuequiv:
+        _skip_without_cuequiv()
+    else:
+        monkeypatch.setitem(sys.modules, "cuequivariance_ops_torch", None)
+    torch.manual_seed(0)
+    batch, i_dim, num_heads = 2, 12, 2
+    # SDPA chunks of five rows, or, when one row exceeds the cap, of seven query positions of one row.
+    rows_or_queries = 5 * tokens if chunks == "rows" else 7
+    mask_cap = rows_or_queries * num_heads * tokens * dtype.itemsize
+    monkeypatch.setattr(heuristic_module, "_SDPA_MASK_BYTES", mask_cap)
+    sdpa = torch.nn.functional.scaled_dot_product_attention
+    mask_bytes: list[int] = []
+
+    def recording_sdpa(*args: torch.Tensor, attn_mask: torch.Tensor, **kwargs: object) -> torch.Tensor:
+        mask_bytes.append(attn_mask.numel() * attn_mask.element_size())
+        return sdpa(*args, attn_mask=attn_mask, **kwargs)
+
+    monkeypatch.setattr(torch.nn.functional, "scaled_dot_product_attention", recording_sdpa)
+    width = num_heads * head_dim
+    backend = HeuristicTriangleAttention(0, num_heads, head_dim, num_heads)
+    # Slices of one projection, as TriangleAttention passes them.
+    qkv = torch.randn(batch, i_dim, tokens, 3 * width, device="cuda", dtype=dtype)
+    q, k, v = qkv.split(width, dim=-1)
+    lengths = torch.randint(1, tokens + 1, (batch, i_dim), dtype=torch.int32, device="cuda")
+    lengths[-1, -1] = 0  # A padding row: no key to attend to.
+    padded = (tokens + 7) // 8 * 8
+    pair_bias = torch.zeros(batch, num_heads, tokens, padded, device="cuda", dtype=dtype)
+    pair_bias[..., :tokens].normal_()
+    output = torch.empty(batch * i_dim, tokens, num_heads, head_dim, device="cuda", dtype=dtype)
+
+    def call() -> torch.Tensor:
+        return backend.forward(q, k, v, biases=[lengths, pair_bias], output=output, use_kv_lengths=False)
+
+    result = call()
+    if graph:
+        captured = torch.cuda.CUDAGraph()
+        with torch.cuda.graph(captured):
+            result = call()
+        output.zero_()
+        captured.replay()
+        torch.cuda.synchronize()
+
+    assert backend.last_backend_name == fallback
+    assert result.data_ptr() == output.data_ptr()
+    assert torch.isfinite(result).all()
+    if fallback == "SDPA":
+        assert mask_bytes and max(mask_bytes) <= mask_cap
+    expected = _dense_reference(q, k, v, lengths, pair_bias, num_heads, head_dim)
+    keyed = lengths > 0  # A row with no key has no defined output.
+    torch.testing.assert_close(result.float()[keyed], expected[keyed], atol=2e-2, rtol=2e-2)
+
+
+@pytest.mark.skipif(SM_VERSION not in (100, 103), reason="cuEquivariance's per-row-length kernel is SM100/SM103 only")
+@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16], ids=["bf16", "fp16"])
+@pytest.mark.parametrize(
+    ("head_dim", "keys", "supported"),
+    [(256, 40, True), (264, 40, False), (256, 37, False)],
+    ids=["d256", "d264", "d256-odd-keys"],
+)
+def test_cuequiv_supports_matches_its_per_row_length_kernel(
+    dtype: torch.dtype, head_dim: int, keys: int, supported: bool
+) -> None:
+    """Calls cuEquivariance's op directly with per-row lengths, past the wrapper's own eligibility check, so a
+    release that widens or narrows the per-row-length kernel (D up to 256, key count a multiple of 8) fails here."""
+    _skip_without_cuequiv()
+    assert cuequiv_supports(dtype, head_dim, sm_version=SM_VERSION, keys=keys) == supported
+    num_heads = 2
+    q = torch.randn(1, 4, num_heads, keys, head_dim, device="cuda", dtype=dtype)
+    bias = torch.randn(1, 1, num_heads, keys, keys, device="cuda", dtype=dtype)
+    lengths = torch.full((1, 4), keys - 3, dtype=torch.int32, device="cuda")
+
+    def attend() -> torch.Tensor:
+        return _invoke_triangle_attention_kernel(q, q, q, bias, None, head_dim**-0.5, kv_lengths=lengths)
+
+    if supported:
+        assert torch.isfinite(attend()).all()
+    else:
+        with pytest.raises(RuntimeError, match="hidden_dim"):
+            attend()
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="cuEquivariance kernels need a GPU")
+@pytest.mark.parametrize(
+    ("dtype", "head_dim", "supported"),
+    [
+        (torch.bfloat16, 128, True),
+        (torch.bfloat16, 136, False),
+        (torch.float16, 128, True),
+        (torch.float16, 136, False),
+        (torch.float32, 32, True),
+        (torch.float32, 36, False),
+    ],
+)
+def test_cuequiv_supports_matches_its_dense_kernels(dtype: torch.dtype, head_dim: int, supported: bool):
+    """``cuequiv_supports`` encodes cuEquivariance's dense-mask head-dim limits; a release that moves them fails
+    here rather than routing calls to a kernel that raises, or away from one that runs."""
+    _skip_without_cuequiv()
+    assert cuequiv_supports(dtype, head_dim) == supported
+    num_heads, tokens = 2, 37
+    q = torch.randn(1, 4, tokens, num_heads * head_dim, device="cuda", dtype=dtype)
+    mask = torch.zeros(1, 4, 1, 1, tokens, device="cuda", dtype=dtype)
+    bias = torch.randn(1, num_heads, tokens, tokens, device="cuda", dtype=dtype)
+    backend = CuEquivAttention(0, num_heads, head_dim)
+    if supported:
+        backend.forward(q, q, q, biases=[mask, bias])
+        torch.cuda.synchronize()
+    else:
+        with pytest.raises(RuntimeError, match="hidden_dim"):
+            backend.forward(q, q, q, biases=[mask, bias])
 
 
 def test_native_policy_binding_contract(monkeypatch: pytest.MonkeyPatch):

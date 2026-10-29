@@ -37,8 +37,9 @@ namespace bioir::cutedsl::trimul_kf_k3::embedded
 struct CubinImage;
 }
 
-/* Hopper device ABI trimul_kf_k3_sm90_v2, read from EIATTR_KPARAM_INFO for variant K3_1 with
- * the fused residual (K3_3 lays out the same bank):
+/* Hopper device ABI trimul_kf_k3_sm90_v2 of the streaming variants, read from EIATTR_KPARAM_INFO for
+ * an image that reads K1's row statistics, with the fused residual (a pitched image's coordinates
+ * below):
  *
  *   ord  0  0x030  0x80  prod_tma    CUtensorMap
  *   ord  1  0x0b0  0x08  prod_coord  CoordTensorS2   (N * N, B)
@@ -58,8 +59,8 @@ struct CubinImage;
  *   ord 15  0x36c  0x04  eps         float
  *   ord 16  0x370  0x04  rows        std::int32_t
  *
- * K3_0 and K3_2 re-reduce the row statistics, so stats is absent; without the fused residual, seqlen
- * is absent; the remaining ordinals shift down. The weights have static shapes, so their coordinate
+ * An image that re-reduces the row statistics (reads_stats false) has no stats; without the fused
+ * residual, seqlen is absent; the remaining ordinals shift down. The weights have static shapes, so their coordinate
  * tensors lower to no parameter. Each 0x80 TMA slot carries CuTe DSL 4.5.2's 0x40-byte
  * non-executable CopyAtom payload followed by zero padding: plain loads of prod, x and the weights,
  * and one store of the output.
@@ -71,12 +72,15 @@ struct SM90Params
 {
   CUtensorMap prod_tma;
   CoordTensorS2 prod_coord;
+  CoordTensorS3 prod_rows_coord;
   CUtensorMap x_tma;
   CoordTensorS1 x_coord;
+  CoordTensorS2 x_rows_coord;
   CUtensorMap w_out_tma;
   CUtensorMap w_gate_tma;
   CUtensorMap output_tma;
   CoordTensorS1 output_coord;
+  CoordTensorS2 output_rows_coord;
   cute_tensor_s0_d0_t vec;
   cute_tensor_s1_d0_t stats;
   cute_tensor_s1_d0_t seqlen;
@@ -97,17 +101,17 @@ inline constexpr std::size_t kSM90MaxParameterCount = sm90_parameter_count(true,
 
 /* params and kernel_params must stay alive until the launch call returns. */
 inline std::size_t pack_sm90_kernel_params(
-  SM90Params* params, bool reads_stats, bool residual, void* kernel_params[kSM90MaxParameterCount])
+  SM90Params* params, bool reads_stats, bool residual, bool pitched, void* kernel_params[kSM90MaxParameterCount])
 {
   std::size_t count = 0;
   kernel_params[count++] = &params->prod_tma;
-  kernel_params[count++] = &params->prod_coord;
+  kernel_params[count++] = pitched ? static_cast<void*>(&params->prod_rows_coord) : &params->prod_coord;
   kernel_params[count++] = &params->x_tma;
-  kernel_params[count++] = &params->x_coord;
+  kernel_params[count++] = pitched ? static_cast<void*>(&params->x_rows_coord) : &params->x_coord;
   kernel_params[count++] = &params->w_out_tma;
   kernel_params[count++] = &params->w_gate_tma;
   kernel_params[count++] = &params->output_tma;
-  kernel_params[count++] = &params->output_coord;
+  kernel_params[count++] = pitched ? static_cast<void*>(&params->output_rows_coord) : &params->output_coord;
   kernel_params[count++] = &params->vec;
   if (reads_stats)
     kernel_params[count++] = &params->stats;
@@ -136,6 +140,104 @@ static_assert(sizeof(SM90Params::mma_p) == 0x01, "unexpected trimul KF K3 MMA to
 static_assert(sizeof(SM90Params::eps) == 0x04, "unexpected trimul KF K3 eps width");
 static_assert(sm90_parameter_count(false, false) == 15U && sm90_parameter_count(true, true) == 17U);
 
+/* A pitched streaming image (spec pitched) reads the product at a row pitch past N, tiled per row: its
+ * product map walks (N, D, N, B), (j, channel, i, b), and its x and output maps (N, C, B * N),
+ * (j, k, b * N + i), so prod_coord takes three extents and x_coord and output_coord two
+ * (prod_rows_coord, x_rows_coord, output_rows_coord), moving every later ordinal up. num_tiles counts
+ * tile_m-column chunks of every pair row.
+ */
+
+/* Hopper device ABI trimul_kf_k3_sm90_resident_v1 of the weights-resident variants, which keep each
+ * CTA's 128-column tile of the weights resident and store their output from registers, read from
+ * EIATTR_KPARAM_INFO with the fused residual:
+ *
+ *   ord  0  0x030  0x80  prod_tma    CUtensorMap
+ *   ord  1  0x0b0  0x08  prod_coord  CoordTensorS2   (N * N, B)
+ *   ord  2  0x0f0  0x80  x_tma       CUtensorMap
+ *   ord  3  0x170  0x04  x_coord     CoordTensorS1   rows
+ *   ord  4  0x1b0  0x80  w_out_tma   CUtensorMap
+ *   ord  5  0x230  0x80  w_gate_tma  CUtensorMap
+ *   ord  6  0x2b0  0x08  vec         cute_tensor_s0_d0_t
+ *   ord  7  0x2b8  0x10  stats       cute_tensor_s1_d0_t
+ *   ord  8  0x2c8  0x10  seqlen      cute_tensor_s1_d0_t
+ *   ord  9  0x2d8  0x10  output      cute_tensor_s1_d0_t
+ *   ord 10  0x2e8  0x01  mma_p       std::uint8_t
+ *   ord 11  0x2e9  0x01  mma_x       std::uint8_t
+ *   ord 12  0x2ec  0x04  n           std::int32_t
+ *   ord 13  0x2f0  0x04  rows        std::int32_t
+ *   ord 14  0x2f4  0x04  num_slabs   std::int32_t   128-row slabs
+ *   ord 15  0x2f8  0x04  eps         float
+ *
+ * Without the fused residual, seqlen is absent. The kernel takes only the address of output, and
+ * indexes stats (padded per batch item to whole 128-row tiles, as K1 writes them) and seqlen without
+ * reading their extents.
+ *
+ * A pitched image (spec pitched) reads the product at a row pitch past N, tiled per row: its product
+ * map walks (N, D, N, B), (j, channel, i, b), and its x map (N, C, B * N), (j, k, b * N + i), so the
+ * two coordinates take three and two extents (prod_rows_coord, x_rows_coord; 0x0c and 0x08 bytes)
+ * and every later ordinal moves up by 4 bytes. num_slabs counts pairs of 64-column row chunks.
+ */
+struct SM90ResidentParams
+{
+  CUtensorMap prod_tma;
+  CoordTensorS2 prod_coord;
+  CoordTensorS3 prod_rows_coord;
+  CUtensorMap x_tma;
+  CoordTensorS1 x_coord;
+  CoordTensorS2 x_rows_coord;
+  CUtensorMap w_out_tma;
+  CUtensorMap w_gate_tma;
+  cute_tensor_s0_d0_t vec;
+  cute_tensor_s1_d0_t stats;
+  cute_tensor_s1_d0_t seqlen;
+  cute_tensor_s1_d0_t output;
+  std::uint8_t mma_p;
+  std::uint8_t mma_x;
+  std::int32_t n;
+  std::int32_t rows;
+  std::int32_t num_slabs;
+  float eps;
+};
+
+constexpr std::size_t sm90_resident_parameter_count(bool residual)
+{
+  return 15U + (residual ? 1U : 0U);
+}
+
+inline constexpr std::size_t kSM90ResidentMaxParameterCount = sm90_resident_parameter_count(true);
+
+/* params and kernel_params must stay alive until the launch call returns. */
+inline std::size_t pack_sm90_resident_kernel_params(
+  SM90ResidentParams* params, bool residual, bool pitched, void* kernel_params[kSM90ResidentMaxParameterCount])
+{
+  std::size_t count = 0;
+  kernel_params[count++] = &params->prod_tma;
+  kernel_params[count++] = pitched ? static_cast<void*>(&params->prod_rows_coord) : &params->prod_coord;
+  kernel_params[count++] = &params->x_tma;
+  kernel_params[count++] = pitched ? static_cast<void*>(&params->x_rows_coord) : &params->x_coord;
+  kernel_params[count++] = &params->w_out_tma;
+  kernel_params[count++] = &params->w_gate_tma;
+  kernel_params[count++] = &params->vec;
+  kernel_params[count++] = &params->stats;
+  if (residual)
+    kernel_params[count++] = &params->seqlen;
+  kernel_params[count++] = &params->output;
+  kernel_params[count++] = &params->mma_p;
+  kernel_params[count++] = &params->mma_x;
+  kernel_params[count++] = &params->n;
+  kernel_params[count++] = &params->rows;
+  kernel_params[count++] = &params->num_slabs;
+  kernel_params[count++] = &params->eps;
+  return count;
+}
+
+static_assert(std::is_standard_layout_v<SM90ResidentParams>);
+static_assert(sizeof(SM90ResidentParams::prod_rows_coord) == 0x0c, "unexpected trimul KF K3 per-row product width");
+static_assert(sizeof(SM90ResidentParams::x_rows_coord) == 0x08, "unexpected trimul KF K3 per-row x width");
+static_assert(sizeof(SM90ResidentParams::output) == 0x10, "unexpected trimul KF K3 resident output width");
+static_assert(sizeof(SM90ResidentParams::num_slabs) == 0x04, "unexpected trimul KF K3 resident slab-count width");
+static_assert(sm90_resident_parameter_count(false) == 15U && sm90_resident_parameter_count(true) == 16U);
+
 } // namespace bioir::cutedsl::trimul_kf_k3::abi
 
 namespace bioir::cutedsl::trimul_kf_k3
@@ -146,9 +248,13 @@ enum class DType : std::uint8_t
   kBFloat16,
 };
 
-/* Launch fields generated with the corresponding CUBIN, which runs the configs' K3_<kernel_variant>.
- * Variants 1 and 3 read K1's row statistics; residual fuses (x + update) * mask into the output.
- * Each tile_m-row tile spans tile_ctas CTAs, one per output-column group.
+/* Launch fields generated with the corresponding CUBIN, which runs the configs' K3_<kernel_variant>;
+ * kernel_variant names the image and never selects behaviour. reads_stats: the image reads K1's row
+ * statistics; residual fuses (x + update) * mask into the output; pitched: it reads the product at the
+ * row pitch its launch passes, tiled per row. Each tile_m-row tile spans tile_ctas CTAs, one per
+ * output-column group. An image with the resident launch ABI (trimul_kf_k3_sm90_resident_v1) reads the
+ * fold's centred, row-permuted weights and takes every batch item in one launch: its 128-row slabs may
+ * straddle batch items.
  */
 struct KernelSpec
 {
@@ -158,6 +264,8 @@ struct KernelSpec
   std::int32_t D;
   std::int32_t kernel_variant;
   bool residual;
+  bool reads_stats;
+  bool pitched;
   std::uint32_t num_threads;
   std::uint32_t tile_m;
   std::uint32_t tile_ctas;
@@ -178,12 +286,14 @@ inline std::uint32_t dynamic_smem_bytes(KernelConfig const& config)
   return config.cubin.dynamic_smem_bytes;
 }
 
-/* K3 operands, all flat and contiguous: prod is the bf16 [nb * D * n * n] channel-major product;
- * x and output are [rows * C] with rows = nb * n * n; w_out is the [C * D] output-projection fold,
- * w_gate_out the [C * C] gate fold and vec_out the fp32 [4C] folded bias terms, which carry the
- * LayerNorm shifts and any output biases; stats K1's row statistics, read by K3_1 and K3_3; seqlen
- * one int32 prefix length per (b, i) output row, read with the fused residual alone. output must
- * not alias x: a CTA streams every column of its x rows again for each output column group.
+/* K3 operands, all flat: prod is the bf16 channel-major product, dense [nb * D * n * n] or, for a
+ * pitched image, nb * D matrices of n rows prod_pitch elements apart and prod_plane apart, the batch
+ * items D * prod_plane apart; x and output are [rows * C] with rows = nb * n * n; w_out is the [C * D]
+ * output-projection fold, w_gate_out the [C * C] gate fold (both centred and row-permuted for a resident
+ * image) and vec_out the fp32 [4C] folded bias terms, which carry the LayerNorm shifts and any output
+ * biases; stats K1's row statistics, read by an image whose spec has reads_stats; seqlen one int32 prefix
+ * length per (b, i) output row, read with the fused residual alone. output must not alias x: a CTA
+ * streams every column of its x rows again for each output column group.
  */
 struct LaunchParams
 {
@@ -199,13 +309,21 @@ struct LaunchParams
   std::int32_t n{};
   std::int32_t nb{};
   float eps{};
+  std::int64_t prod_pitch{};
+  std::int64_t prod_plane{};
   std::uint64_t stream{};
 };
 
 std::vector<KernelSpec> kernel_specs();
 
 KernelConfig make_kernel_config(
-  std::int32_t target_sm, DType dtype, std::int32_t C, std::int32_t D, std::int32_t kernel_variant, bool residual);
+  std::int32_t target_sm,
+  DType dtype,
+  std::int32_t C,
+  std::int32_t D,
+  std::int32_t kernel_variant,
+  bool residual,
+  bool pitched = false);
 
 void launch(KernelConfig const& config, LaunchParams const& params);
 

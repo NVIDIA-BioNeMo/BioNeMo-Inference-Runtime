@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 import torch
@@ -28,10 +29,12 @@ from bionemo_ir._torch.custom_ops import trimul_kf_k3 as k3
 from bionemo_ir._torch.custom_ops.trimul_kf_k1 import _config as k1_config
 from bionemo_ir._torch.custom_ops.trimul_kf_k1 import cutedsl as k1_cutedsl
 from bionemo_ir._torch.custom_ops.trimul_kf_k2 import _config as k2_config
+from bionemo_ir._torch.custom_ops.trimul_kf_k2 import _cubin as k2_cubin
 from bionemo_ir._torch.custom_ops.trimul_kf_k2 import cutedsl as k2_cutedsl
 from bionemo_ir._torch.custom_ops.trimul_kf_k3 import _config as k3_config
+from bionemo_ir._torch.custom_ops.trimul_kf_k3 import _cubin as k3_cubin
 from bionemo_ir._torch.custom_ops.trimul_kf_k3 import cutedsl as k3_cutedsl
-from bionemo_ir._torch.utils.kernel import CuTeDSLKernelLibraryExecutable
+from bionemo_ir._torch.utils.kernel import CuTeDSLKernelLibraryExecutable, CuTeDSLKernelVariantUnavailable
 from tests._torch import cutedsl_test_modes, require_cubin_library, skip_if_not_sm90
 
 _CUTEDSL_MODES = cutedsl_test_modes("bionemo_ir._torch.custom_ops.trimul_kf_k1._source")
@@ -41,14 +44,16 @@ _BACKENDS = (
     (k3_cutedsl.TrimulKFK3CuTe, k3_cutedsl),
 )
 _MODE_CACHES: dict[tuple[type, str], dict] = {}
+_K2Tile = k2_config.TrimulKFK2Tile
 _EPS = 1e-5
 # bf16 a, b and product between fp32 stages.
 _ATOL = 8e-2
 
 # (B, N, C, D, outgoing, has_bias, residual, lengths), selecting every K1 variant and its padded a/b
-# layout (N = 520, 552, 1016), every K2 tile the D = 128 and 256 bundles run, K2_1's odd-cluster fallback
+# layout (N = 504, 520, 552, 1016), every K2 tile the D = 128 and 256 bundles run, K2_1's odd-cluster fallback
 # (N = 392 at C = 64), and the K3 variants the configs select, with and without the residual.
-# N * N % 128 != 0 at N = 136, 168, 200 and 376, where batches run one launch each.
+# N * N % 128 != 0 at N = 104, 136, 168, 200, 376 and 504: K1 still takes every batch in one launch, K3 variants
+# that tile a launch's rows flat one launch each.
 _CASES = [
     (1, 128, 64, 64, True, False, False, "full"),
     (1, 128, 32, 32, False, True, True, "tail"),
@@ -79,6 +84,8 @@ _CASES = [
     (1, 1016, 384, 256, True, True, True, "tail"),
     (1, 264, 128, 128, True, True, True, "random"),
     (1, 520, 128, 128, True, False, True, "tail"),
+    (4, 104, 384, 256, True, True, True, "random"),
+    (2, 504, 384, 256, False, True, True, "random"),
 ]
 
 
@@ -112,6 +119,10 @@ def _assert_dispatched(caches: list[dict], mode: str) -> None:
     for cache in caches:
         assert cache
         assert all(isinstance(value, CuTeDSLKernelLibraryExecutable) == (mode == "cubin") for value in cache.values())
+    if mode == "cubin":
+        # a dynamic K2 tile's CUBIN runs the dynamic schedule, not its static fallback (K2's key ends with the tile's
+        # dynamic flag)
+        assert all(executable.dynamic is key[-1] for key, executable in caches[1].items())
 
 
 def _problem(
@@ -158,12 +169,18 @@ def _widths(problem: dict) -> tuple[int, int]:
     return problem["x"].shape[-1], problem["p_in_weight"].shape[0] // 2
 
 
-def _run_chain(problem: dict, outgoing: bool, residual: bool) -> torch.Tensor:
-    return _run_chain_stages(problem, outgoing, residual)[-1]
+def _run_chain(problem: dict, outgoing: bool, residual: bool, pitched: bool | None = None) -> torch.Tensor:
+    return _run_chain_stages(problem, outgoing, residual, pitched)[-1]
 
 
-def _run_chain_stages(problem: dict, outgoing: bool, residual: bool) -> tuple[torch.Tensor | None, ...]:
-    """``a``, ``b``, ``stats``, the product and the output of the op chain."""
+def _run_chain_stages(
+    problem: dict, outgoing: bool, residual: bool, pitched: bool | None = None
+) -> tuple[torch.Tensor | None, ...]:
+    """``a``, ``b``, ``stats``, the product and the output of the op chain.
+
+    K2 writes the product at K1's a/b pitch when ``pitched``; by default where the node does, for a K3 that reads a
+    pitch.
+    """
     x = problem["x"]
     C, D = _widths(problem)
     op1 = k1.get_trimul_kf_k1_op(torch.bfloat16, C, D)
@@ -177,6 +194,7 @@ def _run_chain_stages(problem: dict, outgoing: bool, residual: bool) -> tuple[to
         problem["g_in_weight"],
         problem["p_in_bias"],
         problem["g_in_bias"],
+        centred=op1.centred,
     )
     fold_out = k3.fold_output_weights(
         problem["norm_out_weight"],
@@ -189,7 +207,7 @@ def _run_chain_stages(problem: dict, outgoing: bool, residual: bool) -> tuple[to
         problem["g_out_bias"],
     )
     a, b, stats = op1(x, problem["seqlen"], fold_in, _EPS)
-    prod = op2(a, b)
+    prod = op2(a, b, pitched=op3.reads_pitch(x.shape[1], residual) if pitched is None else pitched)
     out = op3(
         prod,
         x,
@@ -298,8 +316,8 @@ def test_chain_matches_reference(mode, case, monkeypatch):
     torch.testing.assert_close(out.float(), reference, atol=_ATOL, rtol=0)
 
 
-# Dense and padded K1 planes at C = 128, 256 and 384, K3 with and without the residual, and each K2 tile
-# list's widths.
+# Dense and padded K1 planes at C = 128, 256 and 384 (a pitched product at C = 384), K3 with and without the
+# residual, and each K2 tile list's widths.
 _BITWISE_CASES = [
     _CASES[0],
     _CASES[4],
@@ -316,6 +334,8 @@ _BITWISE_CASES = [
     _CASES[27],
     _CASES[28],
     (1, 520, 256, 256, True, True, True, "random"),
+    # K2's pitched product and K3_4's per-row image: N % 64 = 56
+    (2, 504, 384, 256, False, True, True, "random"),
 ]
 
 
@@ -334,6 +354,131 @@ def test_cubin_chain_matches_source_chain_bitwise(case, monkeypatch):
             outputs.append(_run_chain(problem, outgoing, residual))
             _assert_dispatched(caches, mode)
     assert torch.equal(outputs[0], outputs[1])
+
+
+# Padded K1 planes (N % 16 == 8 past the padding anchor), so K2 writes a pitched product and K3 reads it per row:
+# N % 64 = 56 (504, 568) and 8 (520), every shape and K3 variant, batch items of every length and masked columns, K3
+# with and without the residual.
+_PITCHED_CASES = [
+    (B, N, 384, 256, outgoing, lengths)
+    for N in (504, 520, 568)
+    for B in (1, 2, 4)
+    for outgoing in (True, False)
+    for lengths in ("random", "items")
+    if B < 4 or N == 504
+] + [
+    (B, N, C, C, outgoing, lengths)
+    for C in (32, 64, 128, 256)
+    for B, N, outgoing, lengths in ((1, 568, True, "random"), (2, 520, False, "items"), (2, 568, True, "items"))
+]
+
+
+def _pitched_case_id(case) -> str:
+    B, N, C, D, outgoing, lengths = case
+    return f"B{B}-N{N}-C{C}-D{D}-{'out' if outgoing else 'in'}-{lengths}"
+
+
+@pytest.mark.parametrize("mode", _CUTEDSL_MODES)
+@pytest.mark.parametrize("case", _PITCHED_CASES, ids=_pitched_case_id)
+def test_pitched_product_chain_matches_dense_chain_bitwise(mode, case, monkeypatch):
+    """K2 writing the product at K1's padded pitch and K3 reading it per row change no bit of either.
+
+    Each output row's math is the same on per-row tiles, so the pitched chain reproduces the dense one exactly,
+    masked rows and short batch items included, wherever K3's rule would take the pitched product or not.
+    """
+    skip_if_not_sm90()
+    B, N, C, D, outgoing, lengths = case
+    _skip_without_room(B, N, C, D)
+    caches = _use_mode(mode, monkeypatch)
+    op3 = k3.get_trimul_kf_k3_op(torch.bfloat16, C, D, True)
+    variant = op3.select(N).kernel_variant
+    if mode == "cubin" and not all(op3.backend.supports_pitch(C, D, variant, res) for res in (True, False)):
+        pytest.skip(f"this build ships no pitched {variant} image for C={C}, D={D}")
+    problem = _problem(B, N, C, True, "random" if lengths == "random" else "full", seed=N + B, D=D)
+    if lengths == "items":
+        # short batch items padded to N: item b holds N - 48 b tokens, its padding rows and columns masked
+        seqlen = problem["seqlen"]
+        for item in range(B):
+            length = N - 48 * item
+            seqlen[item, :length] = length
+            seqlen[item, length:] = 0
+        problem["out_seqlen"] = seqlen.clone()
+    for residual in (True, False):
+        a, _, _, pitched_prod, pitched_out = _run_chain_stages(problem, outgoing, residual, pitched=True)
+        assert a.stride(2) == k1_config.ab_pitch(N, "padded") > N
+        assert pitched_prod.stride(2) == a.stride(2) and pitched_prod.stride(1) == N * a.stride(2)
+        *_, dense_prod, dense_out = _run_chain_stages(problem, outgoing, residual, pitched=False)
+        assert dense_prod.is_contiguous()
+        assert torch.equal(pitched_prod, dense_prod)
+        assert torch.equal(pitched_out, dense_out)
+    _assert_dispatched(caches, mode)
+    assert any(key[-1] == "pitched" for key in caches[2]), "K3 never ran its pitched image"
+
+
+def test_k2_writes_the_product_at_its_operands_pitch_on_request():
+    """``pitched`` writes the product's rows at a's row pitch; on dense planes that is the dense product. The column
+    tiles that reach past N write the pad columns too, as zeros, so that every row ends on a whole line."""
+    skip_if_not_sm90()
+    D, N = 64, 136
+    op2 = k2.get_trimul_kf_k2_op(torch.bfloat16, D, True)
+    P = k1_config.ab_pitch(N, "padded")
+    planes = torch.randn(2, 2, D, P, P, device="cuda").to(torch.bfloat16)
+    a, b = planes[..., :N, :N].unbind(0)
+    # hand the pitched product a block that held NaNs, so unwritten pad columns would show
+    torch.full((2, D, N, P), float("nan"), dtype=torch.bfloat16, device="cuda")
+    pitched = op2(a, b, pitched=True)
+    dense = op2(a, b)
+    assert dense.is_contiguous() and pitched.shape == dense.shape == (2, D, N, N)
+    assert pitched.stride() == (D * N * P, N * P, P, 1)
+    assert torch.equal(pitched, dense)
+    tile_n = op2.select(N).tile_n
+    covered = min(P, -(-N // tile_n) * tile_n)
+    assert covered > N
+    rows = pitched.as_strided((2, D, N, P), pitched.stride())
+    assert torch.equal(rows[..., N:covered], torch.zeros_like(rows[..., N:covered]))
+    contiguous = a.contiguous(), b.contiguous()
+    assert op2(*contiguous, pitched=True).is_contiguous()
+
+
+def test_k3_takes_k2s_pitched_product_and_rejects_other_strides():
+    skip_if_not_sm90()
+    C, D, N = 384, 256, 504
+    op3 = k3.get_trimul_kf_k3_op(torch.bfloat16, C, D, True)
+    assert op3.select(N).kernel_variant in k3_config.PITCHED_VARIANTS
+    x = torch.empty(2, N, N, C, device="cuda", dtype=torch.bfloat16)
+    buffer = torch.empty(2, D, N, 512, device="cuda", dtype=torch.bfloat16)
+    assert op3.accepts(buffer[..., :N], x)
+    assert op3.accepts(buffer[..., :N].contiguous(), x)
+    # rows 8-element aligned, planes exactly N rows, batch items D planes apart
+    assert not op3.accepts(torch.empty(2, D, N, 516, device="cuda", dtype=torch.bfloat16)[..., :N], x)
+    assert not op3.accepts(torch.empty(2, D, N + 8, 512, device="cuda", dtype=torch.bfloat16)[:, :, :N, :N], x)
+    assert not op3.accepts(torch.empty(2, 2 * D, N, 512, device="cuda", dtype=torch.bfloat16)[:, :D, :, :N], x)
+
+
+def test_k3_resident_launcher_rejects_n_off_the_token_alignment():
+    """K3_4 loads each slab as two 64-row units that must not straddle batch items, so its launcher needs 8 | n."""
+    skip_if_not_sm90()
+    if "cubin" not in _CUTEDSL_MODES:
+        pytest.skip("needs BIOIR_TEST_CUTEDSL_MODES to include cubin")
+    library = require_cubin_library()
+    C, D = 384, 256
+    executable = k3_cubin.TrimulKFK3CubinExecutable(library, library.trimul_kf_k3, 90, C, D, "K3_4", False)
+
+    def launch(n: int) -> None:
+        """One batch item of n tokens, every operand flat as the op passes it."""
+
+        def zeros(elements: int, dtype: torch.dtype = torch.bfloat16) -> torch.Tensor:
+            return torch.zeros(elements, device="cuda", dtype=dtype)
+
+        stats = zeros(-(-n * n // 128) * 128 * 2, torch.float32)
+        prod, x, out = zeros(D * n * n), zeros(n * n * C), zeros(n * n * C)
+        weights = (zeros(C * D), zeros(C * C), zeros(4 * C, torch.float32))
+        executable(prod, x, *weights, stats, None, out, n * n, n, 1, _EPS)
+
+    with pytest.raises(ValueError, match="multiple of 8, got n=12"):
+        launch(12)
+    launch(16)
+    torch.cuda.synchronize()
 
 
 @pytest.mark.parametrize("mode", _CUTEDSL_MODES)
@@ -357,6 +502,7 @@ def test_graph_replay_feeds_each_k1_the_x_its_k3_wrote(mode, monkeypatch):
         problem["g_in_weight"],
         problem["p_in_bias"],
         problem["g_in_bias"],
+        centred=op1.centred,
     )
     fold_out = k3.fold_output_weights(
         problem["norm_out_weight"],
@@ -461,6 +607,30 @@ def test_chain_past_int32_offsets_matches_reference_rows(mode, B, N, C, outgoing
 
 
 @pytest.mark.parametrize("shape", sorted(k1_config.shipped_shapes(90)))
+def test_k1_k2_and_k3_agree_on_the_product_pitch(shape):
+    """For every token count, K1's a/b layout, the pitch K2 writes the product at and the tiles K3 reads it with agree.
+
+    The chain (the triangle node's rule) has K2 write the product at K1's pitch exactly where K1 pads its planes and
+    K3's product layout rule reads a pitch: every row then starts on a 128-byte line, and K3, a variant that can read
+    a pitch, runs its per-row image. Anywhere else the product is dense and K3 runs flat tiles.
+    """
+    C, D = shape
+    pitched = 0
+    for n in range(8, 4097, 8):
+        k1_selection = k1_config.select(90, C, D, n)
+        k3_selection = k3_config.select(90, C, D, n)
+        padded = k1_selection.ab_layout == "padded"
+        # K2 writes at a's row pitch: K1's padded pitch, or N on dense planes
+        prod_pitch = k1_selection.ab_pitch(n) if k3_selection.reads_pitch else n
+        assert (prod_pitch != n) == (padded and k3_selection.reads_pitch), n
+        assert prod_pitch == n or prod_pitch % k1_config.AB_PAD_ALIGN == 0, n
+        assert k3_selection.kernel_variant in k3_config.PITCHED_VARIANTS or not k3_selection.reads_pitch, n
+        pitched += prod_pitch != n
+    if (C, D) == (384, 256):
+        assert pitched, "the C=384, D=256 chain writes a pitched product somewhere"
+
+
+@pytest.mark.parametrize("shape", sorted(k1_config.shipped_shapes(90)))
 def test_k1_hands_row_statistics_exactly_to_the_k3_that_reads_them(shape):
     """For every token count, K1 writes statistics exactly when the K3 it pairs with reads them."""
     C, D = shape
@@ -489,6 +659,45 @@ def test_shipped_shapes():
     assert k1_config.shipped_shapes(80) == frozenset()
 
 
+def test_centred_input_fold_rows_sum_to_about_zero():
+    """Centred rows sum to almost nothing, at about the rounding error of rounding each entry to nearest."""
+    for seed, (C, D) in enumerate(((384, 256), (256, 128), (32, 16))):
+        generator = torch.Generator().manual_seed(seed)
+        weight = (torch.randn(2 * D, C, generator=generator) * C**-0.5).to(torch.bfloat16)
+        gate = (torch.randn(2 * D, C, generator=generator) * C**-0.5).to(torch.bfloat16)
+        gamma = (torch.randn(C, generator=generator) * 0.1 + 1).to(torch.bfloat16)
+        fold = k1.fold_input_weights(gamma, None, weight, gate, centred=True)
+        assert fold.centred and not k1.fold_input_weights(gamma, None, weight, gate).centred
+        for rows, raw in ((fold.proj, weight), (fold.gate, gate)):
+            exact = raw.double() * gamma.double()
+            exact = exact - exact.mean(-1, keepdim=True)
+            nearest = exact.to(torch.bfloat16).double()
+            err, nearest_err = (rows.double() - exact).abs(), (nearest - exact).abs()
+            assert rows.double().sum(-1).abs().max() < 0.05 * nearest.sum(-1).abs().max()
+            assert err.pow(2).mean().sqrt() < 1.1 * nearest_err.pow(2).mean().sqrt()
+            assert err.max() < 1.5 * nearest_err.max()
+        interleaved = fold.interleaved.view(-1, 2, 8, C)
+        assert torch.equal(interleaved[:, 0].reshape(-1, C), fold.proj)
+        assert torch.equal(interleaved[:, 1].reshape(-1, C), fold.gate)
+
+
+@pytest.mark.parametrize("shape", sorted(k1_config.shipped_shapes(90)))
+def test_k1_reads_a_centred_fold_where_it_drops_the_mean_term(shape):
+    """K1_2, which every C >= 256 bundle selects, drops the LayerNorm mean term: its op asks for a centred fold
+    and rejects a plain one. The mean-term variants of the narrower bundles read the plain fold."""
+    skip_if_not_sm90()
+    C, D = shape
+    op1 = k1.get_trimul_kf_k1_op(torch.bfloat16, C, D)
+    assert op1.centred == (C >= 256)
+    assert all(k1_config.select(90, C, D, n).centred == op1.centred for n in range(8, 4097, 8))
+    if not op1.centred:
+        return
+    problem = _problem(1, 128, C, False, "full", D=D)
+    weights = [problem[name] for name in ("norm_in_weight", "norm_in_bias", "p_in_weight", "g_in_weight")]
+    with pytest.raises(ValueError, match="centred=True"):
+        op1(problem["x"], problem["seqlen"], k1.fold_input_weights(*weights), _EPS)
+
+
 def test_input_fold_interleaves_eight_row_blocks():
     C, D = 32, 16
     weight = torch.randn(2 * D, C).to(torch.bfloat16)
@@ -507,17 +716,137 @@ def test_malformed_k1_configs_are_rejected(config):
 
 
 @pytest.mark.parametrize(
+    "config",
+    [
+        {"S=128": {"kernel_variant": "K3_1", "prod_layout": "pitched"}},  # K3_1 has no per-row image
+        {"S=128": {"kernel_variant": "K3_4", "prod_layout": "strided"}},
+        {"S=128": {"kernel_variant": "K3_4", "ab_layout": "pad_n_mod_16_8"}},
+    ],
+)
+def test_malformed_k3_configs_are_rejected(config):
+    with pytest.raises(ValueError):
+        k3_config.parse_configs(config)
+
+
+def test_k3_product_layout_rules():
+    """``pitched_n_mod_64_ge_56`` reads a pitched product where 64-column row chunks overrun N by at most 8."""
+    ns = (488, 504, 512, 520, 536, 552, 568, 1016)
+    rule = "pitched_n_mod_64_ge_56"
+    assert [k3_config.prod_layout(rule, n) for n in ns] == ["dense", "pitched"] + ["dense"] * 4 + ["pitched"] * 2
+    assert k3_config.prod_layout("pitched", 520) == "pitched" and k3_config.prod_layout("dense", 504) == "dense"
+    with pytest.raises(ValueError):
+        k3_config.prod_layout("strided", 504)
+
+
+@pytest.mark.parametrize(
     "entry",
     [
         {"kernel_variant": "K2_1", "tile_n": 256},
         {"kernel_variant": "K2_0", "tile_n": 128},
         {"kernel_variant": "K2_0", "tile_n": 128, "cluster_m": 1, "defer_kmin": 0, "split_epi": True},
         {"kernel_variant": "K2_0", "tile_n": 136, "cluster_m": 2, "defer_kmin": 0, "split_epi": False},
+        {"kernel_variant": "K2_1", "tile_n": 128, "dynamic": True},
+        {"kernel_variant": "K2_0", "tile_n": 256, "cluster_m": 2, "defer_kmin": 4, "split_epi": False, "static": True},
     ],
 )
 def test_malformed_k2_tiles_are_rejected(entry):
     with pytest.raises(ValueError):
         k2_config.parse_tile(entry, "test")
+
+
+class _FakeK2Launcher:
+    """A K2 CUBIN launcher holding the static image of every tile, and the dynamic one where ``dynamic_images``."""
+
+    class DType:
+        BFLOAT16 = 0
+
+    def __init__(self, axis: bool, dynamic_images: bool) -> None:
+        self.axis, self.dynamic_images = axis, dynamic_images
+
+    def make_kernel_config(self, *geometry: object, **kwargs: bool) -> SimpleNamespace:
+        if kwargs and not self.axis:
+            raise TypeError("make_kernel_config(): incompatible function arguments")  # a launcher without the axis
+        dynamic = kwargs.get("dynamic", False)
+        if dynamic and not self.dynamic_images:
+            raise ValueError("No embedded trimul KF K2 CUBIN")
+        return SimpleNamespace(spec=SimpleNamespace(dynamic=dynamic) if self.axis else SimpleNamespace())
+
+
+@pytest.mark.parametrize(
+    ("axis", "dynamic_images", "runs_dynamic"),
+    [(False, False, False), (True, False, False), (True, True, True)],
+    ids=["launcher-without-the-axis", "no-dynamic-image", "dynamic-image"],
+)
+def test_k2_cubin_runs_a_dynamic_tile_statically_on_a_library_without_its_image(axis, dynamic_images, runs_dynamic):
+    """A dynamic tile runs its dynamic image where the library has one, and its static image (ignoring the counter)
+    where it predates it; a static tile always runs its static image."""
+    dynamic, static = _K2Tile("K2_0", 256, 2, 4, False, True), _K2Tile("K2_0", 256, 2, 4, False)
+    launcher = _FakeK2Launcher(axis, dynamic_images)
+    assert k2_cubin.TrimulKFK2CubinExecutable(None, launcher, 90, True, dynamic).dynamic is runs_dynamic
+    assert k2_cubin.TrimulKFK2CubinExecutable(None, launcher, 90, True, static).dynamic is False
+
+
+def test_k2_cubin_without_any_image_of_the_tile_is_unavailable():
+    class Empty(_FakeK2Launcher):
+        def make_kernel_config(self, *geometry: object, **kwargs: bool) -> SimpleNamespace:
+            raise ValueError("No embedded trimul KF K2 CUBIN")
+
+    with pytest.raises(CuTeDSLKernelVariantUnavailable):
+        k2_cubin.TrimulKFK2CubinExecutable(None, Empty(True, True), 90, True, _K2Tile("K2_0", 256, 2, 4, False, True))
+
+
+class _DenseLaunchParams:
+    """K2's launch fields before the product pitch: like the bound class, it takes no other attribute."""
+
+    __slots__ = ("a", "b", "prod", "n", "l", "ab_pitch", "ab_plane", "counter", "stream")
+
+
+class _PitchedLaunchParams:
+    __slots__ = (*_DenseLaunchParams.__slots__, "prod_pitch", "prod_plane")
+
+
+@pytest.mark.parametrize(
+    ("launch_params", "prod_pitch", "runs"),
+    [
+        (_DenseLaunchParams, None, True),
+        (_DenseLaunchParams, 8, True),
+        (_DenseLaunchParams, 16, False),
+        (_PitchedLaunchParams, 16, True),
+    ],
+    ids=["old-library-dense", "old-library-dense-pitch-n", "old-library-pitched", "pitched"],
+)
+def test_k2_cubin_call_writes_dense_products_on_a_library_without_the_product_pitch(
+    monkeypatch: pytest.MonkeyPatch, launch_params: type, prod_pitch: int | None, runs: bool
+) -> None:
+    """A library built before the product pitch launches dense products and reports a pitched one unavailable."""
+    launched = []
+
+    class Launcher(_FakeK2Launcher):
+        LaunchParams = launch_params
+
+        def launch(self, config: SimpleNamespace, params: object) -> None:
+            launched.append(params)
+
+    monkeypatch.setattr(k2_cubin, "current_stream_handle", lambda tensor: 0)
+    library = SimpleNamespace(FlatTensorView=lambda *view: view)
+    tile = _K2Tile("K2_0", 256, 2, 4, False)
+    executable = k2_cubin.TrimulKFK2CubinExecutable(library, Launcher(True, False), 90, True, tile)
+    n = 8
+    pitch = n if prod_pitch is None else prod_pitch
+    operand, prod = torch.zeros(n * n), torch.zeros(n * pitch)
+
+    def call() -> None:
+        executable(operand, operand, prod, n, 1, n, n * n, prod_pitch, None if prod_pitch is None else n * pitch)
+
+    if not runs:
+        with pytest.raises(CuTeDSLKernelVariantUnavailable, match="predates pitched products"):
+            call()
+        assert not launched
+        return
+    call()
+    assert len(launched) == 1
+    if launch_params is _PitchedLaunchParams:
+        assert (launched[0].prod_pitch, launched[0].prod_plane) == (pitch, n * pitch)
 
 
 def test_k2_anchors_name_one_tile_or_one_per_direction():
@@ -621,4 +950,4 @@ def test_source_kernels_never_request_programmatic_dependent_launch():
         assert "use_pdl=False," in text, f"{name} should launch without PDL"
         assert "use_pdl=True" not in text, f"{name} requests PDL, which breaks CUDA graph replay"
         checked += text.count("use_pdl=")
-    assert checked == 8, f"expected the chain's 8 launch sites, found {checked}"
+    assert checked == 9, f"expected the chain's 9 launch sites, found {checked}"

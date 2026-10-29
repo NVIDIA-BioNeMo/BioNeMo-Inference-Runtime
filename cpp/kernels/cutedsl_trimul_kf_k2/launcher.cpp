@@ -25,8 +25,11 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <map>
+#include <mutex>
 #include <stdexcept>
 #include <string>
+#include <utility>
 
 namespace bioir::cutedsl::trimul_kf_k2
 {
@@ -53,17 +56,6 @@ void check_device(std::int32_t operand_device, std::int32_t device, char const* 
   }
 }
 
-void validate_flat(FlatTensorView const& view, std::int64_t elements, std::int32_t device, char const* name)
-{
-  validate_flat_tensor(view, name, 16);
-  check_device(view.device, device, name);
-  if (view.extent != elements)
-  {
-    throw std::invalid_argument(
-      std::string(name) + " must hold " + std::to_string(elements) + " elements, got " + std::to_string(view.extent));
-  }
-}
-
 /* A strided operand view: its flat extent must reach the last element the TMA box walk can address. */
 void validate_span(FlatTensorView const& view, std::int64_t span, std::int32_t device, char const* name)
 {
@@ -77,19 +69,26 @@ void validate_span(FlatTensorView const& view, std::int64_t span, std::int32_t d
   }
 }
 
-/* Row pitch and plane stride of a and b: both whole 16-byte TMA strides. */
-void validate_ab_strides(std::int64_t n, std::int64_t pitch, std::int64_t plane)
+/* Row pitch and plane stride of a and b, or of prod: both whole 16-byte TMA strides. */
+void validate_strides(std::int64_t n, std::int64_t pitch, std::int64_t plane, char const* name)
 {
   constexpr std::int64_t kStrideElements = 8;
   if (
     pitch < n || pitch % kStrideElements != 0 || plane % kStrideElements != 0
-    || plane < checked_mul(n, pitch, "trimul KF K2 a/b plane extent n * pitch"))
+    || plane < checked_mul(n, pitch, "trimul KF K2 plane extent n * pitch"))
   {
     throw std::invalid_argument(
-      "trimul KF K2 needs a/b row pitch >= n and plane stride >= n * pitch, both multiples of "
+      std::string("trimul KF K2 needs ") + name + " row pitch >= n and plane stride >= n * pitch, both multiples of "
       + std::to_string(kStrideElements) + " elements; got n=" + std::to_string(n) + ", pitch=" + std::to_string(pitch)
       + ", plane=" + std::to_string(plane));
   }
+}
+
+/* Elements from the first to one past the last addressed element of l matrices of n rows by cols columns. */
+std::int64_t matrices_span(
+  std::int64_t n, std::int64_t cols, std::int64_t l, std::int64_t pitch, std::int64_t plane, char const* name)
+{
+  return checked_add(checked_add(checked_mul(l - 1, plane, name), checked_mul(n - 1, pitch, name), name), cols, name);
 }
 
 void validate_image(KernelConfig const& config)
@@ -118,6 +117,44 @@ void validate_image(KernelConfig const& config)
   {
     throw std::invalid_argument("trimul KF K2 CUBIN has invalid launch geometry");
   }
+  if (spec.dynamic && spec.kernel_variant == 1)
+    throw std::invalid_argument("trimul KF K2_1 has no dynamic schedule");
+}
+
+/* Clusters of the loaded image that fit on the device at once, which sizes a dynamic image's grid:
+ * fewer than num_sms / cluster size wherever clusters cannot tile every GPC. Cached per function.
+ */
+std::uint64_t max_active_clusters(cubin_kernel_t loaded, cubin_launch_config_t const& launch_config)
+{
+  static std::mutex mutex;
+  static std::map<std::pair<CUfunction, std::uint32_t>, std::uint64_t> cache;
+  std::pair<CUfunction, std::uint32_t> const key{loaded.function, launch_config.dynamic_smem_bytes};
+  std::lock_guard<std::mutex> lock(mutex);
+  auto const found = cache.find(key);
+  if (found != cache.end())
+    return found->second;
+  CUlaunchAttribute attribute{};
+  attribute.id = CU_LAUNCH_ATTRIBUTE_CLUSTER_DIMENSION;
+  attribute.value.clusterDim.x = launch_config.cluster_x;
+  attribute.value.clusterDim.y = launch_config.cluster_y;
+  attribute.value.clusterDim.z = launch_config.cluster_z;
+  CUlaunchConfig query{};
+  query.gridDimX = launch_config.cluster_x;
+  query.gridDimY = launch_config.cluster_y;
+  query.gridDimZ = launch_config.cluster_z;
+  query.blockDimX = launch_config.block_x;
+  query.blockDimY = launch_config.block_y;
+  query.blockDimZ = launch_config.block_z;
+  query.sharedMemBytes = launch_config.dynamic_smem_bytes;
+  query.attrs = &attribute;
+  query.numAttrs = 1;
+  int clusters = 0;
+  check_cuda_driver(
+    cuOccupancyMaxActiveClusters(&clusters, loaded.function, &query), "cuOccupancyMaxActiveClusters(trimul_kf_k2)");
+  if (clusters <= 0)
+    throw std::invalid_argument("current CUDA device cannot hold one trimul KF K2 cluster");
+  cache.emplace(key, static_cast<std::uint64_t>(clusters));
+  return static_cast<std::uint64_t>(clusters);
 }
 
 /* l matrices of n x n, rows pitch and matrices plane elements apart, as the kernel's (n, n, l) TMA
@@ -142,6 +179,19 @@ TmaTensorSource matrices_source(
   };
 }
 
+/* The product as the kernel's (n, pitch, l) TMA destination: its stores clip at the row pitch rather than at n, so
+ * the column tiles that reach past n write the pad columns too (zeros) and every row ends on a whole line.
+ */
+TmaTensorSource
+product_source(FlatTensorView const& view, std::int64_t n, std::int64_t l, std::int64_t pitch, std::int64_t plane)
+{
+  return TmaTensorSource{
+    view.data,
+    {static_cast<std::uint64_t>(n), static_cast<std::uint64_t>(pitch), static_cast<std::uint64_t>(l), 0},
+    {static_cast<std::uint64_t>(pitch), 1, static_cast<std::uint64_t>(plane), 0},
+  };
+}
+
 void launch_sm90(
   cubin_kernel_t loaded,
   KernelConfig const& config,
@@ -155,16 +205,19 @@ void launch_sm90(
   std::int64_t const l = params.l;
   std::int64_t const pitch = params.ab_pitch;
   std::int64_t const plane = params.ab_plane;
+  std::int64_t const prod_pitch = params.prod_pitch;
+  std::int64_t const prod_plane = params.prod_plane;
   if (n <= 0 || l <= 0)
     throw std::invalid_argument("trimul KF K2 needs positive n and l");
-  validate_ab_strides(n, pitch, plane);
-  char const* const span_name = "trimul KF K2 a/b span";
-  std::int64_t const ab_span = checked_add(
-    checked_add(checked_mul(l - 1, plane, span_name), checked_mul(n - 1, pitch, span_name), span_name), n, span_name);
+  validate_strides(n, pitch, plane, "a/b");
+  validate_strides(n, prod_pitch, prod_plane, "prod");
+  std::int64_t const ab_span = matrices_span(n, n, l, pitch, plane, "trimul KF K2 a/b span");
   validate_span(params.a, ab_span, device, "a");
   validate_span(params.b, ab_span, device, "b");
-  validate_flat(
-    params.prod, checked_mul(l, checked_mul(n, n, "trimul KF K2 prod"), "trimul KF K2 prod"), device, "prod");
+  validate_span(
+    params.prod, matrices_span(n, prod_pitch, l, prod_pitch, prod_plane, "trimul KF K2 prod span"), device, "prod");
+  if (spec.dynamic)
+    validate_span(params.counter, 1, device, "counter");
 
   embedded::SM90LaunchInfo const& metadata = config.embedded_image->sm90;
   std::uint32_t const cluster_m = metadata.cluster_dims[0];
@@ -189,13 +242,13 @@ void launch_sm90(
     throw std::invalid_argument("trimul KF K2 clusters along N need a whole number of column-tile groups");
 
   /* Outgoing reads a and b row-major (K contiguous), incoming column-major. The product is always
-   * dense and row-major.
+   * row-major, at its own pitch.
    */
   CUtensorMapDataType const expected_dtype = tma_data_type(true);
   abi::SM90Params device_params{};
   TmaTensorSource const a_source = matrices_source(params.a, n, l, pitch, plane, !spec.outgoing);
   TmaTensorSource const b_source = matrices_source(params.b, n, l, pitch, plane, !spec.outgoing);
-  TmaTensorSource const prod_source = matrices_source(params.prod, n, l, n, n * n, false);
+  TmaTensorSource const prod_source = product_source(params.prod, n, l, prod_pitch, prod_plane);
   encode_tma_descriptor(device_params.a_tma, metadata.a, expected_dtype, a_source, "a");
   encode_tma_descriptor(device_params.b_tma, metadata.b, expected_dtype, b_source, "b");
   encode_tma_descriptor(device_params.prod_tma, metadata.prod, expected_dtype, prod_source, "prod");
@@ -205,7 +258,10 @@ void launch_sm90(
   CoordTensorS3 const coord{{static_cast<std::int32_t>(n), static_cast<std::int32_t>(n), static_cast<std::int32_t>(l)}};
   device_params.a_coord = coord;
   device_params.b_coord = coord;
-  device_params.prod_coord = coord;
+  device_params.prod_coord = CoordTensorS3{
+    {static_cast<std::int32_t>(n),
+     static_cast<std::int32_t>(checked_u32(static_cast<std::uint64_t>(prod_pitch), "trimul KF K2 product pitch")),
+     static_cast<std::int32_t>(l)}};
 
   std::int32_t const multiprocessor_count = cuda_multiprocessor_count_for_context(context);
   if (multiprocessor_count <= 0)
@@ -213,26 +269,45 @@ void launch_sm90(
   std::uint64_t const sms = static_cast<std::uint64_t>(multiprocessor_count);
 
   cubin_launch_config_t launch_config{};
+  launch_config.block_x = metadata.block_dims[0];
+  launch_config.block_y = metadata.block_dims[1];
+  launch_config.block_z = metadata.block_dims[2];
+  launch_config.cluster_x = metadata.cluster_dims[0];
+  launch_config.cluster_y = metadata.cluster_dims[1];
+  launch_config.cluster_z = metadata.cluster_dims[2];
+  launch_config.cluster_scheduling_policy = metadata.cluster_scheduling_policy;
+  launch_config.dynamic_smem_bytes = smem_bytes;
   if (spec.kernel_variant != 1)
   {
     /* Persistent clusters of cluster_m tiles, vertically adjacent for K2_0 and horizontally for
-     * K2_2, walked (m, n, l) with m fastest. The grid is the smallest one with the same number of
-     * passes as the hardware-wide grid.
+     * K2_2, walked (m, n, l) with m fastest. A static image's grid is the smallest one with the same
+     * number of passes as the hardware-wide grid. A dynamic image starts every cluster that fits on
+     * the device at once, each on the unit of its index, and they claim the rest.
      */
     bool const pairs_columns = spec.kernel_variant == 2;
     std::uint64_t const m_clusters = ceil_div(m_tiles, pairs_columns ? 1 : cluster_m);
     std::uint64_t const n_clusters = ceil_div(n_tiles, pairs_columns ? cluster_m : 1);
     std::uint64_t const work_units = m_clusters * n_clusters * static_cast<std::uint64_t>(l);
-    std::uint64_t const max_active_clusters = sms / cluster_m;
-    if (max_active_clusters == 0)
-      throw std::invalid_argument("current CUDA device cannot hold one trimul KF K2 cluster");
-    std::uint64_t const passes = ceil_div(work_units, max_active_clusters);
     device_params.schedule[0] = static_cast<std::int32_t>(checked_u32(m_clusters, "trimul KF K2 row clusters"));
     device_params.schedule[1] = static_cast<std::int32_t>(checked_u32(n_clusters, "trimul KF K2 column clusters"));
     device_params.schedule[2] = static_cast<std::int32_t>(checked_u32(work_units, "trimul KF K2 work units"));
+    std::uint64_t clusters = 0;
+    if (spec.dynamic)
+    {
+      clusters = std::min(work_units, max_active_clusters(loaded, launch_config));
+      device_params.counter = params.counter.data;
+    }
+    else
+    {
+      std::uint64_t const max_active = sms / cluster_m;
+      if (max_active == 0)
+        throw std::invalid_argument("current CUDA device cannot hold one trimul KF K2 cluster");
+      std::uint64_t const passes = ceil_div(work_units, max_active);
+      clusters = ceil_div(work_units, passes);
+    }
     launch_config.grid_x = cluster_m;
     launch_config.grid_y = 1;
-    launch_config.grid_z = checked_u32(ceil_div(work_units, passes), "trimul KF K2 grid.z");
+    launch_config.grid_z = checked_u32(clusters, "trimul KF K2 grid.z");
   }
   else
   {
@@ -249,18 +324,11 @@ void launch_sm90(
   }
 
   void* kernel_params[abi::kSM90MaxParameterCount]{};
-  std::size_t const parameter_count = abi::pack_sm90_kernel_params(&device_params, spec.kernel_variant, kernel_params);
-  if (parameter_count != abi::sm90_parameter_count(spec.kernel_variant))
+  std::size_t const parameter_count
+    = abi::pack_sm90_kernel_params(&device_params, spec.kernel_variant, spec.dynamic, kernel_params);
+  if (parameter_count != abi::sm90_parameter_count(spec.kernel_variant, spec.dynamic))
     throw std::logic_error("trimul KF K2 parameter packer produced the wrong ABI count");
 
-  launch_config.block_x = metadata.block_dims[0];
-  launch_config.block_y = metadata.block_dims[1];
-  launch_config.block_z = metadata.block_dims[2];
-  launch_config.cluster_x = metadata.cluster_dims[0];
-  launch_config.cluster_y = metadata.cluster_dims[1];
-  launch_config.cluster_z = metadata.cluster_dims[2];
-  launch_config.cluster_scheduling_policy = metadata.cluster_scheduling_policy;
-  launch_config.dynamic_smem_bytes = smem_bytes;
   launch_config.stream = reinterpret_cast<CUstream>(static_cast<std::uintptr_t>(params.stream));
   launch_config.programmatic_stream_serialization = allows_programmatic_launch(launch_config.stream) ? 1 : 0;
   check_cuda_driver(
@@ -280,6 +348,7 @@ KernelSpec make_kernel_spec(embedded::CubinImage const& image)
     image.defer_kmin,
     image.split_epi,
     image.num_threads,
+    image.dynamic,
   };
 }
 
@@ -291,7 +360,8 @@ embedded::CubinImage const& find_embedded_cubin(
   std::uint32_t tile_n,
   std::uint32_t cluster_m,
   std::uint32_t defer_kmin,
-  bool split_epi)
+  bool split_epi,
+  bool dynamic)
 {
   bool const is_bfloat16 = dtype == DType::kBFloat16;
   embedded::RegistryView const registry = embedded::registry();
@@ -301,14 +371,14 @@ embedded::CubinImage const& find_embedded_cubin(
     if (
       cubin_supports_sm(image.cubin, target_sm) && image.is_bfloat16 == is_bfloat16 && image.outgoing == outgoing
       && image.kernel_variant == kernel_variant && image.tile_n == tile_n && image.cluster_m == cluster_m
-      && image.defer_kmin == defer_kmin && image.split_epi == split_epi)
+      && image.defer_kmin == defer_kmin && image.split_epi == split_epi && image.dynamic == dynamic)
       return image;
   }
   throw std::invalid_argument(
     "No embedded trimul KF K2 CUBIN for SM" + std::to_string(target_sm) + ", K2_" + std::to_string(kernel_variant)
     + ", outgoing=" + (outgoing ? "true" : "false") + ", tile_n=" + std::to_string(tile_n)
     + ", cluster_m=" + std::to_string(cluster_m) + ", defer_kmin=" + std::to_string(defer_kmin)
-    + ", split_epi=" + (split_epi ? "true" : "false"));
+    + ", split_epi=" + (split_epi ? "true" : "false") + ", dynamic=" + (dynamic ? "true" : "false"));
 }
 
 std::size_t preload_kernels(CUcontext context, std::int32_t device_sm)
@@ -336,10 +406,11 @@ KernelConfig make_kernel_config(
   std::uint32_t tile_n,
   std::uint32_t cluster_m,
   std::uint32_t defer_kmin,
-  bool split_epi)
+  bool split_epi,
+  bool dynamic)
 {
-  embedded::CubinImage const& image
-    = find_embedded_cubin(target_sm, dtype, outgoing, kernel_variant, tile_n, cluster_m, defer_kmin, split_epi);
+  embedded::CubinImage const& image = find_embedded_cubin(
+    target_sm, dtype, outgoing, kernel_variant, tile_n, cluster_m, defer_kmin, split_epi, dynamic);
   return KernelConfig{make_kernel_spec(image), dtype, image.cubin, &image};
 }
 

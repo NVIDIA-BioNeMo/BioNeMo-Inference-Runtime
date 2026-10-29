@@ -36,7 +36,8 @@ def _layer(backend: str = "CuTeDSL", c_s: int = C_S) -> AttentionPairBias:
     layer = AttentionPairBias(
         layer_idx=0, c_s=c_s, c_z=16, num_heads=HEADS, dtype=torch.float32, attn_backend=backend
     ).cuda()
-    init_module_weights(layer, std=0.5)
+    # the tests run post_load_weights themselves, or check what happens before it
+    init_module_weights(layer, std=0.5, post_load=False)
     layer.in_proj.bias.normal_()
     return layer
 

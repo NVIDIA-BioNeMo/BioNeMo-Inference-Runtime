@@ -22,7 +22,9 @@ One ``configs/D{D}_sm90.json`` bundle per hidden width ``D`` declares the ``kern
 
 ``K2_0`` takes ``tile_n``, ``cluster_m`` (a 2-CTA cluster along M shares B), ``defer_kmin`` and
 ``split_epi``; ``K2_2`` takes the same keys with ``cluster_m`` 2 and pairs its CTAs along N instead
-(sharing A); ``K2_1`` takes only ``tile_n``, and runs a 2-CTA cluster at ``tile_n`` 192. A call over
+(sharing A); ``K2_1`` takes only ``tile_n``, and runs a 2-CTA cluster at ``tile_n`` 192. ``K2_0`` and
+``K2_2`` also take an optional ``dynamic`` (default false): its clusters claim work units from a counter
+instead of a static round-robin, which keeps the sibling tiles of a plane in flight together. A call over
 ``N`` tokens takes the anchor nearest ``N``, ties going to the smaller. An anchor names one tile for
 both contraction directions or one per direction as ``{"out": tile, "in": tile}``, and may list tiles
 of distinct widths, of which a call runs the one that pads ``N`` least (:func:`least_padding`). The
@@ -47,9 +49,12 @@ KERNEL_ABIS = {90: "sm90"}
 KERNEL_VARIANTS = ("K2_0", "K2_1", "K2_2")
 #: Contraction k-block, fixed by every variant.
 TILE_K = 64
+#: Words of a dynamic tile's work counter (one used; the rest keep it on its own 16-byte line).
+COUNTER_WORDS = 4
 _FILE_RE = re.compile(r"^D(?P<D>\d+)_sm(?P<sm>\d+)\.json$")
 _KEY_RE = re.compile(r"^S=(?P<bucket>[1-9]\d*)$")
 _K2_0_KEYS = frozenset({"kernel_variant", "tile_n", "cluster_m", "defer_kmin", "split_epi"})
+_K2_0_OPTIONAL = frozenset({"dynamic"})
 #: K2_0 / K2_2 column tiles; MN-major (incoming) operands take widths off 64 columns on a 32 B swizzle.
 _K2_0_TILE_N = range(128, 257, 16)
 _K2_1_KEYS = frozenset({"kernel_variant", "tile_n"})
@@ -63,6 +68,8 @@ class TrimulKFK2Tile(NamedTuple):
     cluster_m: int = 1
     defer_kmin: int = 0
     split_epi: bool = False
+    #: Clusters claim work units from a global counter (``K2_0`` and ``K2_2``).
+    dynamic: bool = False
 
     @property
     def cluster_n(self) -> int:
@@ -76,10 +83,17 @@ def parse_tile(entry: Any, source: str) -> TrimulKFK2Tile:
         raise ValueError(f"{source}: expected an object")
     variant = entry.get("kernel_variant")
     if variant in ("K2_0", "K2_2"):
-        if set(entry) != _K2_0_KEYS:
-            raise ValueError(f"{source}: {variant} takes exactly {sorted(_K2_0_KEYS)}")
+        if not _K2_0_KEYS <= set(entry) <= _K2_0_KEYS | _K2_0_OPTIONAL:
+            raise ValueError(
+                f"{source}: {variant} takes exactly {sorted(_K2_0_KEYS)}, optionally {sorted(_K2_0_OPTIONAL)}"
+            )
         tile = TrimulKFK2Tile(
-            variant, int(entry["tile_n"]), int(entry["cluster_m"]), int(entry["defer_kmin"]), bool(entry["split_epi"])
+            variant,
+            int(entry["tile_n"]),
+            int(entry["cluster_m"]),
+            int(entry["defer_kmin"]),
+            bool(entry["split_epi"]),
+            bool(entry.get("dynamic", False)),
         )
         clusters = (1, 2) if variant == "K2_0" else (2,)
         if tile.tile_n not in _K2_0_TILE_N or tile.cluster_m not in clusters or tile.defer_kmin < 0:

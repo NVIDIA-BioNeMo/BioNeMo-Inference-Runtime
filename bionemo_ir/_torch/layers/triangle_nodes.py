@@ -289,6 +289,11 @@ class TriangleAttentionEndingNode(TriangleAttentionNode):
         super().__init__(*args, **kwargs)
 
 
+def _refold_after_load_state_dict(node: "TriangleMultiplicationNode", *args: object) -> None:
+    """Refold the weights ``load_state_dict`` loaded, as ``recursive_calling_load_weights`` does through the node."""
+    node.post_load_weights()
+
+
 class TriangleMultiplicationNode(nn.Module):
     def __init__(
         self,
@@ -310,7 +315,9 @@ class TriangleMultiplicationNode(nn.Module):
         """Triangle multiplication node.
 
         Supported SM90 BF16 shapes may dispatch to the SM90 TriMul KF chain
-        when the model pads tokens.
+        when the model pads tokens. A node on the chain folds its weights for
+        it once they exist: here, on :meth:`set_token_padding`, and on
+        :meth:`post_load_weights`, which ``load_state_dict`` also runs.
 
         Args:
             pair_mask_left_aligned: Whether each mask row is ``1...1 0...0``,
@@ -414,6 +421,7 @@ class TriangleMultiplicationNode(nn.Module):
         self._kf_ops: tuple[TrimulKFK1Op, TrimulKFK2Op, TrimulKFK3Op] | None = None
         self._kf_folds: tuple[TrimulKFInputFold, TrimulKFOutputFold] | None = None
         self.set_token_padding(pad_tokens)
+        self.register_load_state_dict_post_hook(_refold_after_load_state_dict)
 
     @property
     def kf_available(self) -> bool:
@@ -425,11 +433,11 @@ class TriangleMultiplicationNode(nn.Module):
 
         Padding enables the SM90 TriMul KF chain ``trimul_kf_k1`` ->
         ``trimul_kf_k2`` -> ``trimul_kf_k3`` when :meth:`_get_kf_ops` finds all
-        three for this node.
+        three for this node, which then folds its weights for them.
         """
         self.pad_tokens = enabled
-        self._kf_folds = None
         self._kf_ops = self._get_kf_ops() if enabled else None
+        self._prepare_kf_weights()
 
     def _get_kf_ops(self) -> tuple[TrimulKFK1Op, TrimulKFK2Op, TrimulKFK3Op] | None:
         """The KF K1, K2 and K3 ops for this node, or ``None`` when any does not ship.
@@ -449,38 +457,53 @@ class TriangleMultiplicationNode(nn.Module):
         )
         return None if any(op is None for op in ops) else ops
 
-    def _prepare_kf_weights(self) -> None:
-        """Fold the LayerNorms and biases into the KF chain's weights.
+    @torch.no_grad()
+    def _prepare_kf_weights(self, device: torch.device | None = None) -> None:
+        """Fold the LayerNorms and biases into the KF chain's weights, on ``device`` (default: the projections').
 
-        The weights hold placeholders until ``load_weights`` fills them in
-        place, so the node folds on its first KF call rather than at
-        construction, and :meth:`post_load_weights` drops the folds a reload
-        makes stale.
+        The node folds whenever it is on the chain and its weights exist: at
+        construction, where the weights hold placeholders until
+        ``load_weights`` or ``load_state_dict`` fills them in place, and again
+        in :meth:`post_load_weights`. The LayerNorms may still be on the CPU
+        then; the fold reads every weight on ``device``. The input fold is
+        centred where K1 drops the LayerNorm mean term
+        (``TrimulKFK1Op.centred``).
         """
+        projections = (self.p_in, self.g_in, self.p_out, self.g_out)
+        if self._kf_ops is None or not all(layer._weights_created for layer in projections):
+            self._kf_folds = None
+            return
+        if device is None:
+            device = self.p_in.weight.device
+
+        def on(weight: torch.Tensor | None) -> torch.Tensor | None:
+            return None if weight is None else weight.to(device)
+
         self._kf_folds = (
             fold_input_weights(
-                self.norm_in.weight,
-                self.norm_in.bias,
-                self.p_in.weight,
-                self.g_in.weight,
-                self.p_in.bias,
-                self.g_in.bias,
+                on(self.norm_in.weight),
+                on(self.norm_in.bias),
+                on(self.p_in.weight),
+                on(self.g_in.weight),
+                on(self.p_in.bias),
+                on(self.g_in.bias),
+                centred=self._kf_ops[0].centred,
             ),
             fold_output_weights(
-                self.norm_out.weight,
-                self.norm_out.bias,
-                self.norm_in.weight,
-                self.norm_in.bias,
-                self.p_out.weight,
-                self.g_out.weight,
-                self.p_out.bias,
-                self.g_out.bias,
+                on(self.norm_out.weight),
+                on(self.norm_out.bias),
+                on(self.norm_in.weight),
+                on(self.norm_in.bias),
+                on(self.p_out.weight),
+                on(self.g_out.weight),
+                on(self.p_out.bias),
+                on(self.g_out.bias),
             ),
         )
 
     def post_load_weights(self) -> None:
-        """Drop the folded KF weights, so the next KF call folds the loaded ones."""
-        self._kf_folds = None
+        """Refold the KF chain's weights from the loaded ones."""
+        self._prepare_kf_weights()
 
     def _kf_forward_if_supported(
         self,
@@ -506,12 +529,14 @@ class TriangleMultiplicationNode(nn.Module):
             k1_seqlen = out_seqlen = (mask > 0).sum(-1, dtype=torch.int32)
         if not k1.accepts(x, k1_seqlen):
             return None
+        # the node folded its weights when they were built or loaded: refold only on another device
         if self._kf_folds is None or self._kf_folds[0].device != x.device:
-            self._prepare_kf_weights()
+            self._prepare_kf_weights(x.device)
         fold_in, fold_out = self._kf_folds
         a, b, stats = k1(x, k1_seqlen, fold_in, self.eps)
+        # Where K1 pads its planes, K2 writes the product at their pitch for a K3 that reads it.
         return k3(
-            k2(a, b),
+            k2(a, b, pitched=k3.reads_pitch(x.shape[1], residual)),
             x,
             fold_out,
             stats,

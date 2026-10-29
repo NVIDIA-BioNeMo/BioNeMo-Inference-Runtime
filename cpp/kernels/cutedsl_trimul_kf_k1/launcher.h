@@ -37,7 +37,7 @@ namespace bioir::cutedsl::trimul_kf_k1::embedded
 struct CubinImage;
 }
 
-/* Hopper device ABI trimul_kf_k1_sm90_v3, read from EIATTR_KPARAM_INFO for variant K1_0:
+/* Hopper device ABI trimul_kf_k1_sm90_v4, read from EIATTR_KPARAM_INFO for variant K1_0:
  *
  *   ord  0  0x030  0x80  x_tma          CUtensorMap
  *   ord  1  0x0b0  0x04  x_coord        CoordTensorS1   rows
@@ -67,6 +67,9 @@ struct CubinImage;
  * image; P = N rounded up to 64 for a padded one, which loads x one 64-position row chunk at a time
  * through x_chunk_tma. A dense image declares the chunk-load pair too, never reads it, and receives
  * x_tma and x_coord in it.
+ *
+ * v4 tiles each batch on its own (v3 tiled a launch's rows flat): num_tiles counts every batch's
+ * whole 128-row tiles, or pairs of row chunks, so one launch serves any number of batches.
  *
  * Each 0x80 TMA slot carries CuTe DSL 4.5.2's 0x40-byte non-executable CopyAtom payload followed
  * by zero padding: plain loads of x, its row chunks and the weights, and stores of a and b.

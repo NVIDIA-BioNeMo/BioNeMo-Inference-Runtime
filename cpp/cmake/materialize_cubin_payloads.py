@@ -136,8 +136,10 @@ class _Field:
     ``default`` does the same from a constant, which is what a field with no
     sibling to copy needs: an axis added to a family is absent from every
     already-published image, and the value those images actually carry is the
-    one the axis had before it was nameable. The generated C++ member is always
-    present.
+    one the axis had before it was nameable. ``default_by`` does the same from a
+    closed table keyed by a sibling's value, for a field whose value differed
+    between the already-published images: an image outside the table must carry
+    the field itself. The generated C++ member is always present.
     """
 
     name: str
@@ -146,6 +148,7 @@ class _Field:
     suffix: str = ""
     default_from: str | None = None
     default: object = _NO_DEFAULT
+    default_by: tuple[str, tuple[tuple[object, object], ...]] | None = None
 
     @property
     def from_metadata(self) -> bool:
@@ -171,8 +174,9 @@ class _Sm90Spec:
     # Per-operand TMA ranks in ``operands`` order, for families whose operands differ; empty uses ``rank``.
     # A tuple entry lists the ranks an operand may lower to.
     ranks: tuple[int | tuple[int, ...], ...] = ()
-    # Operands only some images record, each with its TMA rank; an absent one renders as a rank-0 map.
-    optional: tuple[tuple[str, int], ...] = ()
+    # Operands only some images record, each with its TMA rank (or the ranks it may lower to); an absent one renders
+    # as a rank-0 map.
+    optional: tuple[tuple[str, int | tuple[int, ...]], ...] = ()
 
     @property
     def declared_operands(self) -> tuple[str, ...]:
@@ -458,8 +462,19 @@ _FAMILY_SPECS: dict[str, _FamilySpec] = {
             _Field("defer_kmin", _COUNT, "std::uint32_t defer_kmin;", suffix="U"),
             _Field("split_epi", _BOOL, "bool split_epi;"),
             _Field("num_threads", _POSITIVE, "std::uint32_t num_threads;", suffix="U"),
+            # Every image published before the dynamic schedule ran its tile's static round-robin.
+            _Field("dynamic", _BOOL, "bool dynamic;", default=False),
         ),
-        runtime_key=("is_bfloat16", "outgoing", "kernel_variant", "tile_n", "cluster_m", "defer_kmin", "split_epi"),
+        runtime_key=(
+            "is_bfloat16",
+            "outgoing",
+            "kernel_variant",
+            "tile_n",
+            "cluster_m",
+            "defer_kmin",
+            "split_epi",
+            "dynamic",
+        ),
         sm90=_Sm90Spec("enabled", ("a", "b", "prod"), rank=3),
     ),
     "trimul_kf_k3": _FamilySpec(
@@ -475,9 +490,23 @@ _FAMILY_SPECS: dict[str, _FamilySpec] = {
             _Field("tile_m", _POSITIVE, "std::uint32_t tile_m;", suffix="U", default=128),
             # Every image published before the ping-pong variants covered a tile's columns in one CTA.
             _Field("tile_ctas", _POSITIVE, "std::uint32_t tile_ctas;", suffix="U", default=1),
+            # Whether the image reads K1's row statistics. Of the images published before the field,
+            # K3_1, K3_3 and K3_4 did; any later variant's image carries it.
+            _Field(
+                "reads_stats",
+                _BOOL,
+                "bool reads_stats;",
+                default_by=("kernel_variant", ((0, False), (1, True), (2, False), (3, True), (4, True))),
+            ),
+            # Every image published before the pitched product read a dense one.
+            _Field("pitched", _BOOL, "bool pitched;", default=False),
         ),
-        runtime_key=("is_bfloat16", "C", "D", "kernel_variant", "residual"),
-        sm90=_Sm90Spec("enabled", ("prod", "x", "w_out", "w_gate", "output"), ranks=(3, 2, 2, 2, 2)),
+        runtime_key=("is_bfloat16", "C", "D", "kernel_variant", "residual", "pitched"),
+        # A weights-resident image stores its output from registers and records no output map. A pitched image
+        # reads the product as (N, D, N, B) and x, and stores the output, as (N, C, B * N).
+        sm90=_Sm90Spec(
+            "enabled", ("prod", "x", "w_out", "w_gate"), ranks=((3, 4), (2, 3), 2, 2), optional=(("output", (2, 3)),)
+        ),
     ),
     # The SM90 image loads with cp.async, not TMA, so neither ABI records tensor maps.
     "window_attention": _FamilySpec(
@@ -903,6 +932,11 @@ def _apply_metadata_defaults(spec: _FamilySpec, metadata: dict[str, object]) -> 
                 metadata[field.name] = metadata[source]
         elif field.default is not _NO_DEFAULT:
             metadata[field.name] = field.default
+        elif field.default_by is not None:
+            source, table = field.default_by
+            for key, value in table:
+                if source in metadata and metadata[source] == key:
+                    metadata[field.name] = value
     # Keep an implementation change buildable against the previous family
     # corpus. Old triangle-attention images have no native-SM100 record.
     if spec.sm100 is not None and "sm100_launch" not in metadata:

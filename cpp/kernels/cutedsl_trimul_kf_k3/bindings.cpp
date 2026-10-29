@@ -42,6 +42,8 @@ void bind(nb::module_& parent)
     .def_ro("D", &KernelSpec::D)
     .def_ro("kernel_variant", &KernelSpec::kernel_variant)
     .def_ro("residual", &KernelSpec::residual)
+    .def_ro("reads_stats", &KernelSpec::reads_stats)
+    .def_ro("pitched", &KernelSpec::pitched)
     .def_ro("num_threads", &KernelSpec::num_threads)
     .def_ro("tile_m", &KernelSpec::tile_m)
     .def_ro("tile_ctas", &KernelSpec::tile_ctas);
@@ -68,6 +70,8 @@ void bind(nb::module_& parent)
     .def_rw("n", &LaunchParams::n)
     .def_rw("nb", &LaunchParams::nb)
     .def_rw("eps", &LaunchParams::eps)
+    .def_rw("prod_pitch", &LaunchParams::prod_pitch)
+    .def_rw("prod_plane", &LaunchParams::prod_plane)
     .def_rw("stream", &LaunchParams::stream);
 
   module.def("kernel_specs", &kernel_specs, "Return every registered trimul KF K3 variant.");
@@ -79,7 +83,8 @@ void bind(nb::module_& parent)
     "C"_a,
     "D"_a,
     "kernel_variant"_a,
-    "residual"_a);
+    "residual"_a,
+    "pitched"_a = false);
   module.def(
     "launch",
     [](KernelConfig const& config, LaunchParams const& params)

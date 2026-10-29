@@ -19,8 +19,9 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 import torch
+from cuda.bindings import driver
 
-from ._config import TrimulKFK2Tile
+from ._config import COUNTER_WORDS, TrimulKFK2Tile
 from .cutedsl import TrimulKFK2CuTe, ab_layout_ok
 
 _SUPPORTED_DTYPE = torch.bfloat16
@@ -28,11 +29,50 @@ _SUPPORTED_DTYPE = torch.bfloat16
 TOKEN_ALIGN = 8
 # One backend per SM version, so a process that drives GPUs of different SMs gets each its own configs.
 _trimul_kf_k2_instances: dict[int, TrimulKFK2CuTe] = {}
+# The dynamic schedule's work counters: (device, stream) for eager launches, (device, stream, capture id) under
+# CUDA-graph capture, at most one of each per stream (see work_counter).
+_work_counters: dict[tuple[int, ...], torch.Tensor] = {}
+
+
+def work_counter(device: torch.device) -> torch.Tensor:
+    """The work counter of a dynamic K2 launch on ``device``'s current stream: int32 ``[COUNTER_WORDS]``, zero.
+
+    Every launch leaves its counter at zero, so the launches of one stream, which run in order, share one. A launch
+    under CUDA-graph capture takes its capture's own counter instead, zeroed by a node ahead of the graph's first
+    use of it, so the graph zeroes it on every replay and shares it with no other graph and no eager launch: graphs
+    captured on different streams, or in different captures, replay concurrently without racing on it. Replaying
+    one graph on two streams at once is unsupported, as it would share the counter, like its activations.
+
+    A capture's counter is one of its graph's intermediates: the graph's memory pool keeps its block for every
+    replay. The op holds it only while the capture can still launch K2, and lets it go when its stream starts
+    another capture, since a stream captures one sequence at a time. Repeated captures thus hold one counter per
+    stream rather than one per graph.
+    """
+    stream = torch.cuda.current_stream(device).cuda_stream
+    key = (device.index, stream, *_capture_id(stream))
+    counter = _work_counters.get(key)
+    if counter is None:
+        if len(key) > 2:
+            for ended in [held for held in _work_counters if len(held) > 2 and held[:2] == key[:2]]:
+                del _work_counters[ended]
+        counter = _work_counters[key] = torch.zeros(COUNTER_WORDS, dtype=torch.int32, device=device)
+    return counter
+
+
+def _capture_id(stream: int) -> tuple[int, ...]:
+    """``(id,)`` of the CUDA-graph capture ``stream`` is in, unique over the process, or ``()``."""
+    result, status, capture_id, *_ = driver.cuStreamGetCaptureInfo(driver.CUstream(stream))
+    if result != driver.CUresult.CUDA_SUCCESS:
+        raise RuntimeError(f"cuStreamGetCaptureInfo failed: {result}")
+    return (int(capture_id),) if status == driver.CUstreamCaptureStatus.CU_STREAM_CAPTURE_STATUS_ACTIVE else ()
 
 
 @dataclass(frozen=True)
 class TrimulKFK2Op:
-    """K2 bound to one hidden width and contraction direction; see :func:`get_trimul_kf_k2_op`."""
+    """K2 bound to one hidden width and contraction direction; see :func:`get_trimul_kf_k2_op`.
+
+    A tile on the dynamic schedule claims its work from the :func:`work_counter` of the stream it runs on.
+    """
 
     backend: TrimulKFK2CuTe
     D: int
@@ -68,15 +108,27 @@ class TrimulKFK2Op:
             and b.data_ptr() % 16 == 0
         )
 
-    def __call__(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
-        """The bf16 product ``[B, D, N, N]`` of K1's ``a`` and ``b``, for the tile tuned for ``N``."""
+    def __call__(self, a: torch.Tensor, b: torch.Tensor, pitched: bool = False) -> torch.Tensor:
+        """The bf16 product ``[B, D, N, N]`` of K1's ``a`` and ``b``, for the tile tuned for ``N``.
+
+        Args:
+            a: bf16 ``[B, D, N, N]`` channel-major operand, dense or a view of K1's padded planes.
+            b: ``a``'s partner, laid out the same way.
+            pitched: Write the product's rows at ``a``'s row pitch ``P``, channels ``N`` rows apart: a
+                ``[B, D, N, N]`` view of a ``[B, D, N, P]`` buffer, whose rows start on 128-byte lines when
+                K1 pads its planes. Only a K3 that reads a pitched product takes it (``reads_pitch``).
+                Dense otherwise.
+        """
         if not self.accepts(a, b):
             raise ValueError(
                 f"trimul KF K2 needs non-empty bf16 CUDA a and b [B, {self.D}, N, N] with N a multiple of "
                 f"{TOKEN_ALIGN}, dense or K1's padded planes (same strides, unit column stride, row pitch and plane "
                 f"stride multiples of 8 elements)"
             )
-        return self.backend.run(a, b, self.outgoing, self.select(a.shape[2]))
+        N = a.shape[2]
+        tile = self.select(N)
+        counter = work_counter(a.device) if tile.dynamic else None
+        return self.backend.run(a, b, self.outgoing, tile, a.stride(2) if pitched else N, counter)
 
 
 def get_trimul_kf_k2_op(dtype: torch.dtype | None, hidden_dim: int, outgoing: bool) -> TrimulKFK2Op | None:

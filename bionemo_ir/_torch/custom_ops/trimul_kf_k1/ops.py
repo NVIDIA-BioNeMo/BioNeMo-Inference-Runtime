@@ -28,6 +28,8 @@ _SUPPORTED_DTYPE = torch.bfloat16
 TOKEN_ALIGN = 8
 # One backend per SM version, so a process that drives GPUs of different SMs gets each its own configs.
 _trimul_kf_k1_instances: dict[int, TrimulKFK1CuTe] = {}
+#: Passes of :func:`_centred_rows_bf16`; one bf16 step of one entry per row each.
+_CENTRE_PASSES = 128
 
 
 @dataclass(frozen=True)
@@ -41,12 +43,15 @@ class TrimulKFInputFold:
             the ping-pong variants.
         vec: fp32 ``[8D]``: for every output row, the sum of its folded projection row, then
             ``W_p @ ln_bias + p_bias``, then the same two terms of the gate.
+        centred: Whether every folded row is centred (sums to about zero), as a K1 that drops the
+            LayerNorm mean term needs; any K1 reads a centred fold correctly.
     """
 
     proj: torch.Tensor
     gate: torch.Tensor
     interleaved: torch.Tensor
     vec: torch.Tensor
+    centred: bool = False
     C: int = field(init=False)
     D: int = field(init=False)
     device: torch.device = field(init=False)
@@ -72,6 +77,33 @@ class TrimulKFInputFold:
         object.__setattr__(self, "device", self.proj.device)
 
 
+def _centred_rows_bf16(w: torch.Tensor, passes: int = _CENTRE_PASSES) -> torch.Tensor:
+    """Every row of ``w`` minus its mean, in bf16, rounded so the row still sums to about zero.
+
+    ``x @ centred.T == (x - mean(x)) @ w.T`` for any row ``x``, so a K1 reading the centred rows needs
+    no LayerNorm mean term. Rounding each entry to nearest leaves a row sum of about ``sqrt(C)`` half
+    steps, which the input's mean would multiply. Each pass moves one entry per row by one bf16 step
+    against the remaining sum: the entry adding the least rounding error per unit of sum it removes
+    (entries near a rounding midpoint first), and only a step under twice the sum. The pass count is
+    fixed: no data-dependent control flow, so a fold under graph capture records no host synchronization.
+    """
+    exact = w.double() - w.double().mean(-1, keepdim=True)
+    r = exact.to(torch.bfloat16)
+    for _ in range(passes):
+        rd = r.double()
+        rest = rd.sum(-1, keepdim=True)
+        # bf16 is sign-magnitude: one step of the bits moves away from zero; this lowers |rest|
+        bits = r.view(torch.int16).to(torch.int32)
+        moved = (bits + torch.where((rd > 0) == (rest > 0), -1, 1)).to(torch.int16).view(torch.bfloat16)
+        md = moved.double()
+        step = md - rd
+        fits = (rd != 0) & torch.isfinite(md) & (step * rest < 0) & (step.abs() < 2 * rest.abs())
+        cost = ((md - exact).abs() - (rd - exact).abs()) / step.abs().clamp_min(1e-300)
+        best = torch.where(fits, cost, torch.inf).argmin(-1, keepdim=True)
+        r = torch.where(fits.gather(-1, best), r.scatter(-1, best, moved.gather(-1, best)), r)
+    return r.contiguous()
+
+
 def fold_input_weights(
     norm_in_weight: torch.Tensor,
     norm_in_bias: torch.Tensor | None,
@@ -79,12 +111,15 @@ def fold_input_weights(
     g_in_weight: torch.Tensor,
     p_in_bias: torch.Tensor | None = None,
     g_in_bias: torch.Tensor | None = None,
+    centred: bool = False,
 ) -> TrimulKFInputFold:
     """Fold the input LayerNorm, and any projection biases, into K1's weights.
 
     ``LayerNorm(x) @ W.T + bias == rstd * (x @ (W * gamma).T - mean * rowsum(W * gamma)) + W @ beta + bias``,
     so K1 applies the LayerNorm from per-row statistics on raw ``x``. The fold is fixed for fixed
-    weights. A missing LayerNorm bias is a zero beta.
+    weights. A missing LayerNorm bias is a zero beta. A centred fold also subtracts every folded row's
+    mean, so ``rowsum`` is about zero and the mean term drops out: the fold a K1 whose op is
+    :attr:`TrimulKFK1Op.centred` reads.
 
     Args:
         norm_in_weight: ``[C]`` LayerNorm weight ``gamma``.
@@ -93,24 +128,28 @@ def fold_input_weights(
         g_in_weight: ``[2D, C]`` gate weight, rows matching ``p_in_weight``.
         p_in_bias: Optional ``[2D]`` projection bias.
         g_in_bias: Optional ``[2D]`` gate bias.
+        centred: Centre every folded row (:func:`_centred_rows_bf16`).
     """
     gamma = norm_in_weight.float()
     beta = torch.zeros_like(gamma) if norm_in_bias is None else norm_in_bias.float()
+    rows, C = p_in_weight.shape
+    # one pass over the projection and gate rows together: centring costs the same for twice the rows
+    scaled = torch.cat((p_in_weight, g_in_weight)).float() * gamma
+    folded = _centred_rows_bf16(scaled) if centred else scaled.to(torch.bfloat16)
 
-    def fold(weight: torch.Tensor, bias: torch.Tensor | None) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        weight = weight.float()
-        folded = (weight * gamma).to(torch.bfloat16)
-        shift = weight @ beta
+    def fold(
+        folded: torch.Tensor, weight: torch.Tensor, bias: torch.Tensor | None
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        shift = weight.float() @ beta
         if bias is not None:
             shift = shift + bias.float()
         return folded.contiguous(), folded.float().sum(-1), shift
 
-    proj, proj_sum, proj_shift = fold(p_in_weight, p_in_bias)
-    gate, gate_sum, gate_shift = fold(g_in_weight, g_in_bias)
-    rows, C = proj.shape
+    proj, proj_sum, proj_shift = fold(folded[:rows], p_in_weight, p_in_bias)
+    gate, gate_sum, gate_shift = fold(folded[rows:], g_in_weight, g_in_bias)
     interleaved = torch.stack((proj.view(-1, 8, C), gate.view(-1, 8, C)), dim=1).reshape(2 * rows, C)
     vec = torch.cat((proj_sum, proj_shift, gate_sum, gate_shift)).contiguous()
-    return TrimulKFInputFold(proj, gate, interleaved, vec)
+    return TrimulKFInputFold(proj, gate, interleaved, vec, centred)
 
 
 @dataclass(frozen=True)
@@ -134,6 +173,12 @@ class TrimulKFK1Op:
                 selection = selection._replace(ab_layout="dense")
             self._selections[n] = selection
         return selection
+
+    @property
+    def centred(self) -> bool:
+        """Whether a variant this op runs drops the LayerNorm mean term, so its fold must be centred
+        (``fold_input_weights(..., centred=True)``)."""
+        return self.backend.centred(self.C, self.D)
 
     def accepts(self, x: torch.Tensor, actual_seqlen: torch.Tensor) -> bool:
         """Whether a call on ``x`` ``[B, N, N, C]`` can run."""
@@ -160,7 +205,7 @@ class TrimulKFK1Op:
         Args:
             x: bf16 ``[B, N, N, C]`` pair representation, ``N`` a multiple of 8.
             actual_seqlen: int32 prefix lengths, one per ``(b, i)`` row of ``x``.
-            fold: The input weights folded by :func:`fold_input_weights`.
+            fold: The input weights folded by :func:`fold_input_weights`, centred when :attr:`centred`.
             eps: The input LayerNorm's epsilon.
 
         Returns:
@@ -176,6 +221,8 @@ class TrimulKFK1Op:
         if fold.C != self.C or fold.D != self.D:
             raise ValueError(f"trimul KF K1 needs the C={self.C}, D={self.D} fold")
         selection = self.select(x.shape[1])
+        if selection.centred and not fold.centred:
+            raise ValueError(f"trimul KF K1 {selection.kernel_variant} needs fold_input_weights(..., centred=True)")
         w_in, w_gate_in = (fold.interleaved, None) if selection.interleaved else (fold.proj, fold.gate)
         return self.backend.run(x, actual_seqlen, w_in, w_gate_in, fold.vec, float(eps), selection)
 

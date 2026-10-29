@@ -45,7 +45,8 @@ void bind(nb::module_& parent)
     .def_ro("cluster_m", &KernelSpec::cluster_m)
     .def_ro("defer_kmin", &KernelSpec::defer_kmin)
     .def_ro("split_epi", &KernelSpec::split_epi)
-    .def_ro("num_threads", &KernelSpec::num_threads);
+    .def_ro("num_threads", &KernelSpec::num_threads)
+    .def_ro("dynamic", &KernelSpec::dynamic);
 
   nb::class_<KernelConfig>(module, "KernelConfig")
     .def_ro("spec", &KernelConfig::spec)
@@ -64,6 +65,9 @@ void bind(nb::module_& parent)
     .def_rw("l", &LaunchParams::l)
     .def_rw("ab_pitch", &LaunchParams::ab_pitch)
     .def_rw("ab_plane", &LaunchParams::ab_plane)
+    .def_rw("prod_pitch", &LaunchParams::prod_pitch)
+    .def_rw("prod_plane", &LaunchParams::prod_plane)
+    .def_rw("counter", &LaunchParams::counter)
     .def_rw("stream", &LaunchParams::stream);
 
   module.def("kernel_specs", &kernel_specs, "Return every registered trimul KF K2 variant.");
@@ -77,7 +81,8 @@ void bind(nb::module_& parent)
     "tile_n"_a,
     "cluster_m"_a,
     "defer_kmin"_a,
-    "split_epi"_a);
+    "split_epi"_a,
+    "dynamic"_a = false);
   module.def(
     "launch",
     [](KernelConfig const& config, LaunchParams const& params)

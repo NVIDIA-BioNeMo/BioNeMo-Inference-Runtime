@@ -1,6 +1,6 @@
 {
   "kernel_abi": "sm90",
   "configs": {
-    "S=128": {"kernel_variant": "K3_2"}
+    "S=128": {"kernel_variant": "K3_2", "prod_layout": "pitched_n_mod_64_ge_56"}
   }
 }

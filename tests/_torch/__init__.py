@@ -32,7 +32,7 @@ SM_VERSION: int = (
 )
 
 
-def init_module_weights(module: "torch.nn.Module", std: float = 0.02) -> "torch.nn.Module":
+def init_module_weights(module: "torch.nn.Module", std: float = 0.02, *, post_load: bool = True) -> "torch.nn.Module":
     """Fill a module's parameters with finite values in-place.
 
     TRT-BNM ``Linear`` allocates its weights with ``torch.empty`` and defers
@@ -44,7 +44,10 @@ def init_module_weights(module: "torch.nn.Module", std: float = 0.02) -> "torch.
     tests deterministic and independent of execution order.
 
     Norm scales (1-D ``*.weight``) are set to 1, biases to 0, and matrix
-    weights to a small normal.
+    weights to a small normal. Every submodule's ``post_load_weights`` then
+    runs, as after a checkpoint load, so state derived from the weights
+    (such as the TriMul KF chain's folds) matches them; ``post_load=False``
+    leaves that to the caller.
     """
     with torch.no_grad():
         for name, p in module.named_parameters():
@@ -54,6 +57,11 @@ def init_module_weights(module: "torch.nn.Module", std: float = 0.02) -> "torch.
                 p.fill_(1.0)
             else:
                 p.zero_()
+    if post_load:
+        for submodule in module.modules():
+            post_load_weights = getattr(submodule, "post_load_weights", None)
+            if post_load_weights is not None:
+                post_load_weights()
     return module
 
 

@@ -120,7 +120,7 @@ class TrimulKFK2CuTe(CuteKernelCache):
 
         if self._num_sms is None:
             self._num_sms = torch.cuda.get_device_properties(torch.cuda.current_device()).multi_processor_count
-        disk_key = ("trimul_kf_k2_cute_v1", *key, KERNEL_ABIS[self._sm_version])
+        disk_key = ("trimul_kf_k2_cute_v2", *key, KERNEL_ABIS[self._sm_version])
         executable = self.load_from_cache(disk_key)
         if executable is None:
             logger.info(f"CuTeDSL trimul KF K2: compiling {tile} outgoing={outgoing} for SM{self._sm_version}")
@@ -133,36 +133,48 @@ class TrimulKFK2CuTe(CuteKernelCache):
                 tile.defer_kmin,
                 tile.split_epi,
                 self._num_sms,
+                tile.dynamic,
             )
             self.save_to_cache(disk_key, executable)
         TrimulKFK2CuTe._compiled_cache[key] = executable
         return executable
 
-    def run(self, a: torch.Tensor, b: torch.Tensor, outgoing: bool, tile: TrimulKFK2Tile) -> torch.Tensor:
+    def run(
+        self,
+        a: torch.Tensor,
+        b: torch.Tensor,
+        outgoing: bool,
+        tile: TrimulKFK2Tile,
+        prod_pitch: int | None = None,
+        counter: torch.Tensor | None = None,
+    ) -> torch.Tensor:
         """Contract ``a`` and ``b`` ``[B, D, N, N]`` with ``tile``; the caller has validated the operands.
 
-        ``a`` and ``b`` may be views of K1's padded planes; the product is dense.
+        ``a`` and ``b`` may be views of K1's padded planes. The product is a ``[B, D, N, N]`` view of a
+        ``[B, D, N, prod_pitch]`` buffer: rows ``prod_pitch`` elements apart (``N``, dense, by default),
+        channels ``N`` rows apart; its pad columns hold zeros wherever a column tile reaches them. A dynamic tile
+        takes ``counter``, int32 ``[COUNTER_WORDS]`` on ``a``'s device, zero before the call and zero again after
+        it; launches that share one must be stream-ordered. A CUBIN library built before the tile's dynamic image
+        runs its static image, which ignores the counter.
         """
         B, D, N, _ = a.shape
+        prod_pitch = N if prod_pitch is None else prod_pitch
         pitch, plane = ab_strides(a)
         executable = self._get_or_compile(outgoing, tile)
-        prod = torch.empty((B, D, N, N), dtype=a.dtype, device=a.device)
+        buffer = torch.empty((B, D, N, prod_pitch), dtype=a.dtype, device=a.device)
         l = B * D  # noqa: E741
         span = (l - 1) * plane + (N - 1) * pitch + N
+        args = [a.as_strided((span,), (1,)), b.as_strided((span,), (1,)), buffer.view(-1), N, l, pitch, plane]
+        args += [prod_pitch, N * prod_pitch]
+        if tile.dynamic:
+            if counter is None:
+                raise ValueError(f"trimul KF K2 tile {tile} claims its work from a counter; pass one")
+            args.append(counter)
         # A source-backed launch takes its stream from the current device, not the operands'.
         on_device = a.get_device() == torch.cuda.current_device()
         with contextlib.nullcontext() if on_device else torch.cuda.device(a.device):
-            launch_compiled_kernel(
-                executable,
-                a.as_strided((span,), (1,)),
-                b.as_strided((span,), (1,)),
-                prod.view(-1),
-                N,
-                l,
-                pitch,
-                plane,
-            )
-        return prod
+            launch_compiled_kernel(executable, *args)
+        return buffer[..., :N]
 
 
 def ab_strides(t: torch.Tensor) -> tuple[int, int]:

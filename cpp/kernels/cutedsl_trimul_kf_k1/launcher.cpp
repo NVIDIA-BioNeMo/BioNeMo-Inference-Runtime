@@ -34,8 +34,8 @@ namespace bioir::cutedsl::trimul_kf_k1
 namespace
 {
 
-constexpr char kSM90LaunchAbi[] = "trimul_kf_k1_sm90_v3";
-/* Rows per K1 tile, which the persistent CTAs stride over. */
+constexpr char kSM90LaunchAbi[] = "trimul_kf_k1_sm90_v4";
+/* Rows per K1 tile, which the persistent CTAs stride over; a tile never straddles two batches. */
 constexpr std::uint64_t kTileRows = 128;
 /* Rows, and positions per a/b plane, one launch addresses: TMA coordinates are int32. */
 constexpr std::int64_t kMaxLaunchRows = std::numeric_limits<std::int32_t>::max() - static_cast<std::int64_t>(kTileRows);
@@ -172,18 +172,25 @@ void launch_k1(
   std::int64_t const w_rows = (pingpong ? 4 : 2) * D;
   std::int64_t const pitch = ab_pitch(n, spec.padded);
   std::int64_t const ab_positions = n * pitch;
-  if (rows > kMaxLaunchRows || ab_positions > kMaxLaunchRows)
+  /* Each batch's rows fill whole 128-row tiles, the last running past them, as do its row statistics. */
+  std::uint64_t const batch_tiles = ceil_div(static_cast<std::uint64_t>(n * n), kTileRows);
+  std::int64_t const tile_rows
+    = checked_mul(nb, static_cast<std::int64_t>(batch_tiles * kTileRows), "trimul KF K1 rows");
+  if (tile_rows > kMaxLaunchRows || ab_positions > kMaxLaunchRows)
   {
     throw std::invalid_argument(
-      "trimul KF K1 addresses at most " + std::to_string(kMaxLaunchRows) + " rows and plane positions a launch; got "
-      + std::to_string(rows) + " rows, " + std::to_string(ab_positions) + " positions");
+      "trimul KF K1 addresses at most " + std::to_string(kMaxLaunchRows)
+      + " tile rows and plane positions a launch; got " + std::to_string(tile_rows) + " rows, "
+      + std::to_string(ab_positions) + " positions");
   }
   std::int64_t const plane = pitch * pitch;
   std::int64_t const ab_elements = checked_mul(nb, checked_mul(D, plane, "trimul KF K1 a/b"), "trimul KF K1 a/b");
-  /* A padded image tiles each batch's planes in pairs of row chunks that never straddle two batches. */
+  /* Tiles never straddle two batches: a dense image tiles each batch's rows, a padded one its planes in
+   * pairs of row chunks.
+   */
   std::uint64_t const num_tiles = spec.padded
     ? static_cast<std::uint64_t>(nb) * ceil_div(static_cast<std::uint64_t>(n * (pitch / kAbChunk)), 2)
-    : ceil_div(static_cast<std::uint64_t>(rows), kTileRows);
+    : static_cast<std::uint64_t>(nb) * batch_tiles;
 
   validate_flat(params.x, checked_mul(rows, C, "trimul KF K1 x"), 16, device, "x");
   validate_tensor(params.seqlen, "seqlen", 4);
@@ -200,10 +207,9 @@ void launch_k1(
   {
     validate_flat_tensor(params.stats, "stats", 16);
     check_device(params.stats.device, device, "stats");
-    /* Indexed by flat row in either layout: a padded image's tiles skip the pad positions. */
-    std::uint64_t const row_tiles = ceil_div(static_cast<std::uint64_t>(rows), kTileRows);
-    if (static_cast<std::uint64_t>(params.stats.extent) < 2 * row_tiles * kTileRows)
-      throw std::invalid_argument("stats needs two values per row, rounded up to whole 128-row tiles");
+    /* Batch b's row p at b * (N * N rounded up to whole 128-row tiles) + p, in either layout. */
+    if (params.stats.extent < 2 * tile_rows)
+      throw std::invalid_argument("stats needs two values per row, each batch rounded up to whole 128-row tiles");
   }
 
   embedded::SM90LaunchInfo const& metadata = config.embedded_image->sm90;
@@ -266,10 +272,15 @@ void launch_k1(
   std::int32_t const multiprocessor_count = cuda_multiprocessor_count_for_context(context);
   if (multiprocessor_count <= 0)
     throw std::invalid_argument("current CUDA device has no active multiprocessors");
-  /* Persistent CTAs stride over the row tiles; K1 waits on its predecessor before reading anything. */
+  /* Persistent CTAs stride over the row tiles, or, in K1_2, take runs of (tile, channel group) units, at
+   * most one CTA a unit; K1 waits on its predecessor before reading anything.
+   */
+  std::uint64_t const work_units = spec.kernel_variant == kStatsVariant
+    ? num_tiles * static_cast<std::uint64_t>(2 * D / std::min<std::int64_t>(D, 64))
+    : num_tiles;
   cubin_launch_config_t launch_config{};
   launch_config.grid_x = checked_u32(
-    std::min<std::uint64_t>(num_tiles, static_cast<std::uint64_t>(multiprocessor_count)), "trimul KF K1 grid.x");
+    std::min<std::uint64_t>(work_units, static_cast<std::uint64_t>(multiprocessor_count)), "trimul KF K1 grid.x");
   launch_config.grid_y = 1;
   launch_config.grid_z = 1;
   launch_config.block_x = metadata.block_dims[0];

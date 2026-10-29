@@ -29,9 +29,17 @@ from bionemo_ir._torch.utils.kernel import (
     tensor_s1_d0,
 )
 
+#: Launch ABI of the images that tile a launch's rows flat, so a tile may straddle two batches.
+FLAT_TILE_LAUNCH_ABI = "trimul_kf_k1_sm90_v3"
+
 
 class TrimulKFK1CubinExecutable(CuTeDSLKernelLibraryExecutable):
-    """Match the CuTeDSL compiled-function call ABI using the C++ launcher."""
+    """Match the CuTeDSL compiled-function call ABI using the C++ launcher.
+
+    Attributes:
+        flat_tiles: Whether the image tiles the launch's rows flat, as images built before K1 tiled each batch
+            on its own did: its batches whose rows end mid-tile then each take a launch.
+    """
 
     def __init__(
         self,
@@ -60,6 +68,7 @@ class TrimulKFK1CubinExecutable(CuTeDSLKernelLibraryExecutable):
         self._launcher = launcher
         self._config = config
         self._kernel_variant = kernel_variant
+        self.flat_tiles = config.cubin.launch_abi == FLAT_TILE_LAUNCH_ABI
 
     def __call__(
         self,

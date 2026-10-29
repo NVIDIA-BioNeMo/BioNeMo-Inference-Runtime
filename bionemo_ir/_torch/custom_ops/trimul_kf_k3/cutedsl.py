@@ -31,11 +31,20 @@ from bionemo_ir._torch.utils.kernel import (
 from bionemo_ir.dsl_kernels.cute_cache import FORCE_CUBIN_ENV, CuteKernelCache
 from bionemo_ir.logger import logger
 
-from ..trimul_kf_k1.cutedsl import batch_chunks
-from ._config import KERNEL_ABIS, TrimulKFK3Selection, anchors, select
+from ..trimul_kf_k1.cutedsl import MAX_LAUNCH_ROWS, batch_chunks
+from ._config import KERNEL_ABIS, PITCHED_VARIANTS, TrimulKFK3Selection, anchors, select
 from ._cubin import TrimulKFK3CubinExecutable
 
 __all__ = ["TrimulKFK3CuTe"]
+
+
+def one_launch_chunks(B: int, N: int) -> tuple[tuple[int, int], ...]:
+    """Batch ranges of a variant whose row tiles may straddle batch items: only int32 row coordinates split."""
+    batch_chunks(1, N)  # rejects planes past int32 coordinates
+    max_batch = MAX_LAUNCH_ROWS // (N * N)
+    chunks = -(-B // max_batch)
+    step = -(-B // chunks)
+    return tuple((b, min(B, b + step)) for b in range(0, B, step))
 
 
 class TrimulKFK3CuTe(CuteKernelCache):
@@ -79,8 +88,9 @@ class TrimulKFK3CuTe(CuteKernelCache):
             return False
         return True
 
-    def _key(self, C: int, D: int, kernel_variant: str, residual: bool) -> tuple:
-        return (self._sm_version, C, D, kernel_variant, residual)
+    def _key(self, C: int, D: int, kernel_variant: str, residual: bool, pitched: bool = False) -> tuple:
+        key = (self._sm_version, C, D, kernel_variant, residual)
+        return (*key, "pitched") if pitched else key
 
     def _load_cubin_executable(
         self,
@@ -90,53 +100,75 @@ class TrimulKFK3CuTe(CuteKernelCache):
         kernel_variant: str,
         residual: bool,
         source_error: Exception | None = None,
+        pitched: bool = False,
     ) -> Any:
+        product = "pitched" if pitched else "dense"
         try:
             executable = populate_compiled_cache_from_library(
                 TrimulKFK3CuTe._compiled_cache,
                 key,
                 "trimul_kf_k3",
                 lambda library, launcher: TrimulKFK3CubinExecutable(
-                    library, launcher, self._sm_version, C, D, kernel_variant, residual
+                    library, launcher, self._sm_version, C, D, kernel_variant, residual, pitched
                 ),
             )
         except CuTeDSLKernelLibraryError as library_error:
             if self.force_cubin():
                 raise RuntimeError(
                     f"{FORCE_CUBIN_ENV}=1 forces the trimul KF K3 CUBIN path, but no CUBIN is available for "
-                    f"SM{self._sm_version}, C={C}, D={D}, {kernel_variant}, residual={residual}"
+                    f"SM{self._sm_version}, C={C}, D={D}, {kernel_variant}, residual={residual}, {product} product"
                 ) from library_error
             raise library_error from source_error
         logger.info(
             f"CuTeDSL trimul KF K3: using CUBIN kernel for SM{self._sm_version}, C={C}, D={D}, {kernel_variant}, "
-            f"residual={residual}"
+            f"residual={residual}, {product} product"
         )
         return executable
 
-    def _get_or_compile(self, C: int, D: int, kernel_variant: str, residual: bool) -> Any:
-        key = self._key(C, D, kernel_variant, residual)
+    def supports_pitch(self, C: int, D: int, kernel_variant: str, residual: bool) -> bool:
+        """Whether this build reads a pitched product with ``kernel_variant``, from source or packaged CUBINs."""
+        if kernel_variant not in PITCHED_VARIANTS:
+            return False
+        if not self.force_cubin():
+            try:
+                load_source_module(__package__)
+            except ImportError:
+                pass
+            else:
+                return True
+        key = self._key(C, D, kernel_variant, residual, pitched=True)
+        try:
+            self._load_cubin_executable(key, C, D, kernel_variant, residual, pitched=True)
+        except (CuTeDSLKernelLibraryError, RuntimeError):
+            return False
+        return True
+
+    def _get_or_compile(self, C: int, D: int, kernel_variant: str, residual: bool, pitched: bool = False) -> Any:
+        key = self._key(C, D, kernel_variant, residual, pitched)
         executable = TrimulKFK3CuTe._compiled_cache.get(key)
         force_cubin = self.force_cubin()
         if executable is not None and (not force_cubin or isinstance(executable, CuTeDSLKernelLibraryExecutable)):
             return executable
         if force_cubin:
             TrimulKFK3CuTe._compiled_cache.pop(key, None)
-            return self._load_cubin_executable(key, C, D, kernel_variant, residual)
+            return self._load_cubin_executable(key, C, D, kernel_variant, residual, pitched=pitched)
         try:
             source = load_source_module(__package__)
         except ImportError as source_error:
-            return self._load_cubin_executable(key, C, D, kernel_variant, residual, source_error)
+            return self._load_cubin_executable(key, C, D, kernel_variant, residual, source_error, pitched)
 
         if self._num_sms is None:
             self._num_sms = torch.cuda.get_device_properties(torch.cuda.current_device()).multi_processor_count
-        disk_key = ("trimul_kf_k3_cute_v2", *key, KERNEL_ABIS[self._sm_version])
+        disk_key = ("trimul_kf_k3_cute_v3", *key, KERNEL_ABIS[self._sm_version])
         executable = self.load_from_cache(disk_key)
         if executable is None:
             logger.info(
                 f"CuTeDSL trimul KF K3: compiling {kernel_variant} residual={residual} for SM{self._sm_version}, "
-                f"C={C}, D={D}"
+                f"C={C}, D={D}, {'pitched' if pitched else 'dense'} product"
             )
-            executable = source.compile_trimul_kf_k3_source(self.compile, kernel_variant, C, D, residual, self._num_sms)
+            executable = source.compile_trimul_kf_k3_source(
+                self.compile, kernel_variant, C, D, residual, self._num_sms, pitched
+            )
             self.save_to_cache(disk_key, executable)
         TrimulKFK3CuTe._compiled_cache[key] = executable
         return executable
@@ -154,22 +186,36 @@ class TrimulKFK3CuTe(CuteKernelCache):
         selection: TrimulKFK3Selection,
         out: torch.Tensor,
     ) -> torch.Tensor:
-        """Run ``selection``'s variant into ``out``; the caller has validated the operands."""
+        """Run ``selection``'s variant into ``out``; the caller has validated the operands.
+
+        ``prod`` is dense or, for one of the :data:`PITCHED_VARIANTS`, a view of K2's ``[B, D, N, P]`` buffer: rows
+        ``P`` elements apart, channels ``N`` rows apart. A pitched product runs the variant's per-row image.
+        """
         B, N, _, C = x.shape
         D = prod.shape[1]
         residual = actual_seqlen is not None
-        executable = self._get_or_compile(C, D, selection.kernel_variant, residual)
+        pitch, plane = prod.stride(2), prod.stride(1)
+        pitched = pitch != N
+        executable = self._get_or_compile(C, D, selection.kernel_variant, residual, pitched)
         seqlen = None if actual_seqlen is None else actual_seqlen.view(B * N)
         w_out = w_out.view(-1)
         w_gate_out = w_gate_out.view(-1)
         # A source-backed launch takes its stream from the current device, not the operands'.
         on_device = x.get_device() == torch.cuda.current_device()
         with contextlib.nullcontext() if on_device else torch.cuda.device(x.device):
-            for b0, b1 in batch_chunks(B, N):
+            for b0, b1 in (one_launch_chunks if selection.one_launch else batch_chunks)(B, N):
                 nb = b1 - b0
+                if pitched:
+                    span = (nb * D - 1) * plane + (N - 1) * pitch + N
+                    flat_prod = prod[b0:b1].as_strided((span,), (1,))
+                    prod_strides = (pitch, plane)
+                else:
+                    flat_prod = prod[b0:b1].view(-1)
+                    # a variant that can read a pitch takes none for a dense product
+                    prod_strides = (None, None) if selection.kernel_variant in PITCHED_VARIANTS else ()
                 launch_compiled_kernel(
                     executable,
-                    prod[b0:b1].view(-1),
+                    flat_prod,
                     x[b0:b1].view(-1),
                     w_out,
                     w_gate_out,
@@ -181,5 +227,6 @@ class TrimulKFK3CuTe(CuteKernelCache):
                     N,
                     nb,
                     eps,
+                    *prod_strides,
                 )
         return out

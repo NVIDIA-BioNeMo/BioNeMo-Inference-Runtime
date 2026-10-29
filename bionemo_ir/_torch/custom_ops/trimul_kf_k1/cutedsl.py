@@ -32,12 +32,12 @@ from bionemo_ir._torch.utils.kernel import (
 from bionemo_ir.dsl_kernels.cute_cache import FORCE_CUBIN_ENV, CuteKernelCache
 from bionemo_ir.logger import logger
 
-from ._config import KERNEL_ABIS, TrimulKFK1Selection, anchors, select
+from ._config import CENTRED_VARIANTS, KERNEL_ABIS, TrimulKFK1Selection, anchors, select
 from ._cubin import TrimulKFK1CubinExecutable
 
 __all__ = ["TrimulKFK1CuTe", "TrimulKFK1Output"]
 
-#: Rows per K1 tile; a tile must not straddle two batches.
+#: Rows per K1 tile; a tile never straddles two batches.
 TILE_ROWS = 128
 #: Most rows, and positions per a/b plane, one launch addresses: TMA coordinates are int32.
 MAX_LAUNCH_ROWS = 2**31 - 1 - TILE_ROWS
@@ -53,8 +53,8 @@ class TrimulKFK1Output(NamedTuple):
 
 @functools.lru_cache(maxsize=256)
 def batch_chunks(B: int, N: int, pitch: int | None = None) -> tuple[tuple[int, int], ...]:
-    """Batch ranges one launch covers: a 128-row tile must not straddle two batches, and a launch's
-    rows and plane positions stay within :data:`MAX_LAUNCH_ROWS`."""
+    """Batch ranges one launch of a kernel that tiles the launch's rows flat covers: a 128-row tile must not
+    straddle two batches, and a launch's rows and plane positions stay within :data:`MAX_LAUNCH_ROWS`."""
     if N * max(N, pitch or N) > MAX_LAUNCH_ROWS:
         raise ValueError(f"trimul KF supports N * P <= {MAX_LAUNCH_ROWS} plane positions, got N={N}, P={pitch}")
     if B > 1 and (N * N) % TILE_ROWS:
@@ -68,6 +68,18 @@ def batch_chunks(B: int, N: int, pitch: int | None = None) -> tuple[tuple[int, i
 def stats_rows(N: int) -> int:
     """Rows of row statistics one batch holds: ``N * N`` rounded up to whole 128-row tiles."""
     return -(-N * N // TILE_ROWS) * TILE_ROWS
+
+
+@functools.lru_cache(maxsize=256)
+def launch_chunks(B: int, N: int, pitch: int | None = None) -> tuple[tuple[int, int], ...]:
+    """Batch ranges one K1 launch covers. K1 tiles each batch on its own, its last tile running past the
+    batch's rows, so batches split only where a launch's tile rows (:func:`stats_rows` a batch) or plane
+    positions would pass :data:`MAX_LAUNCH_ROWS`."""
+    batch_chunks(1, N, pitch)  # rejects planes past int32 coordinates
+    max_batch = MAX_LAUNCH_ROWS // stats_rows(N)
+    chunks = -(-B // max_batch)
+    step = -(-B // chunks)
+    return tuple((b, min(B, b + step)) for b in range(0, B, step))
 
 
 class TrimulKFK1CuTe(CuteKernelCache):
@@ -91,6 +103,10 @@ class TrimulKFK1CuTe(CuteKernelCache):
     def select(self, C: int, D: int, n: int) -> TrimulKFK1Selection | None:
         """The anchor and K1 variant a call over ``n`` tokens runs, or ``None`` when ``(C, D)`` does not ship."""
         return select(self._sm_version, C, D, n)
+
+    def centred(self, C: int, D: int) -> bool:
+        """Whether a variant ``(C, D)``'s configs select drops the LayerNorm mean term and reads a centred fold."""
+        return any(variant in CENTRED_VARIANTS for variant in (anchors(self._sm_version, C, D) or {}).values())
 
     def ships(self, C: int, D: int) -> bool:
         """Whether this build can run ``(C, D)``, from source or from a packaged CUBIN.
@@ -221,10 +237,12 @@ class TrimulKFK1CuTe(CuteKernelCache):
         seqlen = actual_seqlen.view(B * N)
         w_in = w_in.view(-1)
         w_gate_in = None if w_gate_in is None else w_gate_in.view(-1)
+        # Images built before K1 tiled each batch on its own tile the launch's rows flat.
+        flat_tiles = isinstance(executable, TrimulKFK1CubinExecutable) and executable.flat_tiles
         # A source-backed launch takes its stream from the current device, not the operands'.
         on_device = x.get_device() == torch.cuda.current_device()
         with contextlib.nullcontext() if on_device else torch.cuda.device(x.device):
-            for b0, b1 in batch_chunks(B, N, P):
+            for b0, b1 in (batch_chunks if flat_tiles else launch_chunks)(B, N, P):
                 nb = b1 - b0
                 launch_compiled_kernel(
                     executable,

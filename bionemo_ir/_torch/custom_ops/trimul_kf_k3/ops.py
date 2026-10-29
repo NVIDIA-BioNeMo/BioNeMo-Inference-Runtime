@@ -21,14 +21,75 @@ from dataclasses import dataclass, field
 import torch
 
 from ..trimul_kf_k1.cutedsl import MAX_LAUNCH_ROWS, stats_rows
-from ._config import TrimulKFK3Selection
+from ._config import PITCHED_VARIANTS, TrimulKFK3Selection
 from .cutedsl import TrimulKFK3CuTe
 
 _SUPPORTED_DTYPE = torch.bfloat16
 #: Token counts must keep every channel-major row 16-byte aligned for TMA.
 TOKEN_ALIGN = 8
+#: Output columns per column tile of the centred weights; their rows are permuted within each tile.
+CENTRED_TILE = 128
+#: Rounding passes of :func:`centre_rows_bf16`: each takes the row sum of the rounded weights an order of
+#: magnitude closer to zero; eight leave under 1e-6 of the row's absolute sum.
+_CENTRE_PASSES = 8
 # One backend per SM version, so a process that drives GPUs of different SMs gets each its own configs.
 _trimul_kf_k3_instances: dict[int, TrimulKFK3CuTe] = {}
+
+
+def _bf16_neighbour(r: torch.Tensor, up: torch.Tensor) -> torch.Tensor:
+    """The bf16 value next to each entry of ``r``: towards +inf where ``up``, else towards -inf."""
+    bits = r.view(torch.int16).to(torch.int32)
+    # bf16 is sign-magnitude: one step of the magnitude bits moves away from zero
+    away = torch.where(bits < 0, ~up, up)
+    stepped = torch.where(away, bits + 1, bits - 1)
+    zero = (bits & 0x7FFF) == 0
+    stepped = torch.where(zero, torch.where(up, 1, -32767), stepped)
+    return stepped.to(torch.int16).view(torch.bfloat16)
+
+
+def centre_rows_bf16(w: torch.Tensor, passes: int = _CENTRE_PASSES) -> torch.Tensor:
+    """Every row of ``w`` minus its mean, in bf16, rounded so the row still sums to about zero.
+
+    ``a @ centred.T == (a - mean(a)) @ w.T`` for any row ``a``: a kernel multiplying by the centred rows
+    needs no mean term of a LayerNorm in front. Rounding each entry to nearest leaves a row sum of about
+    ``sqrt(K)`` rounding steps, which would multiply the input's mean; each pass moves entries one step
+    against the remaining sum, the largest steps that fit in it first, never further than 1.5 steps from
+    the exact value. The pass count is fixed: no data-dependent control flow, so a fold under graph
+    capture records no host synchronization.
+    """
+    exact = w.double() - w.double().mean(-1, keepdim=True)
+    r = exact.to(torch.bfloat16)
+    for _ in range(passes):
+        rd = r.double()
+        rest = rd.sum(-1, keepdim=True)
+        moved = _bf16_neighbour(r, (rest < 0).expand_as(r))
+        md = moved.double()
+        step = (md - rd).abs()
+        # the moved entry's error in its own steps: 0.5 is as good as rounding to nearest; an entry is moved
+        # only while it stays within 1.5 steps of its exact value
+        cost = (md - exact).abs() / step.clamp_min(1e-300)
+        fits = (step <= rest.abs()) & (cost <= 1.5)
+        # the largest steps that fit first (like making change), the least costly among equal steps
+        by_cost = torch.argsort(torch.where(fits, cost, torch.inf), dim=-1, stable=True)
+        by_step = torch.argsort(torch.where(fits, -step, 0.0).gather(-1, by_cost), dim=-1, stable=True)
+        order = by_cost.gather(-1, by_step)
+        total = torch.where(fits, step, 0.0).gather(-1, order).cumsum(-1)
+        take = (total <= rest.abs()) & fits.gather(-1, order)
+        r = torch.where(torch.zeros_like(take).scatter(-1, order, take), moved, r)
+    return r.contiguous()
+
+
+def _centred_row_order(C: int, device: torch.device) -> torch.Tensor:
+    """Row ``j`` of every 128-row tile of the centred weights is the folded row ``sig(j)`` of that tile.
+
+    A WGMMA accumulator gives thread ``t`` of a warp columns ``8 v + 2 (t % 4) + e``; with this order its
+    columns ``v = 4 Q + u`` are output columns ``32 Q + 8 (t % 4) + 2 u + e``: 8 consecutive ones per ``Q``,
+    one 16-byte store.
+    """
+    j = torch.arange(CENTRED_TILE, device=device)
+    v, t, e = j // 8, (j % 8) // 2, j % 2
+    sig = 32 * (v // 4) + 8 * t + 2 * (v % 4) + e
+    return (torch.arange(C // CENTRED_TILE, device=device)[:, None] * CENTRED_TILE + sig).reshape(-1)
 
 
 @dataclass(frozen=True)
@@ -40,6 +101,9 @@ class TrimulKFOutputFold:
         w_gate: bf16 ``[C, C]`` gate projection scaled by the input LayerNorm weight.
         vec: fp32 ``[4C]``: for every output channel, the sum of its folded projection row, then
             ``W_out @ ln_out_bias + p_out_bias``, then the same two terms of the gate.
+        centred: ``(w_out, w_gate)`` for the :data:`~._config.CENTRED_VARIANTS`: every row centred by
+            :func:`centre_rows_bf16`, rows reordered within each 128-row tile by :func:`_centred_row_order`;
+            ``None`` unless ``C`` is a multiple of 128.
     """
 
     w_out: torch.Tensor
@@ -48,6 +112,7 @@ class TrimulKFOutputFold:
     C: int = field(init=False)
     D: int = field(init=False)
     device: torch.device = field(init=False)
+    centred: tuple[torch.Tensor, torch.Tensor] | None = field(init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         C, D = self.w_out.shape
@@ -63,6 +128,19 @@ class TrimulKFOutputFold:
         object.__setattr__(self, "C", C)
         object.__setattr__(self, "D", D)
         object.__setattr__(self, "device", self.w_out.device)
+        centred = None
+        if C % CENTRED_TILE == 0:
+            order = _centred_row_order(C, self.w_out.device)
+            centred = tuple(centre_rows_bf16(w)[order].contiguous() for w in (self.w_out, self.w_gate))
+        object.__setattr__(self, "centred", centred)
+
+    def weights(self, selection: TrimulKFK3Selection) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """``(w_out, w_gate, vec)`` as ``selection``'s variant reads them."""
+        if not selection.centred:
+            return self.w_out, self.w_gate, self.vec
+        if self.centred is None:
+            raise ValueError(f"trimul KF K3 {selection.kernel_variant} needs C % {CENTRED_TILE} == 0, got C={self.C}")
+        return (*self.centred, self.vec)
 
 
 def fold_output_weights(
@@ -118,6 +196,7 @@ class TrimulKFK3Op:
     C: int
     D: int
     _selections: dict[int, TrimulKFK3Selection] = field(default_factory=dict, init=False, repr=False, compare=False)
+    _pitched: dict[tuple[str, bool], bool] = field(default_factory=dict, init=False, repr=False, compare=False)
 
     def select(self, n: int) -> TrimulKFK3Selection:
         """The anchor and variant a call over ``n`` tokens runs, including whether it reads K1's statistics."""
@@ -129,20 +208,50 @@ class TrimulKFK3Op:
             self._selections[n] = selection
         return selection
 
+    def reads_pitch(self, n: int, residual: bool) -> bool:
+        """Whether a call over ``n`` tokens takes K2's ``pitched`` product: its anchor's rule reads one at ``n``
+        (``select(n).reads_pitch``) and this build ships that image with or without the residual."""
+        if not self.select(n).reads_pitch:
+            return False
+        variant = self.select(n).kernel_variant
+        key = (variant, residual)
+        supported = self._pitched.get(key)
+        if supported is None:
+            supported = self._pitched[key] = self.backend.supports_pitch(self.C, self.D, variant, residual)
+        return supported
+
     def accepts(self, prod: torch.Tensor, x: torch.Tensor) -> bool:
-        """Whether a call on ``prod`` ``[B, D, N, N]`` and ``x`` ``[B, N, N, C]`` can run."""
+        """Whether a call on ``prod`` ``[B, D, N, N]`` and ``x`` ``[B, N, N, C]`` can run.
+
+        ``prod`` is dense, or pitched as K2 writes it (``pitched``) when the variant for ``N`` can read a pitch
+        (:data:`~._config.PITCHED_VARIANTS`).
+        """
         if x.dim() != 4 or x.dtype != _SUPPORTED_DTYPE or not x.is_cuda or not x.is_contiguous():
             return False
         B, N, N_j, C = x.shape
-        return (
+        if not (
             B > 0
             and 0 < N == N_j
             and C == self.C
             and N % TOKEN_ALIGN == 0
             and N * N <= MAX_LAUNCH_ROWS
             and prod.dtype == _SUPPORTED_DTYPE
-            and prod.is_contiguous()
+            and prod.is_cuda
             and prod.shape == (B, self.D, N, N)
+        ):
+            return False
+        pitch, plane = prod.stride(2), prod.stride(1)
+        if pitch != N and self.select(N).kernel_variant not in PITCHED_VARIANTS:
+            return False
+        # Rows pitch elements apart and channels N rows apart (B > 1: batch items D channels apart), every TMA
+        # stride and the base a whole 16 bytes; a dense product has pitch N.
+        return (
+            prod.stride(3) == 1
+            and pitch >= N
+            and pitch % TOKEN_ALIGN == 0
+            and plane == N * pitch
+            and (B == 1 or prod.stride(0) == self.D * plane)
+            and prod.data_ptr() % 16 == 0
         )
 
     def __call__(
@@ -160,7 +269,8 @@ class TrimulKFK3Op:
         """The TriMul update of ``x``, or ``(x + update) * mask`` with ``residual``.
 
         Args:
-            prod: bf16 ``[B, D, N, N]`` product from ``trimul_kf_k2``.
+            prod: bf16 ``[B, D, N, N]`` product from ``trimul_kf_k2``: dense, or written ``pitched`` for a
+                variant that can read a pitch (the chain does where ``reads_pitch``).
             x: bf16 ``[B, N, N, C]`` input pair representation, ``N`` a multiple of 8.
             fold: The weights folded by :func:`fold_output_weights`.
             stats: The row statistics K1 returned; required exactly when ``select(N).reads_stats``.
@@ -173,7 +283,7 @@ class TrimulKFK3Op:
         if not self.accepts(prod, x):
             raise ValueError(
                 f"trimul KF K3 needs non-empty contiguous bf16 CUDA x [B, N, N, {self.C}] with N a multiple of {TOKEN_ALIGN} "
-                f"and prod [B, {self.D}, N, N]"
+                f"and prod [B, {self.D}, N, N], dense or pitched as K2 writes it for a variant that reads a pitch"
             )
         B, N = x.shape[0], x.shape[1]
         selection = self.select(N)
@@ -199,9 +309,7 @@ class TrimulKFK3Op:
         elif out.data_ptr() < x.data_ptr() + x.nbytes and x.data_ptr() < out.data_ptr() + out.nbytes:
             # K3 reads x while it writes out, so the two must not share any bytes.
             raise ValueError("trimul KF K3 output must not alias x")
-        return self.backend.run(
-            prod, x, fold.w_out, fold.w_gate, fold.vec, stats, actual_seqlen, float(eps), selection, out
-        )
+        return self.backend.run(prod, x, *fold.weights(selection), stats, actual_seqlen, float(eps), selection, out)
 
 
 def get_trimul_kf_k3_op(

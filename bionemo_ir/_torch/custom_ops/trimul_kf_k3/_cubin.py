@@ -44,20 +44,23 @@ class TrimulKFK3CubinExecutable(CuTeDSLKernelLibraryExecutable):
         D: int,
         kernel_variant: str,
         residual: bool,
+        pitched: bool = False,
     ) -> None:
         try:
             config = launcher.make_kernel_config(
-                target_sm, launcher.DType.BFLOAT16, C, D, int(kernel_variant.removeprefix("K3_")), residual
+                target_sm, launcher.DType.BFLOAT16, C, D, int(kernel_variant.removeprefix("K3_")), residual, pitched
             )
         except (RuntimeError, TypeError, ValueError) as error:
             raise CuTeDSLKernelVariantUnavailable(
-                f"No trimul KF K3 CUBIN for SM{target_sm}, C={C}, D={D}, {kernel_variant}, residual={residual}"
+                f"No trimul KF K3 CUBIN for SM{target_sm}, C={C}, D={D}, {kernel_variant}, residual={residual}, "
+                f"{'pitched' if pitched else 'dense'} product"
             ) from error
         self._kernel_library = kernel_library
         self._launcher = launcher
         self._config = config
         self._reads_stats = kernel_variant in STATS_VARIANTS
         self._residual = residual
+        self._pitched = pitched
 
     def __call__(
         self,
@@ -73,8 +76,14 @@ class TrimulKFK3CubinExecutable(CuTeDSLKernelLibraryExecutable):
         n: int,
         nb: int,
         eps: float,
+        prod_pitch: int | None = None,
+        prod_plane: int | None = None,
     ) -> None:
-        if (stats is not None) != self._reads_stats or (seqlen is not None) != self._residual:
+        if (
+            (stats is not None) != self._reads_stats
+            or (seqlen is not None) != self._residual
+            or (prod_pitch is not None) != self._pitched
+        ):
             raise CuTeDSLKernelVariantUnavailable("trimul KF K3 CUBIN operands do not match its variant")
         library = self._kernel_library
         params = self._launcher.LaunchParams()
@@ -92,5 +101,7 @@ class TrimulKFK3CubinExecutable(CuTeDSLKernelLibraryExecutable):
         params.n = n
         params.nb = nb
         params.eps = eps
+        params.prod_pitch = n if prod_pitch is None else prod_pitch
+        params.prod_plane = n * n if prod_plane is None else prod_plane
         params.stream = current_stream_handle(x)
         self._launcher.launch(self._config, params)

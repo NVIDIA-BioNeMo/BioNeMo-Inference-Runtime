@@ -25,12 +25,17 @@ fixes two contracts with the rest of the chain: the weight fold it reads (the
 :data:`INTERLEAVED_VARIANTS` read one interleaved ``[4D, C]`` fold, ``K1_0`` separate projection
 and gate folds) and whether it hands its input-LayerNorm row statistics to K3
 (:data:`STATS_VARIANTS`, which ``trimul_kf_k3`` pairs with its statistics-reading variant). The
+:data:`CENTRED_VARIANTS` drop the LayerNorm mean term and read a fold whose rows are centred
+(``fold_input_weights(..., centred=True)``); the others apply the mean term and read either fold. The
 fold carries the projection biases, so every variant serves projections with and without them.
 
 An anchor may also name the rule that picks the layout of the ``a``/``b`` planes K1 hands to K2 from
-the token count (:data:`AB_LAYOUT_RULES`, default ``dense``)::
+the token count (:data:`AB_LAYOUT_RULES`, default ``dense``). The rule covers every token count that
+takes the anchor, so a bundle sets where padding starts by where it puts its anchors: a dense anchor
+at ``S`` and a padding one at ``2 M - S`` pad from ``M`` tokens up. This bundle pads from 512::
 
-    {"kernel_abi": "sm90", "configs": {"S=128": {"kernel_variant": "K1_2", "ab_layout": "pad_n_mod_16_8"}}}
+    {"kernel_abi": "sm90", "configs": {"S=128": {"kernel_variant": "K1_2"},
+                                       "S=896": {"kernel_variant": "K1_2", "ab_layout": "pad_n_mod_16_8"}}}
 """
 
 from __future__ import annotations
@@ -48,6 +53,7 @@ KERNEL_VARIANTS = ("K1_0", "K1_1", "K1_2")
 INTERLEAVED_VARIANTS = frozenset({"K1_1", "K1_2"})
 #: Variants writing the input-LayerNorm row statistics that ``trimul_kf_k3``'s ``K3_1`` and ``K3_3`` read.
 STATS_VARIANTS = frozenset({"K1_2"})
+CENTRED_VARIANTS = frozenset({"K1_2"})
 #: Layouts of the ``a``/``b`` planes K1 writes; see :func:`ab_pitch`.
 AB_LAYOUTS = ("dense", "padded")
 #: Row alignment of the ``padded`` layout, in elements: one 128-byte line of bf16.
@@ -56,8 +62,6 @@ AB_PAD_ALIGN = 64
 PADDED_VARIANTS = frozenset({"K1_0", "K1_1", "K1_2"})
 #: Rules an anchor names for its layout, see :func:`ab_layout`.
 AB_LAYOUT_RULES = ("dense", "pad_n_mod_16_8")
-#: No rule pads below this many tokens.
-AB_PAD_MIN_N = 512
 _FILE_RE = re.compile(r"^C(?P<C>\d+)_D(?P<D>\d+)_sm(?P<sm>\d+)\.json$")
 _KEY_RE = re.compile(r"^S=(?P<bucket>[1-9]\d*)$")
 
@@ -75,11 +79,12 @@ def ab_layout(rule: str, n: int) -> str:
     """The a/b layout ``rule`` picks for ``n`` tokens.
 
     ``pad_n_mod_16_8`` pads where dense rows would start mid-sector (``N % 16 == 8``), which makes
-    K2's TMA re-fetch partial lines.
+    K2's TMA re-fetch partial lines. Whether that pays depends on the shapes, so the token counts a
+    rule covers come from the bundle's anchors, not from the rule.
     """
     if rule not in AB_LAYOUT_RULES:
         raise ValueError(f"unknown trimul KF a/b layout rule {rule!r}; expected one of {AB_LAYOUT_RULES}")
-    if rule == "dense" or n < AB_PAD_MIN_N or n % 16 != 8:
+    if rule == "dense" or n % 16 != 8:
         return "dense"
     return "padded"
 
@@ -100,6 +105,11 @@ class TrimulKFK1Selection(NamedTuple):
     def writes_stats(self) -> bool:
         """Whether the variant hands its input-LayerNorm row statistics to K3."""
         return self.kernel_variant in STATS_VARIANTS
+
+    @property
+    def centred(self) -> bool:
+        """Whether the variant drops the input-LayerNorm mean term, so it reads a centred fold."""
+        return self.kernel_variant in CENTRED_VARIANTS
 
     def ab_pitch(self, n: int) -> int:
         """Row pitch of the ``a``/``b`` planes this selection writes for ``n`` tokens."""

@@ -664,8 +664,8 @@ def test_window_attention_sm90_registry_has_no_tma_metadata(tmp_path: Path) -> N
 
 
 def test_trimul_kf_records_predating_new_axes_keep_their_meaning(tmp_path: Path) -> None:
-    """K1 and K3 records without the padded flavour or the ping-pong tile fields still materialize: dense planes,
-    no row-chunk map, and one CTA per 128-row tile."""
+    """K1 and K3 records without the padded flavour, the ping-pong tile fields or K3's statistics flag still
+    materialize: dense planes, no row-chunk map, one CTA per 128-row tile, and K3_0 re-reducing its statistics."""
     sources, headers = {}, {}
     for family in ("trimul_kf_k1", "trimul_kf_k3"):
         index = _write_case(tmp_path / family / "source", family, kernel_sm=90)
@@ -673,12 +673,68 @@ def test_trimul_kf_records_predating_new_axes_keep_their_meaning(tmp_path: Path)
         sources[family] = (result.output_dir / f"{family}_registry.cpp").read_text()
         headers[family] = (result.output_dir / f"{family}_registry.h").read_text()
     assert "TmaDescriptorInfo x_chunk;" in headers["trimul_kf_k1"] and "bool padded;" in headers["trimul_kf_k1"]
-    assert "std::uint32_t tile_ctas;" in headers["trimul_kf_k3"]
+    assert "std::uint32_t tile_ctas;" in headers["trimul_kf_k3"] and "bool reads_stats;" in headers["trimul_kf_k3"]
     # K1: num_threads, then padded; the absent row-chunk map renders as a rank-0 map.
     assert "    512U,\n    false,\n" in sources["trimul_kf_k1"]
     assert "      {},\n    },\n" in sources["trimul_kf_k1"]
-    # K3: num_threads, then tile_m and tile_ctas.
-    assert "    512U,\n    128U,\n    1U,\n" in sources["trimul_kf_k3"]
+    # K3: num_threads, then tile_m, tile_ctas and reads_stats.
+    assert "    512U,\n    128U,\n    1U,\n    false,\n" in sources["trimul_kf_k3"]
+
+
+@pytest.mark.parametrize(
+    ("kernel_variant", "reads_stats", "rendered"),
+    [
+        (1, None, "true"),
+        (3, None, "true"),
+        (4, None, "true"),
+        (2, None, "false"),
+        (5, True, "true"),
+        (5, False, "false"),
+    ],
+)
+def test_trimul_kf_k3_image_states_whether_it_reads_k1s_statistics(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, kernel_variant: int, reads_stats: bool | None, rendered: str
+) -> None:
+    """The K3 launcher takes reads_stats from the image, never from its variant number: an image published before
+    the field gets its variant's known value (K3_1, K3_3 and K3_4 read K1's statistics), a later one states it."""
+    family = "trimul_kf_k3"
+    base = _metadata
+    extra = {} if reads_stats is None else {"reads_stats": reads_stats}
+    monkeypatch.setattr(
+        sys.modules[__name__], "_metadata", lambda *args: {**base(*args), "kernel_variant": kernel_variant, **extra}
+    )
+    index = _write_case(tmp_path / "source", family, kernel_sm=90)
+    result = materializer.materialize([(family, index)], tmp_path / "build")
+    source = (result.output_dir / f"{family}_registry.cpp").read_text()
+    assert f"    512U,\n    128U,\n    1U,\n    {rendered},\n" in source
+
+
+def test_trimul_kf_k3_image_of_a_new_variant_must_state_its_statistics(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Only the images published before reads_stats existed may omit it: a later variant's image must carry it."""
+    family = "trimul_kf_k3"
+    base = _metadata
+    monkeypatch.setattr(sys.modules[__name__], "_metadata", lambda *args: {**base(*args), "kernel_variant": 5})
+    index = _write_case(tmp_path / "source", family, kernel_sm=90)
+    with pytest.raises(materializer.MaterializationError, match=r"missing=\['reads_stats'\]"):
+        materializer.verify_packs([(family, index)])
+
+
+def test_trimul_kf_k3_resident_image_renders_no_output_map(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A weights-resident K3 stores its output from registers: its record has no output map, which renders as a
+    rank-0 map."""
+    family = "trimul_kf_k3"
+    names, ranks, epi_tile, threads = _SM90_LAUNCH_SHAPES[family]
+    monkeypatch.setitem(_SM90_LAUNCH_SHAPES, family, (names[:-1], ranks[:-1], epi_tile, threads))
+    index = _write_case(tmp_path / "source", family, kernel_sm=90)
+    result = materializer.materialize([(family, index)], tmp_path / "build")
+    source = (result.output_dir / f"{family}_registry.cpp").read_text()
+    header = (result.output_dir / f"{family}_registry.h").read_text()
+    assert "TmaDescriptorInfo output;" in header
+    rendered = [int(line.strip().rstrip("U,")) for line in source.splitlines() if line.strip() in {"2U,", "3U,"}]
+    assert rendered == [3, 2, 2, 2]
+    assert "      {},\n    },\n" in source
 
 
 def test_trimul_kf_k1_padded_image_renders_its_row_chunk_map(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

@@ -62,9 +62,10 @@ class AdaLNLayerNormSigmoidCubinExecutable(CuTeDSLKernelLibraryExecutable):
                 num_threads,
                 rms_norm,
             )
-        except (RuntimeError, TypeError, ValueError) as error:
-            # N is compiled in, so an unshipped feature dimension has no payload
-            # at all -- unlike a tile choice, it cannot fall back to a neighbour.
+        except ValueError as error:
+            # The launcher's lookup miss. N is compiled in, so an unshipped feature
+            # dimension has no payload at all -- unlike a tile choice, it cannot fall
+            # back to a neighbour. Other errors mean a broken extension and propagate.
             raise CuTeDSLKernelVariantUnavailable(
                 f"No AdaLN CUBIN for SM{target_sm}, dtype={dtype}, N={N}, "
                 f"threads_per_row={threads_per_row}, num_threads={num_threads}, "

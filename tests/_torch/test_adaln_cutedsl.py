@@ -21,6 +21,7 @@ the underlying custom op directly.
 """
 
 import os
+import warnings
 from dataclasses import dataclass
 from types import ModuleType
 
@@ -28,8 +29,11 @@ import pytest
 import torch
 
 from bionemo_ir._torch.custom_ops.adaln_layernorm_sigmoid import (
+    SHIPPED_N,
     AdaLNLayerNormSigmoidCuTe,
+    bucket_variants,
     get_adaln_layernorm_sigmoid_op,
+    select_bucket,
 )
 from bionemo_ir._torch.custom_ops.adaln_layernorm_sigmoid import cutedsl as adaln_cutedsl
 from bionemo_ir._torch.custom_ops.adaln_layernorm_sigmoid import ops as adaln_ops
@@ -46,9 +50,13 @@ from bionemo_ir._torch.custom_ops.adaln_layernorm_sigmoid.ops import (
     _invoke_vanilla_adaln_layernorm_sigmoid,
 )
 from bionemo_ir._torch.layers.normalization import AdaLN
-from bionemo_ir._torch.utils.kernel import cute_numeric
+from bionemo_ir._torch.utils.kernel import (
+    CuTeDSLKernelLibraryExecutable,
+    CuTeDSLKernelVariantUnavailable,
+    cute_numeric,
+)
 from bionemo_ir.utils import str_dtype_to_torch
-from tests._torch import SM_VERSION, cutedsl_test_modes, run_cutedsl_test_mode
+from tests._torch import SM_VERSION, cutedsl_test_modes, require_cubin_family, run_cutedsl_test_mode
 
 _SOURCE_MODULE = "bionemo_ir._torch.custom_ops.adaln_layernorm_sigmoid._source"
 _CUTEDSL_MODES = cutedsl_test_modes(_SOURCE_MODULE)
@@ -229,6 +237,155 @@ def test_adaln_force_cubin_ignores_warmed_source(monkeypatch):
     assert backend._compile_bucket(torch.bfloat16, 256, {}, geometry) is cubin
 
 
+def _lose_kernel(monkeypatch: pytest.MonkeyPatch, cause: str) -> None:
+    """Leave only the CUBIN pack: force it as model tests do, or drop the kernel sources."""
+    if cause == "force_cubin":
+        monkeypatch.setenv(adaln_cutedsl.FORCE_CUBIN_ENV, "1")
+        return
+
+    def missing_source(_package: str) -> None:
+        raise ModuleNotFoundError("CuTeDSL kernel source removed")
+
+    monkeypatch.setattr(adaln_cutedsl, "load_source_module", missing_source)
+
+
+def _hide_cubin_geometry(monkeypatch: pytest.MonkeyPatch, hidden: tuple[int, int]) -> list[int]:
+    """Make the CUBIN pack lookup miss one ``(threads_per_row, num_threads)``; return the PyTorch-path row counts."""
+    packed = adaln_cutedsl.AdaLNLayerNormSigmoidCubinExecutable
+
+    def lookup(
+        library: ModuleType,
+        launcher: object,
+        target_sm: int,
+        dtype: torch.dtype,
+        N: int,
+        threads_per_row: int,
+        num_threads: int,
+        rms_norm: bool,
+    ) -> AdaLNLayerNormSigmoidCubinExecutable:
+        if (threads_per_row, num_threads) == hidden:
+            raise CuTeDSLKernelVariantUnavailable(f"test hides the AdaLN CUBIN for geometry {hidden}")
+        return packed(library, launcher, target_sm, dtype, N, threads_per_row, num_threads, rms_norm)
+
+    pytorch_rows: list[int] = []
+    pytorch_path = adaln_cutedsl._invoke_vanilla_adaln_layernorm_sigmoid
+
+    def recording_pytorch_path(x: torch.Tensor, *args: object, **kwargs: object) -> torch.Tensor:
+        pytorch_rows.append(x.numel() // x.shape[-1])
+        return pytorch_path(x, *args, **kwargs)
+
+    monkeypatch.setattr(adaln_cutedsl, "AdaLNLayerNormSigmoidCubinExecutable", lookup)
+    monkeypatch.setattr(adaln_cutedsl, "_invoke_vanilla_adaln_layernorm_sigmoid", recording_pytorch_path)
+    monkeypatch.setattr(AdaLNLayerNormSigmoidCuTe, "_compiled_cache", {})
+    monkeypatch.setattr(AdaLNLayerNormSigmoidCuTe, "_missing_variants_warned", set())
+    return pytorch_rows
+
+
+@pytest.mark.parametrize("cause", ["force_cubin", "no_sources"])
+@pytest.mark.parametrize("rms_norm", [False, True], ids=["layer_norm", "rms_norm"])
+@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16, torch.float32], ids=["fp16", "bf16", "fp32"])
+@pytest.mark.parametrize("N", SHIPPED_N)
+def test_adaln_runs_a_bucket_the_cubin_pack_lacks_in_pytorch(
+    monkeypatch: pytest.MonkeyPatch, cause: str, rms_norm: bool, dtype: torch.dtype, N: int
+) -> None:
+    """A pack can lag the bucket schedule, as between a schedule change and its CUBIN refresh. With only the
+    pack to run from, a bucket it lacks runs in PyTorch instead of raising mid-forward; the rest keep their
+    CUBINs. Each bucket geometry is hidden in turn, after the op is built, as model tests set the flag."""
+    _skip_without_adaln_cubin()
+    require_cubin_family("adaln_layernorm_sigmoid")
+    buckets = bucket_variants(SM_VERSION, N)
+    first_rows = [1] + [m_max + 1 for m_max, _, _ in buckets[:-1]]
+    torch.manual_seed(3)
+    for hidden in dict.fromkeys(geometry for _, _, geometry in buckets):
+        op = AdaLNLayerNormSigmoidCuTe(rms_norm=rms_norm)
+        with monkeypatch.context() as patch, pytest.warns(RuntimeWarning, match="runs in PyTorch"):
+            _lose_kernel(patch, cause)
+            pytorch_rows = _hide_cubin_geometry(patch, hidden)
+            for rows, (_, _, geometry) in zip(first_rows, buckets, strict=True):
+                x, scale, bias = (torch.randn(rows, N, device="cuda", dtype=dtype) for _ in range(3))
+                expected = _torch_adaln_layernorm_sigmoid(x, scale, bias, rms_norm=rms_norm)
+                torch.testing.assert_close(op(x, scale, bias), expected, atol=0.05, rtol=0.02)
+                assert (rows in pytorch_rows) == (geometry == hidden)
+            assert not any(value is None for value in AdaLNLayerNormSigmoidCuTe._compiled_cache.values())
+
+
+@pytest.mark.parametrize("cause", ["force_cubin", "no_sources"])
+def test_adaln_pack_gap_fallback_replays_in_a_cuda_graph(monkeypatch: pytest.MonkeyPatch, cause: str) -> None:
+    """The case a CUBIN-only model test hit: fp32 ``N=128`` past the first bucket, with sample broadcast,
+    under graph capture."""
+    _skip_without_adaln_cubin()
+    require_cubin_family("adaln_layernorm_sigmoid")
+    N = 128
+    m_max, _, _ = bucket_variants(SM_VERSION, N)[0]
+    if m_max is None:
+        pytest.skip(f"AdaLN SM{SM_VERSION} N={N} has a single bucket")
+    samples, tokens = 5, m_max // 5 + 1
+    op = AdaLNLayerNormSigmoidCuTe()
+    _lose_kernel(monkeypatch, cause)
+    pytorch_rows = _hide_cubin_geometry(monkeypatch, select_bucket(SM_VERSION, N, samples * tokens)[1])
+    x = torch.randn(1, samples, tokens, N, device="cuda")
+    scale, bias = (torch.randn(1, 1, tokens, N, device="cuda") for _ in range(2))
+    out = torch.empty_like(x)
+    with pytest.warns(RuntimeWarning, match="runs in PyTorch"):
+        op(x, scale, bias, out=out)
+    graph = torch.cuda.CUDAGraph()
+    with torch.cuda.graph(graph):
+        op(x, scale, bias, out=out)
+    out.zero_()
+    graph.replay()
+    torch.cuda.synchronize()
+    assert pytorch_rows == [samples * tokens] * 2
+    torch.testing.assert_close(out, _torch_adaln_layernorm_sigmoid(x, scale, bias), atol=1e-4, rtol=1e-4)
+
+
+def test_adaln_warns_once_per_missing_variant(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A variant the pack lacks warns once per process: not again on repeated calls, new instances, a switch
+    between source-free and forced-CUBIN runs, or graph capture and replay, whatever the warning filter."""
+    _skip_without_adaln_cubin()
+    require_cubin_family("adaln_layernorm_sigmoid")
+    N, rows = 128, 33
+    _hide_cubin_geometry(monkeypatch, select_bucket(SM_VERSION, N, rows)[1])
+    x, scale, bias = (torch.randn(rows, N, device="cuda") for _ in range(3))
+    out = torch.empty_like(x)
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        for cause in ("no_sources", "force_cubin"):
+            with monkeypatch.context() as patch:
+                _lose_kernel(patch, cause)
+                for _ in range(2):
+                    op = AdaLNLayerNormSigmoidCuTe()
+                    op(x, scale, bias, out=out)
+                    op(x, scale, bias, out=out)
+                    graph = torch.cuda.CUDAGraph()
+                    with torch.cuda.graph(graph):
+                        op(x, scale, bias, out=out)
+                    graph.replay()
+        torch.cuda.synchronize()
+    missing = [w for w in caught if issubclass(w.category, RuntimeWarning) and "runs in PyTorch" in str(w.message)]
+    assert len(missing) == 1, [str(w.message) for w in missing]
+    torch.testing.assert_close(out, _torch_adaln_layernorm_sigmoid(x, scale, bias), atol=1e-4, rtol=1e-4)
+
+
+def test_adaln_pack_covers_every_scheduled_variant(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Every bucket a shipped width schedules on this GPU has a packaged CUBIN, so forcing CUBINs never falls
+    back to PyTorch. A schedule change merged ahead of its CUBIN refresh fails here."""
+    _skip_without_adaln_cubin()
+    require_cubin_family("adaln_layernorm_sigmoid")
+    monkeypatch.setenv(adaln_cutedsl.FORCE_CUBIN_ENV, "1")
+    monkeypatch.setattr(AdaLNLayerNormSigmoidCuTe, "_compiled_cache", {})
+    uncovered = []
+    for rms_norm in (False, True):
+        op = AdaLNLayerNormSigmoidCuTe(rms_norm=rms_norm)
+        for dtype in (torch.float16, torch.bfloat16, torch.float32):
+            for N in SHIPPED_N:
+                for (m_max, executable), (_, _, geometry) in zip(
+                    op._get_or_build_schedule(dtype, N), bucket_variants(SM_VERSION, N), strict=True
+                ):
+                    if not isinstance(executable, CuTeDSLKernelLibraryExecutable):
+                        uncovered.append((str(dtype), N, "rms" if rms_norm else "ln", m_max, geometry))
+    assert not uncovered, f"SM{SM_VERSION} CUBIN packs lack (dtype, N, norm, bucket m_max, geometry): {uncovered}"
+
+
 def test_adaln_selector_rejects_unshipped_targets(monkeypatch):
     monkeypatch.setattr(adaln_ops, "get_sm_version", lambda: 110)
     assert adaln_ops.get_adaln_layernorm_sigmoid_op(torch.bfloat16, N=128) is _invoke_vanilla_adaln_layernorm_sigmoid
@@ -242,6 +399,38 @@ def test_adaln_selector_rejects_unshipped_targets(monkeypatch):
         rms_fallback(x.clone(), torch.zeros_like(x), torch.zeros_like(x)),
         torch.nn.functional.rms_norm(x, (8,), eps=1e-5) * 0.5,
     )
+
+
+@pytest.mark.parametrize(
+    ("launcher_error", "raised"),
+    [
+        (ValueError, CuTeDSLKernelVariantUnavailable),
+        (TypeError, TypeError),
+        (RuntimeError, RuntimeError),
+    ],
+    ids=["lookup_miss", "stale_binding", "launcher_failure"],
+)
+def test_cubin_adapter_reports_only_a_lookup_miss_as_a_missing_variant(
+    launcher_error: type[Exception], raised: type[Exception]
+) -> None:
+    """The launcher signals a variant the pack lacks with ``ValueError``. A stale binding or a launcher failure
+    propagates, so the call does not fall back to PyTorch."""
+
+    class FakeDType:
+        FLOAT16 = object()
+        BFLOAT16 = object()
+        FLOAT32 = object()
+
+    class FailingLauncher:
+        DType = FakeDType
+
+        def make_kernel_config(self, *args: object) -> None:
+            raise launcher_error("launcher refused")
+
+    with pytest.raises(raised):
+        AdaLNLayerNormSigmoidCubinExecutable(
+            ModuleType("fake_adaln_cubin_library"), FailingLauncher(), 100, torch.float32, 128, 8, 128, False
+        )
 
 
 def test_cubin_adapter_selects_rms_norm_variant():

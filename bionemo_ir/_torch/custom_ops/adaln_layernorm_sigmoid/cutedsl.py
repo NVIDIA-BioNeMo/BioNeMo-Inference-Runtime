@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import warnings
 from typing import Any
 
 import torch
@@ -23,6 +24,7 @@ import torch
 from bionemo_ir._torch.utils.kernel import (
     CuTeDSLKernelLibraryError,
     CuTeDSLKernelLibraryExecutable,
+    CuTeDSLKernelVariantUnavailable,
     cute_numeric,
     launch_compiled_kernel,
     load_source_module,
@@ -56,6 +58,8 @@ class AdaLNLayerNormSigmoidCuTe(CuteKernelCache):
     """Cached backend for fused LayerNorm/RMSNorm and sigmoid gating."""
 
     _compiled_cache: dict[tuple, Any] = {}
+    # Variants the CUBIN pack lacked, warned about once per process whatever the instance or mode.
+    _missing_variants_warned: set[tuple] = set()
 
     def __init__(self, rms_norm: bool = False):
         if not isinstance(rms_norm, bool):
@@ -76,7 +80,14 @@ class AdaLNLayerNormSigmoidCuTe(CuteKernelCache):
         geometry: tuple[int, int],
         source_error: Exception | None = None,
         cfg: dict | None = None,
-    ):
+    ) -> Any | None:
+        """Load the packaged CUBIN for one bucket, or ``None`` when the pack has no image for it.
+
+        The pack can lag the bucket schedule, for example between a schedule
+        change and its CUBIN refresh. ``None`` sends that bucket to PyTorch, as
+        a source-free build does on an SM without a payload, and warns once per
+        variant, since the pack should cover every scheduled variant.
+        """
         threads_per_row, num_threads = geometry
         # Reject knobs that are not represented by the CUBIN registry key.
         if cfg is not None and not is_cubin_representable(cfg):
@@ -103,15 +114,20 @@ class AdaLNLayerNormSigmoidCuTe(CuteKernelCache):
                     self._rms_norm,
                 ),
             )
+        except CuTeDSLKernelVariantUnavailable as missing_variant:
+            if key not in AdaLNLayerNormSigmoidCuTe._missing_variants_warned:
+                AdaLNLayerNormSigmoidCuTe._missing_variants_warned.add(key)
+                warnings.warn(
+                    f"{missing_variant}; this bucket runs in PyTorch until the CUBIN packs are refreshed",
+                    RuntimeWarning,
+                    stacklevel=2,
+                )
+            return None
         except CuTeDSLKernelLibraryError as library_error:
             if self.force_cubin():
                 raise RuntimeError(
-                    f"{FORCE_CUBIN_ENV}=1 forces the AdaLN CUBIN path, but no "
-                    f"CUBIN is available for SM{self._sm_version}, dtype={dtype}, "
-                    f"N={N}, threads_per_row={threads_per_row}, "
-                    f"num_threads={num_threads}, rms_norm={self._rms_norm}. "
-                    f"N and norm type are compiled in, so only "
-                    f"{list(SHIPPED_N)} are shipped."
+                    f"{FORCE_CUBIN_ENV}=1 forces the AdaLN CUBIN path, but the CuTeDSL kernel "
+                    f"library cannot load the adaln_layernorm_sigmoid family for SM{self._sm_version}"
                 ) from library_error
             raise library_error from source_error
         logger.info(f"CuTeDSL adaln_layernorm_sigmoid: using CUBIN kernel for SM{self._sm_version}, key={key}")
@@ -213,6 +229,10 @@ class AdaLNLayerNormSigmoidCuTe(CuteKernelCache):
     ) -> torch.Tensor:
         """Run fused LayerNorm/RMSNorm and sigmoid gating.
 
+        A bucket whose variant the CUBIN pack lacks runs in PyTorch when the
+        CUBIN path is forced (``CUTEDSL_FORCE_CUBIN=1``) or the kernel sources
+        are absent.
+
         Args:
             x: Contiguous input with shape ``[..., N]``.
             s_scale: Sigmoid scale with shape ``[..., N]``. It may differ from
@@ -274,6 +294,10 @@ class AdaLNLayerNormSigmoidCuTe(CuteKernelCache):
 
         schedule = self._get_or_build_schedule(x.dtype, N)
         executable = self._pick(schedule, M)
+        if executable is None:
+            return _invoke_vanilla_adaln_layernorm_sigmoid(
+                x, s_scale, s_bias, out=out, eps=eps, rms_norm=self._rms_norm
+            )
 
         launch_compiled_kernel(executable, x_2d, s_scale_2d, s_bias_2d, out_2d, eps, mult, inner)
         return out

@@ -75,7 +75,7 @@ def _torch_adaln_layernorm_sigmoid(x, s_scale, s_bias, eps=1e-5, rms_norm=False)
 def _skip_without_adaln_cubin() -> None:
     """Skip unless AdaLN ships a CUBIN for this GPU.
 
-    Where it does not -- SM120 among them -- AdaLN falls back to the torch
+    Where it does not, AdaLN falls back to the torch
     path by design, so a test that requires the fused kernel is asserting
     something the support matrix never claimed.
     """
@@ -230,7 +230,7 @@ def test_adaln_force_cubin_ignores_warmed_source(monkeypatch):
 
 
 def test_adaln_selector_rejects_unshipped_targets(monkeypatch):
-    monkeypatch.setattr(adaln_ops, "get_sm_version", lambda: 120)
+    monkeypatch.setattr(adaln_ops, "get_sm_version", lambda: 110)
     assert adaln_ops.get_adaln_layernorm_sigmoid_op(torch.bfloat16, N=128) is _invoke_vanilla_adaln_layernorm_sigmoid
 
     monkeypatch.setattr(adaln_ops, "get_sm_version", lambda: 90)

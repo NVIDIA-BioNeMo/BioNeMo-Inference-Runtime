@@ -25,7 +25,7 @@ from bionemo_ir._torch.utils.kernel import get_config_file_name, load_kernel_con
 _DTYPES = (torch.float16, torch.bfloat16, torch.float32)
 
 # Architectures with shipped payloads.
-SUPPORTED_SMS = (80, 86, 89, 90, 100, 103)
+SUPPORTED_SMS = (80, 86, 89, 90, 100, 103, 120, 121)
 
 # N is compile-time and must have a shipped payload.
 SHIPPED_N = (128, 256, 384, 512, 768, 1024)

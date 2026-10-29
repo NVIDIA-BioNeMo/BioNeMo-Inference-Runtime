@@ -2,8 +2,8 @@
   "kernel_abi": "sm80",
   "configs": {
     "0": {
-      "num_threads_override": 256
-    },
-    "257": {}
+      "tpr_override": 16,
+      "num_threads_override": 64
+    }
   }
 }

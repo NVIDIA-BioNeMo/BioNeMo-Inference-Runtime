@@ -23,6 +23,8 @@ from types import ModuleType
 import numpy as np
 import torch
 
+from bionemo_ir.pipeline.utils import RANDOM_SEED_COLUMN, SAMPLING_SEED_ARG
+
 
 class _RequestRNG:
     def __init__(self, seed: int, torch_seed: int | None = None) -> None:
@@ -30,6 +32,20 @@ class _RequestRNG:
         self.numpy = np.random.RandomState(seed)
         self.torch = torch.Generator(device="cpu")
         self.torch.manual_seed(seed if torch_seed is None else torch_seed)
+
+
+def _initialize_request_rng(context: dict) -> dict:
+    """Seed feature and sampling stages; omitted seeds default to zero.
+
+    Args:
+        context: Request context, initialized before tokenization and features.
+    """
+    seed_value = context.get(RANDOM_SEED_COLUMN)
+    seed = 0 if seed_value is None else int(seed_value)
+    context[RANDOM_SEED_COLUMN] = seed
+    context[SAMPLING_SEED_ARG] = seed
+    context["_rng"] = _RequestRNG(seed)
+    return context
 
 
 _RNG: ContextVar[_RequestRNG | None] = ContextVar("bioir_feature_rng", default=None)

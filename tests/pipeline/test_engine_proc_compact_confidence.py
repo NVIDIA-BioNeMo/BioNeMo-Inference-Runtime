@@ -72,3 +72,54 @@ def test_batched_of3_preserves_raw_config() -> None:
     config = EngineProcessorConfig(model_source="openfold3", engine_kwargs={"config": original})
     assert config.folding_engine_kwargs()["config"] is original
     assert original.auxiliary_heads_config.compact_output is False
+
+
+def test_protenix_merges_release_runtime_defaults():
+    from bionemo_ir.pipeline.processor.engine_proc import _resolve_runtime_args
+
+    config = EngineProcessorConfig(
+        model_source="protenix-v2", executor_backend=None, runtime_args={"diffusion_samples": 2}
+    )
+    _resolve_runtime_args(config)
+    from bionemo_ir.pipeline.models.protenix.postprocessor import INPUT_FEATURES
+
+    assert config.runtime_args == {
+        "recycling_steps": 9,
+        "num_sampling_steps": 200,
+        "diffusion_samples": 2,
+        "consume_input_features": True,
+        "keep_input_features": INPUT_FEATURES,
+    }
+    assert config.folding_engine_kwargs()["config"].compact_output is True
+
+
+@pytest.mark.parametrize(
+    ("runtime_args", "message"),
+    [
+        ({"return_full_data": False}, "requires return_full_data"),
+        ({"keep_input_features": ()}, "must keep the Protenix postprocessor inputs"),
+    ],
+)
+def test_protenix_rejects_runtime_options_before_loading_metadata(
+    monkeypatch: pytest.MonkeyPatch, runtime_args: dict, message: str
+) -> None:
+    from bionemo_ir.pipeline.processor import engine_proc
+
+    def unexpected_metadata_load(config: EngineProcessorConfig) -> None:
+        pytest.fail("Runtime validation must precede metadata loading")
+
+    monkeypatch.setattr(engine_proc, "_resolve_metadata", unexpected_metadata_load)
+    config = EngineProcessorConfig(model_source="protenix-v2", executor_backend=None, runtime_args=runtime_args)
+    with pytest.raises(ValueError, match=message):
+        engine_proc.build_processor(config)
+
+
+@pytest.mark.parametrize("model_source", ModelRegistry.get_models())
+def test_runtime_resolution_preserves_caller_arguments(model_source: str) -> None:
+    from bionemo_ir.pipeline.processor.engine_proc import _resolve_runtime_args
+
+    supplied = {"diffusion_samples": 2, "compact_output": False}
+    config = EngineProcessorConfig(model_source=model_source, runtime_args=supplied, compact_confidence=False)
+    _resolve_runtime_args(config)
+    assert config.runtime_args == {**ModelRegistry.get_factory(model_source).get_default_runtime_args(), **supplied}
+    assert supplied == {"diffusion_samples": 2, "compact_output": False}

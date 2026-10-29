@@ -19,18 +19,19 @@
 # Protenix-v2 benchmark profile
 
 Use this profile with [`../SKILL.md`](../SKILL.md). Protenix-v2 is a
-folding model with a BioIR compute module but no BioIR data-pipeline
-factory, so it always uses the **OSS feature path** from
-[`../no-pipeline.md`](../no-pipeline.md):
+folding model with a native BioIR pipeline (`ProtenixFactory`,
+Pipeline = Yes in `docs/ref/support-matrix.md`). Benchmark it on
+**Processor path**, like OpenFold3 and Boltz-2: each side featurizes itself.
 
 ```text
-dataset spec -> pinned OSS Protenix featurizer -> one CPU feature dump
-                                                   |-> OSS forward
-                                                   `-> BioIR forward
+dataset spec -> BioIR build_processor (native featurizer) -> BioIR forward
+dataset spec -> pinned OSS runner/inference featurizer   -> OSS forward
 ```
 
-Do not call `build_processor`, do not build a BioIR feature pipeline, and
-do not featurize a second time for BioIR.
+The native pipeline passed Level 1 feature equivalence against the
+upstream v2.0.0 featurizer
+([`docs/advanced/validate-data-pipeline.md`](../../../../docs/advanced/validate-data-pipeline.md)),
+so Processor path needs no shared OSS feature dump.
 
 ## Source and checkpoint lock
 
@@ -38,15 +39,27 @@ do not featurize a second time for BioIR.
 - Required pin: ByteDance Protenix tag `v2.0.0`, commit
   `2475421477ab414b571149ad4a875c390ff8a35d`.
 - Model name on both sides: `protenix-v2`.
-- Checkpoint: BioIR has no Hub fallback, so stage `protenix-v2.pt` yourself.
-  To get the weights, check <https://github.com/bytedance/Protenix> or contact
-  the Protenix authors.
-- BioIR construction:
-  `Protenix(model_name="protenix-v2", include_load_weights=True)`.
-  Omit `config=` so the optimized pretrained config is selected.
+- Checkpoint: the v2 weights are proprietary and BioIR has no Hub fallback.
+  Obtain `protenix-v2.pt` from the Protenix authors and stage it yourself.
+- BioIR construction: serial
+  `build_processor(EngineProcessorConfig(model_source="protenix-v2", ...))`.
+  Omit `engine_kwargs["config"]` so the optimized pretrained config is
+  selected.
 - Set `PROTENIX_V2_CKPT` to the staged checkpoint. Record the
   resolved path and SHA-256 and strict-load the same file in both
-  interpreters before feature dumping or timing.
+  interpreters before timing.
+- BioIR reads CCD topology from Biotite's bundled CCD and never
+  downloads the conformer pickle; set `BIOIR_PROTENIX_CCD_MOLS_PATH`.
+  Pinned OSS reads `$OSS_ROOT/common/components.cif` and its
+  `.rdkit_mol.pkl`. Point both sides at the same pickle and record both
+  SHA-256 values; a different CCD or pickle changes ligand features.
+  Biotite's CCD differs from the release `components.cif` on heavy-atom
+  names of `NOT` and one leaving flag of `OYA`; avoid both in samples.
+- Require the hashes listed in `docs/ref/model-weights.md`
+  ("Protenix metadata"):
+  `components.cif` `bb31ae5c…` and `components.cif.rdkit_mol.pkl`
+  `d1cfb71f…`. A truncated pickle loads without error and silently
+  changes the reference conformer of every component it lacks.
 - Default scratch work directory for this profile: `/tmp/protenix`.
 
 The checkpoint is wrapped as `{"model": state_dict}` and its keys may have
@@ -91,12 +104,66 @@ For this benchmark, lock:
 
 This is five recycles / six total trunk cycles on both sides. Setting OSS
 `N_cycle=5` would run one fewer cycle and is not parity.
+`ProtenixFactory.get_default_runtime_args()` follows the release
+(`recycling_steps=9`), so pass all three values explicitly.
 
 Also lock seed 101, one model seed, `use_msa=true`,
 `use_rna_msa=false`, `msa_pair_as_unpair=true`, `use_template=true`,
 one discarded warmup, and one measured forward. The release declares no
 RNA A3Ms; do not enable RNA-MSA search or invent one. There is no Amber
 relaxation stage in this path.
+
+BioIR reads its data settings from `ProtenixConfig`
+(`bionemo_ir/models/protenix/config.py`): `use_msa`, `use_rna_msa`,
+`msa_pair_as_unpair`, `max_msa_rows`, `max_paired_per_species`,
+`use_templates`, and `max_templates`. The pretrained defaults
+(`use_rna_msa=False` included) match the upstream inference defaults.
+Serialize the resolved values in `bench_config.json`; do not override
+them.
+
+Both sides resample MSA rows on every recycle. BioIR does it through
+`msa_module_config.sample_rows=True`, seeded from the request seed. The
+OSS release also applies Monte Carlo dropout to the recycled pair state
+for a random 40% of requests; BioIR does not. That is a documented,
+accepted accuracy difference, so a single seed can diverge per sample.
+Compare lDDT and DockQ over seeds or over the sample set, not one seed
+per sample.
+
+Seed the OSS featurizer the way `runner/inference.py` does: call
+`seed_everything(seed)` before iterating the dataloader. The release
+draws each residue's random reference pose from the global RNG, so an
+unseeded harness folds a different pose, and often a different
+structure, in every process. BioIR seeds featurization and sampling from
+the request seed and reproduces across processes.
+
+A per-sample gap from one seed is not yet a finding. On CASP15 `T1152` without
+templates at seed 101, OSS scored GlobalDockQ 0.44 and BioIR 0.23, yet over ten
+seeds the top-ranked sample averaged 0.341 for OSS, 0.362 for OSS without MC
+dropout, and 0.374 for BioIR; about a quarter of diffusion samples dock the
+GT-like interface on either side. Before reporting a per-sample lDDT or DockQ
+gap, rerun that sample with at least five seeds per side and compare every
+diffusion sample, not only the top-ranked one.
+
+## Feature parity
+
+On 66 CASP15 targets with unpaired and paired A3Ms, CCD ligands, ions,
+RNA, and DNA, but no templates, the native featurizer matched pinned
+v2.0.0 tensor for tensor at the model boundary, with three expected
+exceptions:
+
+- `ref_pos`: each side draws its own random pose per residue. Compare
+  intra-residue distances, not coordinates. Swapping `ref_pos` between
+  the two feature dicts reproduces the other side's structures bit for
+  bit, so the pose is the only input that changes the output.
+- SMILES ligand conformers: the release embeds them without a seed.
+- 25 OSS-only keys the BioIR model never reads. The model rebuilds
+  `d_lm`, `v_lm`, and `pad_info` itself; the rest are raw or
+  bookkeeping fields.
+
+After a change to the native featurizer, repeat that comparison before
+timing. Build the OSS dict with `get_inference_dataloader()` and
+`update_input_feature_dict()`, and the BioIR dict by running the
+processor's stages up to `FoldingEngineStage` and reading `__data__`.
 
 ## Approximate option: frame-aware prediction reuse (default on)
 
@@ -162,8 +229,11 @@ differences in `bench_config.json`.
 
 ## Convert `spec_full.json` to Protenix input
 
-All 17 items in `$DATASET_ROOT/spec_full.json` are in scope.
-Convert each item to the AlphaFold-Server-like list accepted by
+All 17 items in `$DATASET_ROOT/spec_full.json` are in scope. BioIR
+converts each item to an `InputRequest`
+([`../samples.md`](../samples.md#load-path-processor)) with every listed A3M
+and template attached. For OSS, convert each item to the
+AlphaFold-Server-like list accepted by
 `runner/inference.py`:
 
 - `protein` -> `proteinChain`
@@ -196,9 +266,23 @@ A3M path per protein entity. Assert:
 ## Caller-supplied templates
 
 `T1152`, `T1118v1`, and `T1158v1` carry caller-supplied template
-**structures**, while pinned Protenix's JSON accepts a template-search
-alignment (`templatesPath`) and then resolves an mmCIF by the hit name.
-Stage this deterministic adapter:
+**structures**.
+
+BioIR takes them directly: map each spec template to
+`Template(path=..., format="cif", chain_id=...)` on `Polymer.templates`
+in spec order. The pipeline accepts CIF and PDB, aligns each supplied
+template without search-hit filters, and fills slots in the supplied
+order up to `ProtenixConfig.max_templates`.
+
+`chain_id` names a CIF chain by `label_asym_id` and a PDB chain by its
+author id. Pinned OSS keys template chains by author id. When a CIF's
+label and author ids differ, give BioIR the label id and keep the author
+id in the OSS hit name. A mismatched id selects another chain without
+notice, or drops the template with only a warning.
+
+Pinned Protenix's JSON accepts a template-search alignment
+(`templatesPath`) instead and then resolves an mmCIF by the hit name.
+Stage this deterministic OSS adapter:
 
 1. Symlink every supplied CIF into
    `oss_data/templates/mmcif/<lowercase-entry>.cif`.
@@ -218,30 +302,29 @@ Stage this deterministic adapter:
    future to accept the supplied CIF. Do not alter template feature
    math, cap, or model compute.
 
-The profile's cap is four, matching pinned inference. Verify attachment
-per protein chain from `template_pseudo_beta_mask`: count rows with any
-populated token in that chain and require
-`min(n_supplied_for_chain, 4)`. A global nonzero mask is insufficient,
-especially for `T1152`, which supplies the same structure separately
-to two protein entities.
+The profile's cap is four on both sides, matching pinned inference and
+the BioIR default `max_templates=4`. Verify attachment per protein chain
+from `template_pseudo_beta_mask` on each side's featurized batch: count
+rows with any populated token in that chain and require
+`min(n_supplied_for_chain, 4)`, with the same entry and chain per slot.
+A global nonzero mask is insufficient, especially for `T1152`, which
+supplies the same structure separately to two protein entities.
 
 Record every generated alignment, chosen chain, symlink target, and
 filter override in `oss_data/index.json` and
-`implementation-notes.md`. The resulting template tensors are part of
-the shared dump, so BioIR and OSS consume the same template evidence.
+`implementation-notes.md`.
 
 ## OSS data-pipeline dependencies
 
-Importing `protenix.data` is what the feature dump costs, and the
+Importing `protenix.data` is what the OSS featurizer costs, and the
 dependency set is larger than the overlay installs. On a dev box the
 base interpreter happens to carry the rest, so this only surfaces in a
-clean container running from a wheel, where `run_bioir.py` dies on
+clean container running from a wheel, where `run_oss.py` dies on
 `ModuleNotFoundError` before it reaches a single sample.
 
-Both chains — `protenix.data.inference.infer_dataloader` plus
-`protenix.model.protenix` for the dump, and `runner.inference` plus
-`runner.dumper` for the OSS column — reach the same third-party set,
-so there is no cheaper subset to install for one column only.
+The OSS column imports `protenix.data.inference.infer_dataloader`,
+`protenix.model.protenix`, `runner.inference`, and `runner.dumper`. The
+BioIR column imports none of them.
 
 Three are hard imports and must be installed:
 
@@ -251,11 +334,9 @@ Three are hard imports and must be installed:
   featurization work that cannot be stubbed.
 - `optree` — module scope in `protenix/model/utils.py`.
 
-Install them into **both** interpreters. `run_bioir.py` dumps features
-under `BIOIR_PYTHON` and `run_oss.py` builds the model in the overlay
-venv, and a `--user` install in the base is invisible inside a venv, so
-neither one covers the other. Every version floor is low enough that
-pip leaves BioIR's pinned `numpy` and `scipy` alone.
+Install them into the OSS interpreter. A `--user` install in the base
+is invisible inside the overlay venv, so install into the venv itself.
+Do not add them to the BioIR interpreter.
 
 Three more appear in a static scan but need nothing:
 
@@ -299,48 +380,48 @@ Importing this chain the first time also JIT-builds Protenix's
 `fast_layer_norm_cuda_v2` extension with `nvcc`, which took about two
 and a half minutes. That pause is the extension build, not a hang.
 
-## Feature dump and BioIR adapter
+## BioIR harness
 
-Run `bench/dump_features.py` only with the OSS interpreter. For
-each sample save a trusted local `.pt` containing:
+Use the generic Processor path harness
+([`../workflow.md`](../workflow.md#processor-path-bioir-side--workdirbenchrun_bioirpy))
+with `model_source="protenix-v2"`:
 
-- the CPU `input_feature_dict`;
-- the OSS `AtomArray` and `entity_poly_type` needed by `DataDumper`;
-- `N_token`, `N_atom`, `N_msa`, chain metadata, and provenance;
-- resolved unpaired/paired MSA paths and row counts;
-- per-chain populated template counts;
-- the OSS commit, query digest, and effective featurizer config.
+- `executor_backend=None`, one `processor([record])` per sample;
+- `runtime_args` = the three locked BioIR values above;
+- `engine_kwargs={"profile_inference": True}`, with no
+  `engine_kwargs["config"]`;
+- `FeatureGeneratorStageConfig(init_context={"random_seed": 101})`;
+- CIF writer under `$WORKDIR/results/`.
 
-Call pinned OSS `update_input_feature_dict()` before saving so
-`d_lm`, `v_lm`, and `pad_info` are present in the shared artifact.
-Pinned OSS recomputes those deterministic layout tensors at the start
-of its top-level forward; BioIR uses the dumped copies. Record and
-verify bit equality for one sample.
+`build_processor` rejects `return_full_data=False` for Protenix: the
+postprocessor needs per-atom confidence. It also rejects
+`consume_input_features=True` when `keep_input_features` omits the
+postprocessor's inputs; the registry defaults set both. The default
+`compact_confidence=True` already sets `ProtenixConfig.compact_output`.
 
-`torch.load()` defaults to `weights_only=True` on recent PyTorch.
-These trusted local dumps include an `AtomArray`, so both harnesses
-must pass `weights_only=False`.
+The default pretrained config captures graph regions automatically. Keep
+the model policies and audit each forward
+([CUDA graphs](../measurement.md#cuda-graphs)).
 
-BioIR adaptation is layout-only:
-
-- add a leading `B=1` dimension to every tensor except `pad_info`;
-- leave non-tensor metadata unchanged;
-- move the adapted dict to CUDA outside the timing window;
-- do not recompute MSA, template, chemistry, or structure features;
-- reject a missing required key instead of filling zeros.
-
-Construct BioIR with the default pretrained config; its graph regions
-capture by default ([CUDA graphs](../measurement.md#cuda-graphs)). Pass
-`compact_output=True`, preserve `full_data` for the pinned OSS writer, and
-use the locked runtime arguments above.
+Expect one trunk capture per input shape of at most 1024 tokens,
+replayed on every later recycle and request of that shape. The trunk
+samples MSA rows at a fixed depth, `min(N_msa, 16384)` rows with the
+unsampled ones masked, so the sampled count never changes the graph
+key. Above 1024 tokens the trunk runs
+eagerly and counts `out_of_range`. A trunk that captures on every
+recycle is a build without fixed-depth sampling: it runs slower than
+eager and segfaults in `cuGraphLaunch` after a few same-size requests
+(six on `T1152`).
 
 For large pair representations, lock and serialize the benchmark's
 semantic-preserving chunk policy: pair transition, diffusion pair
 transition, and pair-weighted averaging at 256; outer-product mean at
-64; contact probability at 256; each with `min_size=1024`. Apply the
-same values for smoke and full BioIR runs. These chunks avoid
-materializing the corresponding full pair intermediates and do not
-change OSS features, model weights, or requested sampling work.
+64; contact probability at 256; each with `min_size=1024`. Set it on
+`CHUNK_REGISTRY` (`bionemo_ir/_torch/utils/auto_chunk.py`) in the BioIR
+harness process before `build_processor`, and apply the same values for
+smoke and full runs. These chunks avoid materializing the corresponding
+full pair intermediates and do not change features, model weights, or
+requested sampling work.
 
 ## OSS compile status — skipped
 
@@ -371,19 +452,30 @@ FP32-query/BF16-value SDPA mismatch before the compiler is tested.
 
 ## Output and scoring
 
-Use pinned OSS `DataDumper` for both outputs. Build its input from:
+- OSS: pinned `DataDumper` with `sorted_by_ranking_score=true` writes
+  `<sample>_sample_0.cif` as the highest-ranked diffusion sample. Score
+  that file.
+- BioIR: the Protenix postprocessor writes the diffusion sample with the
+  highest `ranking_score`. That CIF is the comparable file. It writes
+  every declared CCD ligand, including residue-named codes such as
+  `TYR` and `2MG`, as a HETATM non-polymer, so DockQ needs no scorer-only
+  HETATM copy.
 
-- OSS: measured `prediction` from the top-level model;
-- BioIR: `coordinate`, `summary_confidence`, and `full_data` from the
-  measured compact output;
-- shared dump: `AtomArray` and polymer entity metadata.
-
-Score the rank-zero CIF after timing. Run OpenStructure lDDT on every
+Score after timing. Run OpenStructure lDDT on every
 sample with ground truth. Run DockQ on supported protein-protein and
 protein-small-molecule interfaces; use `--small_molecule` for ligand
 complexes and record `unsupported_chain_types` when DockQ cannot score
 an RNA/DNA interface. Single-chain structures use
 `dockq=null, dockq_status="single_chain"`.
+
+Two DockQ outcomes get a status instead of a score:
+
+- `Need at least two chains in the two inputs`: the native has fewer
+  chains than the model, such as a one-chain ground truth for a homomer
+  query. Record `no_native_interfaces` on both sides.
+- Exit status 0 with no JSON written: DockQ could not map model chains
+  to the native. Record `failed` with its stderr; never read a stale
+  JSON from an earlier run.
 
 ## Five-sample smoke selection
 

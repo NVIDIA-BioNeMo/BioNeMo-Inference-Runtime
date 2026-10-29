@@ -14,6 +14,7 @@
 # limitations under the License.
 
 import hashlib
+from pathlib import Path
 from unittest.mock import Mock
 
 import pytest
@@ -77,3 +78,22 @@ def test_boltz_metadata_has_sha256(metadata_key, expected):
     for model_name in (metadata.SupMat.Boltz1, metadata.SupMat.Boltz2, metadata.SupMat.Boltz2Affinity):
         asset = next(item for item in metadata.HF_MODEL_METADATA[model_name] if item.metadata_key == metadata_key)
         assert asset.sha256 == expected
+
+
+def test_protenix_offline_metadata(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A staged native CCD can resolve without Hub or publisher requests."""
+    from bionemo_ir.hubs.metadata import load_metadata
+
+    mols = tmp_path / "mols.pkl"
+    mols.write_bytes(b"mols")
+    monkeypatch.setenv("BIOIR_PROTENIX_CCD_MOLS_PATH", str(mols))
+    result = load_metadata("protenix-v2", cache_dir=tmp_path, local_files_only=True)
+    assert result == {"ccd_mols_path": str(mols)}
+
+
+def test_protenix_metadata_never_downloads(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("BIOIR_PROTENIX_CCD_MOLS_PATH", raising=False)
+    monkeypatch.setenv("BIOIR_METADATA", str(tmp_path / "empty"))
+    monkeypatch.setattr(metadata, "download_hf_file", Mock(side_effect=AssertionError("unexpected download")))
+    with pytest.raises(FileNotFoundError, match="BIOIR_PROTENIX_CCD_MOLS_PATH"):
+        metadata.load_metadata("protenix-v2", cache_dir=tmp_path)

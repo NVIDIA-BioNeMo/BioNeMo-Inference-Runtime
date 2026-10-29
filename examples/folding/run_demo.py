@@ -37,7 +37,7 @@ from bionemo_ir.pipeline.stages.configs import FeatureGeneratorStageConfig, Writ
 from bionemo_ir.registry import ModelRegistry
 
 DEFAULT_INPUT = Path(__file__).resolve().parents[1] / "data" / "samples" / "monomers" / "T1031.json"
-DIFFUSION_MODELS = {"boltz-1", "boltz-2", "openfold3"}
+DIFFUSION_MODELS = {"boltz-1", "boltz-2", "openfold3", "protenix-v2"}
 
 
 def _as_list(value: Any) -> list[Any]:

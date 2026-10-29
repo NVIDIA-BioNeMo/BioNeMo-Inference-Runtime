@@ -20,6 +20,7 @@
 from __future__ import annotations
 
 import inspect
+from collections.abc import Callable
 from typing import Any
 
 import pytest
@@ -115,6 +116,7 @@ def test_protenix_forward_signature_stable():
         "return_full_data",
         "consume_input_features",
         "sampling_seed",
+        "keep_input_features",
     ]
     defaults = {name: param.default for name, param in sig.parameters.items() if name != "self"}
     assert defaults["recycling_steps"] == 3
@@ -123,6 +125,7 @@ def test_protenix_forward_signature_stable():
     assert defaults["compact_output"] is None
     assert defaults["return_full_data"] is True
     assert defaults["consume_input_features"] is False
+    assert defaults["keep_input_features"] == ()
 
 
 def test_protenix_load_weight_attribute_names(structural_model):
@@ -133,8 +136,8 @@ def test_protenix_load_weight_attribute_names(structural_model):
     assert hasattr(model.diffusion_sampler.diffusion_module, "diffusion_transformer")
 
 
-def test_protenix_inference_precision_defaults(structural_model):
-    cfg = structural_model(Protenix).get_pretrained_config(SupMat.ProtenixV2)
+def test_protenix_inference_precision_defaults():
+    cfg = Protenix.get_pretrained_config(SupMat.ProtenixV2)
     assert cfg.trunk_config.pair_state_dtype == "float32"
     dm = cfg.diffusion_module_config
     assert dm.token_transformer_config.dtype == "bfloat16"
@@ -288,7 +291,16 @@ class _StubTrunk(nn.Module):
         self.graph = GraphRegion(self, "forward", None)
         self.pair_state_dtype = pair_state_dtype
 
-    def forward(self, batch, s_inputs, s_init, z_init, num_cycles=1, generator=None, row_generator=None):
+    def forward(
+        self,
+        batch: dict[str, torch.Tensor],
+        s_inputs: torch.Tensor,
+        s_init: torch.Tensor,
+        z_init: torch.Tensor,
+        num_cycles: int = 1,
+        generator: torch.Generator | None = None,
+        row_generator: torch.Generator | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         return s_init, z_init
 
 
@@ -349,7 +361,9 @@ def _tiny_batch(n_token: int = 4, n_atom: int = 4) -> dict[str, torch.Tensor]:
 
 @pytest.mark.parametrize("configured", [False, True])
 @pytest.mark.parametrize("unbatched", [False, True])
-def test_protenix_forward_output_modes_and_feature_ownership(monkeypatch, configured, unbatched, structural_model):
+def test_protenix_forward_output_modes_and_feature_ownership(
+    monkeypatch: pytest.MonkeyPatch, configured: bool, unbatched: bool, structural_model: Callable[..., Protenix]
+) -> None:
     # Keep this API-only test on CPU.
     model = structural_model(
         Protenix, config=ProtenixConfig(compact_output=configured), include_load_weights=False
@@ -392,6 +406,20 @@ def test_protenix_forward_output_modes_and_feature_ownership(monkeypatch, config
     )
     assert set(compact) == {"coordinate"}
     assert batch2 == {}
+
+    batch3 = _tiny_batch()
+    kept = {name: batch3[name] for name in ("atom_to_token_idx", "restype")}
+    model.forward(
+        batch3,
+        recycling_steps=0,
+        num_sampling_steps=1,
+        diffusion_samples=1,
+        compact_output=True,
+        consume_input_features=True,
+        keep_input_features=(*kept, "absent"),
+    )
+    assert batch3.keys() == kept.keys()
+    assert all(batch3[name] is value for name, value in kept.items())
     assert stub_sampler.last_kwargs["drop_consumed_features"] is True
     assert stub_sampler.last_kwargs["drop_consumed_relp"] is True
 

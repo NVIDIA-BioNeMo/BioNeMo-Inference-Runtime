@@ -30,6 +30,7 @@ from bionemo_ir.pipeline.models.boltz2.feature_factory import pre_init as boltz2
 from bionemo_ir.pipeline.models.boltz2.structure import _build_smiles_mol
 from bionemo_ir.pipeline.models.openfold2.feature_factory import pre_init as of2_init
 from bionemo_ir.pipeline.models.openfold3.feature_factory import pre_init as of3_init
+from bionemo_ir.pipeline.models.protenix.feature_factory import pre_init as protenix_init
 from bionemo_ir.pipeline.processor.base import ProcessorConfig, SerialProcessor
 from bionemo_ir.pipeline.processor.pipelined import PipelinedSerialProcessor
 from bionemo_ir.pipeline.stages.base import StatefulStage, StatefulStageUDF
@@ -37,7 +38,7 @@ from bionemo_ir.pipeline.stages.feature_generator_stage import FeatureGeneratorS
 from bionemo_ir.pipeline.stages.tokenizer_stage import TokenizerUDF
 from bionemo_ir.pipeline.utils._rng import _feature_rng, _python_rng, _RequestRNG, _torch_generator
 
-FACTORIES = [of2_init, of3_init, boltz1_init, boltz2_init]
+FACTORIES = [of2_init, of3_init, boltz1_init, boltz2_init, protenix_init]
 
 
 class _DrawContext(ContextGeneratorBase):

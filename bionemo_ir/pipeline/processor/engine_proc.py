@@ -403,7 +403,7 @@ def _resolve_metadata(config: EngineProcessorConfig) -> None:
 
 
 def _resolve_runtime_args(config: EngineProcessorConfig) -> None:
-    """Merge registry defaults with user-supplied runtime_args.
+    """Merge registry defaults with user-supplied runtime_args, then validate them.
 
     Registry defaults are used as the base; any keys explicitly provided
     by the user take precedence.
@@ -412,6 +412,7 @@ def _resolve_runtime_args(config: EngineProcessorConfig) -> None:
     if defaults:
         merged = {**defaults, **config.runtime_args}
         config.runtime_args = merged
+    ModelRegistry.get_factory(config.model_source).validate_runtime_args(config.runtime_args)
 
 
 def build_processor(config: EngineProcessorConfig) -> _ProcessorBase:
@@ -423,8 +424,8 @@ def build_processor(config: EngineProcessorConfig) -> _ProcessorBase:
     run on threads alongside serial inference. Writer work starts after
     all device batches succeed.
     """
-    _resolve_metadata(config)
     _resolve_runtime_args(config)
+    _resolve_metadata(config)
 
     processor_defaults = {
         "batch_size": config.batch_size,

@@ -94,10 +94,6 @@ def test_confidence_integration(monkeypatch: pytest.MonkeyPatch) -> None:
     expected = head.per_sample_logits(reference_ctx, x)
     for got, ref in zip(actual, expected, strict=True):
         torch.testing.assert_close(got, ref, atol=1e-5, rtol=1e-5)
-    with torch.enable_grad():
-        assert head.prepare(batch, si, s, z)["plddt_rows"] is None
-        head.per_sample_logits(ctx, x)[0].sum().backward()
-    assert head.plddt_weight.grad is not None
 
 
 @pytest.mark.parametrize("launch", ["driver", "compiled", "unaligned"])

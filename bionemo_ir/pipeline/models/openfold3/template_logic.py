@@ -28,6 +28,7 @@ from __future__ import annotations
 import io
 import logging
 from dataclasses import dataclass
+from typing import Literal
 
 import numpy as np
 
@@ -44,10 +45,33 @@ _PROTEIN_3TO1: dict[str, str] = {v: k for k, v in _PROTEIN_1TO3.items()}
 
 # Backbone + pseudo-beta atom names read from the template structure.
 _FRAME_ATOMS = ("N", "CA", "C")
+_FRAME_AND_CB_ATOMS = frozenset((*_FRAME_ATOMS, "CB"))
 
 # 20 amino acids + UNK. An aligned residue outside this set triggers the OSS
 # "non-standard" cleaning branch (see ``resolve_template_idx_map``).
 _STANDARD_PROTEIN_3: frozenset = frozenset(_PROTEIN_3TO1) | {"UNK"}
+
+
+@dataclass(frozen=True)
+class TemplateParsing:
+    """How a template CIF is read; the defaults serve OpenFold.
+
+    Attributes:
+        atom_names: Atom names whose coordinates to keep; ``None`` keeps every
+            heavy atom.
+        modified_as_unknown: Spell modified residues ``X`` in the canonical
+            sequence instead of their parent one-letter code.
+        altloc: ``"residue"`` keeps the highest-occupancy conformer per
+            residue; ``"atom"`` picks each atom's location independently,
+            highest occupancy and first on ties, as Biopython does.
+    """
+
+    atom_names: frozenset[str] | None = _FRAME_AND_CB_ATOMS
+    modified_as_unknown: bool = False
+    altloc: Literal["residue", "atom"] = "residue"
+
+
+_OPENFOLD_PARSING = TemplateParsing()
 
 
 @dataclass
@@ -116,7 +140,9 @@ def align_query_to_template_chain(
 # ---------------------------------------------------------------------------
 
 
-def _canonical_seq_from_poly_scheme(block) -> dict[str, tuple[str, dict[int, str]]] | None:
+def _canonical_seq_from_poly_scheme(
+    block, modified_as_unknown: bool = False
+) -> dict[str, tuple[str, dict[int, str]]] | None:
     """Per-asym canonical sequence + residue names for a template CIF.
 
     Returns dict[label_asym_id -> (canonical_seq, {seq_id: res_name_3})] or
@@ -126,8 +152,9 @@ def _canonical_seq_from_poly_scheme(block) -> dict[str, tuple[str, dict[int, str
     (the sequence OSS aligns against), which uses the parent one-letter code for
     modified residues (e.g. MSE -> 'M'); a 3->1 mapping would emit 'X' and shift
     the alignment. Per-position 3-letter names come from ``mon_id`` keyed by
-    ``seq_id``. Without canonical metadata, falls back to the 3->1 mapping
-    with MSE treated as MET.
+    ``seq_id``. Without canonical metadata, or always with
+    ``modified_as_unknown``, falls back to the 3->1 mapping, which treats MSE
+    as MET unless ``modified_as_unknown``.
     """
     if "pdbx_poly_seq_scheme" not in block:
         return None
@@ -136,12 +163,12 @@ def _canonical_seq_from_poly_scheme(block) -> dict[str, tuple[str, dict[int, str
     mon = scheme["mon_id"].as_array(str)
     seq_id = scheme["seq_id"].as_array(int)
 
-    entity_seqs = _entity_canonical_seqs(block)
+    entity_seqs = {} if modified_as_unknown else _entity_canonical_seqs(block)
 
     out: dict[str, tuple[list, dict[int, str]]] = {}
     for a, m, s in zip(asym, mon, seq_id, strict=False):
         chars, names = out.setdefault(a, ([], {}))
-        chars.append((int(s), _PROTEIN_3TO1.get(m, "M" if m == "MSE" else "X")))
+        chars.append((int(s), _PROTEIN_3TO1.get(m, "M" if m == "MSE" and not modified_as_unknown else "X")))
         names[int(s)] = m
     result: dict[str, tuple[str, dict[int, str]]] = {}
     for a, (chars, names) in out.items():
@@ -179,13 +206,29 @@ def _entity_canonical_seqs(block) -> dict[str, str]:
     return out
 
 
-def extract_template_chains(content: str, fmt: str = "cif") -> dict[str, ChainTemplateData]:
-    """Parse PDB/CIF into per-chain sequence + backbone/pseudo-beta coords.
+def _first_highest_occupancy(atoms):
+    """One location per atom: the highest occupancy, the first listed on ties, at its first listed position."""
+    chosen: dict[tuple, int] = {}
+    for index, key in enumerate(zip(atoms.chain_id, atoms.res_id, atoms.atom_name, strict=True)):
+        if key not in chosen or atoms.occupancy[index] > atoms.occupancy[chosen[key]]:
+            chosen[key] = index
+    return atoms[list(chosen.values())]
+
+
+def extract_template_chains(
+    content: str, fmt: str = "cif", parsing: TemplateParsing = _OPENFOLD_PARSING
+) -> dict[str, ChainTemplateData]:
+    """Parse PDB/CIF into per-chain sequence + heavy-atom coords.
 
     Uses biotite with ``use_author_fields=False`` so that ``chain_id`` is the
     label_asym_id and ``res_id`` is the 1-based label_seq_id (canonical
     position) — matching the numbering OSS template idx maps use. PDB inputs
     return author-chain IDs; CIF inputs retain label-asym IDs.
+
+    Args:
+        content: Template PDB or mmCIF text.
+        fmt: Template format, ``"cif"`` or ``"pdb"``.
+        parsing: Atoms, sequence spelling and altloc rule to apply.
     """
     from biotite.structure.io.pdbx import CIFFile, get_structure
 
@@ -194,7 +237,7 @@ def extract_template_chains(content: str, fmt: str = "cif") -> dict[str, ChainTe
     is_pdb = fmt.lower() == "pdb"
     cif = pdb_to_cif_file(content) if is_pdb else CIFFile.read(io.StringIO(content))
     block = cif.block
-    poly = _canonical_seq_from_poly_scheme(block)
+    poly = _canonical_seq_from_poly_scheme(block, parsing.modified_as_unknown)
     author_by_label: dict[str, str] = {}
     if is_pdb:
         if not poly:
@@ -206,7 +249,12 @@ def extract_template_chains(content: str, fmt: str = "cif") -> dict[str, ChainTe
 
     # altloc="occupancy" picks the highest-occupancy conformer, matching OSS.
     # Biotite's default ("first") picks altloc 'A' regardless and diverges.
-    arr = get_structure(cif, model=1, use_author_fields=False, altloc="occupancy")
+    if parsing.altloc == "atom":
+        arr = _first_highest_occupancy(
+            get_structure(cif, model=1, use_author_fields=False, altloc="all", extra_fields=["occupancy"])
+        )
+    else:
+        arr = get_structure(cif, model=1, use_author_fields=False, altloc="occupancy")
     # Heavy atoms of amino acids only.
     arr = arr[arr.element != "H"]
 
@@ -230,8 +278,7 @@ def extract_template_chains(content: str, fmt: str = "cif") -> dict[str, ChainTe
             if pos < 1:
                 continue
             aname = str(chain_atoms.atom_name[i])
-            if aname not in _FRAME_ATOMS and aname != "CB":
-                # Only backbone frame + pseudo-beta atoms are needed.
+            if parsing.atom_names is not None and aname not in parsing.atom_names:
                 resname_by_pos.setdefault(pos, str(chain_atoms.res_name[i]))
                 continue
             coords_by_pos.setdefault(pos, {})[aname] = np.asarray(chain_atoms.coord[i], dtype=np.float64)
@@ -267,6 +314,7 @@ def select_template_for_cif(
     fmt: str,
     specified_chain_id: str | None,
     min_score: float = TEMPLATE_CIF_DIRECT_MIN_SCORE,
+    parsing: TemplateParsing = _OPENFOLD_PARSING,
     *,
     chains: dict[str, ChainTemplateData] | None = None,
 ) -> SelectedTemplate | None:
@@ -277,7 +325,7 @@ def select_template_for_cif(
     If ``specified_chain_id`` is given, only that chain is considered.
     Supplied ``chains`` reuse request-local CIF extraction.
     """
-    chains = extract_template_chains(content, fmt) if chains is None else chains
+    chains = extract_template_chains(content, fmt, parsing) if chains is None else chains
     if specified_chain_id is not None:
         candidates = {specified_chain_id: chains[specified_chain_id]} if specified_chain_id in chains else {}
         if not candidates:

@@ -53,7 +53,6 @@ _FULL = {
     "distance_bin_start": 3.25,
     "distance_bin_end": 52.0,
     "distance_bin_step": 1.25,
-    "stop_gradient": True,
 }
 
 

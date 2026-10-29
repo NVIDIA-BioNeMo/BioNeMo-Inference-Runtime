@@ -15,7 +15,6 @@
 """OpenFold3 feature factory: generators and collators for the feature stage."""
 
 from collections.abc import Callable
-from typing import Any
 
 from bionemo_ir.pipeline.base import (
     FeatureCollatorSpec,
@@ -23,8 +22,7 @@ from bionemo_ir.pipeline.base import (
     FeatureGeneratorSpec,
     default_context_and_feature_merger,
 )
-from bionemo_ir.pipeline.utils import RANDOM_SEED_COLUMN, SAMPLING_SEED_ARG
-from bionemo_ir.pipeline.utils._rng import _RequestRNG
+from bionemo_ir.pipeline.utils._rng import _initialize_request_rng as pre_init
 
 from .feature_collators import OpenFold3FinalFeatureCollator
 from .feature_generators import (
@@ -33,23 +31,6 @@ from .feature_generators import (
     StructureFeatureGenerator,
     TemplateFeatureGenerator,
 )
-
-
-def pre_init(context: dict[str, Any]) -> dict[str, Any]:
-    """Create request-local RNGs from context['random_seed'].
-
-    Must run *before* OpenFold3ContextGenerator / RDKit ETKDGv3 (tokenizer
-    stage). The processor wires this hook into both the tokenizer stage and
-    the feature stage so ETKDG and centre_random_augmentation stay aligned.
-    """
-    seed = context.get("random_seed", 0)
-    if seed is None:
-        seed = 0
-    seed = int(seed)
-    context[RANDOM_SEED_COLUMN] = seed
-    context[SAMPLING_SEED_ARG] = seed
-    context["_rng"] = _RequestRNG(seed)
-    return context
 
 
 class FeatureFactory(FeatureFactoryBase):

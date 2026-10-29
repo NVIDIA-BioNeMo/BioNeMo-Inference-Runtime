@@ -174,8 +174,10 @@ templated = InputRequest(
 ]
 ```
 
-RNA, DNA, and ligands are Boltz-1/2 and OpenFold3 only (AF2 / OF2 are
-protein-only). Nucleic-acid and ligand chains carry no MSA. A CCD ligand
+RNA, DNA, and ligands are Boltz-1/2, OpenFold3, and Protenix only (AF2 / OF2
+are protein-only). Ligand chains carry no MSA. Nucleic-acid chains carry none
+either, except Protenix RNA chains with `ProtenixConfig.use_rna_msa=True`
+(off by default, as in the release). A CCD ligand
 uses `polymer_type="ccd_ligand"` and a CCD code in `sequence` (`"ATP"` or
 `"ATP_FAD"`). Bundled complexes:
 [`examples/data/samples/rna_dna_ligand/`](../../examples/data/samples/rna_dna_ligand/).
@@ -293,7 +295,9 @@ It returns a `SerialProcessor` when `config.executor_backend is None`, or a
 Ray `Processor` when `config.executor_backend == "ray"`.
 
 Metadata (Boltz CCD + mols) and per-model `runtime_args` are filled in
-automatically if you omit them. User-supplied keys win over registry defaults.
+automatically if you omit them. Protenix CCD metadata resolves from local
+staging only; refer to [Protenix metadata](model-weights.md#protenix-metadata).
+User-supplied keys win over registry defaults.
 
 ### Hello World (Serial)
 
@@ -457,10 +461,10 @@ configuration retain their existing behavior.
   heads. Batched confidence configurations retain raw outputs. Per-sample
   compact inference preserves coordinate-dtype quantization and pLDDT-based
   sample selection.
-- Protenix config resolution selects its existing compact summary mode and
-  preserves `return_full_data`. Boltz-2 affinity inherits Boltz-2 confidence
-  reduction. These models still require their external feature pipelines;
-  their built-in tokenizer and postprocessor factories remain unavailable.
+- Protenix sets `ProtenixConfig.compact_output`, which drops trunk archives
+  and keeps the per-atom confidence its postprocessor reads.
+- Boltz-2 affinity inherits Boltz-2 confidence reduction. It still requires an
+  external feature pipeline.
 
 The streamed OF2, OF3, and Boltz paths require uncaptured inference; confidence
 graph capture retains raw execution. Row projection shapes and reduction devices
@@ -512,9 +516,10 @@ model(feed_dict, recycling_steps=3, num_sampling_steps=200,
       sampling_seed=None)
 ```
 
-Boltz1, Boltz2, and OpenFold3 pass the resolved request seed to model sampling.
-A non-`None` `runtime_args["sampling_seed"]` overrides that seed for inference
-only. OpenFold3 also uses it for MSA subsampling across recycles.
+Boltz1, Boltz2, OpenFold3, and Protenix pass the resolved request seed to model
+sampling. A non-`None` `runtime_args["sampling_seed"]` overrides that seed for
+inference only. OpenFold3 and Protenix also use it for MSA subsampling across
+recycles.
 
 #### OpenFold3
 
@@ -528,6 +533,15 @@ Same Boltz-style names, mapped inside `forward`:
 
 You can also pin sample count at construction:
 `OpenFold3(model_name="openfold3", diffusion_samples=N)`.
+
+#### Protenix
+
+Same Boltz-style names; `num_cycles = recycling_steps + 1`. The pipeline
+defaults are `recycling_steps=9`, `num_sampling_steps=200`, and
+`diffusion_samples=5`; the writer keeps the sample with the highest ranking
+score. The pipeline also sets `consume_input_features=True` with
+`keep_input_features` naming the postprocessor's inputs; a direct `forward`
+call may pass both the same way.
 
 #### OpenFold2 / AlphaFold2
 
@@ -696,18 +710,16 @@ b2 = Boltz2(model_name="boltz-2").cuda().eval()
 
 of3 = OpenFold3(model_name="openfold3").cuda().eval()
 
-# Protenix is not in the registry. include_load_weights defaults to False.
-px = Protenix(model_name="protenix-v2", include_load_weights=True).cuda().eval()
+px = Protenix(model_name="protenix-v2").cuda().eval()
 ```
 
 `from bionemo_ir.models.boltz1 import Boltz1` follows the same pattern
 as `Boltz2`.
 
-`include_load_weights=True` (default on Boltz / OpenFold2 / OpenFold3) builds
-from `ModelCls.get_pretrained_config(model_name)` and loads weights through the
-hub resolver. Pass `include_load_weights=False` for an empty module you will
-load yourself (`model.load_weights(state_dict)`). On `Protenix` the default
-is `False`; pass `True` to load hub weights.
+`include_load_weights=True` (default on Boltz / OpenFold2 / OpenFold3 /
+Protenix) builds from `ModelCls.get_pretrained_config(model_name)` and loads
+weights through the hub resolver. Pass `include_load_weights=False` for an empty
+module you will load yourself (`model.load_weights(state_dict)`).
 
 Pass `config=` to override dtypes, attention backends, recycle counts, and
 similar. Default triangle / pairwise backends:

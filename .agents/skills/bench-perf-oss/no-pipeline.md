@@ -19,10 +19,11 @@
 # OSS feature path — no BioIR data pipeline
 
 Use this when `docs/ref/support-matrix.md` says Pipeline = **No**
-**and** the model is still a folding compute path. Today that is
-`protenix-v2` (no factory). `boltz-2-affinity` is the same *shape*
-(module only) but a different task — do not run it with this
-folding dump / CIF / lDDT path. See
+**and** the model is still a folding compute path. No current folding
+key uses it: Boltz-1/2, OpenFold2 / AlphaFold2, OpenFold3, and
+`protenix-v2` all have a factory and run on Processor path. `boltz-2-affinity`
+is the same *shape* (module only) but a different task — do not run it
+with this folding dump / CIF / lDDT path. See
 [Extending to other model kinds](workflow.md#extending-to-other-model-kinds).
 
 `build_processor` cannot run. Both timed forwards consume **the same
@@ -47,28 +48,24 @@ Do not invent a BioIR tokenizer / feature factory for the bench.
 
 ## Construct the BioIR module
 
-Protenix is not registered. `include_load_weights` defaults to
-`False` — pass `True` (`docs/ref/model-weights.md`).
+Use the default constructor (`docs/ref/api.md`). Check the class's
+`include_load_weights` default and confirm the weights load from the
+local checkpoint (`docs/ref/model-weights.md`).
 
 ```python
-from bionemo_ir.models.protenix import Protenix
 
 # Default constructor: config=None → get_pretrained_config.
 # Do not pass a handmade BaseConfig.
-model = Protenix(model_name="protenix-v2", include_load_weights=True)
+model = ModelCls(model_name="<model_source>")
 model = model.cuda().eval()
 ```
 
 Its graph regions capture by default; keep their policies
 ([CUDA graphs](measurement.md#cuda-graphs)).
 
-`forward` takes Boltz-style `runtime_args`: `recycling_steps`,
-`num_sampling_steps`, `diffusion_samples` (`docs/ref/api.md`).
-For this bench, Protenix-v2 uses `recycling_steps=5`,
-`num_sampling_steps=200`, and `diffusion_samples=5`. Map those to OSS
-`model.N_cycle=6`, `sample_diffusion.N_step=200`, and
-`sample_diffusion.N_sample=5`; see
-[models/protenix.md](models/protenix.md#runtime-lock-and-recycle-semantics).
+Pass the `runtime_args` its `forward` accepts (`docs/ref/api.md`), and
+map each onto the OSS equivalent with the same semantics. Write the
+mapping into a model profile under `models/`.
 
 ## Featurize once, time twice
 
@@ -107,8 +104,9 @@ for sample_id, path in in_scope_dumps:
     # not every sample.
 
 # bioir_python — timed
+from adapt_features import adapt_features  # $WORKDIR/bench/
 raw = torch.load(path)["batch"]
-batch = to_device(adapt_oss_batch_to_bioir(raw))
+batch = to_device(adapt_features(raw))
 time_model_forward(bioir_model, batch, bioir_runtime_args)
 ```
 
@@ -118,8 +116,7 @@ Use the same `time_model_forward` helper as
 
 ## Feature adapter
 
-OSS key names may not match `Protenix.forward` (`restype`, `msa`,
-`ref_pos`, `atom_to_token_idx`, …). Write
+OSS key names may not match the BioIR module's `forward`. Write
 `$WORKDIR/bench/adapt_features.py` that maps OSS → BioIR keys.
 
 - Record every rename / reshape / dtype cast in

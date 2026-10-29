@@ -15,21 +15,15 @@
 """OpenFold3 shared utilities: one-hot encoding, atom name encoding, etc."""
 
 import math
-import os
-from collections.abc import Callable, Sequence
-from concurrent.futures import ThreadPoolExecutor
-from threading import Lock
-from typing import TYPE_CHECKING
+from collections.abc import Sequence
 
 import torch
-
-if TYPE_CHECKING:
-    import numpy as np
 
 from bionemo_ir._torch.layers.random_augmentation import _quaternion_components_to_matrix
 from bionemo_ir.pipeline.utils._rng import _torch_generator
 from bionemo_ir.pipeline.utils.atom import encode_atom_name_chars as _encode_atom_name_chars
 from bionemo_ir.pipeline.utils.atom import encode_atom_name_chars_one_hot as _encode_atom_name_chars_one_hot
+from bionemo_ir.pipeline.utils.template import masked_distogram
 
 
 def encode_one_hot(x: torch.Tensor, num_classes: int) -> torch.Tensor:
@@ -212,7 +206,11 @@ def create_template_distogram(
     ):
         lower = np.linspace(min_bin, max_bin, n_bins) ** 2
         if np.all(np.isfinite(lower)) and np.all(lower[1:] > lower[:-1]):
-            return _distogram_rows(coords, pseudo_beta_mask, multichain_pair_mask, lower, inf_value)
+            return torch.from_numpy(
+                masked_distogram(
+                    coords, pseudo_beta_mask.numpy(), lower, inf_value, multichain_pair_mask.numpy()[0, ..., 0]
+                )
+            )
     if coords.dtype in (np.float32, np.float64):
         # Same left-to-right sum as ``np.sum`` over the last axis, without the
         # [..., N, N, 3] temporaries. Other dtypes may accumulate wider.
@@ -258,81 +256,6 @@ def create_template_distogram(
         # Same float32 products in place; skips two dense temporaries.
         return template_distogram.mul_(pair).mul_(multichain_pair_mask)
     return template_distogram * pair * multichain_pair_mask
-
-
-_DISTOGRAM_LOCK = Lock()
-_DISTOGRAM_POOL: tuple[int, ThreadPoolExecutor] | None = None
-
-
-def _run_distogram_batch(fill_rows: Callable[[tuple[int, int]], None], bounds: list[tuple[int, int]]) -> None:
-    global _DISTOGRAM_POOL
-    with _DISTOGRAM_LOCK:
-        pid = os.getpid()
-        if _DISTOGRAM_POOL is None or _DISTOGRAM_POOL[0] != pid:
-            cores = len(os.sched_getaffinity(0)) if hasattr(os, "sched_getaffinity") else os.cpu_count() or 1
-            _DISTOGRAM_POOL = pid, ThreadPoolExecutor(max_workers=min(8, cores), thread_name_prefix="bioir-distogram")
-        list(_DISTOGRAM_POOL[1].map(fill_rows, bounds))
-
-
-def _reset_distogram_pool() -> None:
-    """Reset inherited state only in the forked child.
-
-    Parent locks and in-flight work remain unchanged. External C forks must
-    invoke Python's at-fork hooks; other libraries retain their fork limits.
-    """
-    global _DISTOGRAM_LOCK, _DISTOGRAM_POOL
-    _DISTOGRAM_LOCK = Lock()
-    _DISTOGRAM_POOL = None
-
-
-def _lock_distogram_pool() -> None:
-    _DISTOGRAM_LOCK.acquire()
-
-
-def _unlock_distogram_pool() -> None:
-    _DISTOGRAM_LOCK.release()
-
-
-if hasattr(os, "register_at_fork"):
-    os.register_at_fork(
-        before=_lock_distogram_pool,
-        after_in_parent=_unlock_distogram_pool,
-        after_in_child=_reset_distogram_pool,
-    )
-
-
-def _distogram_rows(
-    coords: "np.ndarray", pb: torch.Tensor, mc: torch.Tensor, lower: "np.ndarray", inf_value: float
-) -> torch.Tensor:
-    import numpy as np
-
-    n_templ, n_tokens, _ = coords.shape
-    n_bins = lower.size
-    upper = np.concatenate([lower[1:], np.array([inf_value], dtype=lower.dtype)])
-    masks, pair_mask = pb.numpy(), mc.numpy()[0, ..., 0]
-    output = np.zeros((n_templ, n_tokens, n_tokens, n_bins), dtype=np.float32)
-    active = np.flatnonzero(masks.any(axis=1))
-    if not active.size:
-        return torch.from_numpy(output)
-    coords, masks = coords[active], masks[active]
-
-    def fill_rows(bounds: tuple[int, int]) -> None:
-        start, end = bounds
-        allowed = (masks[:, start:end, None] != 0) & (masks[:, None, :] != 0)
-        allowed &= pair_mask[start:end] != 0
-        ti, ii, ji = np.nonzero(allowed)
-        squares = [(coords[ti, ii + start, k] - coords[ti, ji, k]) ** 2 for k in range(3)]
-        distances = squares[0] + squares[1] + squares[2]
-        del squares
-        indices = np.searchsorted(lower, distances, side="left") - 1
-        valid = (indices >= 0) & (distances < upper[np.clip(indices, 0, n_bins - 1)])
-        output[active[ti[valid]], ii[valid] + start, ji[valid], indices[valid]] = 1.0
-
-    workers = min(8, max(1, n_tokens // 64))
-    edges = np.linspace(0, n_tokens, workers + 1, dtype=int)
-    bounds = [(int(start), int(end)) for start, end in zip(edges[:-1], edges[1:], strict=True)]
-    _run_distogram_batch(fill_rows, bounds)
-    return torch.from_numpy(output)
 
 
 def _rot3_from_two_vectors(e0: torch.Tensor, e1: torch.Tensor) -> torch.Tensor:

@@ -177,6 +177,10 @@ spec lists it.
 query-field, cap, bookkeeping, and reference-value contract in
 [models/of3.md](models/of3.md#msas).
 
+**Protenix-v2.** Follow the pinned release's query JSON, MSA path,
+and per-entity assertions in
+[models/protenix.md](models/protenix.md#convert-spec_fulljson-to-protenix-input).
+
 **Boltz-1/2.** Native `boltz_yaml` + `boltz_msa_csv` from the spec.
 Rewrite every CSV path to `$DATASET_ROOT/casp15/msa/<file>`; never
 point at `examples/boltz2/...` or `examples/data/samples/`.

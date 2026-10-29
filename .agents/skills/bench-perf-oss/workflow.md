@@ -37,7 +37,7 @@ guess, and do not clone `main`.
 - OpenFold2 / AlphaFold2: follow the protein-only AF2 model-1
   checkpoint, recycle, MSA/template, and Evoformer-compile profile in
   [models/of2.md](models/of2.md). WORKDIR default `/tmp/openfold2`.
-- Protenix-v2 (OSS feature path): follow the source, checkpoint, recycle
+- Protenix-v2: follow the Processor path source, checkpoint, CCD, recycle
   mapping, and input profile in [models/protenix.md](models/protenix.md).
   WORKDIR default `/tmp/protenix`.
 - Boltz-1/2: [jwohlwend/boltz](https://github.com/jwohlwend/boltz) `v2.2.1`
@@ -141,7 +141,7 @@ Look up `model_source` in `docs/ref/support-matrix.md`. Set
 `feature_path` in `bench_config.json`:
 
 - Pipeline **Yes** → `processor` (folding factory)
-- Pipeline **No** and folding (`protenix-v2`) → `oss`
+- Pipeline **No** and folding → `oss`
   ([no-pipeline.md](no-pipeline.md)). Do not call `build_processor`.
 - Pipeline **No** and not folding (`boltz-2-affinity`) → stop.
   Extend the skill first
@@ -196,7 +196,7 @@ unexpected state-dict keys, or any per-sample hub request is a setup
 failure — fix it before timing, and do not paper over it with a token
 or a non-strict load in the harness. Record both checkpoint paths,
 hashes, registry names, and declared compatibility ranges in
-`bench_config.json`. On Protenix pass `include_load_weights=True`.
+`bench_config.json`.
 
 ## Phase 1 — Manifest + locked config
 
@@ -309,6 +309,9 @@ internal `num_cycles` mapping is handled by its `forward`; pass
 `recycling_steps=3` to BioIR. For Protenix-v2, pass
 `recycling_steps=5` to BioIR and set OSS `model.N_cycle=6`; see
 [models/protenix.md](models/protenix.md#runtime-lock-and-recycle-semantics).
+Protenix-v2 `build_processor` rejects `return_full_data=False`. Its
+registry default is the release's nine recycles, so the lock above is
+required.
 
 Also lock `dataset_root`, `dataset_spec`, `dataset_manifest_sha256` and
 `dataset_build_sha256` (BUILD.json — a built tree is not identified by a version
@@ -531,12 +534,13 @@ supported protein interfaces with the locked `dockq_args`).
 1. **Eager (required).** Time `model.forward()` (warmup 1, measure 1).
    Write the pred CIF, then `ost compare-structures` vs `gt_path`
    (outside the clock). Write `$WORKDIR/results/oss_eager.json`.
-1. **Compile once.** On a **fresh** OSS model, wrap the target
-   submodules with `compile_oss_hot_modules` **one time** (OF2:
-   Evoformer; AF3-style: Pairformer + DiffusionModule). Each target
-   uses `torch.compile(module)` with `dynamic` omitted (`None`), no
-   manual shape marks, and unmodified global Dynamo shape settings.
-   Do not `torch.compile(model)`.
+1. **Compile once.** Skip this and the compile steps below for Protenix-v2 (see
+   the OSS scenarios compile exception) and record the compile column as
+   intentionally skipped. On a **fresh** OSS model, wrap the target submodules
+   with `compile_oss_hot_modules` **one time** (OF2: Evoformer; AF3-style:
+   Pairformer + DiffusionModule). Each target uses `torch.compile(module)` with
+   `dynamic` omitted (`None`), no manual shape marks, and unmodified global
+   Dynamo shape settings. Do not `torch.compile(model)`.
 1. **Fast synthetic compile probe.** Feed deterministic,
    shape-correct synthetic tensors directly to each compiled child at
    two sizes in A, A, B, B order. Initial A and first B may compile;
@@ -641,7 +645,8 @@ Rules:
 
 After dataset mapping and both harnesses are complete, but before any
 full sweep, run a **five-sample BioIR + OSS eager smoke benchmark**,
-then an OSS `torch.compile` smoke on the same selection when possible.
+then an OSS `torch.compile` smoke on the same selection when possible
+(never for Protenix-v2, which has no compile column).
 This is mandatory: it catches an expensive tail failure while still
 testing the real checkpoint, featurizers, writers, scorers, timing
 window, and compiled dynamic-shape serving path.

@@ -272,6 +272,10 @@ enough. Snippet: [samples.md](samples.md#load-path-processor).
 selection-floor, cache, patch, and populated-slot contract in
 [models/of3.md](models/of3.md#templates).
 
+**Protenix-v2.** Pinned OSS needs a synthesized `templatesPath`
+alignment per supplied CIF; follow
+[models/protenix.md](models/protenix.md#caller-supplied-templates).
+
 **OSS feature path (OSS pipeline + BioIR module).** One OSS-featurized batch
 feeds both forwards, so template parity is structural; verify once on
 the shared batch ([no-pipeline.md](no-pipeline.md)).

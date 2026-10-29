@@ -18,8 +18,16 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
+import torch
 
-from bionemo_ir.pipeline.utils.msa import a3m_columns, code_points, map_code_points, ragged_mask, truncate_rows
+from bionemo_ir.pipeline.utils.msa import (
+    a3m_columns,
+    code_points,
+    map_code_points,
+    msa_profile,
+    ragged_mask,
+    truncate_rows,
+)
 
 
 def _reference(rows: list[str]) -> tuple[list[int], list[int], list[int]]:
@@ -86,3 +94,13 @@ def test_truncate_rows_and_ragged_mask() -> None:
     out = np.full((3, 4), -1)
     out[ragged_mask(np.array([2, 0, 4]), 4)] = kept
     assert out.tolist() == [[0, 1, -1, -1], [-1, -1, -1, -1], [3, 4, 5, 6]]
+
+
+@pytest.mark.parametrize("rows,columns,classes", [(1, 5, 32), (127, 29, 32), (1025, 101, 33)])
+def test_msa_profile_matches_frequencies(rows: int, columns: int, classes: int) -> None:
+    rng = np.random.default_rng(42)
+    msa = rng.integers(classes, size=(rows, columns), dtype=np.int32)
+    expected = (msa[..., None] == np.arange(classes)).mean(0).astype(np.float32)
+    actual = msa_profile(torch.from_numpy(msa), classes)
+    np.testing.assert_array_equal(actual.numpy(), expected)
+    assert actual.is_contiguous()

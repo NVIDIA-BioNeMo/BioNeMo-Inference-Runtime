@@ -419,10 +419,12 @@ take no extra runtime args — recycle count comes from the feature axis.
 
 Every key in `FoldingSupportMatrix` (`hubs/support_matrix.py`) is registered to
 a factory, but registration does not guarantee a usable end-to-end pipeline.
-`ProtenixFactory` and `Boltz2AffinityFactory` expose their model classes while
-raising `NotImplementedError` for the tokenizer, feature factory, and
-postprocessor. For those keys, `build_processor` raises instead of building a
-partial pipeline.
+`Boltz2AffinityFactory` exposes its model class while raising
+`NotImplementedError` for the tokenizer, feature factory, and postprocessor.
+`ProtenixFactory` supplies a native tokenizer, feature factory, and
+postprocessor. It defaults to the release runner's nine recycles (ten trunk
+cycles), 200 diffusion steps, and five samples, selecting the highest upstream
+ranking score.
 
 ### The Two Trees a Model Family Occupies
 
@@ -448,18 +450,16 @@ Five families exist today, and the two trees do not line up one-to-one:
 | `boltz2/`          | `Boltz2`, `Boltz2Affinity` | yes                | `boltz-2`, `boltz-2-affinity`              |
 | `openfold2/`       | `OpenFold2`                | yes                | every `openfold2_*` and `alphafold2_*` key |
 | `openfold3/`       | `OpenFold3`                | yes                | `openfold3`                                |
-| `protenix/`        | `Protenix`                 | **no**             | `protenix-v2` (compute-only factory)       |
+| `protenix/`        | `Protenix`                 | yes                | `protenix-v2`                              |
 
-Two asymmetries are worth knowing. `openfold2/` is one compute path behind many
-keys: the AlphaFold2 and AlphaFold2-multimer keys are `OpenFold2` with a
-different pretrained config, and the multimer keys additionally get their own
-tokenizer and feature factory in the data path. `protenix/` is the reverse — a
-compute path with no data path at all. Its factory resolves the `Protenix` model
-class, but its pipeline-component methods are not implemented.
+`openfold2/` is one compute path behind many keys: the AlphaFold2 and
+AlphaFold2-multimer keys are `OpenFold2` with a different pretrained config,
+and the multimer keys additionally get their own tokenizer and feature
+factory in the data path.
 
-The split is why a data-pipeline change never touches a compute-side config,
-and why the same model can be driven by a different front end. To add a data
-path for a new family, refer to [Port a Data Pipeline][port-pipeline].
+The split separates data preparation from model execution; both read the family
+configuration. Different front ends can drive the same model. To add a data path
+for a new family, refer to [Port a Data Pipeline][port-pipeline].
 
 ### Conventions in the Data Path
 

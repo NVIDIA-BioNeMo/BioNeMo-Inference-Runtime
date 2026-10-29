@@ -27,7 +27,7 @@ from bionemo_ir._torch.layers.random_augmentation import random_rotations
 from bionemo_ir._torch.utils import pad_dim
 from bionemo_ir.pipeline.utils._rng import _python_rng, _torch_generator
 from bionemo_ir.pipeline.utils.atom import encode_atom_name_chars
-from bionemo_ir.pipeline.utils.msa import a3m_columns, map_code_points
+from bionemo_ir.pipeline.utils.msa import a3m_columns, map_code_points, msa_profile
 
 from .const import (
     Structure,
@@ -908,13 +908,7 @@ def process_msa_features(
             col += Lc
     # Keep layout (N_MSA, L) to match Boltz2 featurizerv2; do not transpose.
     msa_mask = torch.ones_like(msa, dtype=torch.float32)
-    if msa.shape[0] > 2**24:
-        profile = one_hot(msa, num_classes=num_tokens).float().mean(dim=0)
-    else:
-        profile_counts = torch.zeros((num_tokens, msa.shape[1]), dtype=torch.int32, device=msa.device)
-        profile_counts.scatter_add_(0, msa, torch.ones_like(msa, dtype=torch.int32))
-        profile = (profile_counts.float() / msa.shape[0]).transpose(0, 1).contiguous()
-        del profile_counts
+    profile = msa_profile(msa, num_tokens)
 
     # Real per-row deletion counts, matching the reference implementation in
     # the upstream Boltz project (an external dependency, not vendored here:

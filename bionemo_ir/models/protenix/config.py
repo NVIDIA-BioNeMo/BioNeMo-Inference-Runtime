@@ -451,6 +451,15 @@ class ProtenixConfig(BaseConfig):
             " state_dict then omits their parameters. Turn off to export a full state_dict."
         ),
     )
+    use_msa: bool = Field(default=True, description="Use supplied alignments; otherwise use the query alone.")
+    use_rna_msa: bool = Field(
+        default=False, description="Use supplied RNA alignments, as the release does when enabled."
+    )
+    msa_pair_as_unpair: bool = Field(default=True, description="Include paired alignments in the unpaired pool.")
+    max_msa_rows: int = Field(default=16384, ge=1, description="Maximum assembled alignment depth, including query.")
+    max_paired_per_species: int = Field(default=600, ge=1, description="Maximum paired rows per species.")
+    use_templates: bool = Field(default=True, description="Use caller-supplied protein CIF templates.")
+    max_templates: int = Field(default=4, ge=1, description="Number of template slots, including masked padding.")
     c_s: int = _Default.c_s
     c_z: int = _Default.c_z
     c_s_inputs: int = _Default.c_s_inputs

@@ -137,7 +137,7 @@ def test_pool_fork_lifecycle() -> None:
         import os
         from concurrent.futures import ThreadPoolExecutor
         from threading import Event, Timer
-        from bionemo_ir.pipeline.models.openfold3 import common
+        from bionemo_ir.pipeline.utils import template as common
 
         lock = common._DISTOGRAM_LOCK
         common._run_distogram_batch(lambda _: None, [(0, 1)])

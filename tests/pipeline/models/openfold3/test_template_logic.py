@@ -143,7 +143,7 @@ def test_pdb_without_polymer() -> None:
 def test_pdb_empty_polymer(pdb_content: str, monkeypatch: pytest.MonkeyPatch) -> None:
     from bionemo_ir.pipeline.models.openfold3 import template_logic
 
-    monkeypatch.setattr(template_logic, "_canonical_seq_from_poly_scheme", lambda _: {})
+    monkeypatch.setattr(template_logic, "_canonical_seq_from_poly_scheme", lambda *_: {})
 
     with pytest.raises(ValueError, match="Template PDB contains no polymer sequence"):
         extract_template_chains(pdb_content, "pdb")

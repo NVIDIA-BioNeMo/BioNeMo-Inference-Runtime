@@ -62,7 +62,7 @@ def get_all_residue_types(model: str, include_gap: bool = True) -> list[ResType]
             + [ResTypes.DA, ResTypes.DG, ResTypes.DC, ResTypes.DT]
             + [ResTypes.DX]
         )
-    elif "openfold3" in model:
+    elif "openfold3" in model or "protenix" in model:
         # Order must match RESTYPES_3 in pipeline/models/openfold3/const.py (32 types):
         #   idx 21-25: A, G, C, U, N   idx 26-30: DA, DG, DC, DT, DN
         # ResTypes has no RN (RNA any-nucleotide) or DN (DNA any-nucleotide) entries;
@@ -109,6 +109,36 @@ def sequence_to_onehot(sequence: str, restype_to_idx: dict[str, int]) -> torch.I
 # ---------------------------------------------------------------------------
 # CCD-component mol loading — model-agnostic (Boltz2, OF3, Protenix).
 # ---------------------------------------------------------------------------
+def is_component_id(name: str) -> bool:
+    """True for a bare CCD-style identifier: ASCII alphanumeric, at most five characters."""
+    return name.isascii() and name.isalnum() and len(name) <= 5
+
+
+# Molecule pickles need only these; any other global could run code.
+_MOLECULE_GLOBALS = frozenset(
+    {
+        ("rdkit.Chem.rdchem", "Mol"),
+        ("numpy", "dtype"),
+        ("numpy", "ndarray"),
+        ("numpy.core.multiarray", "_reconstruct"),
+        ("numpy._core.multiarray", "_reconstruct"),
+    }
+)
+
+
+class MoleculeUnpickler(pickle.Unpickler):
+    """Unpickle RDKit molecules and NumPy arrays only.
+
+    Staged molecule files are not digest-checked, so they must not run code.
+    See https://docs.python.org/3/library/pickle.html#restricting-globals.
+    """
+
+    def find_class(self, module: str, name: str) -> type:
+        if (module, name) not in _MOLECULE_GLOBALS:
+            raise pickle.UnpicklingError(f"Molecule pickle refuses global: {module}.{name}")
+        return super().find_class(module, name)
+
+
 def load_component_mol(mol_dir: str | Path, name: str) -> Any | None:
     """Load one CCD-component RDKit ``Mol`` from ``<mol_dir>/<name>.pkl``.
 
@@ -117,9 +147,14 @@ def load_component_mol(mol_dir: str | Path, name: str) -> Any | None:
     validated as a bare CCD-style identifier (ASCII alphanumeric, <=5 chars —
     CCD ids are at most 5 chars) and the resolved path is confirmed to stay
     under ``mol_dir``. Either check failing, or the pickle being absent, returns
-    ``None`` (callers fall back to their unknown-component path).
+    ``None`` (callers fall back to their unknown-component path). The file is
+    read with :class:`MoleculeUnpickler`.
+
+    Raises:
+        pickle.UnpicklingError: The pickle names a global other than an RDKit
+            molecule or NumPy array.
     """
-    if not (name.isascii() and name.isalnum() and len(name) <= 5):
+    if not is_component_id(name):
         return None
     from rdkit import Chem
 
@@ -131,7 +166,7 @@ def load_component_mol(mol_dir: str | Path, name: str) -> Any | None:
     if not p.exists():
         return None
     with open(p, "rb") as f:
-        return pickle.load(f)
+        return MoleculeUnpickler(f).load()
 
 
 # ---------------------------------------------------------------------------

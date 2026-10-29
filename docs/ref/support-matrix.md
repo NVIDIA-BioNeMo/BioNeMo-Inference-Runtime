@@ -43,13 +43,26 @@ available yet.
 | `boltz-1`                                                                  | `Boltz1`                      | Yes                          | `{recycling_steps: 3, num_sampling_steps: 200, diffusion_samples: 1}`           |
 | `boltz-2`                                                                  | `Boltz2`                      | Yes                          | same as Boltz-1                                                                 |
 | `openfold3`                                                                | `OpenFold3`                   | Yes                          | same Boltz-style names ([`api.md` runtime args](api.md#runtime-args))           |
-| `protenix-v2`                                                              | `Protenix`                    | **No**                       | — (no pipeline)                                                                 |
+| `protenix-v2`                                                              | `Protenix`                    | Yes                          | `{recycling_steps: 9, num_sampling_steps: 200, diffusion_samples: 5}`           |
 | `boltz-2-affinity`                                                         | `Boltz2Affinity`              | **No**                       | —                                                                               |
 
-`protenix-v2` and `boltz-2-affinity` have an `nn.Module` but no tokenizer,
-feature factory, or post-processor. Do not pass them to `build_processor`.
-Ligand *structure* prediction on Boltz-1/2 and OpenFold3 is supported;
-affinity prediction is not.
+`boltz-2-affinity` has an `nn.Module` but no tokenizer, feature factory, or
+postprocessor. Do not pass it to `build_processor`.
+
+`protenix-v2` builds the same model inputs as the Protenix v2.0.0 release
+data pipeline. Its postprocessor requires `return_full_data=True`;
+`build_processor` rejects `False`. The pipeline defaults to
+`consume_input_features=True`, which frees model inputs during the forward
+except the postprocessor's (`keep_input_features`). The default
+`compact_confidence=True` sets `ProtenixConfig.compact_output`.
+
+Like the Protenix v2.0.0 release, the trunk keeps a random subset of MSA rows
+on every recycle (`msa_module_config.sample_rows`, seeded by the request seed).
+The release also applies Monte Carlo dropout to the recycled pair state for a
+random 40% of requests; BioIR does not.
+
+Ligand *structure* prediction on Boltz-1/2, OpenFold3, and Protenix is
+supported; affinity prediction is not.
 
 Input coverage for the bundled data pipeline (`InputRequest` → parser →
 writer). "Supported" means the pipeline accepts the input and produces a
@@ -61,18 +74,22 @@ structure. "—" means the mode does not apply to that family.
 | AF2 multimer         | —       | Yes                     | Required            | Optional   | Yes (protein)                   | —         | —                      | —               |
 | `boltz-1`, `boltz-2` | Yes     | Yes                     | Required on protein | Optional   | Yes (protein)                   | Yes       | Yes                    | —               |
 | `openfold3`          | Yes     | Yes                     | Required on protein | Optional   | Yes (protein)                   | Yes       | Yes                    | —               |
+| `protenix-v2`        | Yes     | Yes                     | Optional            | Optional   | Yes (protein)                   | Yes       | Yes                    | —               |
 
 Notes:
 
-- Nucleic acids and ligands are Boltz-1/2 and OpenFold3 only. OpenFold2 /
-  AlphaFold2 fold protein chains exclusively.
+- Nucleic acids and ligands are Boltz-1/2, OpenFold3, and Protenix only.
+  OpenFold2 / AlphaFold2 fold protein chains exclusively.
 - Templates are allowed only on `polymer_type="protein"`. BioIR does
   **not** run HHsearch / HMMsearch; pass CIF (or PDB) hits you already have.
-- Nucleic-acid and ligand chains carry no MSA (`msas` / `paired_msas` are
-  empty).
+  Protenix accepts mmCIF only, attaches every supplied template that aligns,
+  and fills the slots in the supplied order.
+- Nucleic-acid and ligand chains carry no MSA. Protenix reads supplied RNA
+  MSAs only with `ProtenixConfig.use_rna_msa=True`; the release default is off.
 - AF2 monomer takes a single unpaired a3m per chain. AF2 multimer accepts
   paired a3m (some sample builders require it on every chain). Boltz-1/2 and
-  OpenFold3 treat paired MSAs as optional.
+  OpenFold3 treat paired MSAs as optional. Protenix pairs protein rows by
+  species identifiers and includes them in the unpaired pool by default.
 
 `Polymer.polymer_type` is `"protein"`, `"rna"`, `"dna"`, `"ccd_ligand"` (a
 CCD code or `_`-joined list), or `"smiles_ligand"` (a SMILES string in

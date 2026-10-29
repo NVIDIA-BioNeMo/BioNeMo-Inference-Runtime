@@ -86,8 +86,8 @@ Still call `torch.cuda.reset_peak_memory_stats()` immediately before
 `processor([row])` and read peak memory after it returns — the engine
 does not record GPU bytes.
 
-**OSS feature path** (`protenix-v2` and any model with Pipeline = No). There is
-no engine. Call `time_model_forward` on the BioIR module after
+**OSS feature path** (a folding model with Pipeline = No; no current key). There
+is no engine. Call `time_model_forward` on the BioIR module after
 adapting the dumped OSS batch ([no-pipeline.md](no-pipeline.md)).
 
 ### Allocator flags — leave PyTorch on its default
@@ -121,7 +121,7 @@ self.config = config or self.get_pretrained_config(self.model_name)
 So `ModelCls(model_name=..., config=None)` (omit `config=`) is
 `get_pretrained_config`. Processor path: omit `engine_kwargs["config"]`
 so `FoldingEngine` constructs the same way. OSS feature path: omit
-`config=` on `Protenix(...)`.
+`config=` on the module constructor.
 
 Do **not**:
 

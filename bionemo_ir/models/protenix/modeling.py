@@ -19,6 +19,7 @@ EDM sampling, distogram / confidence heads, and confidence summary. Building
 OSS-facing ``FoldingOutput`` is deferred to the Protenix data pipeline.
 """
 
+from collections.abc import Collection
 from typing import Any
 
 import torch
@@ -171,7 +172,7 @@ class Protenix(nn.Module, OptimizedModuleSetterMixin):
     }
 
     def __init__(
-        self, config: BaseConfig = None, model_name: str | None = None, include_load_weights: bool = False
+        self, config: BaseConfig = None, model_name: str | None = None, include_load_weights: bool = True
     ) -> None:
         super().__init__()
         self.model_name = model_name or SupMat.ProtenixV2
@@ -233,7 +234,16 @@ class Protenix(nn.Module, OptimizedModuleSetterMixin):
     def _proj(self, c_in: int, c_out: int):
         return Linear(c_in, c_out, bias=False, dtype=self.dtype, skip_create_weights=self.config.skip_create_weights)
 
-    def get_pretrained_config(self, model_name: str = SupMat.ProtenixV2) -> BaseConfig:
+    @classmethod
+    def get_pretrained_config(cls, model_name: str = SupMat.ProtenixV2) -> BaseConfig:
+        """Return the release architecture with BioIR inference precision.
+
+        Args:
+            model_name: Registered Protenix model name.
+
+        Raises:
+            ValueError: ``model_name`` has no registered config.
+        """
         config_class = PRETRAINED_CONFIG_REGISTRY.get(model_name)
         if config_class is None:
             raise ValueError(f"Protenix pretrained config not found for model name: {model_name}")
@@ -486,13 +496,14 @@ class Protenix(nn.Module, OptimizedModuleSetterMixin):
         return_full_data: bool = True,
         consume_input_features: bool = False,
         sampling_seed: int | None = None,
+        keep_input_features: Collection[str] = (),
     ) -> dict[str, Any]:
         """Trunk + diffusion + optional confidence (Boltz-style runtime args).
 
         ``recycling_steps`` → ``num_cycles = recycling_steps + 1``. Destructive
         ``consume_input_features`` pops tensors after final use and clears
-        ``batch`` before return; default preserves the caller's dict via a
-        shallow shell copy.
+        ``batch`` before return, except ``keep_input_features``; default
+        preserves the caller's dict via a shallow shell copy.
 
         Args:
             batch: feature dict. Typical token/atom keys include
@@ -509,6 +520,8 @@ class Protenix(nn.Module, OptimizedModuleSetterMixin):
             diffusion_samples: ``N_sample`` / ``S``
             compact_output: drop trunk tensors from the return dict
             return_full_data: include per-sample ``full_data`` when summarizing
+            keep_input_features: ``batch`` keys a consuming call leaves in place,
+                such as the caller's postprocessing inputs
 
         Returns:
             Full mode (``compact_output=False``)::
@@ -537,6 +550,7 @@ class Protenix(nn.Module, OptimizedModuleSetterMixin):
         # Precompute relp once (shared by trunk RPE and diffusion conditioning).
         # Destructive mode takes ownership; otherwise shallow-copy the shell.
         batch = batch if consume_input_features else {**batch}
+        kept = {name: batch[name] for name in keep_input_features if name in batch} if consume_input_features else {}
         if batch["ref_pos"].ndim == 2:
             batched = _batch_features(batch)
             batch.update(batched)
@@ -630,4 +644,5 @@ class Protenix(nn.Module, OptimizedModuleSetterMixin):
         elif have_conf and not compact_output:
             out.update(self.confidence_head(batch, s_inputs, s, z, coordinate, pair_mask=batch.get("pair_mask")))
         batch.clear()
+        batch.update(kept)
         return out

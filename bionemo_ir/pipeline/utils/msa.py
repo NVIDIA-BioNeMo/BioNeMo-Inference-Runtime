@@ -19,6 +19,8 @@ from __future__ import annotations
 from collections.abc import Callable, Sequence
 
 import numpy as np
+import torch
+import torch.nn.functional as F
 
 _LOWER_A = ord("a")
 _LOWER_Z = ord("z")
@@ -105,3 +107,17 @@ def truncate_rows(values: np.ndarray, counts: np.ndarray, limits: np.ndarray) ->
     starts = np.cumsum(counts) - counts
     column = np.arange(len(values)) - np.repeat(starts, counts)
     return values[column < np.repeat(limits, counts)]
+
+
+def msa_profile(msa: torch.Tensor, num_classes: int) -> torch.Tensor:
+    """Compute column frequencies without expanding an MSA into one-hot rows.
+
+    Args:
+        msa: Integer residue IDs, shaped ``[rows, columns]``.
+        num_classes: Number of residue classes, including gaps.
+    """
+    if msa.shape[0] > 2**24:
+        return F.one_hot(msa.long(), num_classes=num_classes).float().mean(dim=0)
+    counts = torch.zeros((num_classes, msa.shape[1]), dtype=torch.int32, device=msa.device)
+    counts.scatter_add_(0, msa.long(), torch.ones_like(msa, dtype=torch.int32))
+    return (counts.float() / msa.shape[0]).transpose(0, 1).contiguous()

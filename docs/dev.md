@@ -308,6 +308,11 @@ Two things are needed:
   The script reads only `HF_TOKEN`. A token stored by `hf auth login` covers
   only the automatic download on the first prediction.
 
+  Protenix-v2 weights are not public: `--source ngc` stages them from NGC,
+  and BioIR never fetches them or the chemical metadata from a public
+  source. Stage the metadata, or weights without NGC access, by hand as
+  described in [Protenix metadata](ref/model-weights.md#protenix-metadata).
+
   Refer to [Model Weights](ref/model-weights.md) for the other
   families, cache layout, token alternatives, and manual checkpoint staging.
 
@@ -356,6 +361,10 @@ uv run --locked python examples/folding/run_demo.py            # Boltz-2 on the 
 uv run --locked python examples/folding/run_demo.py \
     --model-source openfold3 \
     --input examples/data/samples/monomers/T1031.json \
+    --output-dir output
+uv run --locked python examples/folding/run_demo.py \
+    --model-source protenix-v2 \
+    --input examples/data/samples/heterooligomers/7sfy.json \
     --output-dir output
 uv run --locked python examples/folding/run_demo.py --help
 ```

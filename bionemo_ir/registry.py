@@ -67,6 +67,11 @@ class ModelComponentsFactory(ABC):
         return {}
 
     @classmethod
+    def validate_runtime_args(cls, runtime_args: dict[str, Any]) -> None:
+        """Reject runtime arguments the pipeline cannot serve; raise ``ValueError``."""
+        return None
+
+    @classmethod
     def get_supported_model_names(cls) -> list[str]:
         return []
 
@@ -380,6 +385,30 @@ class ProtenixFactory(ModelComponentsFactory):
     confidence_config_path = ()
 
     @classmethod
+    def get_default_runtime_args(cls) -> dict[str, Any]:
+        from bionemo_ir.pipeline.models.protenix.postprocessor import INPUT_FEATURES
+
+        # Release defaults: model.N_cycle=10 (nine recycles), N_step=200, N_sample=5.
+        return {
+            "recycling_steps": 9,
+            "num_sampling_steps": 200,
+            "diffusion_samples": 5,
+            "consume_input_features": True,
+            "keep_input_features": INPUT_FEATURES,
+        }
+
+    @classmethod
+    def validate_runtime_args(cls, runtime_args: dict[str, Any]) -> None:
+        from bionemo_ir.pipeline.models.protenix.postprocessor import INPUT_FEATURES
+
+        # The writer requires per-atom confidence.
+        if not runtime_args.get("return_full_data", True):
+            raise ValueError("The Protenix pipeline requires return_full_data=True for structure confidence")
+        kept = set(runtime_args.get("keep_input_features", ()))
+        if runtime_args.get("consume_input_features") and not kept.issuperset(INPUT_FEATURES):
+            raise ValueError("consume_input_features must keep the Protenix postprocessor inputs")
+
+    @classmethod
     def get_model_class(cls) -> type[nn.Module]:
         from bionemo_ir.models.protenix import Protenix
 
@@ -387,15 +416,21 @@ class ProtenixFactory(ModelComponentsFactory):
 
     @classmethod
     def get_tokenizer(cls) -> "TokenizerBase":
-        raise NotImplementedError("Protenix tokenizer not implemented in pipeline")
+        from bionemo_ir.pipeline.models.protenix.tokenizer import Tokenizer
+
+        return Tokenizer()
 
     @classmethod
     def get_feature_factory(cls) -> "FeatureFactoryBase":
-        raise NotImplementedError("Protenix feature factory not implemented in pipeline")
+        from bionemo_ir.pipeline.models.protenix.feature_factory import FeatureFactory
+
+        return FeatureFactory()
 
     @classmethod
     def get_postprocessor(cls) -> type["PostProcessorBase"]:
-        raise NotImplementedError("Protenix postprocessor not implemented in pipeline")
+        from bionemo_ir.pipeline.models.protenix.postprocessor import PostProcessor
+
+        return PostProcessor
 
     @classmethod
     def get_supported_model_names(cls) -> list[str]:

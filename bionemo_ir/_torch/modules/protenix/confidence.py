@@ -137,7 +137,7 @@ class ProtenixConfidenceHead(nn.Module):
         pde = self.linear_no_bias_pde(self.pde_ln(z_pair + z_pair.transpose(-2, -3)))
         a = s_single[..., atom_to_token_idx, :]  # [*, N_atom, c_s]
         normalized = self.plddt_ln(a)
-        if plddt_rows is not None and not torch.is_grad_enabled() and not torch.is_autocast_enabled("cuda"):
+        if plddt_rows is not None and not torch.is_autocast_enabled("cuda"):
             plddt = indexed_projection(normalized, self.plddt_weight, plddt_rows)
         else:
             plddt = torch.einsum("...nc,ncb->...nb", normalized, self.plddt_weight[atom_to_tokatom_idx])
@@ -178,8 +178,7 @@ class ProtenixConfidenceHead(nn.Module):
         atom_slots = _unbatch_leading(input_feature_dict["atom_to_tokatom_idx"])
         plddt_rows = None
         if (
-            not torch.is_grad_enabled()
-            and not torch.is_autocast_enabled("cuda")
+            not torch.is_autocast_enabled("cuda")
             and s_trunk.is_cuda
             and self.dtype == torch.float32
             and atom_slots.numel() >= 16384

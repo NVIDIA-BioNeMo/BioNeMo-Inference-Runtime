@@ -33,8 +33,8 @@ python examples/folding/run_demo.py \
 ```
 
 `--model-source` accepts the models the pipeline registry has a factory for
-(`bionemo_ir/registry.py`) — the Boltz, OpenFold and AlphaFold2 variants, named
-by their support-matrix keys. `--help` enumerates those values.
+(`bionemo_ir/registry.py`) — the Boltz, OpenFold, AlphaFold2 and Protenix
+variants, named by their support-matrix keys. `--help` enumerates those values.
 
 `bionemo_ir/hubs/support_matrix.py` is a wider list: it names every model the
 library can load weights for, including ones with no pipeline factory or with

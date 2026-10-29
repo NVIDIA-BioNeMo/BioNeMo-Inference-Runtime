@@ -31,6 +31,8 @@ logger = logging.getLogger(__name__)
 
 BOLTZ_CCD_SHA256 = "2d3b2f03a3c5665944adba51e33263511e51b21c9cd05d902f9c4b7c1e58d2f4"
 BOLTZ_MOLS_SHA256 = "39e076d96dbec6b4e86982bbda16f3a53a2a60c9bdc17828d88f6f9a0c7d1fd7"
+# Protenix v2.0.0 release components.cif.rdkit_mol.pkl.
+PROTENIX_MOLS_SHA256 = "d1cfb71f5993a3ebea7c47877022d7f597bbfbaf86e28a4770e957da6c50cd35"
 
 # ---------------------------------------------------------------------------
 # Shared utility helpers
@@ -155,7 +157,8 @@ class MetadataFile:
 
     Attributes:
         metadata_key: Dict key in the returned metadata (e.g. "ccd_path").
-        repo_id: HuggingFace repo to download from.
+        repo_id: HuggingFace repo to download from; ``None`` resolves
+            locally only.
         filename: File name inside the repo.
         env: Environment variable for local override.
         sha256: Expected SHA-256 digest for Hub downloads.
@@ -165,7 +168,7 @@ class MetadataFile:
     """
 
     metadata_key: str
-    repo_id: str
+    repo_id: str | None
     filename: str
     env: str
     sha256: str | None = None
@@ -173,6 +176,15 @@ class MetadataFile:
 
 
 HF_MODEL_METADATA: dict[str, list[MetadataFile]] = {
+    # No pinned Hub mirror exists, so this resolves from local staging only.
+    SupMat.ProtenixV2: [
+        MetadataFile(
+            metadata_key="ccd_mols_path",
+            repo_id=None,
+            filename="components.cif.rdkit_mol.pkl",
+            env="BIOIR_PROTENIX_CCD_MOLS_PATH",
+        ),
+    ],
     SupMat.Boltz1: [
         MetadataFile(
             metadata_key="ccd_path",
@@ -239,7 +251,7 @@ def load_metadata(
     cache_dir: str | Path | None = None,
     local_files_only: bool = False,
 ) -> dict[str, Any]:
-    """Resolve metadata for a model, trying env vars first then HuggingFace.
+    """Resolve metadata from env overrides, staged files, then HuggingFace.
 
     Each ``MetadataFile`` entry carries its own ``prepare`` callable, so the
     logic for turning a raw download into a usable path is fully customisable
@@ -268,6 +280,9 @@ def load_metadata(
             logger.info(f"Using staged local {meta_file.metadata_key} for {model_name}: {staged}")
             metadata[meta_file.metadata_key] = staged
             continue
+
+        if meta_file.repo_id is None:
+            raise FileNotFoundError(f"{model_name} metadata {meta_file.filename} missing: set {meta_file.env}")
 
         logger.info(f"Downloading {meta_file.metadata_key} from {meta_file.repo_id}/{meta_file.filename}")
         downloaded = download_hf_file(

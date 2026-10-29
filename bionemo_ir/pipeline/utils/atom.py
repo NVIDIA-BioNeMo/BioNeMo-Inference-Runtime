@@ -79,13 +79,13 @@ def decode_atom_name_chars(
             ``[N_atom, 4, C]``.
         atom_mask: Atom presence shaped ``[N_atom]``; absent atoms decode to ``""``.
     """
-    mask = _to_numpy(atom_mask).astype(bool, copy=False)
+    mask = to_numpy(atom_mask).astype(bool, copy=False)
     if mask.ndim != 1:
         raise ValueError(f"atom_mask must have shape [N_atom], got {mask.shape}")
     if encoded is None:
         return np.zeros(mask.shape, dtype=f"<U{NUM_ATOM_NAME_CHARS}")
 
-    chars = one_hot_indices(encoded) if np.ndim(encoded) == 3 else _to_numpy(encoded)
+    chars = one_hot_indices(encoded) if np.ndim(encoded) == 3 else to_numpy(encoded)
     if chars.shape != (mask.shape[0], NUM_ATOM_NAME_CHARS):
         raise ValueError(f"encoded atom names must have shape [N_atom, 4] or [N_atom, 4, C], got {chars.shape}")
 
@@ -117,7 +117,7 @@ def decode_element_symbols(
         atom_mask: Atom presence shaped ``[N_atom]``; absent atoms decode to ``""``.
         index_offset: Atomic number of index zero.
     """
-    mask = _to_numpy(atom_mask).astype(bool, copy=False)
+    mask = to_numpy(atom_mask).astype(bool, copy=False)
     if mask.ndim != 1:
         raise ValueError(f"atom_mask must have shape [N_atom], got {mask.shape}")
     symbols = np.zeros(mask.shape, dtype="<U2")
@@ -128,7 +128,7 @@ def decode_element_symbols(
         # An all-zero row has no class, though its argmax reads as index 0.
         indices = np.where(_has_class(encoded), one_hot_indices(encoded), -1)
     else:
-        indices = _to_numpy(encoded)
+        indices = to_numpy(encoded)
     if indices.shape != (mask.shape[0],):
         raise ValueError(f"encoded elements must have shape [N_atom] or [N_atom, C], got {indices.shape}")
 
@@ -143,10 +143,13 @@ def one_hot_indices(encoded: torch.Tensor | np.ndarray) -> np.ndarray:
 
     Device tensors reduce in place so only the indices cross to the host;
     host arrays reduce in NumPy, which outpaces a single-threaded Torch argmax.
+
+    Args:
+        encoded: One-hot or score array; the last axis holds the classes.
     """
     if isinstance(encoded, torch.Tensor) and (encoded.device.type != "cpu" or encoded.dtype == torch.bfloat16):
         return encoded.argmax(dim=-1).cpu().numpy()
-    return _to_numpy(encoded).argmax(axis=-1)
+    return to_numpy(encoded).argmax(axis=-1)
 
 
 def _has_class(encoded: torch.Tensor | np.ndarray) -> np.ndarray:
@@ -210,14 +213,24 @@ def scatter_flat_atoms_to_folding_layout(
     produces names past the end of the vocabulary. Dropping them silently
     emitted protein-only structures for successful ligand requests.
 
+    Args:
+        positions: Flat atom coordinates shaped ``[N_atom, 3]``.
+        atom_to_token_index: Owning token per atom shaped ``[N_atom]``.
+        atom_names: Name per atom; selects the canonical slot.
+        atom_mask: Atom presence shaped ``[N_atom]``.
+        num_tokens: Rows in the output layout.
+        atom_name_to_index: Canonical slot per atom name; its largest
+            index sets the row width.
+        atom_elements: Element symbol per atom, carried to the writers.
+
     Raises:
         ValueError: if an atom cannot be placed because its token's row is
             already full. That is unrepresentable in this layout, and losing
             the atom quietly is exactly the failure this function must avoid.
     """
-    flat_positions = _to_numpy(positions)
-    ownership = _to_numpy(atom_to_token_index)
-    active = _to_numpy(atom_mask).astype(bool, copy=False)
+    flat_positions = to_numpy(positions)
+    ownership = to_numpy(atom_to_token_index)
+    active = to_numpy(atom_mask).astype(bool, copy=False)
     num_atoms = active.shape[0]
     if flat_positions.shape != (num_atoms, 3):
         raise ValueError(f"positions must have shape {(num_atoms, 3)}, got {flat_positions.shape}")
@@ -309,7 +322,15 @@ def _sorted_vocabulary(items: tuple[tuple[str, int], ...]) -> tuple[np.ndarray, 
     return keys[order], np.fromiter((slot for _, slot in items), np.int64, len(items))[order]
 
 
-def _to_numpy(value: torch.Tensor | np.ndarray) -> np.ndarray:
+def to_numpy(value: torch.Tensor | np.ndarray) -> np.ndarray:
+    """Convert inference outputs to NumPy, including bfloat16.
+
+    Args:
+        value: Tensor on any device, or an array-like.
+    """
     if isinstance(value, torch.Tensor):
-        return value.detach().cpu().numpy()
+        value = value.detach().cpu()
+        if value.dtype == torch.bfloat16:
+            value = value.float()
+        return value.numpy()
     return np.asarray(value)

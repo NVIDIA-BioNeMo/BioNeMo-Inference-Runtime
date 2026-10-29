@@ -1,0 +1,81 @@
+{
+  "upstream_commit": "2475421477ab414b571149ad4a875c390ff8a35d",
+  "sample": {
+    "name": "golden",
+    "sequences": [
+      {
+        "proteinChain": {
+          "sequence": "MKWHC",
+          "count": 2
+        }
+      },
+      {
+        "rnaSequence": {
+          "sequence": "AGCU",
+          "count": 1
+        }
+      },
+      {
+        "dnaSequence": {
+          "sequence": "ATGC",
+          "count": 1
+        }
+      },
+      {
+        "ligand": {
+          "ligand": "CCD_ATP",
+          "count": 1
+        }
+      },
+      {
+        "ligand": {
+          "ligand": "CCD_TYR",
+          "count": 1
+        }
+      },
+      {
+        "ion": {
+          "ion": "MG",
+          "count": 1
+        }
+      }
+    ]
+  },
+  "features": [
+    "asym_id",
+    "atom_to_tokatom_idx",
+    "atom_to_token_idx",
+    "deletion_mean",
+    "deletion_value",
+    "distogram_rep_atom_mask",
+    "entity_id",
+    "has_deletion",
+    "has_frame",
+    "is_ligand",
+    "msa",
+    "profile",
+    "ref_atom_name_chars",
+    "ref_charge",
+    "ref_element",
+    "ref_mask",
+    "ref_pos",
+    "ref_space_uid",
+    "residue_index",
+    "restype",
+    "sym_id",
+    "template_aatype",
+    "template_backbone_frame_mask",
+    "template_distogram",
+    "template_pseudo_beta_mask",
+    "template_unit_vector",
+    "token_bonds",
+    "token_index"
+  ],
+  "ccd_mols_sha256": "d1cfb71f5993a3ebea7c47877022d7f597bbfbaf86e28a4770e957da6c50cd35",
+  "reference": "SampleDictToFeatures.get_feature_dict -> InferenceMSAFeaturizer.make_msa_feature -> InferenceTemplateFeaturizer.make_template_feature(use_template=False) -> data_type_transform",
+  "tolerance": {
+    "atol": 1e-05,
+    "rtol": 1e-05
+  },
+  "regenerate": "Run in the pinned upstream environment: python tests/pipeline/models/protenix/generate_feature_golden.py 3rdparty/protenix <PROTENIX_ROOT_DIR> tests/pipeline/models/protenix/data"
+}

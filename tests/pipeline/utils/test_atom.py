@@ -26,6 +26,7 @@ from bionemo_ir.pipeline.utils.atom import (
     encode_atom_name_chars,
     encode_atom_name_chars_one_hot,
     scatter_flat_atoms_to_folding_layout,
+    to_numpy,
 )
 
 
@@ -192,3 +193,10 @@ def test_decode_strided() -> None:
     mask = np.ones(2, dtype=bool)
     assert decode_atom_name_chars(np.asfortranarray(chars), mask).tolist() == ["CA", "C4'"]
     assert decode_atom_name_chars(chars[::-1], mask).tolist() == ["C4'", "CA"]
+
+
+def test_to_numpy_handles_bfloat16() -> None:
+    value = torch.tensor([1.5, 2.0], dtype=torch.bfloat16)
+    actual = to_numpy(value)
+    assert actual.dtype == np.float32
+    np.testing.assert_array_equal(actual, [1.5, 2.0])

@@ -172,7 +172,6 @@ class RefProtenixConfidenceHeadFromOSS(ProtenixOSS_ConfidenceHead):
         distance_bin_start: float = 3.25,
         distance_bin_end: float = 52.0,
         distance_bin_step: float = 1.25,
-        stop_gradient: bool = True,
         seed: int = 42,
     ) -> "RefProtenixConfidenceHeadFromOSS":
         torch.manual_seed(seed)
@@ -186,7 +185,6 @@ class RefProtenixConfidenceHeadFromOSS(ProtenixOSS_ConfidenceHead):
             distance_bin_start=distance_bin_start,
             distance_bin_end=distance_bin_end,
             distance_bin_step=distance_bin_step,
-            stop_gradient=stop_gradient,
         )
 
 

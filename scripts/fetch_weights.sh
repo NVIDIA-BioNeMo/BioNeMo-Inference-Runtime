@@ -110,9 +110,8 @@ METADATA=(
 # parameters, and the loader here wants an OpenFold-format PyTorch state dict.
 # Converting is a local step an external user runs once, so these stage only from
 # a path the user supplies. The licence is not the obstacle — see
-# docs/ref/model-weights.md. Protenix-v2 is absent too: no source here is pinned
-# to a digest, so it stages from NGC or a file the user supplies. See
-# docs/ref/model-weights.md for the download sources and the MD5 to check.
+# docs/ref/model-weights.md. Protenix-v2 is absent too: its weights are
+# proprietary, so it stages from NGC or a file the user supplies.
 PUBLIC_URLS=(
   "openfold2/finetuning_2.pt|https://openfold.s3.amazonaws.com/openfold_params/finetuning_2.pt|9511993ad138a66f3c51412d65351c5162e16bc4abd51d76f8016b6e0c392362"
   "openfold2/finetuning_3.pt|https://openfold.s3.amazonaws.com/openfold_params/finetuning_3.pt|4ee7b3de7a2754c6102029b2997df3b9f32d3e9104836986939d1aba2a164494"

@@ -7,12 +7,12 @@
 # Model Weights
 
 Checkpoints are not committed here. A model resolves them in `__init__` when
-`include_load_weights=True` (default for every family except Protenix), so a
+`include_load_weights=True` (the default for every family), so a
 miss fails at engine startup, not mid-inference.
 
 Weights keep their **upstream** licences, and each upstream repo page is
-authoritative. Boltz also needs chemical-component metadata — refer to
-[Metadata assets](#metadata-assets).
+authoritative. Boltz and Protenix also need chemical-component metadata —
+refer to [Metadata assets](#metadata-assets).
 
 ## Notice and Disclaimer
 
@@ -53,11 +53,14 @@ this software and the retrieved materials at your own risk.
   resolve locally only. With nothing staged, `load_hf_weights` raises
   `ValueError` naming the `<MODEL>_CKPT` variable to set. Refer to
   [AlphaFold2 parameters](#alphafold2-parameters).
-- **Protenix-v2:** to get the weights, check
-  <https://github.com/bytedance/Protenix> or contact the Protenix authors.
-- **`protenix-v2` has weights but no pipeline factory.** Construct
-  `models/protenix` and call `load_weights()` yourself (`include_load_weights`
-  defaults to `False`).
+- **Protenix-v2 weights are proprietary.** The upstream README states they
+  are not released under an open-source licence, and the publisher URL
+  refuses anonymous downloads. Obtain `protenix-v2.pt` from the Protenix
+  authors (<https://github.com/bytedance/Protenix>), then set
+  `PROTENIX_V2_CKPT` or stage it under `<checkpoint root>/protenix-v2/`.
+- **`protenix-v2` loads weights through its native pipeline factory.**
+  Direct construction also loads weights by default; use
+  `include_load_weights=False` when supplying converted weights yourself.
 
 Every Hub download is **pinned to a commit** (`HF_REVISIONS` in
 `hubs/integrity.py`), so an upstream re-upload changes nothing until BioIR
@@ -90,13 +93,13 @@ reports what already resolves.
 What the public source covers, per family — the per-file list is the
 `PUBLIC_URLS` table in the script, not restated here to avoid drift:
 
-| Family     | Source                                          | Licence    |
-| ---------- | ----------------------------------------------- | ---------- |
-| OpenFold2  | `openfold.s3.amazonaws.com`                     | CC BY 4.0  |
-| Boltz      | HuggingFace `boltz-community`, plus metadata    | MIT        |
-| OpenFold3  | HuggingFace `OpenFold/OpenFold3` (**gated**)    | Apache-2.0 |
-| Protenix   | none; stage your own file                       | Apache-2.0 |
-| AlphaFold2 | **conversion required**, refer to the following | CC BY 4.0  |
+| Family     | Source                                          | Licence     |
+| ---------- | ----------------------------------------------- | ----------- |
+| OpenFold2  | `openfold.s3.amazonaws.com`                     | CC BY 4.0   |
+| Boltz      | HuggingFace `boltz-community`, plus metadata    | MIT         |
+| OpenFold3  | HuggingFace `OpenFold/OpenFold3` (**gated**)    | Apache-2.0  |
+| Protenix   | none; stage your own file                       | Proprietary |
+| AlphaFold2 | **conversion required**, refer to the following | CC BY 4.0   |
 
 Downloads are resumable and skipped when already present. Hugging Face URLs
 name the same commits as `HF_REVISIONS`, and every file is checked against its
@@ -235,8 +238,9 @@ resolution never hits the Hub. The grant is per account — CI needs its own.
 ## Metadata Assets
 
 Boltz needs a CCD pickle and a molecule directory, resolved separately from the
-checkpoint through `HF_MODEL_METADATA` in `hubs/metadata.py` (Boltz keys only;
-others return `{}`):
+checkpoint through `HF_MODEL_METADATA` in `hubs/metadata.py`. Protenix uses
+the same resolver but never downloads; refer to
+[Protenix metadata](#protenix-metadata).
 
 | Key        | Asset      | Repo                      | File       | Override         |
 | ---------- | ---------- | ------------------------- | ---------- | ---------------- |
@@ -247,6 +251,36 @@ Identical for `boltz-1`, `boltz-2`, and `boltz-2-affinity` (CCD from Boltz-1,
 `mols.tar` from Boltz-2 — including for Boltz-1). Downloads use the pinned
 commits and are digest-checked; `mols.tar` is then extracted, which is skipped
 when the target already exists. Order: override → staged entry → download.
+Molecule files load through an unpickler that accepts only RDKit molecules
+and NumPy arrays, so a substituted file cannot run code.
+
+### Protenix metadata
+
+The native Protenix pipeline reads CCD topology from Biotite's bundled CCD
+and reference conformers from the release `components.cif.rdkit_mol.pkl`. No
+pinned Hub mirror exists, so BioIR resolves the pickle locally only:
+`EngineProcessorConfig.metadata["ccd_mols_path"]`, then
+`BIOIR_PROTENIX_CCD_MOLS_PATH`, then an entry of that name in the metadata
+probe directory. `build_processor` raises `FileNotFoundError` when it is
+missing. Fetch and check it once:
+
+```bash
+dir="${BIOIR_METADATA:-${BIOIR_CACHE:-$HOME/.cache/bionemo_ir}/metadata}"
+mkdir -p "$dir/protenix" && cd "$dir/protenix"
+curl -fLO https://protenix.tos-cn-beijing.volces.com/common/components.cif.rdkit_mol.pkl
+echo "d1cfb71f5993a3ebea7c47877022d7f597bbfbaf86e28a4770e957da6c50cd35  components.cif.rdkit_mol.pkl" |
+  sha256sum -c -
+ln -sfn "$PWD/components.cif.rdkit_mol.pkl" "$dir/BIOIR_PROTENIX_CCD_MOLS_PATH"
+```
+
+Each worker hashes the pickle and reuses per-component files under
+`$BIOIR_CACHE/protenix-v2/mols-<digest>/`; the first worker to see a pickle
+creates them. Workers then load only the components a request uses.
+`BIOIR_PROTENIX_CCD_MOLS_PATH` may also name such a directory directly. A
+pickle whose SHA-256 differs from the v2.0.0 release (`PROTENIX_MOLS_SHA256` in
+`hubs/metadata.py`) still loads but logs a warning, since a different pickle
+changes ligand features. The pickle and each component file load through the
+same restricted unpickler as the Boltz molecules.
 
 ## AlphaFold2 Parameters
 

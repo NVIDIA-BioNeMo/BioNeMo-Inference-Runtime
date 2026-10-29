@@ -22,9 +22,9 @@ description: >-
   one sample per processor() call. Score written CIFs with
   OpenStructure lDDT and DockQ on every supported protein interface;
   record an explicit applicability status on every sample.
-  Uses build_processor when a pipeline factory
-  exists; for compute-only folding models (protenix-v2) uses the
-  OSS data pipeline and swaps in the BioIR module. Every sample
+  Uses serial build_processor on every current folding key
+  (Boltz-1/2, OpenFold2 / AlphaFold2, OpenFold3, protenix-v2); each
+  side featurizes itself. Every sample
   must load its bundled MSAs and templates when any exist, on both
   sides or neither. Use when comparing
   BioIR vs OSS folding performance. Do not use as-is for affinity
@@ -83,12 +83,12 @@ Choose a path from the support matrix
 (`docs/ref/support-matrix.md`, Pipeline column):
 
 - **Processor path — `build_processor`.** The model has a factory (Boltz-1/2,
-  OpenFold2 / AlphaFold2, OpenFold3). BioIR uses serial
+  OpenFold2 / AlphaFold2, OpenFold3, `protenix-v2`). BioIR uses serial
   `build_processor`; OSS uses its own e2e. Each side featurizes itself.
-- **OSS feature path — OSS pipeline + BioIR module.** The folding model has a
-  compute path and no factory (`protenix-v2`). Use the OSS data
-  pipeline for features, then replace the OSS `nn.Module` with the
-  BioIR module. See [no-pipeline.md](no-pipeline.md).
+- **OSS feature path — OSS pipeline + BioIR module.** A folding model with a
+  compute path but no pipeline factory. No current key uses it. Use the
+  OSS data pipeline for features, then replace the OSS `nn.Module` with
+  the BioIR module. See [no-pipeline.md](no-pipeline.md).
   `boltz-2-affinity` is **not** a folding bench — see
   [Other model kinds](#other-model-kinds).
 
@@ -490,6 +490,10 @@ Each of these has cost a full run. The gates above cover the rest.
 - **Processor path: `profile_inference` already isolates `model.forward`.** Do
   not time `processor()` wall clock and call it the model.
 - **H2D is outside the window on both sides.** OSS must move the batch first.
+- **Protenix-v2 is Processor path.** Never pass `return_full_data=False`;
+  `build_processor` rejects it. Compare
+  quality over seeds or the sample set because OSS adds Monte Carlo pair
+  dropout that BioIR omits.
 - **Seed goes on the feature-generator stage**, not the tokenizer
   (`docs/ref/api.md`).
 - **Paired A3Ms are per chain, same row count** (`docs/ref/api.md`).

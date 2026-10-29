@@ -108,7 +108,8 @@ config = EngineProcessorConfig(
 The configuration controls the complete prediction pipeline:
 
 - `model_source="boltz-2"` selects the Boltz-2 model, tokenizer, feature
-  generator, checkpoint, and default runtime arguments.
+  generator, checkpoint, and default runtime arguments. `"openfold3"` and
+  `"protenix-v2"` run through the same configuration with their own defaults.
 - `num_sampling_steps=50` shortens the diffusion stage for this example. Other
   Boltz-2 arguments retain their registered defaults.
 - `random_seed=42` makes request preprocessing and model sampling reproducible.

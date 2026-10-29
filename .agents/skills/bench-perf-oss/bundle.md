@@ -345,12 +345,10 @@ Copy the **locked** pin, not `main`. Follow the matching profile:
   commit `0bb17be5199846e806b6347b6e17c6249c88ff1b`. Ship the two
   input-only template patches. Predict preset **without** `low_mem`.
   cuEq + DeepSpeed evoformer.
-- Protenix-v2 — [models/protenix.md](models/protenix.md),
-  [no-pipeline.md](no-pipeline.md). OSS feature path. Pin
-  `2475421477ab414b571149ad4a875c390ff8a35d`. Dump OSS features once;
-  both forwards load the `.pt`. BioIR `recycling_steps=5` → OSS
-  `model.N_cycle=6`. Seed 101. `LAYERNORM_TYPE=torch`. Never
-  `torch.compile`.
+- Protenix-v2 — [models/protenix.md](models/protenix.md). Processor path. Pin
+  `2475421477ab414b571149ad4a875c390ff8a35d`. BioIR
+  `recycling_steps=5` → OSS `model.N_cycle=6`. Seed 101.
+  `LAYERNORM_TYPE=torch`. Never `torch.compile`.
 - OpenFold2 / AF2 model-1 — [models/of2.md](models/of2.md). Processor path.
   `aqlaboratory/openfold` `v2.2.0` commit
   `e938c184a291bf053af3b14c1e3e8bb29aee57e2`. Protein-only (monomer
@@ -552,7 +550,7 @@ clocks only while its model forward executes, as on the OSS side.
 - Import `update_inference_configs` from `runner.inference` on
   this pin. Later upstream moved it to `protenix.model.protenix`;
   that name is absent here and the OSS column will fail at import.
-- **The CCD cache build needs `pdbeccdutils` and must run in the
+- **The OSS CCD cache build needs `pdbeccdutils` and runs in the
   overlay venv, not the BioIR interpreter.**
   `prepare_ccd.py` calls upstream
   `scripts/gen_ccd_cache.py`, which imports it. Install it
@@ -563,28 +561,11 @@ clocks only while its model forward executes, as on the OSS side.
   which pins both. The import chain also reaches `PIL`, `networkx`,
   and `scipy`, already present via rdkit, torch, and the overlay
   list.
-- **So `prepare_ccd.py` re-runs itself under `$OSS_PYTHON` when
-  `pdbeccdutils` is not importable.** Both columns can trigger the
-  build — `run_bioir.py` and `run_oss.py` each call
-  `dump_features.main()`, which builds the cache when
-  `common/components.cif.rdkit_mol.pkl` is missing — and
-  `run_bioir.py` goes first, so the BioIR interpreter is normally
-  the one that needs the cache and cannot build it. Without the
-  hop it dies on `ModuleNotFoundError: pdbeccdutils` before it
-  reaches a single sample. `install_deps.sh` has already created
-  the venv by then, since `bench.py` runs it before either column.
-- **Stop that hop from recursing with an explicit `--delegated`
-  argv flag, never by comparing interpreter paths.** A venv's
-  `bin/python` is a symlink to the base interpreter, so
-  `Path(OSS_PYTHON).resolve()` and
-  `Path(sys.executable).resolve()` are both `/usr/bin/python3.12`
-  — a healthy overlay reads as a loop and the build dies with
-  `pdbeccdutils is missing from the overlay venv` while sitting
-  next to a venv that has it. Let the child diagnose itself and
-  pass its return code up; a `CalledProcessError` traceback on top
-  of the child's message just buries it. Missing `OSS_PYTHON`, a
-  nonexistent interpreter, and a genuinely unequipped overlay stay
-  hard errors.
+- Run `prepare_ccd.py` under `$OSS_PYTHON` only. The BioIR column
+  runs `build_processor`, reads CCD topology from Biotite's bundled
+  CCD, and resolves conformers through `BIOIR_PROTENIX_CCD_MOLS_PATH`;
+  point it at the same `common/components.cif.rdkit_mol.pkl` the OSS
+  column uses.
 - `install_deps.sh` curls `common/components.cif` (490 MB) and
   owns it. `prepare_ccd.py` only checks that it is there before
   scanning it — it must not try to symlink it into place, because
@@ -592,18 +573,12 @@ clocks only while its model forward executes, as on the OSS side.
   an unconditional `FileExistsError`.
 - The overlay list is **not** the full set `protenix.data` needs.
   A clean container from a wheel also needs `ml_collections`,
-  `scikit-learn`, and `optree`, in both interpreters, while
+  `scikit-learn`, and `optree` in the OSS interpreter, while
   `fair-esm` is stubbed rather than installed. A dev box hides
   this because its base interpreter already has them. See
   [models/protenix.md](models/protenix.md).
-- Only RDKit molecules cross that interpreter boundary, in
-  `components.cif.rdkit_mol.pkl`. It stays readable because the
-  overlay venv inherits the base rdkit through
-  `--system-site-packages` (unpinned `pip install rdkit` is
-  satisfied by it, so pip does not shadow it). Pinning rdkit
-  differently in the overlay would put a cross-version RDKit
-  pickle on the critical path.
-- Feature dumps use `torch.load(..., weights_only=False)`.
+- Never pass `return_full_data=False` to the BioIR column;
+  `build_processor` rejects it for Protenix.
 - `LAYERNORM_TYPE=torch`, seed 101. BioIR `recycling_steps=5`
   corresponds to OSS `model.N_cycle=6`.
 

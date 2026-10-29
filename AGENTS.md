@@ -51,6 +51,21 @@ Daily loop is in [`docs/dev.md`][dev]. See also
 
 - **Write terse, direct, active prose.** Lead with facts. Keep shared text
   self-contained; omit narration, recaps, and local-only context.
+- **Connect adjacent sentences.** When a sentence is not a direct continuation
+  of the one before, add a sentence that says how they relate (contrast,
+  cause, or addition). Do not make the reader guess. After a question, write
+  at least one sentence before the answer.
+- **Stack at most two modifiers before a noun.** When a third is needed,
+  explain the innermost concept in a full sentence first, then build outward.
+  Write "the plan to optimize the model that analyzes user behavior", not
+  "user behavior analysis model optimization plan".
+- **Use at most two abstract subjects with action verbs per paragraph.**
+  "This rule captures...", "This mechanism drives..." read fine alone and
+  tire the reader when they pile up. From the third sentence on, make a
+  concrete person, thing, or scenario the subject.
+- **Check word pairings after writing.** Read each noun-verb pair and ask
+  whether you would say it aloud. If every word is familiar but the phrase
+  sounds awkward, replace it.
 - **Prefer a list to a table** in Markdown. Use table only when the cells line
   up for numerical data or comparison
 - **Documentation assets belong in `docs/assets/`.** Put every image, diagram,

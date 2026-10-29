@@ -15,9 +15,10 @@
 """Triangle attention backend using precompiled or source CuTe left-mask kernels.
 
 The kernel variant is selected from ``torch.cuda.get_device_capability()`` and
-the tuning bundle's ``kernel_abi``. If the source implementation is absent, the
-executable cache is populated from the packaged ``_cutedsl_kernels`` library
-instead.
+the tuning bundle's ``kernel_abi``, which an ``S`` anchor may override with its
+own (SM100 and SM103 run the Ampere kernel at small ``S``). If the source implementation
+is absent, the executable cache is populated from the packaged
+``_cutedsl_kernels`` library instead.
 
 Requires the per-row pair mask to be left-aligned (``1...1 0...0``), as produced
 by ``pair_mask = seq_mask[..., None] * seq_mask[..., None, :]`` under the

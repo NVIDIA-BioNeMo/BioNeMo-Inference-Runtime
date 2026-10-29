@@ -519,14 +519,31 @@ def test_triangle_left_mask_lse_is_written_only_when_requested(head_dim, cutedsl
 # ---------------------------------------------------------------------------
 
 
+def _binds_native_sm100_kernel(head_dim: int, bucket: int) -> bool:
+    """Whether the tuned anchor at ``bucket`` binds the native Blackwell kernel.
+
+    Small-``S`` anchors name the Ampere kernel's ``kernel_abi`` over the
+    bundle's. Read from the JSON so it also works in CUBIN mode, where
+    resolving the kernel class is deliberately broken.
+    """
+    bundle = load_kernel_configs(
+        triangle_config._TRI_CONFIGS_DIR,
+        get_config_file_name(SM_VERSION, D=head_dim),
+    )
+    return bundle.configs[f"S={bucket}"].get("kernel_abi", bundle.kernel_abi) == "sm100"
+
+
+# SM100 runs the Ampere kernel at small S = sqrt(I * J), so I lifts each case
+# onto a native anchor (S=240 at D=32, S=128 at D=64) while J keeps its tail,
+# padding, or tile layout.
 @pytest.mark.parametrize(
     "dtype,head_dim,bs,I,J,num_heads",
     [
-        (torch.bfloat16, 32, 2, 13, 13, 4),
-        (torch.bfloat16, 32, 1, 2, 513, 3),
-        (torch.bfloat16, 64, 1, 4, 127, 4),
+        (torch.bfloat16, 32, 2, 4431, 13, 4),
+        (torch.bfloat16, 32, 1, 112, 513, 3),
+        (torch.bfloat16, 64, 1, 129, 127, 4),
         (torch.bfloat16, 128, 1, 3, 129, 4),
-        (torch.float16, 32, 1, 3, 65, 4),
+        (torch.float16, 32, 1, 886, 65, 4),
     ],
     ids=[
         "bf16-D32-multibatch-tail",
@@ -579,7 +596,10 @@ def test_triangle_left_mask_native_sm100(dtype, head_dim, bs, I, J, num_heads, q
     )
 
     variant = cute_attn._last_variant
-    assert variant.bucket == 0
+    assert _binds_native_sm100_kernel(variant.head_dim, variant.bucket), (
+        f"D={head_dim} S={variant.bucket} no longer binds the native kernel on "
+        "SM100, so this test no longer covers the native launcher"
+    )
     is_cubin_executable = isinstance(
         cute_attn._last_executable,
         library_runtime.CuTeDSLKernelLibraryExecutable,

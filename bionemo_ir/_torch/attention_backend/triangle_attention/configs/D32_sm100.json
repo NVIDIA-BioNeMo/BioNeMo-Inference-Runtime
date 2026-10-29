@@ -1,6 +1,30 @@
 {
   "kernel_abi": "sm100",
   "configs": {
-    "S=0": {}
+    "S=81": {
+      "kernel_abi": "sm80",
+      "m_block_size": 32,
+      "n_block_size": 32,
+      "num_threads": 64,
+      "swizzle_b": 3,
+      "load_bias_before_gemm": true
+    },
+    "S=112": {
+      "kernel_abi": "sm80",
+      "m_block_size": 64,
+      "n_block_size": 64,
+      "num_threads": 128,
+      "swizzle_b": 3,
+      "load_bias_before_gemm": true
+    },
+    "S=145": {
+      "kernel_abi": "sm80",
+      "m_block_size": 32,
+      "n_block_size": 32,
+      "num_threads": 64,
+      "swizzle_b": 3,
+      "load_bias_before_gemm": true
+    },
+    "S=240": {}
   }
 }

@@ -43,13 +43,21 @@ constexpr char kSM100LaunchAbi[] = "triangle_attention_sm100";
 constexpr char kSM80NullableLseLaunchAbi[] = "triangle_attention_sm80_nullable_lse_v1";
 constexpr char kSM90NullableLseLaunchAbi[] = "triangle_attention_sm90_nullable_lse_v1";
 constexpr char kSM100NullableLseLaunchAbi[] = "triangle_attention_sm100_nullable_lse_v1";
+/* The SM100 bank plus the bias MMA of images that fold the bias on the tensor core. */
+constexpr char kSM100BiasMmaNullableLseLaunchAbi[] = "triangle_attention_sm100_bias_mma_nullable_lse_v1";
+
+bool uses_sm100_bias_mma(KernelConfig const& config)
+{
+  return config.cubin.launch_abi != nullptr
+    && std::strcmp(config.cubin.launch_abi, kSM100BiasMmaNullableLseLaunchAbi) == 0;
+}
 
 bool accepts_null_lse(KernelConfig const& config)
 {
   char const* abi = config.cubin.launch_abi;
   return abi != nullptr
     && (std::strcmp(abi, kSM80NullableLseLaunchAbi) == 0 || std::strcmp(abi, kSM90NullableLseLaunchAbi) == 0
-        || std::strcmp(abi, kSM100NullableLseLaunchAbi) == 0);
+        || std::strcmp(abi, kSM100NullableLseLaunchAbi) == 0 || uses_sm100_bias_mma(config));
 }
 
 /* Older images store LSE unconditionally, so they still need a buffer. */
@@ -76,9 +84,11 @@ void validate_launch(KernelConfig const& config, LaunchParams const& params)
   char const* expected_nullable_lse_abi
     = is_sm80 ? kSM80NullableLseLaunchAbi : (is_sm90 ? kSM90NullableLseLaunchAbi : kSM100NullableLseLaunchAbi);
   std::int32_t const expected_kernel_sm = is_sm80 ? 80 : (is_sm90 ? 90 : 100);
-  if (
-    config.cubin.kernel_sm != expected_kernel_sm || config.cubin.launch_abi == nullptr
-    || (std::strcmp(config.cubin.launch_abi, expected_abi) != 0 && std::strcmp(config.cubin.launch_abi, expected_nullable_lse_abi) != 0))
+  bool const known_abi = config.cubin.launch_abi != nullptr
+    && (std::strcmp(config.cubin.launch_abi, expected_abi) == 0
+        || std::strcmp(config.cubin.launch_abi, expected_nullable_lse_abi) == 0
+        || (is_sm100 && uses_sm100_bias_mma(config)));
+  if (config.cubin.kernel_sm != expected_kernel_sm || !known_abi)
   {
     throw std::invalid_argument("triangle-attention CUBIN has an incompatible launch ABI");
   }
@@ -393,6 +403,7 @@ void launch_sm100(
   KernelSpecSM100 const& spec,
   embedded::SM100LaunchInfo const& metadata,
   DType dtype,
+  bool bias_mma,
   LaunchParams const& params,
   CUcontext context,
   std::uint32_t smem_bytes)
@@ -440,8 +451,8 @@ void launch_sm100(
     throw std::overflow_error("triangle-attention SM100 scheduler total block count overflow");
   device_params.scheduler_total_blocks = static_cast<std::int32_t>(total_blocks);
 
-  void* kernel_params[abi::kSM100ParameterCount];
-  abi::pack_sm100_kernel_params(&device_params, kernel_params);
+  void* kernel_params[abi::kSM100BiasMmaParameterCount];
+  abi::pack_sm100_kernel_params(&device_params, bias_mma, kernel_params);
   cubin_launch_config_t const launch_config
     = make_sm100_launch_config(metadata, params, context, spec.tile_m, smem_bytes);
   check_cuda_driver(
@@ -541,7 +552,15 @@ void launch(KernelConfig const& config, LaunchParams const& params)
 
   if (auto const* spec = std::get_if<KernelSpecSM100>(&config.spec))
   {
-    launch_sm100(loaded, *spec, config.embedded_image->sm100, config.dtype, params, context, smem_bytes);
+    launch_sm100(
+      loaded,
+      *spec,
+      config.embedded_image->sm100,
+      config.dtype,
+      uses_sm100_bias_mma(config),
+      params,
+      context,
+      smem_bytes);
     return;
   }
 

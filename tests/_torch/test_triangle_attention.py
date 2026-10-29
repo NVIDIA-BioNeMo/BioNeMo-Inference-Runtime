@@ -125,6 +125,8 @@ def test_triangle_attention_backend(s: Scenario):
     "s",
     [
         Scenario(backend="CuTeDSL", torch_dtype="bfloat16"),
+        # SM100/SM103 run the Ampere kernel at this small S; 136 leaves a partial tile.
+        Scenario(backend="CuTeDSL", torch_dtype="float16", seq_len=136),
         # Partial tiles at the S=384 and S=512 anchors; 448/449 is the switch.
         Scenario(backend="CuTeDSL", torch_dtype="bfloat16", seq_len=320),
         Scenario(backend="CuTeDSL", torch_dtype="float16", seq_len=448),

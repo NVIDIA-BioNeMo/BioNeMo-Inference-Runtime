@@ -46,6 +46,8 @@ namespace bioir::cutedsl::triangle_attention::abi
 inline constexpr std::size_t kSM80ParameterCount = 12;
 inline constexpr std::size_t kSM90ParameterCount = 21;
 inline constexpr std::size_t kSM100ParameterCount = 20;
+/* Images that fold the bias on the tensor core (D <= 64) also take its tiled MMA. */
+inline constexpr std::size_t kSM100BiasMmaParameterCount = kSM100ParameterCount + 1;
 
 struct SM80Params
 {
@@ -172,8 +174,9 @@ struct SM100FastDivmod
 };
 
 /* Blackwell lowers Q/K/V/O and bias to coordinate tensors plus five by-value
- * TMA descriptors. The two tiled-MMA descriptors are fixed all-zero records;
- * the scheduler divisors are precomputed on the host.
+ * TMA descriptors. The tiled-MMA descriptors are fixed all-zero records: QK and
+ * PV, plus the bias MMA in images that fold the bias on the tensor core. The
+ * scheduler divisors are precomputed on the host.
  */
 struct SM100Params
 {
@@ -194,12 +197,17 @@ struct SM100Params
   float softmax_scale;
   SM100TiledMmaDescriptor qk_tiled_mma;
   SM100TiledMmaDescriptor pv_tiled_mma;
+  SM100TiledMmaDescriptor bias_tiled_mma;
   SM100FastDivmod scheduler_num_blocks;
   SM100FastDivmod scheduler_num_heads;
   std::int32_t scheduler_total_blocks;
 };
 
-inline void pack_sm100_kernel_params(SM100Params* params, void* kernel_params[kSM100ParameterCount])
+/* The kernel declares the bias MMA, when it has one, between the PV MMA and the
+ * scheduler, which shifts the three scheduler parameters one slot later.
+ */
+inline void
+pack_sm100_kernel_params(SM100Params* params, bool bias_mma, void* kernel_params[kSM100BiasMmaParameterCount])
 {
   kernel_params[0] = &params->q_coord;
   kernel_params[1] = &params->k_coord;
@@ -218,9 +226,12 @@ inline void pack_sm100_kernel_params(SM100Params* params, void* kernel_params[kS
   kernel_params[14] = &params->softmax_scale;
   kernel_params[15] = &params->qk_tiled_mma;
   kernel_params[16] = &params->pv_tiled_mma;
-  kernel_params[17] = &params->scheduler_num_blocks;
-  kernel_params[18] = &params->scheduler_num_heads;
-  kernel_params[19] = &params->scheduler_total_blocks;
+  std::size_t const scheduler = bias_mma ? 18 : 17;
+  if (bias_mma)
+    kernel_params[17] = &params->bias_tiled_mma;
+  kernel_params[scheduler] = &params->scheduler_num_blocks;
+  kernel_params[scheduler + 1] = &params->scheduler_num_heads;
+  kernel_params[scheduler + 2] = &params->scheduler_total_blocks;
 }
 
 static_assert(sizeof(CUtensorMap) == 128);
@@ -355,7 +366,7 @@ constexpr KernelSpecSM100 make_sm100_spec(std::int32_t target_sm, std::int32_t h
  * configuration. Dtype and packed output select distinct CUBINs but do not
  * change launch geometry.
  */
-inline std::array<KernelSpec, 39> const kKernelSpecs = {
+inline std::array<KernelSpec, 47> const kKernelSpecs = {
   /* SM80 */
   make_sm80_spec(80, 32, 0, 64, 64, 128),
   make_sm80_spec(80, 32, 384, 64, 64, 128),
@@ -399,12 +410,23 @@ inline std::array<KernelSpec, 39> const kKernelSpecs = {
   make_sm90_spec(256, 0, 64, 64, 3, 4),
   make_sm90_spec(256, 384, 64, 64, 3, 0),
 
+  /* SM100 and SM103 D32 and D64 take the Ampere ABI at small S, where its
+   * 32- and 64-row tiles pad less than a native Blackwell work item. */
+  make_sm80_spec(100, 32, 81, 32, 32, 64),
+  make_sm80_spec(100, 32, 112, 64, 64, 128),
+  make_sm80_spec(100, 32, 145, 32, 32, 64),
+  make_sm80_spec(100, 64, 64, 32, 64, 64),
+  make_sm80_spec(103, 32, 81, 32, 32, 64),
+  make_sm80_spec(103, 32, 112, 64, 64, 128),
+  make_sm80_spec(103, 32, 145, 32, 32, 64),
+  make_sm80_spec(103, 64, 64, 32, 64, 64),
+
   /* Native Blackwell entries use the same device ABI on SM100 and SM103. */
-  make_sm100_spec(100, 32, 0),
-  make_sm100_spec(100, 64, 0),
+  make_sm100_spec(100, 32, 240),
+  make_sm100_spec(100, 64, 65),
   make_sm100_spec(100, 128, 0),
-  make_sm100_spec(103, 32, 0),
-  make_sm100_spec(103, 64, 0),
+  make_sm100_spec(103, 32, 240),
+  make_sm100_spec(103, 64, 65),
   make_sm100_spec(103, 128, 0),
 };
 

@@ -1,6 +1,14 @@
 {
   "kernel_abi": "sm100",
   "configs": {
-    "S=0": {}
+    "S=64": {
+      "kernel_abi": "sm80",
+      "m_block_size": 32,
+      "n_block_size": 64,
+      "num_threads": 64,
+      "swizzle_b": 3,
+      "load_bias_before_gemm": true
+    },
+    "S=65": {}
   }
 }

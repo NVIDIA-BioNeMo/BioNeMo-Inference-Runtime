@@ -85,13 +85,18 @@ def get_kernel_config(
     head_dim: int,
     S: int,
 ) -> TriangleAttentionLeftMaskKernelConfig:
-    """Resolve the source kernel at the nearest tuned ``S`` anchor."""
+    """Resolve the source kernel at the nearest tuned ``S`` anchor.
+
+    An anchor may name its own ``kernel_abi`` over the bundle's: the kernel
+    that serves small ``S`` best is not always the one that serves large ``S``.
+    """
     bundle = _load_config_bundle(sm_version, head_dim)
     _, tile_params = _nearest_variant(bundle.configs, S)
+    kernel_abi = tile_params.pop("kernel_abi", bundle.kernel_abi)
     source = load_source_module(__package__)
-    implementation = source.source_implementation(bundle.kernel_abi, None, bundle.kernel_variant)
+    implementation = source.source_implementation(kernel_abi, None, bundle.kernel_variant)
     kernel_cls = resolve_implementation(implementation)
-    if bundle.kernel_abi == "sm100":
+    if kernel_abi == "sm100":
         if tile_params:
             raise ValueError(f"SM100 triangle attention has no tunable tile parameters; got {tile_params}")
         return source._build_sm100_config(kernel_cls)

@@ -1,0 +1,37 @@
+{
+  "executables": {},
+  "kernel_symbols": {},
+  "sm90_launches": {},
+  "variants": [
+    {
+      "executable": "c4eda381e1069525bf4585eb22a70dc08e608eb24e1eb0777b55a8ec9f32b273",
+      "runtime_metadata": {
+        "C": 256,
+        "D": 256,
+        "kernel_variant": 3,
+        "num_threads": 512,
+        "pitched": false,
+        "reads_stats": true,
+        "residual": false,
+        "tile_ctas": 2,
+        "tile_m": 64
+      },
+      "variant_id": "2b23dd98f2e5c8153a30"
+    },
+    {
+      "executable": "72baf1c15df712ac308e2463b01645e093136bce99bd9eaa96e7027809172087",
+      "runtime_metadata": {
+        "C": 384,
+        "D": 256,
+        "kernel_variant": 4,
+        "num_threads": 384,
+        "pitched": true,
+        "reads_stats": true,
+        "residual": false,
+        "tile_ctas": 3,
+        "tile_m": 128
+      },
+      "variant_id": "2f7c2d9783e7abb361c9"
+    }
+  ]
+}

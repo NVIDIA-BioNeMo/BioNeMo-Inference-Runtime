@@ -1,0 +1,64 @@
+{
+  "executables": {
+    "18fce504ab0f0b81dba5744a65e02f50be1874bf1c8ba4df9606c5665fa62ee9": {
+      "dtype": "bf16",
+      "dynamic_smem_bytes": 160768,
+      "image_sha256": "c27f75703297995fa8f64f543b52b27d19be62309325dee6f904cb10cb8b5161",
+      "image_size": 53968,
+      "kernel_sm": 90,
+      "kernel_symbol": "0fe009db752f31880df7ef10c737e61eba5519803dacf58094b26df6d8a221e9",
+      "launch_abi": "trimul_kf_k3_sm90_v2",
+      "sm90_launch": "9670eea3f29fc92af6c900074ece4f40a1d29474a97b052e09d3685b76e879c5",
+      "target_arch": "sm_90a",
+      "target_sm": 90
+    },
+    "19f79d443de454ac49d5feaa306f3402866b808b437f9e0f6017f1b1d13f66ef": {
+      "dtype": "bf16",
+      "dynamic_smem_bytes": 228352,
+      "image_sha256": "5173ffec2665e344891c58623dfcbc46bbc466eda0f33f66eaf13e14b0b082d3",
+      "image_size": 54992,
+      "kernel_sm": 90,
+      "kernel_symbol": "7baabbde2c4dc526bb31aec125bcac6edc21cb61e25bbef7aa80668d33e2a8a3",
+      "launch_abi": "trimul_kf_k3_sm90_v2",
+      "sm90_launch": "08d561132f391ea686c8085890011905fdc9bbfaee361dfb85cb57bcda1d8b5e",
+      "target_arch": "sm_90a",
+      "target_sm": 90
+    }
+  },
+  "kernel_symbols": {
+    "163a5a09103fd62681fa54fe93cebda179336f19d43e6a0d2cd4d349abae5bcb": "kd7d146c1834293f87ef1028e37b2d887868aeaef2d891f70a24664829e9a1896____________________________________________________________________________________________________________________________"
+  },
+  "sm90_launches": {},
+  "variants": [
+    {
+      "executable": "d62b5fe8f4480507ad4261fc700f7c176ca71a4df52f0d8b5abe5b586ceb4d27",
+      "runtime_metadata": {
+        "C": 64,
+        "D": 64,
+        "kernel_variant": 0,
+        "num_threads": 512,
+        "pitched": false,
+        "reads_stats": false,
+        "residual": false,
+        "tile_ctas": 1,
+        "tile_m": 128
+      },
+      "variant_id": "17008c99a4075d14de47"
+    },
+    {
+      "executable": "f2b0326136c920033a5fcbdd7035ef0dbe2d85859770d128e39ec4bc4f9d057b",
+      "runtime_metadata": {
+        "C": 64,
+        "D": 64,
+        "kernel_variant": 0,
+        "num_threads": 512,
+        "pitched": true,
+        "reads_stats": false,
+        "residual": true,
+        "tile_ctas": 1,
+        "tile_m": 128
+      },
+      "variant_id": "1dcb90c79bdfbda5af4a"
+    }
+  ]
+}

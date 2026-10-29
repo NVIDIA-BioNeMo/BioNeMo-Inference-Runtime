@@ -1,0 +1,172 @@
+{
+  "executables": {
+    "b082495c880293ebfd455197a280d0734b4674fd11fd5607e463b4deab065bf5": {
+      "dtype": "bf16",
+      "dynamic_smem_bytes": 96256,
+      "image_sha256": "d70d254ce0236462609f4ee522772bccd3b2183e2f526797f3b2cc5e6f340706",
+      "image_size": 28352,
+      "kernel_sm": 90,
+      "kernel_symbol": "b45b0d20259939c6bec0f0c3aac3acf51c05c91bfc409889ecf3dcdef202122c",
+      "launch_abi": "trimul_kf_k3_sm90_v2",
+      "sm90_launch": "9cc6e19502ce8ac34de9efc20362280519707722892259bd0cf7a1234c3a96df",
+      "target_arch": "sm_90a",
+      "target_sm": 90
+    }
+  },
+  "kernel_symbols": {
+    "b45b0d20259939c6bec0f0c3aac3acf51c05c91bfc409889ecf3dcdef202122c": "kd46b32c528b17df3e74adf84eba50b8df9649baabaeb50fd3641e8f518d5bf76____________________________________________________________________________________________________________________________",
+    "bad9f1a4a7ef4a5e30bdb81445dddd9b2db6b9ea83d6bd19cb61f0d97f097d6c": "kadf27a9628e36e2a137b0775ed7a3d2227a1318d59d95505e9b58ab05c1c7997____________________________________________________________________________________________________________________________"
+  },
+  "sm90_launches": {
+    "bb3d0bb687387fefe7acff4c1c7ab5139d6e2138f685f5e51d057befb07c30ef": {
+      "block_dims": [
+        512,
+        1,
+        1
+      ],
+      "cluster_dims": [
+        1,
+        1,
+        1
+      ],
+      "cluster_scheduling_policy": "default",
+      "tma_descriptors": {
+        "output": {
+          "box_dims": [
+            32,
+            128
+          ],
+          "data_type": "bfloat16",
+          "element_strides": [
+            1,
+            1
+          ],
+          "global_dim_order": [
+            1,
+            0
+          ],
+          "interleave": "none",
+          "l2_promotion": "128b",
+          "oob_fill": "none",
+          "rank": 2,
+          "swizzle": "64b"
+        },
+        "prod": {
+          "box_dims": [
+            64,
+            64,
+            1
+          ],
+          "data_type": "bfloat16",
+          "element_strides": [
+            1,
+            1,
+            1
+          ],
+          "global_dim_order": [
+            0,
+            1,
+            2
+          ],
+          "interleave": "none",
+          "l2_promotion": "128b",
+          "oob_fill": "none",
+          "rank": 3,
+          "swizzle": "128b"
+        },
+        "w_gate": {
+          "box_dims": [
+            64,
+            64
+          ],
+          "data_type": "bfloat16",
+          "element_strides": [
+            1,
+            1
+          ],
+          "global_dim_order": [
+            1,
+            0
+          ],
+          "interleave": "none",
+          "l2_promotion": "128b",
+          "oob_fill": "none",
+          "rank": 2,
+          "swizzle": "128b"
+        },
+        "w_out": {
+          "box_dims": [
+            64,
+            64
+          ],
+          "data_type": "bfloat16",
+          "element_strides": [
+            1,
+            1
+          ],
+          "global_dim_order": [
+            1,
+            0
+          ],
+          "interleave": "none",
+          "l2_promotion": "128b",
+          "oob_fill": "none",
+          "rank": 2,
+          "swizzle": "128b"
+        },
+        "x": {
+          "box_dims": [
+            64,
+            128
+          ],
+          "data_type": "bfloat16",
+          "element_strides": [
+            1,
+            1
+          ],
+          "global_dim_order": [
+            1,
+            0
+          ],
+          "interleave": "none",
+          "l2_promotion": "128b",
+          "oob_fill": "none",
+          "rank": 2,
+          "swizzle": "128b"
+        }
+      }
+    }
+  },
+  "variants": [
+    {
+      "executable": "18fce504ab0f0b81dba5744a65e02f50be1874bf1c8ba4df9606c5665fa62ee9",
+      "runtime_metadata": {
+        "C": 128,
+        "D": 128,
+        "kernel_variant": 2,
+        "num_threads": 512,
+        "pitched": false,
+        "reads_stats": false,
+        "residual": true,
+        "tile_ctas": 1,
+        "tile_m": 64
+      },
+      "variant_id": "b2e78205cb263e38ffc9"
+    },
+    {
+      "executable": "aab2b67a5bf6b56a2c0fef70c5ea3f89283e1dc4aafbc558cc58a074f331673f",
+      "runtime_metadata": {
+        "C": 128,
+        "D": 128,
+        "kernel_variant": 2,
+        "num_threads": 512,
+        "pitched": false,
+        "reads_stats": false,
+        "residual": false,
+        "tile_ctas": 1,
+        "tile_m": 64
+      },
+      "variant_id": "b338126efd50dcbe723e"
+    }
+  ]
+}

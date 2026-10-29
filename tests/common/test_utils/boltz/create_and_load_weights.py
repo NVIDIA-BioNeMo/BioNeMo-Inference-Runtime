@@ -414,6 +414,8 @@ def load_self_pairwise_attention_weights_torch(module, weights_and_biases, dtype
             else:
                 module.proj_z[0].bias.data.zero_()
         module.proj_z[1].load_weights(z_1_proj_weights)
+    # Loading each Linear directly skips the hook that recursive_calling_load_weights runs afterwards.
+    module.post_load_weights()
 
 
 def load_self_pairwise_attention_weights_ref_torch(module, weights_and_biases):

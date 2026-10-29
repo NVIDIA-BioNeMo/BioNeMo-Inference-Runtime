@@ -74,6 +74,11 @@ def _broadcast_rows(lead: torch.Size, gate_lead: torch.Size) -> tuple[int, int, 
     return math.prod(lead[:dim]), lead[dim], math.prod(lead[dim + 1 :])
 
 
+def _pad_after_load_state_dict(layer: "AttentionPairBias", *args: object) -> None:
+    """Pad the weights ``load_state_dict`` loaded, as ``recursive_calling_load_weights`` does through the layer."""
+    layer.post_load_weights()
+
+
 class TriangleAttention(nn.Module):
     """
     A module that implements the triangle attention mechanism with tensor parallelism in torch.
@@ -594,6 +599,16 @@ class AttentionPairBias(nn.Module):
         )
         self.attn_backend = attn_backend
         self._bias_pad_multiple = 8 if attn_backend == "CuTeDSL" else -1
+        # CuTeDSL pads D up to a multiple of 16 around every call. Layers with another D project into and out of padded
+        # copies of in_proj and proj_o instead, built by post_load_weights so that forward never touches the weights.
+        # QK norm needs whole vectors and keeps the pads.
+        self._padded_head_dim = None
+        if attn_backend == "CuTeDSL" and self.head_dim % 16 and not use_qk_norm:
+            self._padded_head_dim = (self.head_dim + 15) // 16 * 16
+            self.register_buffer("_padded_in_weight", None, persistent=False)
+            self.register_buffer("_padded_in_bias", None, persistent=False)
+            self.register_buffer("_padded_out_weight", None, persistent=False)
+            self.register_load_state_dict_post_hook(_pad_after_load_state_dict)
         self._ln_proj_moveaxis_pad = (
             LNProjMoveaxisPad(
                 D=c_z,
@@ -754,13 +769,26 @@ class AttentionPairBias(nn.Module):
         ``in_proj``'s k/v bias only under ``kv_bias``, even when *kv_in* is *s*.
 
         Returns:
-            (q, k, v, g) — non-contiguous views of the projection output (the
-            attention kernels accept strided operands). When ``use_qk_norm``
-            is set, q and k are whole-vector normed, which also makes them
-            contiguous.
+            (q, k, v, g) — non-contiguous ``[*, S, H * D]`` views of the
+            projection output (the attention kernels accept strided operands).
+            When ``use_qk_norm`` is set, q and k are whole-vector normed, which
+            also makes them contiguous. On a layer that pads its heads, a call
+            whose keys come from *s* itself projects with the padded copies
+            :meth:`post_load_weights` builds and returns ``[*, S, H * Dp]``
+            views, the padding columns zero.
+
+        Raises:
+            RuntimeError: A padded layer's weights were filled without
+                :meth:`post_load_weights`.
         """
         if kv_in is s and not local_keys:
-            q, g, k, v = self.in_proj(s).split(self._in_proj_sizes, dim=-1)
+            if self._padded_head_dim is None:
+                q, g, k, v = self.in_proj(s).split(self._in_proj_sizes, dim=-1)
+            else:
+                if self._padded_in_weight is None:
+                    raise RuntimeError("padded heads need post_load_weights() after the weights are loaded")
+                projected = F.linear(s, self._padded_in_weight, self._padded_in_bias)
+                q, g, k, v = projected.chunk(len(self._in_proj_sizes), dim=-1)
         else:
             # Slice per call: in_proj's parameters may be created or replaced after __init__.
             rows = 2 * self.q_size
@@ -1030,17 +1058,19 @@ class AttentionPairBias(nn.Module):
             if len(biases) > 1:
                 biases = [biases[0], biases[1].to(dtype=kernel_dtype)]
 
-        _b_flat = 1
-        for _d in q.shape[:-2]:
-            _b_flat *= _d
-        attn_buf = (
-            ensure_buffer(
-                buffers, "pw_attn_output", (_b_flat, q.shape[-2], self.num_heads, self.head_dim), q.dtype, q.device
-            )
-            if buffers is not None
-            else None
-        )
+        kernel_head_dim = q.shape[-1] // self.num_heads  # D, or the padded D when _prep_qkvg padded the heads
+        buf_shape = (math.prod(q.shape[:-2]), q.shape[-2], self.num_heads, kernel_head_dim)
+        attn_buf = ensure_buffer(buffers, "pw_attn_output", buf_shape, q.dtype, q.device)
+        padded = kernel_head_dim != self.head_dim
+        if padded:
+            # The backend takes padded heads as [*, S, H, Dp].
+            q, k, v = (x.unflatten(-1, (self.num_heads, kernel_head_dim)) for x in (q, k, v))
+            if attn_buf is None:
+                attn_buf = q.new_empty(buf_shape)
         mha_o = self.attn.forward(q, k, v, biases=biases, metadata=attn_metadata, output=attn_buf)
+        if padded:
+            # The backend returns each head's first D columns; _attention_output reads the zero padding too.
+            mha_o = attn_buf
         if mha_o.dtype != attn_in_dtype:
             mha_o = mha_o.to(dtype=attn_in_dtype)
         return mha_o
@@ -1068,13 +1098,19 @@ class AttentionPairBias(nn.Module):
         output_gate_logits: torch.Tensor | None,
     ) -> torch.Tensor:
         """Gate, project, output-gate and add the residual to the attention core's output."""
-        if residual is not None and self._epilogue is not None:
+        padded = mha_o.shape[-1] != self.head_dim
+        if residual is not None and self._epilogue is not None and not padded:
             fused = self._fused_output(mha_o, g, residual, single_embedding, output_gate_logits)
             if fused is not None:
                 return fused
 
         # Nothing reads the attention output or the gate columns again.
-        update = self.proj_o(mha_o.reshape(g.shape).mul_(g.sigmoid_()))
+        gated = mha_o.reshape(g.shape).mul_(g.sigmoid_())
+        if padded:
+            # The heads' zero padding meets zero columns of proj_o's padded copy, so nothing is sliced or copied back.
+            update = F.linear(gated, self._padded_out_weight, self.proj_o.bias)
+        else:
+            update = self.proj_o(gated)
         if output_gate_logits is not None:
             # Precomputed ``output_projection(single_embedding)``: not projected again.
             update = update * output_gate_logits.sigmoid()
@@ -1087,6 +1123,28 @@ class AttentionPairBias(nn.Module):
                 output=update,
             )
         return update if residual is None else residual + update
+
+    def post_load_weights(self) -> None:
+        """Zero-pad each head of the loaded ``in_proj`` and ``proj_o`` to the attention kernel's head dim.
+
+        The padded copies sit beside the loaded weights, so the checkpoint layout is unchanged, and :meth:`forward`
+        only reads them. ``recursive_calling_load_weights`` calls this after loading, and ``load_state_dict`` does
+        through a hook; code that fills the weights any other way calls it afterwards.
+        """
+        if self._padded_head_dim is None:
+            return
+        heads, dim, padded_dim = self.num_heads, self.head_dim, self._padded_head_dim
+        segments = len(self._in_proj_sizes)
+        w_in, b_in, w_out = self.in_proj.weight, self.in_proj.bias, self.proj_o.weight
+        in_weight = w_in.new_zeros(segments, heads, padded_dim, w_in.shape[-1])
+        in_weight[:, :, :dim] = w_in.view(segments, heads, dim, -1)
+        in_bias = b_in.new_zeros(segments, heads, padded_dim)
+        in_bias[:, :, :dim] = b_in.view(segments, heads, dim)
+        out_weight = w_out.new_zeros(w_out.shape[0], heads, padded_dim)
+        out_weight[:, :, :dim] = w_out.view(-1, heads, dim)
+        self._padded_in_weight = in_weight.flatten(0, 2)
+        self._padded_in_bias = in_bias.flatten()
+        self._padded_out_weight = out_weight.flatten(1)
 
     def _fused_output(
         self,

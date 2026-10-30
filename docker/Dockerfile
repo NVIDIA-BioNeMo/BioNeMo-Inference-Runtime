@@ -46,11 +46,10 @@ ENV UV_BREAK_SYSTEM_PACKAGES=1 \
     UV_LINK_MODE=copy \
     UV_PYTHON_DOWNLOADS=never
 
-# What the extension build actually needs. nvcc is NOT required to compile CUDA
-# here -- the kernels ship precompiled -- it is only read to stamp the wheel's
-# +cuXYZ local version, and CUDA_TAG overrides that. The C++ side needs cuda.h
-# and the libcuda stub to link against the driver API.
-RUN test -f "${CUDA_HOME}/include/cuda.h" \
+# CuTeDSL kernels ship precompiled; the default extension also compiles the
+# ClaudeKit SM90 CUDA kernel. CUDA_TAG only overrides the wheel version tag.
+RUN nvcc --version \
+    && test -f "${CUDA_HOME}/include/cuda.h" \
     && test -f "${CUDA_HOME}/lib64/stubs/libcuda.so"
 
 # Install Git and its LFS transport here, ahead of any stage that may carry
@@ -182,12 +181,14 @@ CMD ["bash"]
 FROM devdeps AS wheel
 WORKDIR /src
 COPY . /src
+# A local build.env must not turn a release image into a Python-only wheel.
+ENV BIOIR_BUILD_CUTEDSL_KERNELS=1
 # Make wheel ZIP metadata derive from the source revision rather than build time.
 ARG SOURCE_DATE_EPOCH
 RUN test -n "${SOURCE_DATE_EPOCH}"
 ENV SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH}
-# State the CUDA tag explicitly so the wheel's local version does not depend on
-# nvcc being present or on which toolkit the base image happens to carry.
+# State the CUDA tag explicitly to label the wheel independently of the
+# toolkit version the build image carries.
 ARG CUDA_TAG=
 ENV CUDA_TAG=${CUDA_TAG}
 # Compile jobs. Empty means "ask the machine", which is right locally and on a

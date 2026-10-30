@@ -59,6 +59,15 @@ wheel's `+cuXYZ` local version; `CUDA_TAG` overrides that version tag, and
 make -C docker wheel CUDA_TAG=cu130 BUILD_JOBS=8
 ```
 
+The wheel stage forces `BIOIR_BUILD_CUTEDSL_KERNELS=1`, overriding an opted-out
+local `build.env`. The runtime stage checks the installed extension and its
+library dependencies. On a GPU host, verify the SM90 launcher before testing
+or benchmarking a wheel or editable install:
+
+```bash
+python -c "from bionemo_ir._torch.attention_backend.triangle_attention.claude_kit import _load_claude_kit_modules; _load_claude_kit_modules()"
+```
+
 Below is the Dockerfile stages graph
 
 ```mermaid

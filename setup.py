@@ -484,6 +484,9 @@ class CMakeBuild(build_ext):
             f"-DCMAKE_LIBRARY_OUTPUT_DIRECTORY_{configuration.upper()}={extension_dir}",
             f"-DPython_EXECUTABLE={sys.executable}",
             f"-DBIOIR_CUBIN_MATERIALIZED_DIR={materialized_dir}",
+            # A reused CMake tree may have disabled this launcher. Packaged
+            # builds must carry it so SM90 does not silently run the SM80 path.
+            "-DBIOIR_BUILD_CLAUDE_KIT_KERNELS=ON",
         ]
         subprocess.run(configure_command, cwd=ROOT_DIR, check=True)
 

@@ -41,17 +41,18 @@ API, refer to [Python API](ref/api.md).
   already available. The development image includes the repository's minimum
   accepted version.
 
-- **Toolchain**: a C++17 compiler and CUDA toolkit headers, only to build the
-  extension from source. CMake and nanobind are declared build dependencies, so
-  the build frontend supplies them.
+- **Toolchain**: a C++17 compiler and the CUDA toolkit, including `nvcc`, to
+  build the extension from source. CMake and nanobind are declared build
+  dependencies, so the build frontend supplies them.
 
 Verify these requirements with the commands in
 [Collecting System Information][system-information]. If the requirements are
 not met, follow the [GPU Stack][gpu-stack] guide.
 
-The kernels are **precompiled**. Neither building the wheel nor running it needs
-`nvcc`. Running needs the driver's `libcuda.so.1`, plus a C compiler and
-`Python.h` for Triton's launcher.
+CuTeDSL kernels are **precompiled**. The default extension also compiles the
+ClaudeKit SM90 triangle-attention kernel with `nvcc`, on both x86_64 and
+aarch64. Running a wheel needs no CUDA compiler: it needs the driver's
+`libcuda.so.1`, plus a C compiler and `Python.h` for Triton's launcher.
 
 Host and development-container commands use uv and the committed lock. The
 container reuses its preinstalled locked dependencies for native rebuilds.
@@ -94,13 +95,14 @@ the editable native extension:
 
 ```bash
 uv sync --locked
-uv run --locked python -c "import bionemo_ir.libs._cutedsl_kernels; print('ok')"
+uv run --locked python -c "from bionemo_ir._torch.attention_backend.triangle_attention.claude_kit import _load_claude_kit_modules; _load_claude_kit_modules()"
 uv run --locked prek install
 ```
 
 uv downloads a compatible Python when the host has no Python 3.12 interpreter.
-It installs the `dev` dependency group by default. If `nvcc` is not on
-`PATH`, set the wheel's CUDA tag explicitly:
+It installs the `dev` dependency group by default. Put the CUDA toolkit's
+`bin/` directory on `PATH` before building. `CUDA_TAG` overrides only the
+wheel's version tag; it does not replace the CUDA compiler:
 
 ```bash
 CUDA_TAG=cu132 uv sync --locked
@@ -197,8 +199,20 @@ payloads inside the archive, so their native build needs no private compiler
 code. Verify the active environment:
 
 ```bash
-python -c "import bionemo_ir.libs._cutedsl_kernels; print('ok')"
+python -c "from bionemo_ir._torch.attention_backend.triangle_attention.claude_kit import _load_claude_kit_modules; _load_claude_kit_modules()"
 ```
+
+Importing the extension alone does not prove it contains the SM90 launcher.
+Keep `BIOIR_BUILD_CUTEDSL_KERNELS=1` for source builds used on Hopper. A
+missing launcher makes the heuristic router log a warning once per process
+and use the slower SM80 CuTeDSL kernel for eligible BF16 D=32 calls.
+
+After warmup or inference, each `HeuristicTriangleAttention` backend exposes
+`route_provenance`: a JSON-serializable list of selected delegates keyed by
+device, dtype, batch, tokens, rows, heads, head dimension and LSE request.
+Save it with run metadata outside the timed region. It includes every cached
+shape, including routes used by CUDA graph replays; `last_backend_name` only
+describes the most recent Python call.
 
 ### CuTeDSL Compiler
 
@@ -232,10 +246,9 @@ Triton, and CUDA stack; `--no-deps` adds only the mounted checkout to its
 writable development venv. Do not use the container command in a general
 interpreter because it suppresses dependencies the package requires.
 
-One thing the isolated build environment does not have is `torch`. The wheel's
-CUDA tag comes from `nvcc` first and only falls back to `torch.version.cuda`, so
-this is invisible wherever `nvcc` is on `PATH`. Where it is not, set the tag
-rather than reaching for the flag:
+The isolated build environment does not have `torch`. The wheel's CUDA tag
+comes from `nvcc` first. To label a build explicitly while keeping the native
+extension enabled:
 
 ```bash
 # Configured host.

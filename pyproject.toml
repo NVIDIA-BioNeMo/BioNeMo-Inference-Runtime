@@ -217,7 +217,6 @@ cache-keys = [
   { env = "BIOIR_CUTLASS_INCLUDE_DIR" },
   { env = "CUTLASS_PATH" },
   { env = "CUTLASS_ROOT" },
-  { env = "BIOIR_BUILD_CLAUDE_KIT_KERNELS" },
   { env = "BIOIR_CUBIN_ARTIFACT_ROOT" },
   { env = "BIOIR_BUILD_CUTEDSL_KERNELS" },
   { env = "BIOIR_VERSION_LOCAL" },

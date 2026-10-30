@@ -15,6 +15,7 @@
 
 from __future__ import annotations
 
+import json
 import sys
 import warnings
 from types import SimpleNamespace
@@ -160,6 +161,66 @@ def test_heuristic_falls_back_when_claude_kit_is_unavailable(monkeypatch: pytest
     assert backend.forward(q, q, q) is q
     assert backend.last_backend_name == "CuTeDSL"
     assert len(delegates["CuTeDSL"].calls) == 1
+    assert backend.route_provenance[0]["backend"] == "CuTeDSL"
+
+
+@pytest.mark.parametrize("native_policy", [None, "ClaudeKit"])
+def test_missing_claude_kit_logs_once_across_layers_and_shapes(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture, native_policy: str | None
+) -> None:
+    monkeypatch.setattr(heuristic_module, "_warned_missing_claude_kit", False)
+    with caplog.at_level("WARNING", logger=heuristic_module.__name__):
+        for layer in range(3):
+            backend = HeuristicTriangleAttention(layer, 4, 32, 4)
+            _install_fake_delegates(backend, monkeypatch)
+            monkeypatch.setattr(heuristic_module, "_native_policy", lambda *_args: native_policy)
+            monkeypatch.setattr(ClaudeKitTriangleAttentionSM90D32, "native_available", staticmethod(lambda: False))
+            for tokens in (256, 373, 959, 1734):
+                q = torch.empty((1, tokens, tokens, 128), dtype=torch.bfloat16, device="meta")
+                backend.forward(q, q, q)
+                assert backend.last_backend_name == "CuTeDSL"
+    assert len(caplog.records) == 1
+    assert "SM80" in caplog.text
+    assert "BIOIR_BUILD_CUTEDSL_KERNELS=1" in caplog.text
+
+
+@pytest.mark.parametrize(("available", "tokens"), [(True, 373), (False, 29)])
+def test_native_and_below_crossover_routes_do_not_warn(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture, available: bool, tokens: int
+) -> None:
+    monkeypatch.setattr(heuristic_module, "_warned_missing_claude_kit", False)
+    backend = HeuristicTriangleAttention(0, 4, 32, 4)
+    _install_fake_delegates(backend, monkeypatch)
+    monkeypatch.setattr(ClaudeKitTriangleAttentionSM90D32, "native_available", staticmethod(lambda: available))
+    q = torch.empty((1, tokens, tokens, 128), dtype=torch.bfloat16, device="meta")
+    backend.forward(q, q, q)
+    assert not caplog.records
+    assert not heuristic_module._warned_missing_claude_kit
+
+
+def test_route_provenance_records_all_selected_delegates(monkeypatch: pytest.MonkeyPatch) -> None:
+    backend = HeuristicTriangleAttention(0, 4, 32, 4)
+    _install_fake_delegates(backend, monkeypatch)
+    assert backend.route_provenance == []
+    for tokens in (29, 373, 373):
+        q = torch.empty((1, tokens, tokens, 128), dtype=torch.bfloat16, device="meta")
+        backend.forward(q, q, q)
+    routes = json.loads(json.dumps(backend.route_provenance))
+    assert [(r["tokens"], r["backend"]) for r in routes] == [(29, "CuTeDSL"), (373, "ClaudeKit")]
+    assert routes[1] == {
+        "backend": "ClaudeKit",
+        "sm_version": 90,
+        "device_index": -1,
+        "dtype": "torch.bfloat16",
+        "num_heads": 4,
+        "head_dim": 32,
+        "batch": 1,
+        "tokens": 373,
+        "i_dim": 373,
+        "has_lse": False,
+    }
+    routes[0]["backend"] = "changed"
+    assert backend.route_provenance[0]["backend"] == "CuTeDSL"
 
 
 def test_heuristic_delegate_receives_buffers_unchanged(monkeypatch: pytest.MonkeyPatch):
@@ -604,7 +665,22 @@ def native_claude_kit() -> tuple[object, object]:
     try:
         return claude_kit_module._load_claude_kit_modules()
     except ClaudeKitTriangleAttentionUnavailable as error:
-        pytest.skip(str(error))
+        pytest.fail(f"SM90 tests require the native ClaudeKit launcher: {error}")
+
+
+def test_sm90_native_tests_fail_when_launcher_is_absent(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda: (9, 0))
+
+    def unavailable() -> None:
+        raise ClaudeKitTriangleAttentionUnavailable("extension has no ClaudeKit submodule")
+
+    monkeypatch.setattr(claude_kit_module, "_load_claude_kit_modules", unavailable)
+    try:
+        with pytest.raises(pytest.fail.Exception, match="SM90 tests require the native ClaudeKit launcher"):
+            native_claude_kit.__wrapped__()
+    except pytest.skip.Exception as error:
+        pytest.fail(f"fixture skipped on a missing SM90 launcher: {error}")
 
 
 def _native_inputs(

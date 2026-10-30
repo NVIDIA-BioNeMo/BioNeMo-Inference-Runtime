@@ -57,6 +57,34 @@ def _setup_version(monkeypatch: pytest.MonkeyPatch, **environment: str) -> str:
     return str(_setup_metadata(monkeypatch, **environment)["version"])
 
 
+def test_native_build_enables_hopper_launcher(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """A packaged build must override a cached launcher opt-out."""
+    metadata = _setup_metadata(monkeypatch, CUDA_TAG="cu132", BIOIR_BUILD_CUTEDSL_KERNELS="1")
+    build_class = metadata["cmdclass"]["build_ext"]
+    build_globals = build_class.build_extension.__globals__
+    monkeypatch.setitem(build_globals, "ROOT_DIR", tmp_path)
+    monkeypatch.setitem(build_globals, "_remove_stale_kernel_libraries", lambda paths: None)
+    monkeypatch.setitem(build_globals, "_materialize_cutedsl_kernel_payloads", lambda path: path)
+    build = build_class(setuptools.Distribution())
+    build.build_lib = str(tmp_path / "lib")
+    build.build_temp = str(tmp_path / "temp")
+    extension = metadata["ext_modules"][0]
+    extension_path = Path(build.get_ext_fullpath(extension.name)).resolve()
+    commands: list[list[str]] = []
+
+    def run(command: list[str], *, cwd: Path, check: bool) -> None:
+        assert cwd == tmp_path and check
+        commands.append(command)
+        if "--build" in command:
+            extension_path.touch()
+
+    monkeypatch.setattr(subprocess, "run", run)
+    build.build_extension(extension)
+
+    assert "-DBIOIR_BUILD_CLAUDE_KIT_KERNELS=ON" in commands[0]
+    assert commands[1][:2] == ["cmake", "--build"]
+
+
 def test_wheel_version_records_the_toolkit_and_the_commit(monkeypatch: pytest.MonkeyPatch) -> None:
     """The local version is what tells two builds of one base version apart."""
     version = _setup_version(monkeypatch, CUDA_TAG="cu132", BIOIR_VERSION_LOCAL="g1a2b3c4 some/branch")

@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import importlib
+import logging
 import warnings
 from dataclasses import dataclass
 
@@ -48,6 +49,19 @@ _DENSE_MASK_BACKENDS = frozenset({_CUEQUIV, _SDPA})
 _MASK_INF = 1e9
 # Byte cap on the summed row mask and pair bias of one SDPA row chunk.
 _SDPA_MASK_BYTES = 1 << 30
+_logger = logging.getLogger(__name__)
+_warned_missing_claude_kit = False
+
+
+def _warn_missing_claude_kit() -> None:
+    global _warned_missing_claude_kit
+    if not _warned_missing_claude_kit:
+        _warned_missing_claude_kit = True
+        _logger.warning(
+            "SM90 triangle attention selected ClaudeKit, but its native launcher is unavailable; "
+            "falling back to CuTeDSL (SM80). Rebuild BioIR with BIOIR_BUILD_CUTEDSL_KERNELS=1 "
+            "and the CUDA toolkit, or install a wheel containing the ClaudeKit launcher."
+        )
 
 
 class HeuristicTriangleAttentionMetadata(ClaudeKitTriangleAttentionMetadata):
@@ -283,6 +297,29 @@ class HeuristicTriangleAttention(AttentionBackend[HeuristicTriangleAttentionMeta
         """Return the delegate selected by the most recent call."""
         return self._last_backend_name
 
+    @property
+    def route_provenance(self) -> list[dict[str, str | int | bool]]:
+        """Return JSON-serializable delegates and static shapes selected since construction.
+
+        Read after eager warmup or inference, outside a timed region. Cached
+        routes also describe CUDA graph replays, which do not reenter Python.
+        """
+        return [
+            {
+                "backend": backend,
+                "sm_version": self._sm_version,
+                "device_index": key.device_index,
+                "dtype": str(key.dtype),
+                "num_heads": self.num_heads,
+                "head_dim": self.head_dim,
+                "batch": key.batch,
+                "tokens": key.tokens,
+                "i_dim": key.i_dim,
+                "has_lse": key.has_lse,
+            }
+            for key, backend in self._route_cache.items()
+        ]
+
     def _create_delegate(self, backend_name: str) -> AttentionBackend:
         if backend_name == _CLAUDE_KIT:
             backend_cls = ClaudeKitTriangleAttentionSM90D32
@@ -324,6 +361,7 @@ class HeuristicTriangleAttention(AttentionBackend[HeuristicTriangleAttentionMeta
         if choice == _CLAUDE_KIT:
             if ClaudeKitTriangleAttentionSM90D32.native_available():
                 return choice
+            _warn_missing_claude_kit()
             if cutedsl_supported:
                 return _CUTEDSL
         elif choice == _CUTEDSL and cutedsl_supported:

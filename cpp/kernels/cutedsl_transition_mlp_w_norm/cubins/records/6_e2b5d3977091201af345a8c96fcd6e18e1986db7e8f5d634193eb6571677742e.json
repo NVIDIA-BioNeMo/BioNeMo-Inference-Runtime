@@ -1,0 +1,49 @@
+{
+  "executables": {},
+  "kernel_symbols": {},
+  "sm90_launches": {},
+  "variants": [
+    {
+      "executable": "364307ebe65de6a8dca19d6fc05c871d9ac5048cc8637855c712c7fa12f48bce",
+      "runtime_metadata": {
+        "ctas_per_sm": 1,
+        "hidden": 128,
+        "is_persistent": true,
+        "is_silu_gate": false,
+        "layouts": 65536,
+        "num_threads": 512,
+        "tile_m": 256,
+        "width": 64
+      },
+      "variant_id": "633eae05fa5eef986e5c"
+    },
+    {
+      "executable": "4450d0b3baf7d7b0a56b3c0ef52d63ad23151c6141af0e884825b2a864b6421b",
+      "runtime_metadata": {
+        "ctas_per_sm": 1,
+        "hidden": 768,
+        "is_persistent": false,
+        "is_silu_gate": false,
+        "layouts": 12079,
+        "num_threads": 256,
+        "tile_m": 128,
+        "width": 384
+      },
+      "variant_id": "66d9999f20b7e2816471"
+    },
+    {
+      "executable": "e6eabc178028b6d25f34382e0df74142ad9974a7f4911025ab5b0a613528d345",
+      "runtime_metadata": {
+        "ctas_per_sm": 1,
+        "hidden": 512,
+        "is_persistent": false,
+        "is_silu_gate": false,
+        "layouts": 2827,
+        "num_threads": 256,
+        "tile_m": 128,
+        "width": 128
+      },
+      "variant_id": "66ef604d7a9fec9075fe"
+    }
+  ]
+}

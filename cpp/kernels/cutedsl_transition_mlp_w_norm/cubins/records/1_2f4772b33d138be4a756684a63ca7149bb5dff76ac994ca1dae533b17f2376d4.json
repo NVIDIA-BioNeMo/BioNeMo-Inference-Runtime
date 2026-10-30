@@ -1,0 +1,72 @@
+{
+  "executables": {
+    "10440162c712fdf5a1916cfbea148581393a8577fe9e17a04ac659e7578177cf": {
+      "dtype": "bf16",
+      "dynamic_smem_bytes": 219136,
+      "image_sha256": "71dfdc853a56b6715b3895d577874687e179ad377da4558f99855ce618a2bd07",
+      "image_size": 50128,
+      "kernel_sm": 90,
+      "kernel_symbol": "400db1b65b5ae4abbe134452c2bae722d31a62dc1116296bc79aa895190eabfc",
+      "launch_abi": "transition_mlp_w_norm_sm90_v3",
+      "target_arch": "sm_90a",
+      "target_sm": 90
+    },
+    "1a658e9ac9fc2862ec6fbe865c8826430e198bb6f7838744c851e964dc5bb11f": {
+      "dtype": "bf16",
+      "dynamic_smem_bytes": 227328,
+      "image_sha256": "facdd1debd282a2d46c0f7b837cb8a4e35d850cdc2ac57f559705b1f34c1fa0d",
+      "image_size": 55248,
+      "kernel_sm": 90,
+      "kernel_symbol": "400db1b65b5ae4abbe134452c2bae722d31a62dc1116296bc79aa895190eabfc",
+      "launch_abi": "transition_mlp_w_norm_sm90_v3",
+      "target_arch": "sm_90a",
+      "target_sm": 90
+    }
+  },
+  "kernel_symbols": {},
+  "sm90_launches": {},
+  "variants": [
+    {
+      "executable": "ddc61903f2a6d597ce1c3f37f337a4a0cd8a88666f17c1008adcb797d5115d20",
+      "runtime_metadata": {
+        "ctas_per_sm": 1,
+        "hidden": 128,
+        "is_persistent": false,
+        "is_silu_gate": false,
+        "layouts": 197379,
+        "num_threads": 512,
+        "tile_m": 256,
+        "width": 64
+      },
+      "variant_id": "1c37db8af1a695a59274"
+    },
+    {
+      "executable": "a4643d49ed41695e6b452dd7886ebfcdbad88a956dba320e02706e468c8af48c",
+      "runtime_metadata": {
+        "ctas_per_sm": 1,
+        "hidden": 256,
+        "is_persistent": false,
+        "is_silu_gate": true,
+        "layouts": 723715,
+        "num_threads": 512,
+        "tile_m": 256,
+        "width": 64
+      },
+      "variant_id": "1d6317f43a156677bb39"
+    },
+    {
+      "executable": "0fa086e2ecebece6b51b9a566b335a2b3bfe3ba8ea7e239de074850922273aba",
+      "runtime_metadata": {
+        "ctas_per_sm": 1,
+        "hidden": 256,
+        "is_persistent": false,
+        "is_silu_gate": true,
+        "layouts": 771,
+        "num_threads": 256,
+        "tile_m": 128,
+        "width": 128
+      },
+      "variant_id": "1d83d9fee7530f728c8c"
+    }
+  ]
+}

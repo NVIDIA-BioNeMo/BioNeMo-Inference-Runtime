@@ -2034,7 +2034,8 @@ def test_rfproteina_model_existing_protein_redesign_is_reproducible_and_restores
     assert first.partial_redesign is not None
     assert first.insertion is not None
     assert first.insertion.residue_types[0, 2] == 19
-    assert first.residue_types[0, 2] != 19
+    # The raw prediction can match the conditioned class by chance.
+    torch.testing.assert_close(first.residue_types, first.sequence_logits.argmax(dim=-1))
     assert first.partial_redesign.num_steps == 3
     assert first.partial_redesign.start_times == {
         "bb_ca": 0.7,

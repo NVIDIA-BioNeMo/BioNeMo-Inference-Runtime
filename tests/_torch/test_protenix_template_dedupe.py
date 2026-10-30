@@ -19,6 +19,7 @@ import torch
 
 from bionemo_ir._torch.modules.protenix import ProtenixTemplateEmbedder
 from bionemo_ir.models.protenix.config import TemplateEmbedderConfig
+from tests._torch import run_post_load_weights
 
 N_TOKEN = 24
 N_TEMPLATES = 4
@@ -39,7 +40,7 @@ def _embedder(n_blocks: int) -> ProtenixTemplateEmbedder:
     with torch.no_grad():
         for parameter in model.parameters():
             parameter.normal_(mean=0.0, std=0.05)
-    return model
+    return run_post_load_weights(model)
 
 
 def _features(order: list[int]) -> dict[str, torch.Tensor]:

@@ -1,0 +1,110 @@
+/*
+ * SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+#include "launcher.h"
+
+#include <nanobind/nanobind.h>
+#include <nanobind/stl/vector.h>
+
+#include <cstdint>
+
+namespace nb = nanobind;
+using namespace nb::literals;
+
+namespace bioir::cutedsl::transition_mlp_w_norm
+{
+
+void bind(nb::module_& parent)
+{
+  nb::module_ module = parent.def_submodule(
+    "transition_mlp_w_norm", "Direct CUDA Driver launcher for the precompiled SM90 transition with its LayerNorm");
+
+  nb::enum_<DType>(module, "DType").value("BFLOAT16", DType::kBFloat16);
+  nb::enum_<Activation>(module, "Activation")
+    .value("RELU", Activation::kReLU)
+    .value("SILU_GATE", Activation::kSiLUGate);
+
+  nb::class_<KernelSpec>(module, "KernelSpec")
+    .def_ro("target_sm", &KernelSpec::target_sm)
+    .def_ro("kernel_sm", &KernelSpec::kernel_sm)
+    .def_ro("width", &KernelSpec::width)
+    .def_ro("hidden", &KernelSpec::hidden)
+    .def_ro("activation", &KernelSpec::activation)
+    .def_ro("num_threads", &KernelSpec::num_threads)
+    .def_ro("tile_m", &KernelSpec::tile_m)
+    .def_ro("ctas_per_sm", &KernelSpec::ctas_per_sm)
+    .def_ro("layouts", &KernelSpec::layouts)
+    .def_ro("is_persistent", &KernelSpec::is_persistent);
+
+  nb::class_<KernelConfig>(module, "KernelConfig")
+    .def_ro("spec", &KernelConfig::spec)
+    .def_ro("dtype", &KernelConfig::dtype)
+    .def_ro("cubin", &KernelConfig::cubin)
+    .def_prop_ro("dynamic_smem_bytes", &dynamic_smem_bytes)
+    .def_prop_ro("variant_id", [](KernelConfig const& config) { return config.cubin.variant_id; })
+    .def_prop_ro("kernel_symbol", [](KernelConfig const& config) { return config.cubin.kernel_symbol; });
+
+  nb::class_<LaunchParams>(module, "LaunchParams")
+    .def(nb::init<>())
+    .def_rw("x", &LaunchParams::x)
+    .def_rw("mask", &LaunchParams::mask)
+    .def_rw("image", &LaunchParams::image)
+    .def_rw("vec", &LaunchParams::vec)
+    .def_rw("output", &LaunchParams::output)
+    .def_rw("n_valid", &LaunchParams::n_valid)
+    .def_rw("rows", &LaunchParams::rows)
+    .def_rw("n", &LaunchParams::n)
+    .def_rw("n_batch", &LaunchParams::n_batch)
+    .def_rw("eps", &LaunchParams::eps)
+    .def_rw("residual", &LaunchParams::residual)
+    .def_rw("split", &LaunchParams::split)
+    .def_rw("tile_wgs", &LaunchParams::tile_wgs)
+    .def_rw("stream", &LaunchParams::stream);
+
+  /* The device ABI this launcher drives; an adapter that needs the launch layout arguments checks it. */
+  module.attr("LAUNCH_ABI") = "transition_mlp_w_norm_sm90_v3";
+  module.def("kernel_specs", &kernel_specs, "Return every registered fused transition image.");
+  module.def(
+    "supports_layout",
+    &supports_layout,
+    "spec"_a,
+    "split"_a,
+    "tile_wgs"_a,
+    "Whether the image takes split CTAs per row tile of tile_wgs warpgroups (0: every warpgroup).");
+  module.def(
+    "make_kernel_config",
+    &make_kernel_config,
+    "target_sm"_a,
+    "dtype"_a,
+    "width"_a,
+    "hidden"_a,
+    "activation"_a,
+    "persistent"_a = false,
+    "The shape's image that takes every launch layout, or its persistent one: the full tile at split 1 only.");
+  module.def(
+    "launch",
+    [](KernelConfig const& config, LaunchParams const& params)
+    {
+      nb::gil_scoped_release release;
+      transition_mlp_w_norm::launch(config, params);
+    },
+    "config"_a,
+    "params"_a,
+    "Launch using prepacked raw pointers, shapes, and stream.");
+}
+
+} // namespace bioir::cutedsl::transition_mlp_w_norm

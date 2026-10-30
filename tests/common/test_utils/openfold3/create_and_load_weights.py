@@ -34,6 +34,8 @@ def load_pair_transition_weights_torch(module, weights_and_biases, dtype=torch.f
         torch.cat([linear_b_weight.to(dtype).to("cuda"), linear_a_weight.to(dtype).to("cuda")], dim=0)
     )
     module.fc3.weight.data.copy_(linear_out_weight.to(dtype).to("cuda"))
+    # Refold the fused kernel's weights from the loaded ones, as recursive_calling_load_weights does.
+    module.post_load_weights()
 
 
 def create_msa_pair_weighted_averaging_weights(from_ref=None):

@@ -27,6 +27,7 @@ from bionemo_ir.models.boltz2.config import Boltz2Config, MSAModuleConfig, Templ
 from bionemo_ir.models.openfold3.config import AuxiliaryHeadsConfig
 from bionemo_ir.models.protenix.config import ConfidenceHeadConfig
 from bionemo_ir.pipeline.models.boltz2.const import num_tokens
+from tests._torch import run_post_load_weights
 
 requires_cuda = pytest.mark.skipif(not torch.cuda.is_available(), reason="the layers build their weights on CUDA")
 
@@ -54,7 +55,8 @@ def _pairformer_config(dtype: str) -> PairformerConfig:
 
 
 def _initialize(module: torch.nn.Module) -> torch.nn.Module:
-    """Fill the checkpoint-backed parameters with finite, deterministic values."""
+    """Fill the checkpoint-backed parameters with finite, deterministic values, then run every submodule's
+    ``post_load_weights`` as a checkpoint load does."""
     torch.manual_seed(0)
     with torch.no_grad():
         for name, parameter in module.named_parameters():
@@ -65,7 +67,7 @@ def _initialize(module: torch.nn.Module) -> torch.nn.Module:
         for submodule in module.modules():
             if isinstance(submodule, torch.nn.LayerNorm):
                 submodule.reset_parameters()
-    return module
+    return run_post_load_weights(module)
 
 
 def _record_tokens(pairformer: torch.nn.Module, tokens_seen: list[int]):

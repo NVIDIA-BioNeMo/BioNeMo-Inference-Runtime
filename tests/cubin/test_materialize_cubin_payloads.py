@@ -55,6 +55,7 @@ FAMILIES = (
     "pair_weighted_averaging",
     "pairwise_attention",
     "transition_mlp",
+    "transition_mlp_w_norm",
     "triangle_attention",
     "attn_epilogue",
     "trimul_kf_k1",
@@ -62,7 +63,7 @@ FAMILIES = (
     "trimul_kf_k3",
     "window_attention",
 )
-_BF16_ONLY_FAMILIES = {"transition_mlp", "trimul_kf_k1", "trimul_kf_k2", "trimul_kf_k3"}
+_BF16_ONLY_FAMILIES = {"transition_mlp", "transition_mlp_w_norm", "trimul_kf_k1", "trimul_kf_k2", "trimul_kf_k3"}
 # Operand names, TMA rank (per operand where they differ), whether an epilogue tile is recorded,
 # and threads per block, per native-SM90 family. The attention epilogue and transition MLP run one
 # load and two compute warpgroups; the TriMul KF K1 and K3 mix rank-2 rows with rank-3
@@ -112,6 +113,7 @@ def _aliases(family: str) -> list[dict[str, object]]:
                 "has_residual": True,
             }
         ],
+        "transition_mlp_w_norm": [{"width": 384, "hidden": 768, "is_silu_gate": False}],
         "triangle_attention": [{"head_dim": 64, "packed": False}],
         "attn_epilogue": [{"heads": 4, "head_dim": 32, "channels": 128, "has_bias": False, "has_output_gate": False}],
         "trimul_kf_k1": [{"C": 128, "D": 128, "bucket": 256}],
@@ -165,7 +167,7 @@ def _metadata(family: str, dtype: str, kernel_sm: int) -> dict[str, object]:
     common: dict[str, object] = {
         "dynamic_smem_bytes": 4096,
         "non_portable_cluster_size_allowed": kernel_sm in {90, 100}
-        and family not in {"adaln_layernorm_sigmoid", "window_attention"},
+        and family not in {"adaln_layernorm_sigmoid", "transition_mlp_w_norm", "window_attention"},
     }
     concrete: dict[str, object]
     if family == "adaln_layernorm_sigmoid":
@@ -302,6 +304,14 @@ def _metadata(family: str, dtype: str, kernel_sm: int) -> dict[str, object]:
             "tile_j": 64,
             "num_threads": 384,
             "sm90_launch": _sm90_launch(family, dtype) if kernel_sm == 90 else None,
+        }
+    elif family == "transition_mlp_w_norm":
+        concrete = {
+            "is_bfloat16": dtype == "bf16",
+            "width": 384,
+            "hidden": 768,
+            "num_threads": 256,
+            "tile_m": 128,
         }
     elif family == "window_attention":
         concrete = {
@@ -510,6 +520,12 @@ def test_materializes_every_family_registry_shape(tmp_path: Path, family: str) -
         # The synthetic record omits the 3-way SwiGLU axis, as every image
         # published before it does.
         assert "bool is_three_way;" in header
+    if family == "transition_mlp_w_norm":
+        # The synthetic record omits the activation, the CTAs per SM, the
+        # launch layouts and the persistent image, as every image of the first
+        # launch ABI does.
+        assert "bool is_silu_gate;" in header and "std::uint32_t ctas_per_sm;" in header
+        assert "std::uint32_t layouts;" in header and "bool is_persistent;" in header
     assert '"label"' not in index.read_text()
     assert all('"label"' not in path.read_text() for path in (index.parent / "records").glob("*.json"))
     objects = list((result.output_dir / "objects").glob("*.cubin"))
@@ -661,6 +677,76 @@ def test_window_attention_sm90_registry_has_no_tma_metadata(tmp_path: Path) -> N
     assert "TmaDescriptorInfo" not in header
     assert '"window_attention_sm90"' in source
     assert "    128U,\n" in source
+
+
+def test_transition_mlp_w_norm_sm90_registry_has_no_tma_metadata(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The image bulk-copies from raw addresses, so its record carries its shape, activation, launch geometry and
+    launch layouts, no maps."""
+    family = "transition_mlp_w_norm"
+    base = _metadata
+    monkeypatch.setattr(
+        sys.modules[__name__],
+        "_metadata",
+        lambda *args: {**base(*args), "is_silu_gate": True, "ctas_per_sm": 2, "layouts": 0x100, "is_persistent": True},
+    )
+    index = _write_case(tmp_path / "source", family, kernel_sm=90)
+    result = materializer.materialize([(family, index)], tmp_path / "build")
+    header = (result.output_dir / f"{family}_registry.h").read_text()
+    source = (result.output_dir / f"{family}_registry.cpp").read_text()
+
+    assert "SM90LaunchInfo" not in header
+    assert "TmaDescriptorInfo" not in header
+    assert (
+        "  std::int32_t width;\n  std::int32_t hidden;\n  bool is_silu_gate;\n  std::uint32_t num_threads;\n"
+        "  std::uint32_t tile_m;\n  std::uint32_t ctas_per_sm;\n  std::uint32_t layouts;\n  bool is_persistent;\n"
+    ) in header
+    assert '"transition_mlp_w_norm_sm90"' in source
+    assert "    true,\n    384,\n    768,\n    true,\n    256U,\n    128U,\n    2U,\n    256U,\n    true,\n" in source
+
+
+def test_transition_mlp_w_norm_records_predating_the_activation_keep_their_meaning(tmp_path: Path) -> None:
+    """A record of the first launch ABI names no activation, no CTAs per SM, no launch layouts and no persistent image:
+    it materializes as the ReLU image it is, one CTA per SM, taking no layout, not persistent. The launcher still
+    declines it, since it matches images by launch ABI too."""
+    family = "transition_mlp_w_norm"
+    index = _write_case(tmp_path / "source", family, kernel_sm=90)
+    result = materializer.materialize([(family, index)], tmp_path / "build")
+    source = (result.output_dir / f"{family}_registry.cpp").read_text()
+    assert "    true,\n    384,\n    768,\n    false,\n    256U,\n    128U,\n    1U,\n    0U,\n    false,\n" in source
+
+
+def test_transition_mlp_w_norm_activation_is_a_distinct_runtime_key(tmp_path: Path) -> None:
+    """ReLU and SwiGLU images of one shape coexist, and so do a shape's persistent image and the one taking every
+    layout; two images of one activation and one kind collide."""
+    family = "transition_mlp_w_norm"
+    index = _write_case(tmp_path / "source", family, kernel_sm=90)
+
+    def add_variant(
+        is_silu_gate: bool, seed: bytes, is_persistent: bool = False
+    ) -> Callable[[dict[str, object]], None]:
+        def add(value: dict[str, object]) -> None:
+            variants = value["variants"]
+            assert isinstance(variants, list)
+            twin = json.loads(json.dumps(variants[0]))
+            twin["runtime_metadata"]["is_silu_gate"] = is_silu_gate
+            twin["runtime_metadata"]["is_persistent"] = is_persistent
+            twin["variant_id"] = hashlib.sha256(seed).hexdigest()[:20]
+            variants.append(twin)
+            variants.sort(key=lambda variant: variant["variant_id"])
+
+        return add
+
+    _mutate_records(index, add_variant(True, b"silu-gate"))
+    _mutate_records(index, add_variant(False, b"relu-persistent", is_persistent=True))
+    result = materializer.materialize([(family, index)], tmp_path / "build")
+    source = (result.output_dir / f"{family}_registry.cpp").read_text()
+    assert source.count('"transition_mlp_w_norm_sm90"') == 3
+
+    _mutate_records(index, add_variant(False, b"second-relu"))
+    with pytest.raises(materializer.MaterializationError, match="runtime key"):
+        materializer.verify_packs([(family, index)])
 
 
 def test_trimul_kf_records_predating_new_axes_keep_their_meaning(tmp_path: Path) -> None:

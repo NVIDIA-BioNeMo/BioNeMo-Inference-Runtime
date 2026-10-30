@@ -83,6 +83,8 @@ def test_openfold3_diffusion_pair_transition_chunks_token_rows() -> None:
         for layer in module.transition_z:
             assert layer.auto_chunk_policy is not None
             layer.auto_chunk_policy = layer.auto_chunk_policy.replace(chunk_size=7, min_size=1)
+            # The chunked path itself: the LayerNorm-fused kernel would take the whole map in one call.
+            layer._w_norm_op = None
             for parameter in layer.parameters():
                 parameter.normal_(mean=0.0, std=0.1)
             expected = layer._forward_impl(pair)

@@ -835,6 +835,8 @@ def load_transition_weights_torch(module, weights_and_biases, dtype=torch.float3
         ]
     )
     module.fc3.load_weights([{"weight": fc3_weight.to(dtype).to("cuda"), "bias": None}])
+    # Refold the fused kernel's weights from the loaded ones, as recursive_calling_load_weights does.
+    module.post_load_weights()
 
 
 def create_pairformer_layer_weights(

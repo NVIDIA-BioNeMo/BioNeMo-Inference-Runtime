@@ -49,6 +49,7 @@ _FAMILIES = frozenset(
         "pair_weighted_averaging",
         "pairwise_attention",
         "transition_mlp",
+        "transition_mlp_w_norm",
         "triangle_attention",
         "trimul_kf_k1",
         "trimul_kf_k2",
@@ -74,9 +75,12 @@ _PREVIOUS_FAMILIES = frozenset(
         "trimul_kf_k1",
         "trimul_kf_k2",
         "trimul_kf_k3",
+        "window_attention",
     }
 )
-_BF16_ONLY_FAMILIES = frozenset({"transition_mlp", "trimul_kf_k1", "trimul_kf_k2", "trimul_kf_k3"})
+_BF16_ONLY_FAMILIES = frozenset(
+    {"transition_mlp", "transition_mlp_w_norm", "trimul_kf_k1", "trimul_kf_k2", "trimul_kf_k3"}
+)
 _DTYPES = {
     "adaln_layernorm_sigmoid": frozenset({"fp16", "bf16", "fp32"}),
     **{family: frozenset({"bf16"}) for family in _BF16_ONLY_FAMILIES},
@@ -401,6 +405,27 @@ _FAMILY_SPECS: dict[str, _FamilySpec] = {
         ),
         sm90=_Sm90Spec("enabled", ("x", "w1", "w2", "residual", "output"), rank=2),
     ),
+    # The SM90 image bulk-copies from raw addresses, not through TMA, so it records no tensor maps.
+    "transition_mlp_w_norm": _FamilySpec(
+        fields=(
+            _Field("is_bfloat16", _BOOL, "bool is_bfloat16;"),
+            _Field("width", _POSITIVE, "std::int32_t width;"),
+            _Field("hidden", _POSITIVE, "std::int32_t hidden;"),
+            # Every image published before SwiGLU existed is ReLU.
+            _Field("is_silu_gate", _BOOL, "bool is_silu_gate;", default=False),
+            _Field("num_threads", _POSITIVE, "std::uint32_t num_threads;", suffix="U"),
+            _Field("tile_m", _POSITIVE, "std::uint32_t tile_m;", suffix="U"),
+            # Every image published before the field existed ran one CTA per SM.
+            _Field("ctas_per_sm", _POSITIVE, "std::uint32_t ctas_per_sm;", suffix="U", default=1),
+            # The (tile_wgs, split) launch layouts, one bit each; images published before the field took none of
+            # them, being of an earlier launch ABI.
+            _Field("layouts", _COUNT, "std::uint32_t layouts;", suffix="U", default=0),
+            # The persistent image of a shape (the full tile at split 1 only) beside the one taking every layout;
+            # every image published before the field is the latter's predecessor.
+            _Field("is_persistent", _BOOL, "bool is_persistent;", default=False),
+        ),
+        runtime_key=("is_bfloat16", "width", "hidden", "is_silu_gate", "is_persistent"),
+    ),
     "attn_epilogue": _FamilySpec(
         fields=(
             _Field("heads", _POSITIVE, "std::int32_t heads;"),
@@ -547,6 +572,7 @@ _PUBLIC_ALIAS_FIELDS: dict[str, tuple[tuple[str, int | None], ...]] = {
         ("has_mask", None),
         ("has_residual", None),
     ),
+    "transition_mlp_w_norm": (("width", 1), ("hidden", 1), ("is_silu_gate", None)),
     "triangle_attention": (("head_dim", 1), ("packed", None)),
     "attn_epilogue": (
         ("heads", 1),
@@ -569,6 +595,8 @@ _PUBLIC_LEGACY_ALIAS_FIELDS = {
         (("K", 1), ("K1", 1), ("N", 1), ("has_bias", None)),
         (("K", 1), ("N", 1), ("has_bias", None)),
     ),
+    # The ReLU-only images name no activation.
+    "transition_mlp_w_norm": ((("width", 1), ("hidden", 1)),),
 }
 _PUBLIC_ALIAS_SENTINELS = {"gated_sigmoid": "fallback_tile", "outer_product_mean": "default_config"}
 _DTYPE_CODES = {"fp16": 0, "bf16": 1, "fp32": 2}

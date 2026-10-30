@@ -153,6 +153,8 @@ def test_transition_auto_chunk(torch_dtype: str, chunk_rows: int):
     policy = ChunkPolicy(chunk_size=chunk_rows, min_size=1, dim=1, min_rank=4)
     transition = Transition(dim, hidden, dtype=dtype, auto_chunk_policy=policy).to(device)
     transition.eval()
+    # The chunked path itself: the LayerNorm-fused kernel would take the whole map in one call.
+    transition._w_norm_op = None
     # Constructed weights are zero-initialized (production loads them); give them real values so
     # the dense-vs-chunked comparison is meaningful rather than 0 == 0.
     with torch.no_grad():
@@ -249,6 +251,8 @@ def test_msa_transition_cudnn_graph_matches_vanilla(cudnn_dynamic_shapes: bool) 
         enable_cudnn_graph=True,
         cudnn_dynamic_shapes=cudnn_dynamic_shapes,
     ).to(device)
+    # cuDNN against the plain linears, so neither takes the LayerNorm-fused kernel.
+    vanilla._w_norm_op = fused._w_norm_op = None
     # Only the opt-in holds plans; the default path builds them per row count.
     assert set(fused._cudnn_graph_plans) == ({"linear_relu", "linear_mask"} if cudnn_dynamic_shapes else set())
     with torch.no_grad():
@@ -309,21 +313,29 @@ class _CountingKernel:
 @pytest.mark.parametrize("masked", [False, True])
 @pytest.mark.parametrize("residual,inplace", [(False, False), (True, False), (True, True)])
 def test_transition_fuses_each_chunk(batch: int, normalize: bool, masked: bool, residual: bool, inplace: bool) -> None:
-    """A partial final chunk fuses its own residual, including non-contiguous batch slices."""
+    """A partial final chunk fuses its own residual, including non-contiguous batch slices.
+
+    At C = 128, H = 256, the one SwiGLU shape SM90 still ships the transition MLP for, and only without the residual:
+    SM90 runs residual calls as the LayerNorm-fused kernel, so those cases skip there.
+    """
     skip_if_not_sm90()
     torch.manual_seed(29)
     layer = init_module_weights(
         Transition(
-            64,
             128,
+            256,
             normalize=normalize,
             dtype=torch.bfloat16,
             auto_chunk_policy=ChunkPolicy(chunk_size=5, min_size=1),
         ).cuda()
     )
+    # The per-chunk transition MLP is the path for maps the LayerNorm-fused kernel declines.
+    layer._w_norm_op = None
+    if layer._fused_mlp_ops[(masked, residual)] is None:
+        pytest.skip("this GPU ships no SwiGLU transition MLP for C=128, H=256 with this mask and residual")
     counter = _CountingKernel(layer._fused_mlp_ops[(masked, residual)])
     layer._fused_mlp_ops[(masked, residual)] = counter
-    x = torch.randn(batch, 13, 17, 64, device="cuda", dtype=torch.bfloat16)
+    x = torch.randn(batch, 13, 17, 128, device="cuda", dtype=torch.bfloat16)
     mask = (torch.rand(batch, 13, 17, device="cuda") > 0.3).to(x.dtype) if masked else None
     original = x.clone()
     with torch.inference_mode():
@@ -341,11 +353,17 @@ def test_transition_fuses_each_chunk(batch: int, normalize: bool, masked: bool, 
 
 @pytest.mark.parametrize("layout", ["transposed", "misaligned"])
 def test_transition_chunk_layout_and_graph_replay(layout: str) -> None:
-    """Chunk fusion preserves aliasing and fallback for unsupported residual alignment."""
+    """Chunk fusion preserves aliasing and fallback for unsupported residual alignment.
+
+    SM90 runs residual SwiGLU calls as the LayerNorm-fused kernel and ships no transition MLP for them, so it skips
+    there.
+    """
     skip_if_not_sm90()
     layer = init_module_weights(
         Transition(64, 128, dtype=torch.bfloat16, auto_chunk_policy=ChunkPolicy(chunk_size=5, min_size=1)).cuda()
     )
+    if layer._fused_mlp_ops[(False, True)] is None:
+        pytest.skip("this GPU ships no SwiGLU transition MLP for C=64, H=128 with the residual")
     counter = _CountingKernel(layer._fused_mlp_ops[(False, True)])
     layer._fused_mlp_ops[(False, True)] = counter
     storage = torch.randn(2, 17, 13, 64 if layout == "transposed" else 65, device="cuda", dtype=torch.bfloat16)
@@ -369,14 +387,19 @@ def test_transition_chunk_layout_and_graph_replay(layout: str) -> None:
 
 @pytest.mark.parametrize("residual", [False, True])
 def test_pair_transition_fuses_each_chunk(residual: bool) -> None:
-    """PairTransition tries the ReLU kernel per slice instead of bypassing it under chunking."""
+    """PairTransition tries the ReLU kernel per slice instead of bypassing it under chunking.
+
+    At C = 256, H = 512, the one ReLU shape SM90 ships the transition MLP for.
+    """
     skip_if_not_sm90()
     layer = init_module_weights(
-        PairTransition(128, 4, dtype=torch.bfloat16, auto_chunk_policy=ChunkPolicy(chunk_size=5, min_size=1)).cuda()
+        PairTransition(256, 2, dtype=torch.bfloat16, auto_chunk_policy=ChunkPolicy(chunk_size=5, min_size=1)).cuda()
     )
+    # The per-chunk transition MLP is the path for maps the LayerNorm-fused kernel declines.
+    layer._w_norm_op = None
     counter = _CountingKernel(layer._fused_mlp_ops[residual])
     layer._fused_mlp_ops[residual] = counter
-    x = torch.randn(2, 13, 17, 128, device="cuda", dtype=torch.bfloat16)
+    x = torch.randn(2, 13, 17, 256, device="cuda", dtype=torch.bfloat16)
     mask = (torch.rand(2, 13, 17, device="cuda") > 0.3).to(x.dtype)
     with torch.inference_mode():
         expected = layer._forward_impl(x, mask, residual=residual)

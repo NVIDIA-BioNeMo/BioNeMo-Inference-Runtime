@@ -414,7 +414,7 @@ def test_sm8x_configs_fit_their_shared_memory(sm):
 def test_op_returns_output_shaped_like_residual(mode, in_place, monkeypatch):
     """The op flattens leading dimensions, and may write its output over the residual."""
     skip_if_not_sm90()
-    variant = TransitionMlpVariant("silu_gate", False, False, True, 128, 512)
+    variant = TransitionMlpVariant("relu", True, True, True, 256, 512)
     op = get_transition_mlp_op(torch.bfloat16, **variant._asdict())
     x, w1, b1, w2, b2, residual, mask = _operands(variant, 2, 45)
     reference = transition_mlp_reference(*_float((x, w1, b1, w2, b2, residual, mask)), activation=variant.activation)
@@ -769,13 +769,25 @@ def _init(layer: torch.nn.Module) -> torch.nn.Module:
     return layer
 
 
+def _on_transition_mlp(layer: torch.nn.Module) -> torch.nn.Module:
+    """Keep ``layer`` off the LayerNorm-fused kernel, on this op: the path for maps that kernel declines."""
+    layer._w_norm_op = None
+    return layer
+
+
 @pytest.mark.parametrize("mode", _CUTEDSL_MODES)
-@pytest.mark.parametrize(("c_z", "n"), [(256, 2), (128, 4), (64, 2)])
 @pytest.mark.parametrize("residual", [False, True])
-def test_pair_transition_runs_fused(mode, c_z, n, residual, monkeypatch):
-    """Pair transitions at C=256, 128 and 64 match their unfused path on a non-aligned pair map."""
+def test_pair_transition_runs_fused(mode, residual, monkeypatch):
+    """A pair transition at C = 256, H = 512 matches its unfused path on a non-aligned pair map.
+
+    SM90 ships the ReLU transition MLP at that shape only: every other ReLU shape a layer builds takes the
+    LayerNorm-fused kernel there instead.
+    """
     skip_if_not_sm90()
-    layer = _init(PairTransition(c_z=c_z, n=n, dtype=torch.bfloat16, enable_cudnn_graph=True).cuda())
+    c_z, n = 256, 2
+    layer = _on_transition_mlp(
+        _init(PairTransition(c_z=c_z, n=n, dtype=torch.bfloat16, enable_cudnn_graph=True).cuda())
+    )
     assert layer._fused_mlp_ops[residual] is not None
     z = torch.randn(2, 37, 37, c_z, device="cuda", dtype=torch.bfloat16)
     mask = (torch.rand(2, 37, 37, 1, device="cuda") > 0.2).to(torch.bfloat16)
@@ -790,12 +802,16 @@ def test_pair_transition_runs_fused(mode, c_z, n, residual, monkeypatch):
 
 
 @pytest.mark.parametrize("mode", _CUTEDSL_MODES)
-@pytest.mark.parametrize("c_m", [256, 64])
 @pytest.mark.parametrize("residual", [False, True])
-def test_msa_transition_runs_fused(mode, c_m, residual, monkeypatch):
-    """OpenFold2's MSA and extra-MSA transitions match their unfused path, with or without ``m + update``."""
+def test_msa_transition_runs_fused(mode, residual, monkeypatch):
+    """An MSA transition at C = 256, H = 512 matches its unfused path, with or without ``m + update``.
+
+    The MSA transitions at 256 -> 1024 and 64 -> 256 take the LayerNorm-fused kernel on SM90, which ships the ReLU
+    transition MLP at 256 -> 512 only.
+    """
     skip_if_not_sm90()
-    layer = _init(MSATransition(c_m=c_m, n=4, dtype=torch.bfloat16).cuda())
+    c_m = 256
+    layer = _on_transition_mlp(_init(MSATransition(c_m=c_m, n=2, dtype=torch.bfloat16).cuda()))
     assert layer._fused_mlp_ops[residual] is not None
     m = torch.randn(1, 13, 41, c_m, device="cuda", dtype=torch.bfloat16)
     mask = (torch.rand(1, 13, 41, device="cuda") > 0.2).to(torch.bfloat16)
@@ -811,13 +827,15 @@ def test_msa_transition_runs_fused(mode, c_m, residual, monkeypatch):
 
 
 @pytest.mark.parametrize("mode", _CUTEDSL_MODES)
-@pytest.mark.parametrize(
-    ("dim", "factor", "masked"), [(128, 4, False), (64, 4, False), (64, 2, True), (256, 4, False), (64, 2, False)]
-)
+@pytest.mark.parametrize(("dim", "factor", "masked"), [(128, 2, False), (128, 2, True)])
 def test_swiglu_transition_runs_its_update_fused(mode, dim, factor, masked, monkeypatch):
-    """Without a residual, SwiGLU transitions return only the update, from the fused op."""
+    """Without a residual, SwiGLU transitions return only the update, from the fused op.
+
+    At C = 128, H = 256, the one SwiGLU shape SM90 still ships the transition MLP for: the transitions that skip their
+    LayerNorm call it with a mask, and ConditionedTransitionBlock without one.
+    """
     skip_if_not_sm90()
-    layer = _init(Transition(dim, dim * factor, dtype=torch.bfloat16).cuda())
+    layer = _on_transition_mlp(_init(Transition(dim, dim * factor, dtype=torch.bfloat16).cuda()))
     assert layer._fused_mlp_ops[(masked, False)] is not None
     x = torch.randn(1, 29, 29, dim, device="cuda", dtype=torch.bfloat16)
     mask = (torch.rand(1, 29, 29, device="cuda") > 0.2).to(torch.bfloat16) if masked else None
@@ -835,10 +853,15 @@ def test_swiglu_transition_runs_its_update_fused(mode, dim, factor, masked, monk
 )
 @pytest.mark.parametrize("inplace", [False, True])
 def test_swiglu_transition_fuses_its_residual(mode, dim, factor, masked, inplace, monkeypatch):
-    """Boltz, OpenFold2-SwiGLU and Protenix transitions match ``x + update``, in place when asked."""
+    """Boltz, OpenFold2-SwiGLU and Protenix transitions match ``x + update``, in place when asked.
+
+    SM90 runs these residual calls as the LayerNorm-fused kernel and ships no transition MLP for them, so on SM90 each
+    case skips.
+    """
     skip_if_not_sm90()
-    layer = _init(Transition(dim, dim * factor, dtype=torch.bfloat16).cuda())
-    assert layer._fused_mlp_ops[(masked, True)] is not None
+    layer = _on_transition_mlp(_init(Transition(dim, dim * factor, dtype=torch.bfloat16).cuda()))
+    if layer._fused_mlp_ops[(masked, True)] is None:
+        pytest.skip(f"this GPU ships no SwiGLU transition MLP for C={dim}, H={dim * factor} with the residual")
     x = torch.randn(1, 29, 29, dim, device="cuda", dtype=torch.bfloat16)
     mask = (torch.rand(1, 29, 29, device="cuda") > 0.2).to(torch.bfloat16) if masked else None
 
@@ -859,35 +882,42 @@ def test_swiglu_transition_fuses_its_residual(mode, dim, factor, masked, inplace
 
 @pytest.mark.parametrize("mode", _CUTEDSL_MODES)
 def test_fused_transitions_replay_under_cuda_graph_capture(mode, monkeypatch):
-    """Captured fused calls, including an in-place one, replay new inputs like eager calls."""
+    """Captured fused calls replay new inputs like eager calls.
+
+    On the shapes where SM90 still ships the transition MLP: the ReLU pair and MSA transitions at C = 256, H = 512, and
+    the SwiGLU update at C = 128, H = 256.
+    """
     skip_if_not_sm90()
-    pair = _init(PairTransition(c_z=128, n=4, dtype=torch.bfloat16).cuda())
-    msa = _init(MSATransition(c_m=64, n=4, dtype=torch.bfloat16).cuda())
-    swiglu = _init(Transition(128, 512, dtype=torch.bfloat16).cuda())
-    z = torch.randn(1, 23, 23, 128, device="cuda", dtype=torch.bfloat16)
-    m = torch.randn(1, 5, 23, 64, device="cuda", dtype=torch.bfloat16)
+    pair = _on_transition_mlp(_init(PairTransition(c_z=256, n=2, dtype=torch.bfloat16).cuda()))
+    msa = _on_transition_mlp(_init(MSATransition(c_m=256, n=2, dtype=torch.bfloat16).cuda()))
+    swiglu = _on_transition_mlp(_init(Transition(128, 256, dtype=torch.bfloat16).cuda()))
+    z = torch.randn(1, 23, 23, 256, device="cuda", dtype=torch.bfloat16)
+    m = torch.randn(1, 5, 23, 256, device="cuda", dtype=torch.bfloat16)
+    x = torch.randn(1, 23, 23, 128, device="cuda", dtype=torch.bfloat16)
     pair_mask = (torch.rand(1, 23, 23, 1, device="cuda") > 0.2).to(torch.bfloat16)
     msa_mask = (torch.rand(1, 5, 23, device="cuda") > 0.2).to(torch.bfloat16)
-    static_z, static_m = z.clone(), m.clone()
+    static_z, static_m, static_x = z.clone(), m.clone(), x.clone()
 
     def step():
         z_out = pair(static_z, mask=pair_mask, residual=True)
         m_out = static_m + msa(static_m, msa_mask)
-        return swiglu(z_out, residual=True, inplace=True), m_out
+        return z_out, m_out, swiglu(static_x)
 
     with torch.inference_mode():
         # Compile and warm up in the requested mode before capture.
         run_cutedsl_test_mode(mode, monkeypatch, TransitionMlpCuTe, transition_cutedsl, lambda: step()[0])
         graph = torch.cuda.CUDAGraph()
         with torch.cuda.graph(graph):
-            captured_z, captured_m = step()
-        z_new, m_new = torch.randn_like(z), torch.randn_like(m)
+            captured_z, captured_m, captured_x = step()
+        z_new, m_new, x_new = torch.randn_like(z), torch.randn_like(m), torch.randn_like(x)
         static_z.copy_(z_new)
         static_m.copy_(m_new)
+        static_x.copy_(x_new)
         graph.replay()
-        pair_out = pair._forward_impl(z_new, pair_mask, residual=True)
-        expected_z = pair_out + swiglu._forward_impl(pair_out, None)
+        expected_z = pair._forward_impl(z_new, pair_mask, residual=True)
         expected_m = m_new + msa._forward_impl(m_new, msa_mask)
+        expected_x = swiglu._forward_impl(x_new, None)
 
-    torch.testing.assert_close(captured_z, expected_z, atol=6e-2, rtol=3e-2)
+    torch.testing.assert_close(captured_z, expected_z, atol=5e-2, rtol=2e-2)
     torch.testing.assert_close(captured_m, expected_m, atol=5e-2, rtol=2e-2)
+    torch.testing.assert_close(captured_x, expected_x, atol=5e-2, rtol=2e-2)

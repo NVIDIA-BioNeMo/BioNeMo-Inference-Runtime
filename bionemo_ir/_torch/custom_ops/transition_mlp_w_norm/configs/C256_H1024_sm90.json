@@ -1,0 +1,17 @@
+{
+  "kernel_abi": "sm90",
+  "configs": {
+    "act=relu": {
+      "layouts": [
+        {"waves": 0.243, "tile_wgs": 1, "split": 2},
+        {"waves": 0.5, "tile_wgs": 1, "split": 1}
+      ]
+    },
+    "act=silu_gate": {
+      "layouts": [
+        {"waves": 0.243, "tile_wgs": 1, "split": 2},
+        {"waves": 0.5, "tile_wgs": 2, "split": 2}
+      ]
+    }
+  }
+}

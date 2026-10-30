@@ -57,11 +57,19 @@ def init_module_weights(module: "torch.nn.Module", std: float = 0.02, *, post_lo
                 p.fill_(1.0)
             else:
                 p.zero_()
-    if post_load:
-        for submodule in module.modules():
-            post_load_weights = getattr(submodule, "post_load_weights", None)
-            if post_load_weights is not None:
-                post_load_weights()
+    return run_post_load_weights(module) if post_load else module
+
+
+def run_post_load_weights(module: "torch.nn.Module") -> "torch.nn.Module":
+    """Run every submodule's ``post_load_weights``, as ``recursive_calling_load_weights`` does after a load.
+
+    Tests that fill weights in place call this afterwards, so that state derived from the weights, such as the
+    TriMul KF chain's and the transition layers' folded weights, matches them.
+    """
+    for submodule in module.modules():
+        post_load_weights = getattr(submodule, "post_load_weights", None)
+        if post_load_weights is not None:
+            post_load_weights()
     return module
 
 

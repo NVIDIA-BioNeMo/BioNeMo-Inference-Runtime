@@ -52,7 +52,8 @@ def _rmse_ratio(a: torch.Tensor, b: torch.Tensor) -> float:
 @pytest.mark.parametrize("batch", [1, 2])
 @pytest.mark.parametrize("chunked", [False, True])
 def test_protenix_pair_conditioning_256_uses_fused_residual(batch: int, chunked: bool) -> None:
-    """The real pair-conditioning call site selects the new 256x512 BF16 residual variant."""
+    """The real pair-conditioning call site takes the LayerNorm-fused op at C = 256, H = 512, one call for the whole
+    map even where the chunk policy would split it."""
     skip_if_not_sm90()
     torch.manual_seed(71)
     config = DiffusionConditioningConfig(
@@ -68,18 +69,18 @@ def test_protenix_pair_conditioning_256_uses_fused_residual(batch: int, chunked:
     counters = []
     for layer in model.transition_z:
         layer.auto_chunk_policy = ChunkPolicy(chunk_size=512, min_size=1) if chunked else None
-        assert layer._fused_mlp_ops[(False, True)] is not None
-        counter = _CountingKernel(layer._fused_mlp_ops[(False, True)])
-        layer._fused_mlp_ops[(False, True)] = counter
+        assert layer._w_norm_op is not None
+        counter = _CountingKernel(layer._w_norm_op)
+        layer._w_norm_op = counter
         counters.append(counter)
     n = 513 if chunked else 129
     z = torch.randn(batch, n, n, 256, device="cuda")
     relp = torch.randn(batch, n, n, model.relpe.linear.in_features, device="cuda")
     with torch.inference_mode():
         actual = model.prepare_pair(relp, z)
-        assert all(counter.calls == (2 if chunked else 1) for counter in counters)
+        assert all(counter.calls == 1 for counter in counters)
         for layer in model.transition_z:
-            layer._fused_mlp_ops[(False, True)] = None
+            layer._w_norm_op = None
         expected = model.prepare_pair(relp, z)
     torch.testing.assert_close(actual, expected, atol=0.05, rtol=0.02)
     assert _rmse_ratio(actual, expected) < 0.01
@@ -234,6 +235,8 @@ def test_protenix_diffusion_pair_transition_auto_chunk(torch_dtype: str):
     model = ProtenixDiffusionConditioning(config).to(device).eval()
     for layer in model.transition_z:
         layer.auto_chunk_policy = policy
+        # The chunked path itself: the LayerNorm-fused kernel would take the whole map in one call.
+        layer._w_norm_op = None
         with torch.no_grad():
             for p in layer.parameters():
                 p.normal_(mean=0.0, std=0.1)

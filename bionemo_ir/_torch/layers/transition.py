@@ -12,7 +12,17 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+"""Transition (feed-forward) layers.
 
+Each layer runs a call on the first path that accepts it:
+
+1. ``transition_mlp_w_norm``: the LayerNorm, both linears, the mask and the residual in one kernel
+   (:class:`_LayerNormFusedPath`), where it ships for the layer's shape.
+2. The LayerNorm, then ``transition_mlp``: both linears, the mask and the residual in one kernel with the hidden
+   activation on chip.
+3. cuDNN graphs (ReLU layers, when enabled).
+4. The PyTorch modules.
+"""
 
 from collections.abc import Callable
 
@@ -22,6 +32,12 @@ import torch.nn as nn
 from bionemo_ir._torch.custom_ops.dual_gemm_x_x import get_cute_dual_gemm_x_x_op
 from bionemo_ir._torch.custom_ops.gated_sigmoid import get_gated_sigmoid_op
 from bionemo_ir._torch.custom_ops.transition_mlp import get_transition_mlp_op
+from bionemo_ir._torch.custom_ops.transition_mlp_w_norm import (
+    TransitionMlpWNormOp,
+    TransitionMlpWNormPack,
+    get_transition_mlp_w_norm_op,
+    pack_weights,
+)
 from bionemo_ir._torch.graph_optimization.cudnn_graph import (
     CudnnGraphModule,
     can_use_cudnn_graph,
@@ -67,7 +83,131 @@ def _get_silu_projection_op(dtype: torch.dtype | None, K: int, N: int):
     return get_cute_dual_gemm_x_x_op(resolved_dtype, K=K, N=N, gate="silu")
 
 
-class Transition(nn.Module):
+def _refold_after_load_state_dict(layer: "_LayerNormFusedPath", *args: object) -> None:
+    """Refold the weights ``load_state_dict`` loaded, as ``recursive_calling_load_weights`` does through the layer."""
+    layer.post_load_weights()
+
+
+def _row_mask(x: torch.Tensor, mask: torch.Tensor) -> torch.Tensor | None:
+    """``mask`` as the LayerNorm-fused kernel reads it: one value per row of ``x``, ``[*x.shape[:-1]]`` in its dtype.
+
+    The unfused paths scale each row's update by ``mask``, with or without a trailing axis of size 1, broadcast over
+    the rows. ``None`` for a mask that does not hold one value per row.
+    """
+    rows = x.shape[:-1]
+    if mask.ndim == x.ndim and mask.shape[-1] == 1:
+        mask = mask.squeeze(-1)
+    if mask.ndim != len(rows) or any(size not in (1, count) for size, count in zip(mask.shape, rows, strict=True)):
+        return None
+    return mask.expand(rows).to(x.dtype).contiguous()
+
+
+class _LayerNormFusedPath:
+    """A transition layer's LayerNorm and both linears as one ``transition_mlp_w_norm`` kernel, where it ships.
+
+    The kernel reads the input once and writes ``[x +] mask * update`` once; the LayerNorm folds into the first
+    linear's weights (``pack_weights``). A layer on the kernel folds them whenever its weights exist: at construction,
+    where they hold placeholders until ``load_weights`` or ``load_state_dict`` fills them in place, again in
+    :meth:`post_load_weights`, which ``load_state_dict`` also runs, and for a call from another device or after any
+    weight it folded changed (a load into one child, an in-place edit). The kernel holds no activation beyond its
+    output, so it takes a whole input that the layer's chunk policy would split.
+    """
+
+    _w_norm_op: TransitionMlpWNormOp | None
+    _w_norm_pack: TransitionMlpWNormPack | None
+    _w_norm_state: tuple[tuple[int, int], ...] | None
+    _w_norm_activation: str
+
+    def _w_norm_parts(self) -> tuple[nn.LayerNorm, Linear, Linear]:
+        """The LayerNorm and the two linears the kernel runs."""
+        raise NotImplementedError
+
+    def _init_w_norm(self, op: TransitionMlpWNormOp | None, activation: str) -> None:
+        """Take the kernel's op, ``None`` when it does not ship for the layer, and fold the weights for it."""
+        self._w_norm_op = op
+        self._w_norm_activation = activation
+        self._w_norm_pack = self._fold_w_norm_weights()
+        self._w_norm_state = self._w_norm_weight_state()
+        self.register_load_state_dict_post_hook(_refold_after_load_state_dict)
+
+    def _w_norm_weight_state(self) -> tuple[tuple[int, int], ...] | None:
+        """Each folded weight's address and in-place write count, or ``None`` where versions are not tracked.
+
+        A load into one child module, an in-place edit or a replaced parameter changes it. Inference tensors keep no
+        version counter; for them the pack refolds only as :meth:`post_load_weights` and device moves do.
+        """
+        if self._w_norm_op is None:
+            return None
+        state = []
+        try:
+            for module in self._w_norm_parts():
+                parameters = module._parameters  # Module.__getattr__ costs about as much as the rest of the check
+                for name in ("weight", "bias"):
+                    weight = parameters.get(name)
+                    if weight is not None:
+                        state.append((weight.data_ptr(), weight._version))
+        except RuntimeError:
+            return None
+        return tuple(state)
+
+    @torch.no_grad()
+    def _fold_w_norm_weights(self, device: torch.device | None = None) -> TransitionMlpWNormPack | None:
+        """The weights folded on ``device`` (default: the first linear's), or ``None`` off the kernel or without them.
+
+        The LayerNorm may still be on the CPU while the linears are on the GPU; the fold reads every weight on
+        ``device``.
+        """
+        norm, linear_1, linear_2 = self._w_norm_parts()
+        if self._w_norm_op is None or not (linear_1._weights_created and linear_2._weights_created):
+            return None
+        if device is None:
+            device = linear_1.weight.device
+
+        def on(weight: torch.Tensor | None) -> torch.Tensor | None:
+            return None if weight is None else weight.to(device)
+
+        return pack_weights(
+            on(norm.weight),
+            on(norm.bias),
+            on(linear_1.weight),
+            on(linear_1.bias),
+            on(linear_2.weight),
+            on(linear_2.bias),
+            activation=self._w_norm_activation,
+        )
+
+    def post_load_weights(self) -> None:
+        """Refold the LayerNorm-fused kernel's weights from the loaded ones."""
+        self._w_norm_pack = self._fold_w_norm_weights()
+        self._w_norm_state = self._w_norm_weight_state()
+
+    def _forward_w_norm(
+        self, x: torch.Tensor, mask: torch.Tensor | None, *, residual: bool, inplace: bool = False
+    ) -> torch.Tensor | None:
+        """``mask * update``, or ``x`` plus it with ``residual``, from the kernel; ``None`` if it declines the call.
+
+        With ``residual`` and ``inplace`` the kernel writes the sum into ``x``.
+        """
+        op = self._w_norm_op
+        if op is None:
+            return None
+        row_mask = None if mask is None else _row_mask(x, mask)
+        if (mask is not None and row_mask is None) or not op.accepts(x, row_mask):
+            return None
+        pack = self._w_norm_pack
+        state = self._w_norm_weight_state()
+        if pack is None or pack.device != x.device or state != self._w_norm_state:
+            pack = self._fold_w_norm_weights(x.device)
+            if pack is None:
+                return None
+            # A fold under graph capture is filled only when the graph replays: this call uses it, later ones refold.
+            if not torch.cuda.is_current_stream_capturing():
+                self._w_norm_pack, self._w_norm_state = pack, state
+        eps = self._w_norm_parts()[0].eps
+        return op(x, row_mask, pack, eps, residual=residual, out=x if residual and inplace else None)
+
+
+class Transition(_LayerNormFusedPath, nn.Module):
     def __init__(
         self,
         dim: int,
@@ -81,6 +221,9 @@ class Transition(nn.Module):
         normalize: bool = True,
     ):
         """SwiGLU feed-forward transition.
+
+        A layer with its LayerNorm and an output as wide as its input runs as one ``transition_mlp_w_norm`` kernel
+        where it ships for ``(dim, hidden)``; see :class:`_LayerNormFusedPath`.
 
         Args:
             normalize: If True (default), apply LayerNorm before the FFN.
@@ -108,10 +251,11 @@ class Transition(nn.Module):
         )
         self._swiglu = FusedSwiGLU(d=self.hidden, three_way=False, dtype=dtype or torch.bfloat16)
         self.fc3 = Linear(hidden, out_dim, dtype=dtype, bias=False, skip_create_weights=skip_create_weights)
-        # One fused op per (mask, residual) state; the kernel's output is as wide as its input.
+        # Both fused kernels write an output as wide as their input.
+        op_dtype = dtype or torch.get_default_dtype()
         self._fused_mlp_ops = {
             (has_mask, has_residual): get_transition_mlp_op(
-                dtype or torch.get_default_dtype(),
+                op_dtype,
                 width=dim,
                 hidden=hidden,
                 activation="silu_gate",
@@ -123,6 +267,13 @@ class Transition(nn.Module):
             for has_residual in (False, True)
             if out_dim == dim
         }
+        w_norm_op = None
+        if normalize and out_dim == dim:
+            w_norm_op = get_transition_mlp_w_norm_op(op_dtype, width=dim, hidden=hidden, activation="silu_gate")
+        self._init_w_norm(w_norm_op, "silu_gate")
+
+    def _w_norm_parts(self) -> tuple[nn.LayerNorm, Linear, Linear]:
+        return self.norm, self.fused_fc2_fc1, self.fc3
 
     def forward(
         self,
@@ -137,24 +288,26 @@ class Transition(nn.Module):
         Args:
             inplace: With ``residual``, write the sum into ``x`` as ``x += update`` would.
         """
+        output = self._forward_w_norm(x, mask, residual=residual, inplace=inplace)
+        if output is not None:
+            return output
         policy = self.auto_chunk_policy
-        if policy is not None and policy.should_chunk(x):
-            op = self._fused_mlp_ops.get((mask is not None, residual))
-            if not (residual and inplace) and op is None:
-                # Keep one full residual add when every slice stays unfused.
-                update = chunk_apply(self._forward_impl, x, mask, policy=policy)
-                return x + update if residual else update
-            if residual and inplace:
-                # Write each slice back directly; chunk_apply would allocate another full output.
-                for start, length in iter_chunks(x.shape[policy.dim], policy.chunk_size):
-                    part = x.narrow(policy.dim, start, length)
-                    part_mask = mask
-                    if mask is not None and mask.ndim > policy.dim and mask.shape[policy.dim] == x.shape[policy.dim]:
-                        part_mask = mask.narrow(policy.dim, start, length)
-                    self._forward_slice(part, part_mask, residual=True, inplace=True)
-                return x
-            return chunk_apply(self._forward_slice, x, mask, policy=policy, residual=residual, inplace=inplace)
-        return self._forward_slice(x, mask, residual=residual, inplace=inplace)
+        if policy is None or not policy.should_chunk(x):
+            return self._forward_slice(x, mask, residual=residual, inplace=inplace)
+        if residual and inplace:
+            # Write each slice back directly; chunk_apply would allocate another full output.
+            for start, length in iter_chunks(x.shape[policy.dim], policy.chunk_size):
+                part = x.narrow(policy.dim, start, length)
+                part_mask = mask
+                if mask is not None and mask.ndim > policy.dim and mask.shape[policy.dim] == x.shape[policy.dim]:
+                    part_mask = mask.narrow(policy.dim, start, length)
+                self._forward_slice(part, part_mask, residual=True, inplace=True)
+            return x
+        if self._fused_mlp_ops.get((mask is not None, residual)) is None:
+            # Keep one full residual add when every slice stays unfused.
+            update = chunk_apply(self._forward_impl, x, mask, policy=policy)
+            return x + update if residual else update
+        return chunk_apply(self._forward_slice, x, mask, policy=policy, residual=residual, inplace=inplace)
 
     def _forward_slice(
         self, x: torch.Tensor, mask: torch.Tensor | None, *, residual: bool, inplace: bool
@@ -360,7 +513,105 @@ class ConditionedTransitionBlock(nn.Module):
         return self.b_to_a(b)
 
 
-class PairTransition(CudnnGraphModule):
+class _ReluTransition(_LayerNormFusedPath, CudnnGraphModule):
+    """``linear_2(relu(linear_1(LayerNorm(x))))``, both linears with biases, over ``[..., width]``.
+
+    The body :class:`PairTransition` and :class:`MSATransition` share. It runs as one ``transition_mlp_w_norm`` kernel
+    where it ships for ``(width, n * width)``; see :class:`_LayerNormFusedPath`.
+    """
+
+    def __init__(
+        self,
+        width: int,
+        n: int,
+        layer_norm: nn.Module,
+        *,
+        dtype: torch.dtype | None,
+        skip_create_weights: bool,
+        enable_cudnn_graph: bool,
+        cudnn_dynamic_shapes: bool,
+    ) -> None:
+        super().__init__()
+        self.enable_cudnn_graph = enable_cudnn_graph
+        self.cudnn_dynamic_shapes = cudnn_dynamic_shapes
+        self.dtype = dtype
+        self.n = n
+        self._width = width
+        self._cudnn_graph_plans: dict[str, _CudnnPlan] = {}
+
+        self.layer_norm = layer_norm
+        self.linear_1 = Linear(width, n * width, bias=True, dtype=dtype, skip_create_weights=skip_create_weights)
+        self.linear_2 = Linear(n * width, width, bias=True, dtype=dtype, skip_create_weights=skip_create_weights)
+        self.relu = nn.ReLU()
+        op_dtype = dtype or torch.get_default_dtype()
+        self._fused_mlp_ops = {
+            has_residual: get_transition_mlp_op(op_dtype, width=width, hidden=n * width, has_residual=has_residual)
+            for has_residual in (False, True)
+        }
+        self._init_w_norm(
+            get_transition_mlp_w_norm_op(op_dtype, width=width, hidden=n * width, activation="relu"), "relu"
+        )
+        self._prepare_cudnn_graphs()
+
+    def _w_norm_parts(self) -> tuple[nn.LayerNorm, Linear, Linear]:
+        return self.layer_norm, self.linear_1, self.linear_2
+
+    def _prepare_cudnn_graphs(self) -> None:
+        self._cudnn_graph_plans.clear()
+        if not self.cudnn_dynamic_shapes:
+            return
+        if not self.linear_1._weights_created or not self.linear_2._weights_created:
+            return
+        if not can_use_cudnn_graph(self.linear_1.weight, enabled=self.enable_cudnn_graph):
+            return
+        hidden_dim = self.n * self._width
+        linear_relu = prepare_cudnn_linear_relu(
+            self.linear_1.weight.device,
+            self.linear_1.weight.dtype,
+            self._width,
+            hidden_dim,
+        )
+        linear_mask = prepare_cudnn_linear_mask(
+            self.linear_2.weight.device,
+            self.linear_2.weight.dtype,
+            hidden_dim,
+            self._width,
+        )
+        if linear_relu is not None:
+            self._cudnn_graph_plans["linear_relu"] = linear_relu
+        if linear_mask is not None:
+            self._cudnn_graph_plans["linear_mask"] = linear_mask
+
+    def _forward_fused(self, x: torch.Tensor, mask: torch.Tensor | None, *, residual: bool) -> torch.Tensor | None:
+        """LayerNorm, then one ``transition_mlp`` kernel for both linears, the mask and any residual; ``None`` if
+        declined.
+
+        The hidden activation stays on chip, which saves most of the layer's DRAM traffic. The op takes masked calls
+        only.
+        """
+        op = self._fused_mlp_ops[residual]
+        weights = (self.linear_1.weight, self.linear_1.bias, self.linear_2.weight, self.linear_2.bias)
+        if op is None or mask is None or not op.accepts(x, mask, *weights):
+            return None
+        return op(self.layer_norm(x), *weights, x if residual else None, mask)
+
+    def _cudnn_hidden(self, normed: torch.Tensor) -> torch.Tensor | None:
+        """``relu(linear_1(normed))`` as ``[1, rows, n * width]`` from cuDNN, or ``None`` if it declines."""
+        rows = normed.numel() // self._width
+        return _run_cudnn_linear(
+            self._cudnn_graph_plans.get("linear_relu"),
+            cudnn_linear_relu,
+            normed.reshape(1, rows, self._width).contiguous(),
+            self.linear_1.weight.unsqueeze(0).transpose(-1, -2),
+            self.linear_1.bias.reshape(1, 1, self.n * self._width),
+        )
+
+    def _cudnn_linear_2(self) -> tuple[torch.Tensor, torch.Tensor]:
+        """``linear_2``'s weight and bias in the layout the cuDNN graphs take."""
+        return self.linear_2.weight.unsqueeze(0).transpose(-1, -2), self.linear_2.bias.reshape(1, 1, self._width)
+
+
+class PairTransition(_ReluTransition):
     def __init__(
         self,
         c_z: int,
@@ -372,54 +623,27 @@ class PairTransition(CudnnGraphModule):
         enable_cudnn_graph: bool = False,
         cudnn_dynamic_shapes: bool = False,
     ):
-        super().__init__()
-        self.auto_chunk_policy = auto_chunk_policy
-        self.enable_cudnn_graph = enable_cudnn_graph
-        self.cudnn_dynamic_shapes = cudnn_dynamic_shapes
-        self.dtype = dtype
+        """ReLU pair transition ``linear_2(relu(linear_1(LayerNorm(z))))`` over ``[*, N, N, c_z]``.
+
+        It runs as one ``transition_mlp_w_norm`` kernel where it ships for ``(c_z, n * c_z)``; see
+        :class:`_LayerNormFusedPath`.
+        """
+        super().__init__(
+            c_z,
+            n,
+            FusedLayerNorm(c_z, eps=eps, dtype=dtype),
+            dtype=dtype,
+            skip_create_weights=skip_create_weights,
+            enable_cudnn_graph=enable_cudnn_graph,
+            cudnn_dynamic_shapes=cudnn_dynamic_shapes,
+        )
         self.c_z = c_z
-        self.n = n
-        self._cudnn_graph_plans: dict[str, _CudnnPlan] = {}
-
-        self.layer_norm = FusedLayerNorm(c_z, eps=eps, dtype=dtype)
-        self.linear_1 = Linear(c_z, n * c_z, bias=True, dtype=dtype, skip_create_weights=skip_create_weights)
-        self.linear_2 = Linear(n * c_z, c_z, bias=True, dtype=dtype, skip_create_weights=skip_create_weights)
-        self.relu = nn.ReLU()
-        self._fused_mlp_ops = {
-            has_residual: get_transition_mlp_op(
-                dtype or torch.get_default_dtype(), width=c_z, hidden=n * c_z, has_residual=has_residual
-            )
-            for has_residual in (False, True)
-        }
-        self._prepare_cudnn_graphs()
-
-    def _prepare_cudnn_graphs(self) -> None:
-        self._cudnn_graph_plans.clear()
-        if not self.cudnn_dynamic_shapes:
-            return
-        if not self.linear_1._weights_created or not self.linear_2._weights_created:
-            return
-        if not can_use_cudnn_graph(self.linear_1.weight, enabled=self.enable_cudnn_graph):
-            return
-        hidden_dim = self.n * self.c_z
-        linear_relu = prepare_cudnn_linear_relu(
-            self.linear_1.weight.device,
-            self.linear_1.weight.dtype,
-            self.c_z,
-            hidden_dim,
-        )
-        linear_mask = prepare_cudnn_linear_mask(
-            self.linear_2.weight.device,
-            self.linear_2.weight.dtype,
-            hidden_dim,
-            self.c_z,
-        )
-        if linear_relu is not None:
-            self._cudnn_graph_plans["linear_relu"] = linear_relu
-        if linear_mask is not None:
-            self._cudnn_graph_plans["linear_mask"] = linear_mask
+        self.auto_chunk_policy = auto_chunk_policy
 
     def forward(self, z: torch.Tensor, mask: torch.Tensor | None = None, *, residual: bool = False):
+        output = self._forward_w_norm(z, mask, residual=residual)
+        if output is not None:
+            return output
         if self.auto_chunk_policy is not None and self.auto_chunk_policy.should_chunk(z):
             return chunk_apply(self._forward_slice, z, mask, policy=self.auto_chunk_policy, residual=residual)
         return self._forward_slice(z, mask, residual=residual)
@@ -435,17 +659,6 @@ class PairTransition(CudnnGraphModule):
                 return output
         return self._forward_impl(z, mask, residual=residual)
 
-    def _forward_fused(self, z: torch.Tensor, mask: torch.Tensor | None, *, residual: bool) -> torch.Tensor | None:
-        """LayerNorm, then one kernel for both linears, the mask and any residual; ``None`` if declined.
-
-        The hidden activation stays on chip, which saves most of this layer's DRAM traffic.
-        """
-        op = self._fused_mlp_ops[residual]
-        weights = (self.linear_1.weight, self.linear_1.bias, self.linear_2.weight, self.linear_2.bias)
-        if op is None or mask is None or not op.accepts(z, mask, *weights):
-            return None
-        return op(self.layer_norm(z), *weights, z if residual else None, mask)
-
     def _forward_cudnn(
         self,
         z: torch.Tensor,
@@ -453,36 +666,24 @@ class PairTransition(CudnnGraphModule):
         *,
         residual: bool,
     ) -> torch.Tensor | None:
-        old_z = z
-        z = self.layer_norm(z)
-        rows = z.numel() // self.c_z
-        hidden_dim = self.n * self.c_z
-        z_flat = z.reshape(1, rows, self.c_z)
-        weight_1_t = self.linear_1.weight.unsqueeze(0).transpose(-1, -2)
-        bias_1 = self.linear_1.bias.reshape(1, 1, hidden_dim)
-        hidden = _run_cudnn_linear(
-            self._cudnn_graph_plans.get("linear_relu"),
-            cudnn_linear_relu,
-            z_flat,
-            weight_1_t,
-            bias_1,
-        )
+        normed = self.layer_norm(z)
+        hidden = self._cudnn_hidden(normed)
         if hidden is None:
             return None
         if mask is None and not residual:
-            return self.linear_2(hidden).view_as(z)
+            return self.linear_2(hidden).view_as(normed)
 
-        weight_2_t = self.linear_2.weight.unsqueeze(0).transpose(-1, -2)
-        bias_2 = self.linear_2.bias.reshape(1, 1, self.c_z)
+        rows = normed.numel() // self.c_z
+        weight_2_t, bias_2 = self._cudnn_linear_2()
         if residual:
-            residual_flat = old_z.reshape(1, rows, self.c_z)
+            residual_flat = z.reshape(1, rows, self.c_z)
             if mask is None:
                 output = cudnn_linear_residual(hidden, weight_2_t, bias_2, residual_flat)
             else:
-                mask_flat = mask.reshape(1, rows, 1).to(dtype=z.dtype)
+                mask_flat = mask.reshape(1, rows, 1).to(dtype=normed.dtype)
                 output = cudnn_linear_mask_residual(hidden, weight_2_t, bias_2, mask_flat, residual_flat)
         else:
-            mask_flat = mask.reshape(1, rows, 1).to(dtype=z.dtype)
+            mask_flat = mask.reshape(1, rows, 1).to(dtype=normed.dtype)
             output = _run_cudnn_linear(
                 self._cudnn_graph_plans.get("linear_mask"),
                 cudnn_linear_mask,
@@ -491,7 +692,7 @@ class PairTransition(CudnnGraphModule):
                 bias_2,
                 mask_flat,
             )
-        return None if output is None else output.view_as(z)
+        return None if output is None else output.view_as(normed)
 
     def _forward_impl(
         self,
@@ -520,7 +721,7 @@ class PairTransition(CudnnGraphModule):
         return z
 
 
-class MSATransition(CudnnGraphModule):
+class MSATransition(_ReluTransition):
     def __init__(
         self,
         c_m: int,
@@ -531,55 +732,27 @@ class MSATransition(CudnnGraphModule):
         enable_cudnn_graph: bool = False,
         cudnn_dynamic_shapes: bool = False,
     ) -> None:
-        super().__init__()
-        self.enable_cudnn_graph = enable_cudnn_graph
-        self.cudnn_dynamic_shapes = cudnn_dynamic_shapes
-        self.dtype = dtype
+        """ReLU MSA transition ``linear_2(relu(linear_1(LayerNorm(m))))`` over ``[*, S, N, c_m]``.
+
+        It runs as one ``transition_mlp_w_norm`` kernel where it ships for ``(c_m, n * c_m)``; see
+        :class:`_LayerNormFusedPath`.
+        """
+        super().__init__(
+            c_m,
+            n,
+            nn.LayerNorm(c_m, eps=eps, dtype=dtype),
+            dtype=dtype,
+            skip_create_weights=skip_create_weights,
+            enable_cudnn_graph=enable_cudnn_graph,
+            cudnn_dynamic_shapes=cudnn_dynamic_shapes,
+        )
         self.c_m = c_m
-        self.n = n
-        self._cudnn_graph_plans: dict[str, _CudnnPlan] = {}
-
-        self.layer_norm = nn.LayerNorm(c_m, eps=eps, dtype=dtype)
-        self.linear_1 = Linear(c_m, n * c_m, bias=True, dtype=dtype, skip_create_weights=skip_create_weights)
-        self.linear_2 = Linear(n * c_m, c_m, bias=True, dtype=dtype, skip_create_weights=skip_create_weights)
-        self.relu = nn.ReLU()
-        self._fused_mlp_ops = {
-            has_residual: get_transition_mlp_op(
-                dtype or torch.get_default_dtype(), width=c_m, hidden=n * c_m, has_residual=has_residual
-            )
-            for has_residual in (False, True)
-        }
-        self._prepare_cudnn_graphs()
-
-    def _prepare_cudnn_graphs(self) -> None:
-        self._cudnn_graph_plans.clear()
-        if not self.cudnn_dynamic_shapes:
-            return
-        if not self.linear_1._weights_created or not self.linear_2._weights_created:
-            return
-        if not can_use_cudnn_graph(self.linear_1.weight, enabled=self.enable_cudnn_graph):
-            return
-        hidden_dim = self.n * self.c_m
-        linear_relu = prepare_cudnn_linear_relu(
-            self.linear_1.weight.device,
-            self.linear_1.weight.dtype,
-            self.c_m,
-            hidden_dim,
-        )
-        linear_mask = prepare_cudnn_linear_mask(
-            self.linear_2.weight.device,
-            self.linear_2.weight.dtype,
-            hidden_dim,
-            self.c_m,
-        )
-        if linear_relu is not None:
-            self._cudnn_graph_plans["linear_relu"] = linear_relu
-        if linear_mask is not None:
-            self._cudnn_graph_plans["linear_mask"] = linear_mask
 
     def forward(self, m: torch.Tensor, mask: torch.Tensor, *, residual: bool = False) -> torch.Tensor:
         """The masked MLP update, or ``m`` plus it when ``residual`` is set."""
-        output = self._forward_fused(m, mask, residual=residual)
+        output = self._forward_w_norm(m, mask, residual=residual)
+        if output is None:
+            output = self._forward_fused(m, mask, residual=residual)
         if output is not None:
             return output
         if can_use_cudnn_graph(m, enabled=self.enable_cudnn_graph):
@@ -588,33 +761,14 @@ class MSATransition(CudnnGraphModule):
             output = self._forward_impl(m, mask)
         return m + output if residual else output
 
-    def _forward_fused(self, m: torch.Tensor, mask: torch.Tensor, *, residual: bool) -> torch.Tensor | None:
-        """LayerNorm, then one kernel for both linears, the mask and any residual; ``None`` if declined."""
-        op = self._fused_mlp_ops[residual]
-        weights = (self.linear_1.weight, self.linear_1.bias, self.linear_2.weight, self.linear_2.bias)
-        if op is None or not op.accepts(m, mask, *weights):
-            return None
-        return op(self.layer_norm(m), *weights, m if residual else None, mask)
-
     def _forward_cudnn(self, m: torch.Tensor, mask: torch.Tensor) -> torch.Tensor | None:
-        m = self.layer_norm(m)
-        rows = m.numel() // self.c_m
-        hidden_dim = self.n * self.c_m
-        m_flat = m.reshape(1, rows, self.c_m).contiguous()
-        mask_flat = mask.reshape(1, rows, 1).to(dtype=m.dtype).contiguous()
-        weight_1_t = self.linear_1.weight.unsqueeze(0).transpose(-1, -2)
-        bias_1 = self.linear_1.bias.reshape(1, 1, hidden_dim)
-        hidden = _run_cudnn_linear(
-            self._cudnn_graph_plans.get("linear_relu"),
-            cudnn_linear_relu,
-            m_flat,
-            weight_1_t,
-            bias_1,
-        )
+        normed = self.layer_norm(m)
+        rows = normed.numel() // self.c_m
+        mask_flat = mask.reshape(1, rows, 1).to(dtype=normed.dtype).contiguous()
+        hidden = self._cudnn_hidden(normed)
         if hidden is None:
             return None
-        weight_2_t = self.linear_2.weight.unsqueeze(0).transpose(-1, -2)
-        bias_2 = self.linear_2.bias.reshape(1, 1, self.c_m)
+        weight_2_t, bias_2 = self._cudnn_linear_2()
         output = _run_cudnn_linear(
             self._cudnn_graph_plans.get("linear_mask"),
             cudnn_linear_mask,
@@ -623,7 +777,7 @@ class MSATransition(CudnnGraphModule):
             bias_2,
             mask_flat,
         )
-        return None if output is None else output.view_as(m)
+        return None if output is None else output.view_as(normed)
 
     def _forward_impl(self, m: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
         mask = mask.unsqueeze(-1)

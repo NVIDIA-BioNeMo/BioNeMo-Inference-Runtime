@@ -196,6 +196,8 @@ def load_msa_transition_weights_torch(module, weights_and_biases):
             }
         ]
     )
+    # Refold the fused kernel's weights from the loaded ones, as recursive_calling_load_weights does.
+    module.post_load_weights()
 
 
 def load_msa_transition_weights_trt(module, weights_and_biases):
@@ -254,6 +256,8 @@ def load_pair_transition_weights_torch(module, weights_and_biases):
             }
         ]
     )
+    # Refold the fused kernel's weights from the loaded ones, as recursive_calling_load_weights does.
+    module.post_load_weights()
 
 
 def load_pair_transition_weights_trt(module, weights_and_biases):

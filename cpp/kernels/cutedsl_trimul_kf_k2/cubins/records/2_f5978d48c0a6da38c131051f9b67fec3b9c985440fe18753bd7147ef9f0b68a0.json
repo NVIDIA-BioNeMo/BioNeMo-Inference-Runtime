@@ -1,5 +1,18 @@
 {
-  "executables": {},
+  "executables": {
+    "25af7ee895c97dbbf3091566b0e368656dfc566b259a9dc9f8fff99f264fe1c3": {
+      "dtype": "bf16",
+      "dynamic_smem_bytes": 214016,
+      "image_sha256": "748d14c8fb215bc46b95c17729d642aa4034c08d49e1ecced51648517781fd3b",
+      "image_size": 25024,
+      "kernel_sm": 90,
+      "kernel_symbol": "9db8b2e70eab333ae0b115144526537e0212c67ffac231c9dc28e058f225ade5",
+      "launch_abi": "trimul_kf_k2_sm90_v1",
+      "sm90_launch": "a756883201ebc748130b6156300c2c8e6688cae1543f26a6507cd6bd50a75db9",
+      "target_arch": "sm_90a",
+      "target_sm": 90
+    }
+  },
   "kernel_symbols": {},
   "sm90_launches": {
     "2d10782b5c9403a85b030d84704cfe2803d5875048bf9e89d6644efee7a95e57": {

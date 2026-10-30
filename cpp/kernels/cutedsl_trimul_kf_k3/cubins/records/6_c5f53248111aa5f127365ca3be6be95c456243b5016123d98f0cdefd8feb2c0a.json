@@ -1,17 +1,5 @@
 {
   "executables": {
-    "613de2fbf9afef0494382fca6a6ab7c587a876dd858d28f4afef8e12d7d9422b": {
-      "dtype": "bf16",
-      "dynamic_smem_bytes": 232448,
-      "image_sha256": "79b2d0d25f3f98dd0fed9cbdca96f488c05071439a965a638d445106e6a79c64",
-      "image_size": 60008,
-      "kernel_sm": 90,
-      "kernel_symbol": "d12938aacb1b9fed78321e9d115613b431458c3c7d11d289d6c13b2fa3c438ea",
-      "launch_abi": "trimul_kf_k3_sm90_resident_v1",
-      "sm90_launch": "e342001e9ecc7b74319a92013b743779563669d9e9d195056fa65fb64358c29f",
-      "target_arch": "sm_90a",
-      "target_sm": 90
-    },
     "695096b4d280a53c5a95810807314d341daa49b3d83d29c6059ed6b4e377bd3b": {
       "dtype": "bf16",
       "dynamic_smem_bytes": 220160,
@@ -44,7 +32,7 @@
       "variant_id": "6b52b39aab336f751406"
     },
     {
-      "executable": "5938b1b10a78bd867a8785e20d60ba6aa152a9f6b26785ed069e07a561814436",
+      "executable": "5b3809409166f9941d816a5add84ee5f2d837f96551629f891083477161cf315",
       "runtime_metadata": {
         "C": 384,
         "D": 256,

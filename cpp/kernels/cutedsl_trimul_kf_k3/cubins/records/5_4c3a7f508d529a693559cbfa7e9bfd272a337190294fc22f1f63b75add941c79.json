@@ -12,11 +12,11 @@
       "target_arch": "sm_90a",
       "target_sm": 90
     },
-    "5938b1b10a78bd867a8785e20d60ba6aa152a9f6b26785ed069e07a561814436": {
+    "5b3809409166f9941d816a5add84ee5f2d837f96551629f891083477161cf315": {
       "dtype": "bf16",
       "dynamic_smem_bytes": 232448,
-      "image_sha256": "be24843462d08c375e5211851fc40ecf3180c0b26b17918876436cab92d2e076",
-      "image_size": 61032,
+      "image_sha256": "407133f9823ce9499c2fbe1d52241a3a899ed5cbfb1040b21d6a6736285539fc",
+      "image_size": 71272,
       "kernel_sm": 90,
       "kernel_symbol": "c897eab1b9b344c7b53e22e9e0c2f66a494f1f8ca2e84cf5896a95d439ba2a37",
       "launch_abi": "trimul_kf_k3_sm90_resident_v1",

@@ -117,6 +117,29 @@ def _declared_gates(source_path: str) -> tuple[str, ...]:
     return tuple(gates)
 
 
+@functools.cache
+def _declared_min_rows(source_path: str) -> int:
+    """Return the row count below which one shape bundle defers to the caller's unfused path.
+
+    A bundle may declare a top-level ``min_rows`` where its kernel's fixed cost
+    loses to a caller's separate projection and gate pass on small inputs. It
+    is a dispatch hint for callers that have such a path; the kernel itself
+    still runs any row count. 0, the default, prefers the kernel everywhere.
+    """
+    with open(source_path) as config_file:
+        raw = json.load(config_file)
+    min_rows = raw.get("min_rows", 0)
+    if isinstance(min_rows, bool) or not isinstance(min_rows, int) or min_rows < 0:
+        raise ValueError(f"Invalid dual_gemm x_x min_rows in {source_path}: expected a non-negative integer")
+    return min_rows
+
+
+def get_min_rows(sm_version: int, K: int, N: int) -> int:
+    """Rows below which callers with an unfused path should take it on this exact target; 0 if none."""
+    bundle = load_kernel_configs(_CONFIGS_DIR, get_config_file_name(sm_version, K=K, N=N))
+    return 0 if bundle is None else _declared_min_rows(bundle.source_path)
+
+
 def _has_direct_config_for_gate(sm_version: int, K: int, N: int, gate: str) -> bool:
     """Whether this exact target ships a tuning bundle for ``gate``.
 

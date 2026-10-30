@@ -202,6 +202,11 @@ LayerNorm followed by the transition MLP where it ships for the call, else by
 the layer's own linears. On SM90 the transition MLP ships only for ReLU at 256
 → 512 and for SwiGLU at 128 → 256 without the residual.
 
+An `x_x` tuning bundle may declare `min_rows`, below which the dual GEMM's fixed
+cost outweighs a separate projection and SwiGLU pass. On SM100 / SM103 the
+768-wide diffusion-token `ConditionedTransitionBlock` therefore takes the Triton
+fused SwiGLU path below 2305 rows (samples × tokens).
+
 `TriangleMultiplicationNode` runs the TriMul KF chain when its model pads tokens
 (`enable_token_pad`, on by default) and the node is bf16 with a
 `(dim, hidden_dim)` of 32/32, 64/64, 128/128, 256/256, or 384/256, without

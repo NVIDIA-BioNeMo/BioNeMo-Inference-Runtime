@@ -23,7 +23,7 @@ import torch
 from bionemo_ir.dsl_kernels.triton.zero_masked_rows import zero_masked_rows_
 from bionemo_ir.utils import get_sm_version
 
-from ._config import _has_direct_config_for_gate
+from ._config import _has_direct_config_for_gate, get_min_rows
 from .cutedsl import DualGemmXxCuTe
 
 _GATES = ("sigmoid", "silu")
@@ -185,3 +185,14 @@ def get_cute_dual_gemm_x_x_op(
     """
     op = get_dual_gemm_x_x_op(dtype, N=N, K=K, gate=gate)
     return op if op is _invoke_cute_dual_gemm_x_x else None
+
+
+def get_cute_dual_gemm_x_x_min_rows(*, N: int, K: int) -> int:
+    """Rows below which this target's tuning prefers the caller's unfused path to the CuTe kernel.
+
+    Pairs with :func:`get_cute_dual_gemm_x_x_op`: a caller that also has a
+    separate projection and gate pass should take it for fewer rows, where the
+    kernel's fixed cost dominates. Returns 0 when the target declares none.
+    """
+    sm = get_sm_version()
+    return get_min_rows(sm, K, N) if sm in _CUTE_SMS else 0

@@ -29,7 +29,7 @@ from collections.abc import Callable
 import torch
 import torch.nn as nn
 
-from bionemo_ir._torch.custom_ops.dual_gemm_x_x import get_cute_dual_gemm_x_x_op
+from bionemo_ir._torch.custom_ops.dual_gemm_x_x import get_cute_dual_gemm_x_x_min_rows, get_cute_dual_gemm_x_x_op
 from bionemo_ir._torch.custom_ops.gated_sigmoid import get_gated_sigmoid_op
 from bionemo_ir._torch.custom_ops.transition_mlp import get_transition_mlp_op
 from bionemo_ir._torch.custom_ops.transition_mlp_w_norm import (
@@ -412,7 +412,8 @@ class ConditionedTransitionBlock(nn.Module):
         )
         # The SwiGLU MLP runs on one kernel path: the fused transition op, which keeps the hidden
         # activation on chip where a config ships for this width, or else, for a 2-way SwiGLU, the
-        # dual GEMM for the gated projection ahead of b_to_a.
+        # dual GEMM for the gated projection ahead of b_to_a. Below the dual GEMM's tuned row count,
+        # where its fixed cost dominates, the separate projection and SwiGLU pass run instead.
         self._fused_mlp_op = get_transition_mlp_op(
             dtype or torch.get_default_dtype(),
             width=self.dim_single,
@@ -423,8 +424,11 @@ class ConditionedTransitionBlock(nn.Module):
             has_residual=False,
         )
         self._dual_gemm_silu_op = None
+        self._dual_gemm_min_rows = 0
         if using_silu:
             self._dual_gemm_silu_op = _get_silu_projection_op(dtype, K=self.dim_single, N=self.dim_inner)
+            if self._dual_gemm_silu_op is not None:
+                self._dual_gemm_min_rows = get_cute_dual_gemm_x_x_min_rows(K=self.dim_single, N=self.dim_inner)
 
         self.output_projection = Linear(
             self.dim_single_cond, self.dim_single, bias=True, dtype=dtype, skip_create_weights=skip_create_weights
@@ -505,7 +509,7 @@ class ConditionedTransitionBlock(nn.Module):
                 output = self._fused_mlp_op(a, *weights, None, None)
                 if output is not None:
                     return output
-        if self._dual_gemm_silu_op is not None:
+        if self._dual_gemm_silu_op is not None and a.numel() >= self._dual_gemm_min_rows * self.dim_single:
             # The dual GEMM gates its first weight; the projection holds value rows, then gate rows.
             b = self._dual_gemm_silu_op(a, weight[self.dim_inner :], weight[: self.dim_inner], gate="silu")
         else:

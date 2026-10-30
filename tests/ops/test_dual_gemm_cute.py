@@ -21,9 +21,11 @@
 """
 
 import importlib
+import json
 import os
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -41,12 +43,14 @@ from bionemo_ir._torch.custom_ops.dual_gemm_x_x import (
     DualGemmXxCuTe,
     _invoke_cuequiv_dual_gemm_x_x,
     _invoke_vanilla_dual_gemm_x_x,
+    get_cute_dual_gemm_x_x_min_rows,
     get_dual_gemm_x_x_op,
 )
+from bionemo_ir._torch.custom_ops.dual_gemm_x_x import _config as dual_gemm_x_x_config
 from bionemo_ir._torch.custom_ops.dual_gemm_x_x import cutedsl as dual_gemm_x_x_cutedsl
 from bionemo_ir._torch.custom_ops.dual_gemm_x_x import ops as dual_gemm_x_x_ops
 from bionemo_ir._torch.custom_ops.dual_gemm_x_x._cubin import DualGemmXxCubinExecutable
-from bionemo_ir._torch.utils.kernel import CuTeDSLKernelVariantUnavailable
+from bionemo_ir._torch.utils.kernel import CuTeDSLKernelVariantUnavailable, load_kernel_configs
 from bionemo_ir._torch.utils.kernel import _cutedsl_kernel_library as library_runtime
 from tests._torch import (
     SM_VERSION,
@@ -348,6 +352,55 @@ def test_x_x_tuned_odd_rectangular_masked(
     )
 
 
+@pytest.mark.parametrize(("K", "N"), [(768, 1536), (384, 1536)], ids=["unit-cluster", "two-pair-cluster"])
+@pytest.mark.parametrize("has_bias", [False, True], ids=["bias0", "bias1"])
+@pytest.mark.parametrize("epi_n", [32, 64])
+def test_x_x_sliced_epilogue_matches_whole_tile(
+    K: int,
+    N: int,
+    has_bias: bool,
+    epi_n: int,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Storing each tile in column slices moves only the staging: bias, masked rows, and tails match bit for bit."""
+    skip_if_no_cutedsl("dual_gemm_x_x")
+    skip_if_not_sm100_family()
+    monkeypatch.delenv("CUTEDSL_FORCE_CUBIN", raising=False)
+    name = dual_gemm_x_x_config.get_config_file_name(SM_VERSION, K=K, N=N)
+    bundle = json.loads((Path(dual_gemm_x_x_config._CONFIGS_DIR) / name).read_text())
+    assert bundle.get("kernel_variant") is None, "the resident kernel has no sliced epilogue"
+
+    torch.manual_seed(7)
+    dtype, device = torch.bfloat16, "cuda"
+    B, I, J = 1, 5, 461
+    X = torch.randn(B, I, J, K, device=device, dtype=dtype)
+    W0 = torch.randn(N, K, device=device, dtype=dtype) * 0.05
+    W1 = torch.randn(N, K, device=device, dtype=dtype) * 0.05
+    bias0 = torch.randn(N, device=device, dtype=dtype) if has_bias else None
+    bias1 = torch.randn(N, device=device, dtype=dtype) if has_bias else None
+    lengths = torch.tensor([[J, J - 1, J // 2, 1, 0]], device=device, dtype=torch.int32)
+    mask = torch.arange(J, device=device) < lengths.unsqueeze(-1)
+
+    def run(entry_update: dict) -> torch.Tensor:
+        folder = tmp_path / f"epi{entry_update.get('epi_n', 0)}"
+        folder.mkdir()
+        tuned = dict(bundle, configs={key: {**entry, **entry_update} for key, entry in bundle["configs"].items()})
+        (folder / name).write_text(json.dumps(tuned))
+        monkeypatch.setenv("BIOIR_TUNED_CONFIG_FOLDER", str(folder))
+        monkeypatch.setattr(DualGemmXxCuTe, "_compiled_cache", {})
+        load_kernel_configs.cache_clear()
+        try:
+            return DualGemmXxCuTe()(X, W0, W1, bias0=bias0, bias1=bias1, mask=mask, actual_seqlen=lengths, gate="silu")
+        finally:
+            load_kernel_configs.cache_clear()
+
+    whole = run({"epi_n": 0})
+    sliced = run({"epi_n": epi_n})
+    torch.testing.assert_close(sliced, whole, atol=0, rtol=0)
+    assert not sliced[0, 4].any()
+
+
 # ---------------------------------------------------------------------------
 # x_x variant -- single shared X, optional left-aligned mask + transpose_out
 # ---------------------------------------------------------------------------
@@ -646,6 +699,141 @@ def test_x_x_rank3_uses_sequence_length_for_tuning_bucket(monkeypatch):
 
     assert captured is not None
     assert captured.bucket == 512
+
+
+def _fake_source(kernel_cls: type, **tile_params: object) -> SimpleNamespace:
+    """A resolved source with only the fields the disk cache key reads."""
+    return SimpleNamespace(
+        kernel=kernel_cls(),
+        config=SimpleNamespace(tile_params={"bias_n": 1536, "mma_tiler": [128, 128, 64], **tile_params}),
+    )
+
+
+class _StreamingKernel:
+    """Stands in for one source kernel class."""
+
+
+class _ResidentKernel:
+    """Stands in for another source kernel class."""
+
+
+def test_x_x_disk_cache_key_separates_kernels_and_tiles() -> None:
+    """The cache directory fingerprints kernel sources only, so the key must carry the selected tile."""
+    backend = DualGemmXxCuTe()
+    variant = dual_gemm_x_x_cutedsl._DualGemmXxVariant(torch.bfloat16, 768, 1536, 256, False, False, True, "silu")
+
+    key = backend._disk_cache_key(variant, _fake_source(_StreamingKernel, cluster_n=2))
+
+    assert key == backend._disk_cache_key(variant, _fake_source(_StreamingKernel, cluster_n=2))
+    assert key != backend._disk_cache_key(variant, _fake_source(_StreamingKernel, cluster_n=1))
+    assert key != backend._disk_cache_key(variant, _fake_source(_ResidentKernel, cluster_n=2))
+
+
+def test_x_x_retuned_tile_compiles_instead_of_loading_the_old_kernel(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A config-only retune with unchanged sources must not load the kernel cached for the old tile."""
+    backend = DualGemmXxCuTe()
+    disk: dict = {}
+    compiled: list[object] = []
+    monkeypatch.setattr(DualGemmXxCuTe, "_compiled_cache", {})
+    monkeypatch.setattr(backend, "load_from_cache", disk.get)
+    monkeypatch.setattr(backend, "save_to_cache", disk.__setitem__)
+
+    def compile_source(*_args: object, **_kwargs: object) -> object:
+        compiled.append(object())
+        return compiled[-1]
+
+    source_module = SimpleNamespace(compile_dual_gemm_x_x_source=compile_source)
+    variant = dual_gemm_x_x_cutedsl._DualGemmXxVariant(torch.bfloat16, 768, 1536, 256, False, False, True, "silu")
+
+    first = backend._load_or_compile_source(variant, source_module, _fake_source(_StreamingKernel, cluster_n=2))
+    DualGemmXxCuTe._compiled_cache.clear()
+    reloaded = backend._load_or_compile_source(variant, source_module, _fake_source(_StreamingKernel, cluster_n=2))
+    retuned = backend._load_or_compile_source(variant, source_module, _fake_source(_StreamingKernel, cluster_n=1))
+
+    assert reloaded is first
+    assert retuned is not first
+    assert len(compiled) == 2
+
+
+@pytest.mark.parametrize("public_call", [False, True], ids=["lookup", "call"])
+def test_x_x_memory_cache_tracks_the_selected_source(monkeypatch: pytest.MonkeyPatch, public_call: bool) -> None:
+    """A changed tile or kernel must replace both shared and per-instance executables."""
+    monkeypatch.delenv("CUTEDSL_FORCE_CUBIN", raising=False)
+    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda: (10, 0))
+    monkeypatch.setattr(DualGemmXxCuTe, "_compiled_cache", {})
+    monkeypatch.setattr(DualGemmXxCuTe, "load_from_cache", lambda *_args: None)
+    monkeypatch.setattr(DualGemmXxCuTe, "save_to_cache", lambda *_args: None)
+    monkeypatch.setattr(DualGemmXxCuTe, "_uses_resident_kernel", lambda *_args: False)
+    monkeypatch.setattr(DualGemmXxCuTe, "_kernel_is_sm90", lambda *_args: False)
+    compiled: list[object] = []
+    launched: list[object] = []
+
+    def compile_source(*_args: object, **_kwargs: object) -> object:
+        compiled.append(object())
+        return compiled[-1]
+
+    def launch_source(executable: object, **_kwargs: object) -> None:
+        launched.append(executable)
+
+    source_module = SimpleNamespace(
+        compile_dual_gemm_x_x_source=compile_source, launch_dual_gemm_x_x_source=launch_source
+    )
+    selected = _fake_source(_StreamingKernel, cluster_n=2)
+    monkeypatch.setattr(dual_gemm_x_x_cutedsl, "load_source_module", lambda *_args: source_module)
+    monkeypatch.setattr(DualGemmXxCuTe, "_resolve_source_kernel", lambda *_args: (source_module, selected))
+    backend = DualGemmXxCuTe()
+    x = torch.empty(1, 32, 128, dtype=torch.bfloat16)
+    weight = torch.empty(256, 128, dtype=torch.bfloat16)
+    variant = dual_gemm_x_x_cutedsl._DualGemmXxVariant(x.dtype, 128, 256, 32, False, False, False)
+
+    def run(operation: DualGemmXxCuTe) -> object:
+        if public_call:
+            operation(x, weight, weight)
+            return launched[-1]
+        return operation._get_executable(variant, x)
+
+    first = run(backend)
+    assert run(backend) is first
+    selected = _fake_source(_StreamingKernel, cluster_n=1)
+    retuned = run(backend)
+    assert retuned is not first
+    assert run(DualGemmXxCuTe()) is retuned
+    selected = _fake_source(_ResidentKernel, cluster_n=1)
+    resident = run(backend)
+    assert resident is not retuned
+    selected = _fake_source(_StreamingKernel, cluster_n=2)
+    assert run(backend) is first
+    assert len(compiled) == 3
+
+
+@pytest.mark.parametrize(("declared", "expected"), [(None, 0), (0, 0), (4096, 4096)])
+def test_x_x_min_rows_reads_the_bundle(tmp_path: Path, declared: int | None, expected: int) -> None:
+    bundle = {"kernel_abi": "sm100", "gates": ["silu"], "configs": {}}
+    if declared is not None:
+        bundle["min_rows"] = declared
+    path = tmp_path / f"K8_N8_sm100_{declared}.json"
+    path.write_text(json.dumps(bundle))
+    assert dual_gemm_x_x_config._declared_min_rows(str(path)) == expected
+
+
+@pytest.mark.parametrize("declared", [-1, True, "4096", 1.5])
+def test_x_x_min_rows_rejects_a_non_count(tmp_path: Path, declared: int | bool | str | float) -> None:
+    path = tmp_path / f"K8_N8_sm100_{declared!r}.json"
+    path.write_text(json.dumps({"kernel_abi": "sm100", "min_rows": declared, "configs": {}}))
+    with pytest.raises(ValueError, match="min_rows"):
+        dual_gemm_x_x_config._declared_min_rows(str(path))
+
+
+@pytest.mark.parametrize("sm", [80, 86, 89, 90, 100, 103])
+def test_x_x_token_swiglu_min_rows_ships_only_on_blackwell(sm: int) -> None:
+    """Only the SM100 family measured the dual GEMM losing to the unfused path on small token MLPs."""
+    min_rows = dual_gemm_x_x_config.get_min_rows(sm, 768, 1536)
+    assert (min_rows > 0) == (sm in (100, 103))
+
+
+def test_x_x_min_rows_is_zero_off_the_tuned_targets(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(dual_gemm_x_x_ops, "get_sm_version", lambda: 120)
+    assert get_cute_dual_gemm_x_x_min_rows(K=768, N=1536) == 0
 
 
 def test_x_x_cubin_adapter_rejects_an_unimplemented_gate_before_the_library():

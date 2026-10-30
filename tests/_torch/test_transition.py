@@ -23,10 +23,14 @@ from test_utils.boltz.create_and_load_weights import (
 )
 from test_utils.boltz.ref_layers import RefConditionedTransitionBlock
 
+from bionemo_ir._torch.custom_ops.dual_gemm_x_x import cutedsl as dual_gemm_x_x_cutedsl
+from bionemo_ir._torch.custom_ops.dual_gemm_x_x import ops as dual_gemm_x_x_ops
 from bionemo_ir._torch.layers.transition import ConditionedTransitionBlock, MSATransition, PairTransition, Transition
 from bionemo_ir._torch.utils import ChunkPolicy
+from bionemo_ir._torch.utils.kernel import CuTeDSLKernelLibraryExecutable
+from bionemo_ir._torch.utils.kernel import _cutedsl_kernel_library as library_runtime
 from bionemo_ir.utils import str_dtype_to_torch
-from tests._torch import init_module_weights, skip_if_not_sm90
+from tests._torch import SM_VERSION, init_module_weights, skip_if_not_sm90, skip_if_not_sm100_family
 
 
 @dataclass(kw_only=True, frozen=True)
@@ -455,5 +459,117 @@ def test_conditioned_transition_kernel_path_matches_split_projection(
         setattr(module, kernel_attr, None)
         split = module(a, s)
 
-    assert kernel.calls == 1
+    rows = a.numel() // dim_single
+    below_threshold = kernel_attr == "_dual_gemm_silu_op" and rows < module._dual_gemm_min_rows
+    assert kernel.calls == (0 if below_threshold else 1)
     torch.testing.assert_close(fused, split, atol=2e-2, rtol=2e-2)
+
+
+def _token_swiglu_block() -> ConditionedTransitionBlock:
+    """A diffusion-token SwiGLU block (768 wide, 1536 hidden) with model-scale weights, or skip."""
+    torch.manual_seed(11)
+    module = (
+        ConditionedTransitionBlock(
+            dim_single=768, dim_single_cond=128, expansion_factor=2, using_silu=True, dtype=torch.bfloat16
+        )
+        .cuda()
+        .eval()
+    )
+    if module._dual_gemm_silu_op is None:
+        pytest.skip("the 768/1536 SiLU dual GEMM does not ship on this GPU")
+    with torch.no_grad():
+        for parameter in module.parameters():
+            parameter.normal_(mean=0.0, std=0.02)
+    return module
+
+
+def _split_projection(module: ConditionedTransitionBlock, a: torch.Tensor) -> torch.Tensor:
+    """The block's MLP on its unfused path: one projection, the SwiGLU pass, then ``b_to_a``."""
+    return module.b_to_a(module._swiglu(module.fused_swl_a_to_b(a)))
+
+
+@pytest.mark.parametrize("offset", [-1, 0, 1], ids=["below", "at", "above"])
+def test_conditioned_transition_dual_gemm_starts_at_its_min_rows(offset: int) -> None:
+    """On SM100 the dual GEMM runs from its shipped row count; fewer rows take the unfused path, bit for bit."""
+    skip_if_not_sm100_family()
+    module = _token_swiglu_block()
+    assert module._dual_gemm_min_rows == 2305
+    kernel = _CountingKernel(module._dual_gemm_silu_op)
+    module._dual_gemm_silu_op = kernel
+    a = torch.randn(module._dual_gemm_min_rows + offset, 768, device="cuda", dtype=torch.bfloat16)
+    with torch.inference_mode():
+        output = module._swiglu_mlp(a)
+        split = _split_projection(module, a)
+
+    if offset < 0:
+        assert kernel.calls == 0
+        torch.testing.assert_close(output, split, atol=0, rtol=0)
+    else:
+        assert kernel.calls == 1
+        torch.testing.assert_close(output, split, atol=2e-2, rtol=2e-2)
+
+
+@pytest.mark.parametrize(
+    ("leading_shape", "dual_gemm"),
+    [((5, 42), False), ((1, 5, 42), False), ((1, 5, 373), False), ((5, 959), True), ((1, 5, 1734), True)],
+    ids=["protenix-42", "of3-42", "of3-373", "protenix-959", "of3-1734"],
+)
+def test_conditioned_transition_token_mlp_path_on_blackwell(leading_shape: tuple[int, ...], dual_gemm: bool) -> None:
+    """On SM100 the token MLP of a small complex runs unfused and a large one runs the dual GEMM.
+
+    Protenix calls it on ``[5, N, 768]`` and OpenFold3 on ``[1, 5, N, 768]``; both have ``5 N`` rows.
+    """
+    skip_if_not_sm100_family()
+    module = _token_swiglu_block()
+    assert module._dual_gemm_min_rows > 0
+    kernel = _CountingKernel(module._dual_gemm_silu_op)
+    module._dual_gemm_silu_op = kernel
+    a = torch.randn(*leading_shape, 768, device="cuda", dtype=torch.bfloat16)
+    with torch.inference_mode():
+        output = module._swiglu_mlp(a)
+        split = _split_projection(module, a)
+
+    assert kernel.calls == int(dual_gemm)
+    torch.testing.assert_close(output, split, atol=2e-2, rtol=2e-2)
+
+
+@pytest.mark.parametrize("mode", ["forced", "source_free"])
+def test_conditioned_transition_dual_gemm_runs_cubins_chosen_at_call_time(
+    mode: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A block built with sources still runs its dual GEMM from the packaged CUBINs when they are all a call has.
+
+    ``forced`` sets ``CUTEDSL_FORCE_CUBIN`` after construction; ``source_free`` makes the source adapter
+    unimportable, as a public build ships it.
+    """
+    try:
+        launcher = library_runtime._load_kernel_library().dual_gemm_x_x
+    except library_runtime.CuTeDSLKernelLibraryUnavailable as error:
+        pytest.skip(f"no _cutedsl_kernels extension: {error}")
+    module = _token_swiglu_block()
+    try:
+        # 96 tokens select the S=128 bucket of every tuned 768/1536 bundle; no mask, no bias, the silu gate.
+        launcher.make_kernel_config(SM_VERSION, 768, 1536, 128, launcher.DType.BFLOAT16, False, False, False, True)
+    except ValueError:
+        pytest.skip(f"the CUBIN corpus has no SM{SM_VERSION} 768/1536 silu dual GEMM")
+    module._dual_gemm_min_rows = 0
+    a = torch.randn(1, 5, 96, 768, device="cuda", dtype=torch.bfloat16)
+    with torch.inference_mode():
+        split = _split_projection(module, a)
+
+    monkeypatch.setattr(dual_gemm_x_x_cutedsl.DualGemmXxCuTe, "_compiled_cache", {})
+    monkeypatch.setattr(dual_gemm_x_x_ops, "_DUAL_GEMM_XX_CUTE", None)
+    if mode == "forced":
+        monkeypatch.setenv(dual_gemm_x_x_cutedsl.FORCE_CUBIN_ENV, "1")
+    else:
+        monkeypatch.delenv(dual_gemm_x_x_cutedsl.FORCE_CUBIN_ENV, raising=False)
+
+        def source_unavailable(*_args, **_kwargs):
+            raise ModuleNotFoundError("CuTeDSL source removed, as in a public build")
+
+        monkeypatch.setattr(dual_gemm_x_x_cutedsl, "load_source_module", source_unavailable)
+    with torch.inference_mode():
+        output = module._swiglu_mlp(a)
+
+    assert isinstance(dual_gemm_x_x_ops._DUAL_GEMM_XX_CUTE._last_exe, CuTeDSLKernelLibraryExecutable)
+    torch.testing.assert_close(output, split, atol=2e-2, rtol=2e-2)

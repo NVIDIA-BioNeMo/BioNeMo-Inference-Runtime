@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import json
 import math
 from dataclasses import dataclass, replace
 from types import ModuleType
@@ -85,13 +86,12 @@ class DualGemmXxCuTe(CuteKernelCache):
     ``_cutedsl_kernels.dual_gemm_x_x``.
     """
 
-    _compiled_cache: dict[tuple[int, _DualGemmXxVariant], Any] = {}
+    _compiled_cache: dict[tuple, Any] = {}
 
     def __init__(self):
         major, minor = torch.cuda.get_device_capability()
         self._sm_version = major * 10 + minor
         self._last_exe = None
-        self._last_key: _DualGemmXxVariant | None = None
         self._bucket_ranges: dict[tuple[int, int, bool], list[tuple[int, str]] | None] = {}
         # Last (S, bucket) per shape: one instance serves every layer, and the layers alternate shapes.
         self._last_buckets: dict[tuple[int, int, bool], tuple[int, int]] = {}
@@ -102,13 +102,19 @@ class DualGemmXxCuTe(CuteKernelCache):
         self._resident: dict[tuple[int, int, int, bool], bool] = {}
         self._gate_configs: dict[tuple[int, int, str], bool] = {}
 
-    def _disk_cache_key(self, variant: _DualGemmXxVariant) -> tuple:
+    def _disk_cache_key(self, variant: _DualGemmXxVariant, source: Any) -> tuple:
         """Return the source-object disk cache key.
 
         The gate joins the key at v3 because it changes the epilogue's machine
         code; a v2 entry compiled before the axis existed is always sigmoid, and
         reusing one for a silu request would return the wrong activation.
+
+        The selected kernel class and tile join it at v4. The cache directory
+        fingerprints kernel sources only, not tuning JSON, so a retuned or
+        user-overridden tile with unchanged sources would otherwise load the
+        kernel compiled for the previous one.
         """
+        kernel_cls = type(source.kernel)
         source_key = (
             variant.dtype,
             variant.K,
@@ -118,8 +124,10 @@ class DualGemmXxCuTe(CuteKernelCache):
             variant.has_bias,
             variant.runtime_mask,
             variant.gate,
+            f"{kernel_cls.__module__}.{kernel_cls.__qualname__}",
+            json.dumps(source.config.tile_params, sort_keys=True, separators=(",", ":")),
         )
-        return ("dual_gemm_x_x_cute_v3", self._sm_version) + source_key
+        return ("dual_gemm_x_x_cute_v4", self._sm_version) + source_key
 
     def _kernel_is_sm90(self, K: int, N: int) -> bool:
         """Whether this shape uses the duplicated-X SM90 source signature."""
@@ -226,12 +234,14 @@ class DualGemmXxCuTe(CuteKernelCache):
         source: Any,
     ) -> Any:
         """Load the persistent source object or compile and save it."""
-        cache_key = (self._sm_version, variant)
-        disk_key = self._disk_cache_key(variant)
+        disk_key = self._disk_cache_key(variant, source)
+        executable = DualGemmXxCuTe._compiled_cache.get(disk_key)
+        if executable is not None:
+            return executable
         executable = self.load_from_cache(disk_key)
         if executable is not None:
             logger.info(f"CuTeDSL dual_gemm x_x: loaded cached kernel for SM{self._sm_version}, key={variant}")
-            DualGemmXxCuTe._compiled_cache[cache_key] = executable
+            DualGemmXxCuTe._compiled_cache[disk_key] = executable
             return executable
 
         logger.info(
@@ -248,7 +258,7 @@ class DualGemmXxCuTe(CuteKernelCache):
             has_bias=variant.has_bias,
             is_sm90=self._kernel_is_sm90(variant.K, variant.N),
         )
-        DualGemmXxCuTe._compiled_cache[cache_key] = executable
+        DualGemmXxCuTe._compiled_cache[disk_key] = executable
         self.save_to_cache(disk_key, executable)
         logger.info("CuTeDSL dual_gemm x_x: compilation done")
         return executable
@@ -260,10 +270,6 @@ class DualGemmXxCuTe(CuteKernelCache):
             return self._load_cubin_executable(variant)
 
         source_variant = self._source_variant(variant)
-        source_key = (self._sm_version, source_variant)
-        executable = DualGemmXxCuTe._compiled_cache.get(source_key)
-        if executable is not None and not isinstance(executable, CuTeDSLKernelLibraryExecutable):
-            return executable
         try:
             source_module, source = self._resolve_source_kernel(source_variant, x)
         except ImportError as source_error:
@@ -342,15 +348,10 @@ class DualGemmXxCuTe(CuteKernelCache):
             gate=gate,
         )
 
-        # A CUBIN executable serves either mode, so only a source one needs the environment read.
-        if variant == self._last_key and (
-            isinstance(self._last_exe, CuTeDSLKernelLibraryExecutable) or not self.force_cubin()
-        ):
-            executable = self._last_exe
-        else:
-            executable = self._get_executable(variant, x)
-            self._last_key = variant
-            self._last_exe = executable
+        # Resolve the selected source before consulting its tile-keyed cache:
+        # an override can change the implementation without changing the variant.
+        executable = self._get_executable(variant, x)
+        self._last_exe = executable
 
         x_2d = x.reshape(M, K)
         if runtime_mask:

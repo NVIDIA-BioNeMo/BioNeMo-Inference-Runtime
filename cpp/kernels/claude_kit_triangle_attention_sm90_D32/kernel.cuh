@@ -988,7 +988,6 @@ __global__ void __launch_bounds__(T::kNumThreads, 1)
           p_regs[p_pv], tV_pv, Int<set_pv>{}, Int<column_pv>{}, acc_s[s_qk], tK_qk, Int<half_qk>{}, Int<column_qk>{});
       }
       release_chunk(Int<e_qk>{}, warp_leader && key_tile_qk < n_key_tiles);
-      uint32_t const p_max = exp_pack(acc_s[s_k], p_regs[p_k], Int<set_k>{});
       if constexpr (half_init == 0)
       {
         if (key_tile_init < n_key_tiles)
@@ -997,6 +996,9 @@ __global__ void __launch_bounds__(T::kNumThreads, 1)
         }
       }
       init_scores(acc_s[s_init], Int<column_init>{}, Int<half_init>{}, key_tile_init, masked_c);
+      // The next bias fragment is independent of this chunk; load it before
+      // the exponentials so its shared-memory latency can overlap them.
+      uint32_t const p_max = exp_pack(acc_s[s_k], p_regs[p_k], Int<set_k>{});
       if (__any_sync(0xffffffffu, p_max != kPBoundPacked))
       {
         redo_chunk(acc_s[s_k], p_regs[p_k], Int<set_k>{});

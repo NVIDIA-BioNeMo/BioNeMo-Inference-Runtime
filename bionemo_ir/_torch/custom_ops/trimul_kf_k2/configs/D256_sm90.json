@@ -26,11 +26,22 @@
     "S=704": {
       "out": [
         {"kernel_variant": "K2_0", "tile_n": 256, "cluster_m": 2, "defer_kmin": 4, "split_epi": false, "dynamic": true},
-        {"kernel_variant": "K2_0", "tile_n": 224, "cluster_m": 2, "defer_kmin": 3, "split_epi": true, "dynamic": true}
+        {"kernel_variant": "K2_0", "tile_n": 224, "cluster_m": 1, "defer_kmin": 3, "split_epi": true, "dynamic": true}
       ],
       "in": [
         {"kernel_variant": "K2_0", "tile_n": 256, "cluster_m": 2, "defer_kmin": 4, "split_epi": true, "dynamic": true},
         {"kernel_variant": "K2_0", "tile_n": 192, "cluster_m": 1, "defer_kmin": 3, "split_epi": true, "dynamic": true}
+      ]
+    },
+    "S=776": {
+      "out": [
+        {"kernel_variant": "K2_0", "tile_n": 256, "cluster_m": 2, "defer_kmin": 4, "split_epi": false, "dynamic": true},
+        {"kernel_variant": "K2_0", "tile_n": 224, "cluster_m": 1, "defer_kmin": 3, "split_epi": true, "dynamic": true},
+        {"kernel_variant": "K2_0", "tile_n": 208, "cluster_m": 1, "defer_kmin": 3, "split_epi": true, "dynamic": true}
+      ],
+      "in": [
+        {"kernel_variant": "K2_0", "tile_n": 256, "cluster_m": 2, "defer_kmin": 4, "split_epi": true, "dynamic": true},
+        {"kernel_variant": "K2_0", "tile_n": 224, "cluster_m": 1, "defer_kmin": 3, "split_epi": true, "dynamic": true}
       ]
     },
     "S=1200": {

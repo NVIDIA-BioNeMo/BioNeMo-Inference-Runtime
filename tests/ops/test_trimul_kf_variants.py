@@ -197,11 +197,62 @@ def test_k2_tile_lists_take_the_tile_that_pads_n_least():
             k2_config.parse_configs({"S=320": bad})
 
 
+#: Distinct K2 tiles a bundle may run per direction (outgoing, incoming) over all token counts: the CUBIN budget. D=256
+#: adds cluster_m 1 tiles for 513-988 tokens (RFD4 and Protenix): two more outgoing, one more incoming.
+_K2_TILE_BUDGET = {256: (6, 5)}
+
+
 @pytest.mark.parametrize("D", sorted(k2_config.shipped_widths(90)))
-def test_k2_tables_run_at_most_four_tiles_per_direction(D):
-    """Every shipped bundle runs at most four distinct tiles per direction over all token counts (CUBIN budget)."""
+def test_k2_tables_stay_within_the_cubin_budget(D):
+    """Every shipped bundle runs at most four distinct tiles per direction over all token counts (CUBIN budget); D=256
+    at most six outgoing and five incoming."""
+    for outgoing, budget in zip((True, False), _K2_TILE_BUDGET.get(D, (4, 4)), strict=True):
+        assert len({k2_config.select(90, D, n, outgoing)[1] for n in range(8, 4097, 8)}) <= budget
+
+
+#: D=256's K2 tile for every token count from 449 to 1100, per direction, as (first, last, tile). The single-CTA tiles
+#: run outgoing at 513-672 (224), 769-832 (208) and 833-896 (224), incoming at 769-896 (224); incoming 897-952 moved
+#: from the single-CTA 192 to the 256 pair; every other count runs the tile it ran before.
+_D256_K2_MAP = {
+    True: [
+        (449, 512, _K2("K2_0", 256, 2, 4, False, True)),
+        (513, 672, _K2("K2_0", 224, 1, 3, True, True)),
+        (673, 768, _K2("K2_0", 256, 2, 4, False, True)),
+        (769, 832, _K2("K2_0", 208, 1, 3, True, True)),
+        (833, 896, _K2("K2_0", 224, 1, 3, True, True)),
+        (897, 1024, _K2("K2_0", 256, 2, 4, False, True)),
+        (1025, 1100, _K2("K2_0", 224, 2, 3, True, True)),
+    ],
+    False: [
+        (449, 512, _K2("K2_0", 256, 2, 4, True, True)),
+        (513, 576, _K2("K2_0", 192, 1, 3, True, True)),
+        (577, 768, _K2("K2_0", 256, 2, 4, True, True)),
+        (769, 896, _K2("K2_0", 224, 1, 3, True, True)),
+        (897, 1100, _K2("K2_0", 256, 2, 4, True, True)),
+    ],
+}
+
+
+@pytest.mark.parametrize("outgoing", [True, False], ids=["out", "in"])
+def test_k2_d256_runs_the_mapped_tile_at_every_token_count(outgoing):
+    """Every token count from 449 to 1100 selects D=256's mapped K2 tile, both edges of every run included. The
+    S=776 anchor hands over to S=1200 between 988 and 989 tokens inside a run in both directions; the tail-anchor test
+    pins that hand-over."""
+    for first, last, tile in _D256_K2_MAP[outgoing]:
+        for n in range(first, last + 1):
+            assert k2_config.select(90, 256, n, outgoing)[1] == tile, n
+
+
+def test_k2_d256_tail_anchor_keeps_the_large_n_tiles_where_it_took_over():
+    """D=256's S=776 anchor serves 741-988 tokens; from 953 tokens, which S=1200 served before, it runs the tiles
+    S=1200 would run, so only 741-952 tokens change."""
     for outgoing in (True, False):
-        assert len({k2_config.select(90, D, n, outgoing)[1] for n in range(8, 4097, 8)}) <= 4
+        entries = k2_config.anchors(90, 256, outgoing)
+        assert k2_config.select(90, 256, 741, outgoing)[0] == 776
+        assert k2_config.select(90, 256, 989, outgoing)[0] == 1200
+        for n in range(953, 989):
+            shipped = k2_config.select(90, 256, n, outgoing)[1]
+            assert shipped == k2_config.runtime_tile(k2_config.least_padding(entries[1200], n), n)
 
 
 def test_launches_keep_tiles_in_one_batch_and_coordinates_in_int32():
@@ -465,6 +516,8 @@ def test_k2_tiles_off_128_columns_keep_their_store_ring_at_small_n(tile, outgoin
         _K2("K2_0", 224, 2, 3, True, True),
         _K2("K2_2", 192, 2, 4, False, True),
         _K2("K2_2", 192, 2, 3, True, True),
+        _K2("K2_0", 224, 1, 3, True, True),
+        _K2("K2_0", 208, 1, 3, True, True),
     ],
     ids=str,
 )
@@ -677,6 +730,55 @@ def test_shipped_k3_skips_all_masked_slabs_bit_for_bit(B, N, lengths, layout):
     finally:
         cache[key] = shipped
     assert torch.equal(skipped, unskipped)
+
+
+@pytest.mark.parametrize("switch", ["split_ring", "wg_offset", "p_inflight"])
+@pytest.mark.parametrize("layout", ["dense", "padded"])
+@pytest.mark.parametrize(
+    ("B", "N", "lengths"), [(1, 400, (400,)), (4, 200, (200, 7, 130, 0)), (3, 136, (136, 0, 50))], ids=str
+)
+@_requires_source
+def test_shipped_k3_schedule_switches_write_the_same_bits(B, N, lengths, layout, switch):
+    """The shipped C=384, D=256 K3's schedule switches change when work is issued, not what is computed: ring
+    barriers per consumer warpgroup, the second warpgroup's half-slab offset and one P-stage WGMMA group in flight
+    each move waits, not arithmetic. The output is bit for bit the one the same kernel writes with the switch
+    flipped, on dense and on K1's padded planes (per-row slabs), all-masked slabs included."""
+    skip_if_not_sm90()
+    import cutlass.cute as cute
+    from cutlass.cute.runtime import make_fake_stream
+
+    from bionemo_ir._torch.custom_ops.trimul_kf_k3 import _source
+    from bionemo_ir.dsl_kernels.cute import sm90_trimul_kf_k3
+
+    backend = k3.get_trimul_kf_k3_op(torch.bfloat16, 384, 256, True).backend
+    if backend.force_cubin():
+        pytest.skip("compares two source builds of the shipped K3")
+    variant = k3_config.select(90, 384, 256, N).kernel_variant
+    kernel_cls = getattr(sm90_trimul_kf_k3, f"Sm90TrimulKF_{variant}")
+    problem = _problem(B, N, 384, True, "full", D=256)
+    problem["out_seqlen"] = _out_seqlen(B, N, lengths)
+    pitched = layout == "padded"
+    shipped_out = _chain(problem, True, layout, k3_variant=variant, pitched=pitched)
+    torch.testing.assert_close(shipped_out.float(), _reference(problem, True, True), atol=_ATOL, rtol=0)
+    flipped = {switch: not getattr(kernel_cls, switch)}
+    plain = type(f"{kernel_cls.__name__}_flipped", (kernel_cls,), flipped)
+    num_sms = torch.cuda.get_device_properties(torch.cuda.current_device()).multi_processor_count
+    executable = cute.compile(
+        plain(384, 256, num_sms, True, **({"pitched": True} if pitched else {})),
+        *_source.make_fake_args(384, 256, variant, True),
+        make_fake_stream(use_tvm_ffi_env_stream=True),
+        *_source.make_fake_pitch_args(pitched),
+        options="--enable-tvm-ffi",
+    )
+    key = backend._key(384, 256, variant, True, pitched)
+    cache = type(backend)._compiled_cache
+    shipped = cache.get(key)
+    cache[key] = executable
+    try:
+        flipped_out = _chain(problem, True, layout, k3_variant=variant, pitched=pitched)
+    finally:
+        cache[key] = shipped
+    assert torch.equal(shipped_out, flipped_out)
 
 
 def _out_seqlen(B: int, N: int, lengths: tuple) -> torch.Tensor:

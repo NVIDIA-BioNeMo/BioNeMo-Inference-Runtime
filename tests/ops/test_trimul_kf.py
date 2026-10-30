@@ -87,6 +87,24 @@ _CASES = [
     (4, 104, 384, 256, True, True, True, "random"),
     (2, 504, 384, 256, False, True, True, "random"),
 ]
+# The D = 256 K2 tiles at 513-988 tokens (N here is the padded token count J the node passes K2): outgoing 224 on one CTA
+# (513-672: N = 520, the J of 513 tokens), outgoing 208 on one CTA (769-832: N = 776, 832), outgoing 224 on one CTA
+# (833-896: N = 864), incoming 224 on one CTA (769-896: N = 776, 896) and incoming 256 on a pair (897-952: N = 904),
+# plus the edges around them: N = 512 (still S=320's tiles), 984 (S=776's 256 pair) and 992 (the J of 988 and 989
+# tokens, S=1200's 256 pair).
+_D256_TAIL_CASES = [
+    (1, 520, 384, 256, True, True, True, "random"),
+    (1, 776, 384, 256, True, False, True, "tail"),
+    (1, 832, 256, 256, True, True, True, "random"),
+    (1, 864, 384, 256, True, True, False, "random"),
+    (1, 776, 384, 256, False, True, True, "random"),
+    (1, 896, 256, 256, False, False, True, "tail"),
+    (1, 904, 256, 256, False, True, True, "random"),
+    (1, 512, 384, 256, True, True, True, "tail"),
+    (1, 984, 384, 256, False, True, True, "tail"),
+    (1, 992, 256, 256, True, False, True, "random"),
+]
+_CASES += _D256_TAIL_CASES
 
 
 def _case_id(case) -> str:
@@ -336,6 +354,7 @@ _BITWISE_CASES = [
     (1, 520, 256, 256, True, True, True, "random"),
     # K2's pitched product and K3_4's per-row image: N % 64 = 56
     (2, 504, 384, 256, False, True, True, "random"),
+    *_D256_TAIL_CASES,
 ]
 
 
@@ -354,6 +373,22 @@ def test_cubin_chain_matches_source_chain_bitwise(case, monkeypatch):
             outputs.append(_run_chain(problem, outgoing, residual))
             _assert_dispatched(caches, mode)
     assert torch.equal(outputs[0], outputs[1])
+
+
+@pytest.mark.parametrize("mode", _CUTEDSL_MODES)
+@pytest.mark.parametrize("case", _D256_TAIL_CASES[:7], ids=_case_id)
+def test_d256_tail_tiles_repeat_bit_for_bit(mode, case, monkeypatch):
+    """The single-CTA K2 tiles at 513-952 tokens claim their units from a counter: three runs of the chain, from source
+    or from the CUBIN library, write the same bits."""
+    skip_if_not_sm90()
+    B, N, C, D, outgoing, has_bias, residual, lengths = case
+    _skip_without_room(B, N, C, D)
+    caches = _use_mode(mode, monkeypatch)
+    problem = _problem(B, N, C, has_bias, lengths, D=D)
+    first = _run_chain(problem, outgoing, residual)
+    _assert_dispatched(caches, mode)
+    for _ in range(2):
+        assert torch.equal(_run_chain(problem, outgoing, residual), first)
 
 
 # Padded K1 planes (N % 16 == 8 past the padding anchor), so K2 writes a pitched product and K3 reads it per row:

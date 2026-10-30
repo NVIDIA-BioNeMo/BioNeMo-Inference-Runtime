@@ -105,6 +105,64 @@ def test_ray_stages_preserve_resources(processor_config: engine_proc.EngineProce
     assert isinstance(stages[3].map_batches_kwargs["compute"], ActorPoolStrategy)
 
 
+@pytest.mark.parametrize("num_cpus", [None, 0.0, 0.5, 2.0])
+def test_ray_engine_stage_preserves_cpu_reservation(
+    processor_config: engine_proc.EngineProcessorConfig, num_cpus: float | None
+) -> None:
+    processor_config.executor_backend = "ray"
+    processor_config.engine_stage = {"compute": 1, "num_cpus": num_cpus}
+    stage = engine_proc._build_folding_engine_stage(processor_config, {})
+    kwargs = stage.get_dataset_map_batches_kwargs(batch_size=1)
+    if num_cpus is None:
+        assert "num_cpus" not in stage.map_batches_kwargs
+        assert "num_cpus" not in kwargs
+    else:
+        assert stage.map_batches_kwargs["num_cpus"] == num_cpus
+        assert kwargs["num_cpus"] == num_cpus
+
+
+@pytest.mark.parametrize("engine_stage_num_cpus, expected_num_cpus", [(None, 4), (2, 2)])
+def test_default_replica_config_engine_cpu_reservation(
+    processor_config: engine_proc.EngineProcessorConfig,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    engine_stage_num_cpus: int | None,
+    expected_num_cpus: int,
+) -> None:
+    monkeypatch.setattr(engine_proc, "get_available_gpu_count", lambda: 8)
+    config = engine_proc.EngineProcessorConfig.create_default_replica_mode_config(
+        model_source=processor_config.model_source,
+        output_dir=str(tmp_path),
+        engine_stage_num_cpus=engine_stage_num_cpus,
+    )
+    assert config.engine_stage.num_cpus == expected_num_cpus
+    assert config.engine_stage.compute == 8
+    stage = engine_proc._build_folding_engine_stage(config, {})
+    kwargs = stage.get_dataset_map_batches_kwargs(batch_size=1)
+    assert kwargs["num_cpus"] == expected_num_cpus
+    assert kwargs["compute"].min_size == kwargs["compute"].max_size == 8
+
+
+def test_ray_engine_stage_explicit_cpu_override_is_preserved(
+    processor_config: engine_proc.EngineProcessorConfig,
+) -> None:
+    processor_config.executor_backend = "ray"
+    processor_config.engine_stage = {"compute": 1, "num_cpus": 2.0}
+    stage = engine_proc._build_folding_engine_stage(processor_config, {})
+    stage.map_batches_kwargs["num_cpus"] = 0.5
+    assert stage.get_dataset_map_batches_kwargs(batch_size=1)["num_cpus"] == 0.5
+    assert processor_config.engine_stage["num_cpus"] == 2.0
+
+
+def test_serial_engine_stage_skips_cpu_reservation(
+    processor_config: engine_proc.EngineProcessorConfig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setitem(sys.modules, "ray", None)
+    processor_config.engine_stage = {"num_cpus": 2.0}
+    stage = engine_proc._build_folding_engine_stage(processor_config, {})
+    assert "num_cpus" not in stage.map_batches_kwargs
+
+
 @pytest.mark.parametrize("concurrency, expected", [(None, (1, 1)), (4, (1, 4)), ((2, 5), (2, 5))])
 def test_ray_concurrency_ranges(concurrency: int | tuple[int, int] | None, expected: tuple[int, int]) -> None:
     strategy = normalize_cpu_stage_concurrency(concurrency)

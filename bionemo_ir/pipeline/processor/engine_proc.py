@@ -344,6 +344,8 @@ def _build_folding_engine_stage(config: EngineProcessorConfig, processor_default
             "num_gpus": engine_stage_cfg.num_gpus,
             "memory": engine_stage_cfg.memory,
         }
+        if engine_stage_cfg.num_cpus is not None:
+            map_batches_kwargs["num_cpus"] = engine_stage_cfg.num_cpus
     else:
         map_batches_kwargs = {}
 

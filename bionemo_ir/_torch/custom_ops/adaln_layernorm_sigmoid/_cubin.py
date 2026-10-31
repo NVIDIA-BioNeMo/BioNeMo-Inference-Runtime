@@ -25,6 +25,7 @@ from bionemo_ir._torch.utils.kernel import (
     CuTeDSLKernelLibraryExecutable,
     CuTeDSLKernelVariantUnavailable,
     current_stream_handle,
+    tensor_s1_d0,
     tensor_s2_d1,
 )
 
@@ -63,9 +64,10 @@ class AdaLNLayerNormSigmoidCubinExecutable(CuTeDSLKernelLibraryExecutable):
                 rms_norm,
             )
         except ValueError as error:
-            # The launcher's lookup miss. N is compiled in, so an unshipped feature
-            # dimension has no payload at all -- unlike a tile choice, it cannot fall
-            # back to a neighbour. Other errors mean a broken extension and propagate.
+            # The launcher's lookup miss, or a payload whose launch ABI predates the
+            # launcher. N is compiled in, so an unshipped feature dimension has no
+            # payload at all -- unlike a tile choice, it cannot fall back to a
+            # neighbour. Other errors mean a broken extension and propagate.
             raise CuTeDSLKernelVariantUnavailable(
                 f"No AdaLN CUBIN for SM{target_sm}, dtype={dtype}, N={N}, "
                 f"threads_per_row={threads_per_row}, num_threads={num_threads}, "
@@ -82,6 +84,7 @@ class AdaLNLayerNormSigmoidCubinExecutable(CuTeDSLKernelLibraryExecutable):
         s_scale: torch.Tensor,
         s_bias: torch.Tensor,
         out: torch.Tensor,
+        mask: torch.Tensor,
         eps: float,
         mult: int,
         inner: int,
@@ -91,6 +94,8 @@ class AdaLNLayerNormSigmoidCubinExecutable(CuTeDSLKernelLibraryExecutable):
         params.s_scale = tensor_s2_d1(self._kernel_library, s_scale)
         params.s_bias = tensor_s2_d1(self._kernel_library, s_bias)
         params.output = tensor_s2_d1(self._kernel_library, out)
+        # Uint8 keep flags, one per s_scale row; an empty mask is a null pointer the kernel skips.
+        params.mask = tensor_s1_d0(self._kernel_library, mask)
         params.eps = float(eps)
         params.mult = int(mult)
         params.inner = int(inner)

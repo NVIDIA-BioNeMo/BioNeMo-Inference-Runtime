@@ -82,6 +82,8 @@ def exact_graph_config(
     static_args: Sequence[str] = (),
     workspace_kwargs: Sequence[str] = (),
     stable_kwargs: Sequence[str] = (),
+    state_kwargs: Sequence[str] = (),
+    borrowed_kwargs: Sequence[str] = (),
 ) -> CUDAGraphOptimizationConfig:
     """Build an exact policy with model-declared dimensions and acceptance.
 
@@ -93,6 +95,9 @@ def exact_graph_config(
         static_args: Arguments whose structural metadata enters routing keys.
         workspace_kwargs: Scratch arguments owned by each graph state.
         stable_kwargs: Read-only inputs that stay fixed during a rollout.
+        state_kwargs: Inputs the module overwrites with its next call's input and returns, which go back to the
+            caller uncloned.
+        borrowed_kwargs: Inputs whose caller-owned tensor the graph reads in place of a copy.
     """
     return CUDAGraphOptimizationConfig(
         graph_optimization_mode=GraphOptimizationMode.CUDA_GRAPH_VIA_TORCH,
@@ -103,6 +108,8 @@ def exact_graph_config(
             static_args=list(static_args),
             internal_workspace_kwargs=list(workspace_kwargs),
             stable_input_kwargs=list(stable_kwargs),
+            state_input_kwargs=list(state_kwargs),
+            borrowed_input_kwargs=list(borrowed_kwargs),
         ),
         num_calls_for_kernel_compilation=1,
         num_calls_for_memory_allocator=1 if repeated else 3,

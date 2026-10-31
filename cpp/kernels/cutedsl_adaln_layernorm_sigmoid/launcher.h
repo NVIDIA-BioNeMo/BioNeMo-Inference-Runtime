@@ -37,9 +37,12 @@ struct CubinImage;
 /* Direct CUDA Driver launch ABI for the AdaLN fused normalization + sigmoid gate.
  *
  * This is the device-kernel ABI, not the high-level CuTeDSL __call__ ABI, and
- * was read back from the compiled CUBINs' EIATTR_KPARAM_INFO: seven parameters
- * over 108 bytes, IDENTICAL for sm_80 and sm_90a, every dtype and N, and both
+ * was read back from the compiled CUBINs' EIATTR_KPARAM_INFO: eight parameters
+ * over 124 bytes, IDENTICAL for sm_80 and sm_90a, every dtype and N, and both
  * normalization variants. The norm kind is compiled into the image.
+ *
+ * The mask is always a parameter: one uint8 keep flag per s_scale row, or an
+ * empty view (null pointer, extent 0) that the kernel reads as "no mask".
  *
  * The four operands are `s1_d1`, not `s2_d1`, because N is a compile-time
  * constant: only the row count and the outer stride stay dynamic. The launcher
@@ -52,7 +55,7 @@ struct CubinImage;
 namespace bioir::cutedsl::adaln_layernorm_sigmoid::abi
 {
 
-inline constexpr std::size_t kParameterCount = 7;
+inline constexpr std::size_t kParameterCount = 8;
 
 struct Params
 {
@@ -60,6 +63,7 @@ struct Params
   cute_tensor_s1_d1_t s_scale;
   cute_tensor_s1_d1_t s_bias;
   cute_tensor_s1_d1_t output;
+  cute_tensor_s1_d0_t mask;
   float eps;
   std::int32_t mult;
   std::int32_t inner;
@@ -74,9 +78,10 @@ inline void pack_kernel_params(Params* params, void* kernel_params[kParameterCou
   kernel_params[1] = &params->s_scale;
   kernel_params[2] = &params->s_bias;
   kernel_params[3] = &params->output;
-  kernel_params[4] = &params->eps;
-  kernel_params[5] = &params->mult;
-  kernel_params[6] = &params->inner;
+  kernel_params[4] = &params->mask;
+  kernel_params[5] = &params->eps;
+  kernel_params[6] = &params->mult;
+  kernel_params[7] = &params->inner;
 }
 
 static_assert(sizeof(cute_tensor_s1_d1_t) == 24, "AdaLN s1_d1 operand size changed");
@@ -84,15 +89,17 @@ static_assert(offsetof(Params, x) == 0, "unexpected AdaLN x offset");
 static_assert(offsetof(Params, s_scale) == 24, "unexpected AdaLN s_scale offset");
 static_assert(offsetof(Params, s_bias) == 48, "unexpected AdaLN s_bias offset");
 static_assert(offsetof(Params, output) == 72, "unexpected AdaLN output offset");
-static_assert(offsetof(Params, eps) == 96, "unexpected AdaLN eps offset");
-static_assert(offsetof(Params, mult) == 100, "unexpected AdaLN mult offset");
-static_assert(offsetof(Params, inner) == 104, "unexpected AdaLN inner offset");
-/* The lowered bank ends at 108 bytes. The backing struct pads to 112 because
+static_assert(sizeof(cute_tensor_s1_d0_t) == 16, "AdaLN s1_d0 mask operand size changed");
+static_assert(offsetof(Params, mask) == 96, "unexpected AdaLN mask offset");
+static_assert(offsetof(Params, eps) == 112, "unexpected AdaLN eps offset");
+static_assert(offsetof(Params, mult) == 116, "unexpected AdaLN mult offset");
+static_assert(offsetof(Params, inner) == 120, "unexpected AdaLN inner offset");
+/* The lowered bank ends at 124 bytes. The backing struct pads to 128 because
  * the int64 strides force 8-byte alignment; harmless, since each parameter is
  * handed to the driver through its own pointer rather than as one blob.
  */
-static_assert(offsetof(Params, inner) + sizeof(Params::inner) == 108, "AdaLN parameter bank changed");
-static_assert(sizeof(Params) == 112, "AdaLN backing struct size changed");
+static_assert(offsetof(Params, inner) + sizeof(Params::inner) == 124, "AdaLN parameter bank changed");
+static_assert(sizeof(Params) == 128, "AdaLN backing struct size changed");
 
 } // namespace bioir::cutedsl::adaln_layernorm_sigmoid::abi
 
@@ -155,6 +162,10 @@ struct LaunchParams
   Tensor2View s_scale;
   Tensor2View s_bias;
   Tensor2View output;
+  /* Optional uint8 keep flags, one per s_scale row: a row of x whose flag is 0
+   * is written as zeros. Left empty (null, extent 0), every row is kept.
+   */
+  Tensor1View mask;
   float eps{};
   /* Broadcast multiplicity: x has `mult` times as many rows as s_scale. */
   std::int32_t mult{1};

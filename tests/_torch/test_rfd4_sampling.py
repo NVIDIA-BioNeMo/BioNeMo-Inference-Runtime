@@ -1639,10 +1639,7 @@ def test_rfproteina_latest_schema_consumes_na_secondary_structure_conditions() -
 
         return hook
 
-    handles = [
-        model.representation_builder.single_projection.register_forward_pre_hook(capture("single")),
-        model.representation_builder.pair_projection.register_forward_pre_hook(capture("pair")),
-    ]
+    handle = model.representation_builder.single_projection.register_forward_pre_hook(capture("single"))
     model.representation_builder(
         static_features,
         state,
@@ -1651,8 +1648,9 @@ def test_rfproteina_latest_schema_consumes_na_secondary_structure_conditions() -
         False,
         static_features["padding_mask"],
     )
-    for handle in handles:
-        handle.remove()
+    handle.remove()
+    # The pair kernel reads the nucleic-acid pair channels as the last two prepared scalars.
+    projection_inputs["pair"] = model.representation_builder.prepare(static_features).pair_features.scalars
 
     config = model.config.representation
     na_state_offset = (
@@ -2375,6 +2373,273 @@ def test_rfproteina_conditioning_only_tokens_hold_zero_state_through_a_rollout()
     assert (free.sampling.state["bb_ca"][0, conditioning_only] != 0).any()
 
 
+def _unified_builder_inputs(
+    sampling: RFProteinaSamplingConfig | None = None, **representation: bool | str
+) -> tuple[RFProteina, dict[str, torch.Tensor], dict, dict, dict, torch.Tensor]:
+    """A recycling model whose builder has the unified checkpoints' sequence-probability schema and remaining-pass
+    conditioning, and one step's inputs: two designs of different lengths, with populated coordinate groups.
+    ``representation`` overrides builder settings, such as the chirality alignment."""
+    trunk = _small_trunk_config().model_copy(update={"dtype": "bfloat16", "recycle_enabled": True})
+    model = RFProteina(
+        RFProteinaConfig(
+            dtype="bfloat16",
+            trunk=trunk,
+            representation=RFProteinaRepresentationConfig(
+                **{
+                    "latent_dim": trunk.latent_dim,
+                    "input_schema": "sequence_probability",
+                    "recycle_conditioning": "recycle_remaining",
+                    "dtype": "float32",
+                    "pair_adaln_dtype": "bfloat16",
+                    **representation,
+                }
+            ),
+            decoder=_small_decoder_config(),
+            **({} if sampling is None else {"sampling": sampling}),
+        )
+    ).cuda()
+    mask = torch.tensor([[True] * 6 + [False] * 2, [True] * 5 + [False] * 3], device="cuda")
+    batch, tokens = mask.shape
+    static = _native_static_features(mask)
+    for token in representation_builder_module.SEQUENCE_PROBABILITY_TOKENS:
+        static[f"condition_sequence-probability-{token}_1_residue"] = torch.full(
+            (batch, tokens), torch.nan, device="cuda"
+        )
+    static["condition_sequence-probability-ALA_1_residue"][:, :2] = 0.5
+    groups = static["condition_CoordinateGroup_1_atom"]
+    groups[:, 0, :3] = 2
+    groups[:, 2, 1] = 5
+    groups[1, 4, 0] = 0
+    state = {
+        "bb_ca": torch.randn(batch, tokens, 3, device="cuda"),
+        "local_latents": torch.randn(batch, tokens, trunk.latent_dim, device="cuda"),
+    }
+    times = {
+        "bb_ca": torch.tensor([0.25, 0.75], device="cuda"),
+        "local_latents": torch.tensor([0.5, 0.125], device="cuda"),
+    }
+    self_conditioning = {name: torch.zeros_like(value) for name, value in state.items()}
+    return model, static, state, times, self_conditioning, mask
+
+
+def test_a_step_on_prepared_static_parts_matches_a_full_build_and_never_waits_on_the_device() -> None:
+    """A design's static track parts make a step's tracks bit for bit what a build from the features alone makes.
+
+    The step reads the coordinate groups' distinct labels from the parts, so it draws the same permutation and never
+    synchronizes with the device; its condition stack, one per trunk pass, is the one built from the features.
+    """
+    model, static, state, times, self_conditioning, mask = _unified_builder_inputs()
+    builder = model.representation_builder
+    with torch.inference_mode():
+        parts = builder.prepare(static, mask)
+        torch.manual_seed(5)
+        expected = builder(static, state, times, self_conditioning, False, mask)
+        expected_stack = builder.condition_stack(static, times, mask, 3)
+        torch.manual_seed(5)
+        torch.cuda.set_sync_debug_mode("error")
+        try:
+            reused = builder(static, state, times, self_conditioning, False, mask, parts=parts, recycle_depth=3)
+        finally:
+            torch.cuda.set_sync_debug_mode("default")
+
+    assert parts.coordinate_groups.count == 3
+    for track in ("single", "pair"):
+        assert torch.equal(getattr(reused, track), getattr(expected, track)), track
+    assert torch.equal(reused.condition, expected_stack)
+    assert torch.equal(expected_stack[0], expected.condition)
+
+
+@pytest.mark.parametrize("frames", [False, True], ids=["no-frames", "frames"])
+def test_noise_aligned_chirality_finds_its_frames_once_per_rollout(frames: bool) -> None:
+    """A step aligns chirality with the frames its rollout found once, bit for bit as a build from the features
+    alone does. Without a frame the chirality is static, so the step never waits on the device."""
+    model, static, state, times, self_conditioning, mask = _unified_builder_inputs(noise_align_chirality=True)
+    batch, tokens = mask.shape
+    slots = 6
+    static["chirality"] = torch.randn(batch, tokens, 3 * slots, device="cuda")
+    frame_atoms = torch.full((batch, tokens, slots, 8), -1, dtype=torch.long, device="cuda")
+    owners = torch.full((batch, tokens, slots), -1, dtype=torch.long, device="cuda")
+    if frames:
+        # A stereocentre at token 0 whose neighbours, tokens 1 to 3, carry slot 0.
+        frame_atoms[0, 0, 0, :5] = torch.tensor([0, 0, 1, 2, 3])
+        owners[0, 1:4, 0] = 0
+    static.update(chiral_frame_atoms=frame_atoms, chiral_slot_owner=owners)
+    builder = model.representation_builder
+    with torch.inference_mode():
+        parts = builder.prepare(static, mask)
+        torch.manual_seed(5)
+        expected = builder(static, state, times, self_conditioning, False, mask)
+        torch.manual_seed(5)
+        torch.cuda.set_sync_debug_mode("default" if frames else "error")
+        try:
+            reused = builder(static, state, times, self_conditioning, False, mask, parts=parts)
+        finally:
+            torch.cuda.set_sync_debug_mode("default")
+
+    assert (parts.chirality is None) == frames
+    assert parts.chiral_frames[0].numel() == int(frames)
+    for track in ("single", "pair", "condition"):
+        assert torch.equal(getattr(reused, track), getattr(expected, track)), track
+
+
+def _one_hot_pair(
+    builder: torch.nn.Module,
+    static: dict[str, torch.Tensor],
+    mask: torch.Tensor,
+    coordinates: torch.Tensor,
+    self_coordinates: torch.Tensor,
+    active: float,
+    time: torch.Tensor,
+) -> torch.Tensor:
+    """The upstream pair track in FP64: the concatenated one-hot and scalar pair features projected, normalized,
+    rounded to the AdaLN dtype as the norm stores it, conditioned per design and masked."""
+    config = builder.config
+    legacy = config.input_schema == "legacy_self_conditioned"
+    edges = torch.linspace(config.pair_distance_min, config.pair_distance_max, config.pair_distance_bins - 1).cuda()
+
+    def bins(x: torch.Tensor) -> torch.Tensor:
+        distance = torch.norm(x.unsqueeze(2) - x.unsqueeze(1), dim=-1)
+        return torch.nn.functional.one_hot(torch.bucketize(distance, edges), config.pair_distance_bins).double()
+
+    def same(key: str) -> torch.Tensor:
+        return (static[key].unsqueeze(-1) == static[key].unsqueeze(-2)).double().unsqueeze(-1)
+
+    def one_hot(key: str, classes: int) -> torch.Tensor:
+        return torch.nn.functional.one_hot(static[key].long().clamp(max=classes - 1), classes).double()
+
+    def scalar(key: str) -> torch.Tensor:
+        return static[key].double().unsqueeze(-1)
+
+    features = [bins(coordinates)] + ([bins(self_coordinates) * active] if legacy else [])
+    features += [scalar("bond_mask"), one_hot("bond_order", config.num_bond_orders), scalar("is_aromatic")]
+    features += [same("condition_index-group_1_token"), same("molecule_iid")]
+    features += [] if legacy else [same("molecule_entity_id")]
+    features += [one_hot("token_bond_path_length", config.token_bond_path_bins), scalar("canonical_polymer_ordering")]
+    features += [] if legacy else [scalar("na_ss_pair"), scalar("na_ss_pair_mask")]
+    projected = torch.cat(features, dim=-1) @ builder.pair_projection.weight.double().T
+    norm = builder.pair_norm
+    if isinstance(norm, torch.nn.LayerNorm):
+        weight, bias = norm.weight.double(), norm.bias.double()
+        normed = torch.nn.functional.layer_norm(projected, norm.normalized_shape, weight, bias, norm.eps)
+    else:
+        normed = torch.nn.functional.rms_norm(projected, norm.normalized_shape, norm.weight.double(), norm.eps)
+    pair = normed.to(builder.pair_adaln_dtype).double()
+    condition = builder.pair_condition_norm(builder.pair_condition_projection(time.to(builder.dtype)))
+    scale, shift = builder.pair_adaln.modulation(condition.to(builder.pair_adaln_dtype))
+    pair = torch.nn.functional.rms_norm(pair, (pair.shape[-1],), eps=builder.pair_adaln.eps)
+    pair = torch.sigmoid(scale.double())[:, None, None] * pair + shift.double()[:, None, None]
+    return pair * (mask.unsqueeze(-1) & mask.unsqueeze(-2)).unsqueeze(-1)
+
+
+@pytest.mark.parametrize("norm", ["layer_norm", "rms_norm"])
+@pytest.mark.parametrize("schema", ["sequence_probability", "legacy_self_conditioned"])
+def test_pair_track_matches_the_one_hot_projection(schema: str, norm: str) -> None:
+    """One kernel builds the pair track from class indices and scalars; it matches the projection of the one-hot
+    features in FP64 to the AdaLN dtype's rounding, distances on a bin edge and every static channel included."""
+    model, static, _state, times, _self_conditioning, mask = _unified_builder_inputs(
+        input_schema=schema, factory_norm=norm
+    )
+    builder = model.representation_builder
+    config = builder.config
+    batch, tokens = mask.shape
+    generator = torch.Generator(device="cuda").manual_seed(3)
+    classes = {"bond_order": config.num_bond_orders, "token_bond_path_length": config.token_bond_path_bins + 3}
+    for key, high in classes.items():
+        static[key] = torch.randint(0, high, (batch, tokens, tokens), device="cuda", generator=generator)
+    for key in ("bond_mask", "is_aromatic", "canonical_polymer_ordering", "na_ss_pair", "na_ss_pair_mask"):
+        static[key] = torch.randint(0, 2, (batch, tokens, tokens), device="cuda", generator=generator).bool()
+    static["na_ss_pair"] = static["na_ss_pair"].float() * 0.5
+    static["molecule_iid"][:, tokens // 2 :] = 1
+    static["molecule_entity_id"] = torch.zeros_like(static["molecule_iid"])
+    edges = torch.linspace(config.pair_distance_min, config.pair_distance_max, config.pair_distance_bins - 1)
+    coordinates = torch.randn(batch, tokens, 3, device="cuda", generator=generator)
+    # Token k + 1 sits exactly one bin edge from token 0, so their distance is that edge.
+    coordinates[:, 0] = 0
+    coordinates[:, 1:tokens, 0] = edges[: tokens - 1].cuda()
+    coordinates[:, 1:tokens, 1:] = 0
+    # Token 1 sits on the first edge off the axes, where a fused multiply-add in the squared distance would
+    # round past the edge into the next bin.
+    coordinates[:, 1] = torch.tensor([-0.004625731613487005, -0.0016711255302652717, -0.09987898170948029])
+    self_coordinates = torch.randn(batch, tokens, 3, device="cuda", generator=generator)
+    with torch.inference_mode():
+        parts = builder.prepare(static, mask)
+        time = builder._time(times)
+        for active in (False, True):
+            pair = builder._pair(parts, {"bb_ca": coordinates}, time, {"bb_ca": self_coordinates}, active)
+            expected = _one_hot_pair(builder, static, mask, coordinates, self_coordinates, float(active), time)
+            assert pair.dtype == builder.pair_adaln_dtype
+            torch.testing.assert_close(pair.double(), expected, rtol=2**-6, atol=2**-6)
+            assert (pair.double() - expected).abs().mean() < 2e-3
+
+
+def test_pair_track_writes_both_padded_buffers_as_the_trunk_would_pad_it() -> None:
+    """Into two padded buffers, the pair track lands as the trunk's masked padding of it, bit for bit, whatever the
+    buffers held."""
+    from bionemo_ir._torch.layers.transformers import local_latents_transformer
+
+    model, static, state, times, self_conditioning, mask = _unified_builder_inputs()
+    builder = model.representation_builder
+    batch, tokens = mask.shape
+    padded = tokens + 8
+    with torch.inference_mode():
+        parts = builder.prepare(static, mask)
+        time = builder._time(times)
+        plain = builder._pair(parts, state, time, self_conditioning, False)
+        buffers = tuple(
+            torch.full((batch, padded, padded, plain.shape[-1]), torch.nan, device="cuda", dtype=plain.dtype)
+            for _ in range(2)
+        )
+        written = builder._pair(parts, state, time, self_conditioning, False, out=buffers)
+        expected = local_latents_transformer._masked_pair(plain, mask, padded)
+    assert written.data_ptr() == buffers[0].data_ptr() and written.shape == plain.shape
+    for buffer in buffers:
+        assert torch.equal(buffer, expected)
+
+
+def test_pair_track_reads_strided_feature_views() -> None:
+    """The pair kernel reads non-dense views of its features and projection rows as it reads their dense copies."""
+    model, static, state, times, self_conditioning, mask = _unified_builder_inputs()
+    builder = model.representation_builder
+
+    def strided(t: torch.Tensor) -> torch.Tensor:
+        # The same values, stored with the first two axes swapped.
+        return t.transpose(0, 1).contiguous().transpose(0, 1)
+
+    with torch.inference_mode():
+        parts = builder.prepare(static, mask)
+        time = builder._time(times)
+        features = parts.pair_features
+        views = features._replace(
+            classes=strided(features.classes),
+            scalars=strided(features.scalars),
+            weights=tuple(strided(weight) for weight in features.weights),
+        )
+        assert not views.classes.is_contiguous() and not views.scalars.is_contiguous()
+        dense = builder._pair(parts, state, time, self_conditioning, False)
+        viewed = builder._pair(dataclasses.replace(parts, pair_features=views), state, time, self_conditioning, False)
+    assert torch.equal(viewed, dense)
+
+
+def test_a_rollout_prepares_its_static_parts_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Every step of a native rollout, two trunk passes each, reuses the parts its first step built."""
+    sampling = _deterministic_sampling_config(num_steps=3)
+    sampling.n_recycle = 2
+    model, static, _state, _times, _self_conditioning, mask = _unified_builder_inputs(sampling)
+    init_module_weights(model)
+    builder = model.representation_builder
+    prepared, built = [], []
+    prepare = builder.prepare
+    monkeypatch.setattr(builder, "prepare", lambda *args, **kwargs: prepared.append(1) or prepare(*args, **kwargs))
+    handle = builder.register_forward_pre_hook(lambda _module, _args: built.append(1))
+    try:
+        with torch.inference_mode():
+            model.sample(mask, static_features=static, seed=0)
+    finally:
+        handle.remove()
+    assert len(prepared) == 1
+    assert len(built) > 1
+
+
 def test_rfproteina_native_builder_hoists_pair_condition_and_uses_bfloat16() -> None:
     trunk = _small_trunk_config().model_copy(update={"dtype": "bfloat16"})
     model = RFProteina(
@@ -2414,11 +2679,11 @@ def test_rfproteina_native_builder_hoists_pair_condition_and_uses_bfloat16() -> 
         projection_input_shapes.append(args[0].shape)
 
     def capture_adaln_condition(_module: torch.nn.Module, args: tuple[torch.Tensor, ...]) -> None:
-        adaln_conditions.append(args[1].detach().clone())
+        adaln_conditions.append(args[0].detach().clone())
 
     handles = [
         model.representation_builder.pair_condition_projection.register_forward_pre_hook(capture_projection_input),
-        model.representation_builder.pair_adaln.register_forward_pre_hook(capture_adaln_condition),
+        model.representation_builder.pair_adaln.norm_cond.register_forward_pre_hook(capture_adaln_condition),
     ]
     try:
         representations = model.representation_builder(

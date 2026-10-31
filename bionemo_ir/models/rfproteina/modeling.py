@@ -28,7 +28,7 @@ from bionemo_ir._torch.graph_optimization.cuda_graph.runtime import (
 )
 from bionemo_ir._torch.layers.normalization import replace_with_fused_layernorm, replace_with_fused_rmsnorm
 from bionemo_ir._torch.layers.transformers.local_latents_decoder import get_residue_atom_mask
-from bionemo_ir._torch.layers.transformers.local_latents_transformer import LocalLatentsTransformer
+from bionemo_ir._torch.layers.transformers.local_latents_transformer import LocalLatentsTransformer, TrunkMasks
 from bionemo_ir._torch.modules.rfproteina import (
     ATOMIZED_TOKEN_TYPE,
     CONDITION_INDEX_MASK,
@@ -60,6 +60,7 @@ from bionemo_ir._torch.modules.rfproteina import (
     materialize_partial_redesign_output,
     partial_num_steps,
     resolve_partial_times,
+    sample_reference_beam,
     sample_reference_state,
     validate_nucleic_acid_contract,
 )
@@ -73,6 +74,7 @@ from bionemo_ir._torch.modules.rfproteina.representation_builder import (
     CONDITION_SEQUENCE,
     CONDITION_SEQUENCE_MASK,
     UNSPECIFIED_RESIDUE_TOKEN,
+    StaticTrackParts,
 )
 from bionemo_ir._torch.modules.rfproteina.search import run_rfproteina_beam_search
 from bionemo_ir._torch.sampling.contracts import SamplingContext
@@ -956,6 +958,8 @@ class RFProteina(nn.Module, OptimizedModuleSetterMixin):
         metadata: AttentionMetadata | None = None,
         buffers: PreallocatedBuffers | None = None,
         recycle_depth: int = 1,
+        pair_in_buffers: bool = False,
+        masks: TrunkMasks | None = None,
     ) -> dict[str, dict[str, torch.Tensor]]:
         """Run one velocity-network evaluation.
 
@@ -967,6 +971,9 @@ class RFProteina(nn.Module, OptimizedModuleSetterMixin):
                 ``pair`` ``[B, N, N, pair_dim]``, and ``condition``
                 ``[B, N, condition_dim]``.
             padding_mask: ``[B, N]`` mask of real tokens.
+            pair_in_buffers: The pair is the trunk's first initial-pair buffer, and both buffers already hold it;
+                see ``LocalLatentsTransformer.initial_pair_buffers``.
+            masks: The trunk's ``prepare_masks`` of ``padding_mask``, which a rollout builds once.
 
         Returns:
             Per-modality velocities, ``bb_ca.v`` ``[B, N, 3]`` and
@@ -982,6 +989,8 @@ class RFProteina(nn.Module, OptimizedModuleSetterMixin):
             metadata=metadata,
             buffers=buffers,
             recycle_depth=recycle_depth,
+            pair_in_buffers=pair_in_buffers,
+            masks=masks,
         )
 
     def _make_predict_fn(
@@ -993,28 +1002,16 @@ class RFProteina(nn.Module, OptimizedModuleSetterMixin):
         metadata: AttentionMetadata | None,
         buffers: PreallocatedBuffers | None,
     ) -> RFProteinaPredictFn:
-        """Bind representation construction and velocity evaluation for a rollout."""
-        if representation_builder is None:
-            if static_features is None:
-                raise ValueError("static_features are required when no custom representation_builder is supplied")
+        """Bind representation construction and velocity evaluation for a rollout.
 
-            def resolved_builder(
-                state: RFProteinaState,
-                times: dict[str, torch.Tensor],
-                self_conditioning: RFProteinaState,
-                self_conditioning_active: bool,
-            ) -> RFProteinaRepresentations:
-                return self.representation_builder(
-                    static_features=static_features,
-                    state=state,
-                    times=times,
-                    self_conditioning=self_conditioning,
-                    self_conditioning_active=self_conditioning_active,
-                    padding_mask=padding_mask,
-                )
-
-        else:
-            resolved_builder = representation_builder
+        The native builder gives one condition per trunk pass when the checkpoint has a recycle feature, and the
+        rollout's first step builds the tracks' static parts, which the later steps reuse. A caller-supplied
+        builder keeps the condition it returns.
+        """
+        if representation_builder is None and static_features is None:
+            raise ValueError("static_features are required when no custom representation_builder is supplied")
+        parts: StaticTrackParts | None = None
+        masks: TrunkMasks | None = None
 
         def predict(
             state: RFProteinaState,
@@ -1023,60 +1020,41 @@ class RFProteina(nn.Module, OptimizedModuleSetterMixin):
             self_conditioning_active: bool,
             recycle_depth: int,
         ) -> dict[str, dict[str, torch.Tensor]]:
-            representations = resolved_builder(state, times, self_conditioning, self_conditioning_active)
-            representations = self.bind_recycle_conditions(
-                representations,
-                static_features,
-                state,
-                times,
-                padding_mask,
-                recycle_depth,
-                expand=representation_builder is None,
-            )
+            nonlocal parts, masks
+            # The first step builds what the static features and the mask alone fix, and the rest reuse it.
+            if masks is None:
+                masks = self.velocity_model.prepare_masks(padding_mask)
+            pair_out = None
+            if representation_builder is not None:
+                representations = representation_builder(state, times, self_conditioning, self_conditioning_active)
+            else:
+                if parts is None:
+                    parts = self.representation_builder.prepare(static_features, padding_mask)
+                # The builder writes the pair straight into the trunk's captured inputs when its dtype allows.
+                if self.representation_builder.output_dtype == self.representation_builder.pair_adaln_dtype:
+                    pair_out = self.velocity_model.initial_pair_buffers(*padding_mask.shape, padding_mask.device)
+                representations = self.representation_builder(
+                    static_features=static_features,
+                    state=state,
+                    times=times,
+                    self_conditioning=self_conditioning,
+                    self_conditioning_active=self_conditioning_active,
+                    padding_mask=padding_mask,
+                    parts=parts,
+                    recycle_depth=recycle_depth,
+                    pair_out=pair_out,
+                )
             return self.velocity(
                 representations,
                 padding_mask,
                 metadata=metadata,
                 buffers=buffers,
                 recycle_depth=recycle_depth,
+                pair_in_buffers=pair_out is not None,
+                masks=masks,
             )
 
         return predict
-
-    def bind_recycle_conditions(
-        self,
-        representations: RFProteinaRepresentations,
-        static_features: Mapping[str, torch.Tensor] | None,
-        state: RFProteinaState,
-        times: Mapping[str, torch.Tensor],
-        padding_mask: torch.Tensor,
-        recycle_depth: int,
-        *,
-        expand: bool = True,
-    ) -> RFProteinaRepresentations:
-        """Attach one condition per trunk pass when the checkpoint has a recycle feature.
-
-        The builder's own condition is trunk pass 1. Later passes differ only
-        in that feature. A caller-supplied representation builder keeps the
-        condition it returned.
-        """
-        if (
-            not expand
-            or recycle_depth <= 1
-            or static_features is None
-            or not self.representation_builder.conditions_per_recycle_pass
-        ):
-            return representations
-        return replace(
-            representations,
-            condition=self.representation_builder.condition_stack(
-                static_features,
-                state,
-                times,
-                padding_mask,
-                recycle_depth,
-            ),
-        )
 
     def sample(
         self,
@@ -1471,21 +1449,35 @@ class RFProteina(nn.Module, OptimizedModuleSetterMixin):
                 "bb_ca": create_modality_schedule(self.config.sampling.backbone, num_steps, device),
                 "local_latents": create_modality_schedule(self.config.sampling.local_latents, num_steps, device),
             }
-            initial_slots = []
-            for replica in range(search_config.beam_width):
-                replica_context = SamplingContext.create(device, derive_search_seed(root_seed, 0, replica))
-                initial_slots.append(
-                    sample_reference_state(
-                        rollout_mask,
-                        self.config.trunk.latent_dim,
-                        self.state_dtype,
-                        self.config.sampling,
-                        generator=replica_context.generator,
-                        can_be_encoded=can_be_encoded,
-                        coordinate_condition_mask=coordinate_condition_mask,
-                        groups=groups,
-                    )
+            if self.config.sampling.match_reference_rng:
+                # The reference draws the whole beam at once, so one stream, not one per replica.
+                initial_slots = sample_reference_beam(
+                    rollout_mask,
+                    self.config.trunk.latent_dim,
+                    self.state_dtype,
+                    self.config.sampling,
+                    search_config.beam_width,
+                    generator=SamplingContext.create(device, derive_search_seed(root_seed, 0)).generator,
+                    can_be_encoded=can_be_encoded,
+                    coordinate_condition_mask=coordinate_condition_mask,
+                    groups=groups,
                 )
+            else:
+                initial_slots = []
+                for replica in range(search_config.beam_width):
+                    replica_context = SamplingContext.create(device, derive_search_seed(root_seed, 0, replica))
+                    initial_slots.append(
+                        sample_reference_state(
+                            rollout_mask,
+                            self.config.trunk.latent_dim,
+                            self.state_dtype,
+                            self.config.sampling,
+                            generator=replica_context.generator,
+                            can_be_encoded=can_be_encoded,
+                            coordinate_condition_mask=coordinate_condition_mask,
+                            groups=groups,
+                        )
+                    )
 
         def decode_prediction(
             sampling: RFProteinaSamplingOutput,

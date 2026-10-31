@@ -24,7 +24,7 @@ from bionemo_ir._torch.custom_ops.attn_epilogue import get_attn_epilogue_op
 from bionemo_ir._torch.custom_ops.fused_ln_proj_moveaxis_pad import LNProjMoveaxisPad
 from bionemo_ir._torch.custom_ops.gated_sigmoid import get_gated_sigmoid_op
 from bionemo_ir._torch.layers.linear import Linear, WeightMode, WeightsLoadingConfig
-from bionemo_ir._torch.layers.normalization import AdaLN
+from bionemo_ir._torch.layers.normalization import AdaLN, fused_norm_pair
 from bionemo_ir._torch.utils import ChunkPolicy, chunk_apply, iter_chunks, permute_final_dims
 from bionemo_ir.runtime.buffers import PreallocatedBuffers, ensure_buffer
 
@@ -797,9 +797,12 @@ class AttentionPairBias(nn.Module):
             kv_bias = bias[rows:] if self.kv_bias else None
             k, v = F.linear(kv_in, weight[rows:], kv_bias).split(self._in_proj_sizes[2:], dim=-1)
         if self.use_qk_norm:
-            q = self.q_norm(q)
-            k = self.k_norm(k)
+            q, k = self._norm_qk(q, k)
         return q, k, v, g
+
+    def _norm_qk(self, q: torch.Tensor, k: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        """``q_norm(q)`` and ``k_norm(k)``: one launch when both are the same fused norm, read in place."""
+        return fused_norm_pair(self.q_norm, self.k_norm, q, k)
 
     def add_key_mask(
         self, pair_bias: torch.Tensor, mask: torch.Tensor, attn_metadata: AttentionMetadata

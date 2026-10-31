@@ -16,6 +16,8 @@
 from __future__ import annotations
 
 import os
+from collections.abc import Sequence
+from typing import Any, NoReturn
 
 import pytest
 import torch
@@ -29,6 +31,7 @@ from bionemo_ir._torch.modules.rfproteina.metrics import (
 )
 from bionemo_ir._torch.modules.rfproteina.representation_builder import SEQUENCE_PROBABILITY_TOKENS
 from bionemo_ir._torch.sampling.contracts import SamplingContext
+from bionemo_ir._torch.sampling.random import normal_draws
 from bionemo_ir._torch.search import SEARCH_REWARD_KEY, MetricEvaluationContext
 from bionemo_ir.data.schemas import (
     AtomIdentity,
@@ -49,6 +52,7 @@ from bionemo_ir.models.rfproteina import (
     RFProteinaRepresentations,
     RFProteinaSearchRewardConfig,
     load_rfproteina_checkpoint_state,
+    modeling,
 )
 from bionemo_ir.models.rfproteina.modeling import _resolve_runtime_masks
 from bionemo_ir.oracles import (
@@ -185,6 +189,76 @@ def test_rfproteina_search_is_seed_reproducible_and_chunk_order_independent() ->
         not torch.allclose(left.prediction.coordinates, right.prediction.coordinates)
         for left, right in zip(first.final_candidates, other.final_candidates, strict=True)
     )
+
+
+class _BeamCaptured(Exception):
+    """Ends a search once its beam driver has been handed the initial states."""
+
+
+def _initial_beam(
+    model: RFProteina,
+    static_features: dict[str, torch.Tensor],
+    config: RFProteinaBeamSearchConfig,
+    monkeypatch: pytest.MonkeyPatch,
+    stream_seed: int,
+) -> dict[str, Any]:
+    """The ``initial_slots`` and driver arguments one search hands its beam driver, with draws from one hosted stream."""
+    captured: dict[str, Any] = {}
+
+    def driver(**kwargs: Any) -> NoReturn:
+        captured.update(kwargs)
+        raise _BeamCaptured
+
+    monkeypatch.setattr(modeling, "run_rfproteina_beam_search", driver)
+    generator = torch.Generator(device="cuda").manual_seed(stream_seed)
+
+    def draw(shape: Sequence[int], *, device: torch.device | str, dtype: torch.dtype | None) -> torch.Tensor:
+        return torch.randn(shape, device=device, dtype=dtype, generator=generator)
+
+    with normal_draws(draw), pytest.raises(_BeamCaptured):
+        model.search(static_features, config, seed=5)
+    return captured
+
+
+@pytest.mark.parametrize("matched", [True, False])
+def test_search_draws_the_reference_beam_only_when_it_matches_the_reference(
+    matched: bool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The reference draws every replica's initial state in one call over the stacked rows, so a replica's rows are
+    the stream's draws at its own offset. Matched noise reproduces that; otherwise each replica draws on its own."""
+    model = _tiny_model(num_steps=4)
+    model.config.sampling.match_reference_rng = matched
+    mask = torch.tensor([[True] * 6 + [False] * 2, [True] * 8], device="cuda")
+    static_features = _native_static_features(mask)
+    config = _clash_search_config(4)
+    captured = _initial_beam(model, static_features, config, monkeypatch, stream_seed=7)
+    slots = captured["initial_slots"]
+
+    def tile(value: torch.Tensor | None) -> torch.Tensor | None:
+        return None if value is None else value.repeat(config.beam_width, *([1] * (value.ndim - 1)))
+
+    generator = torch.Generator(device="cuda").manual_seed(7)
+    with normal_draws(
+        lambda shape, *, device, dtype: torch.randn(shape, device=device, dtype=dtype, generator=generator)
+    ):
+        reference = sample_reference_state(
+            tile(captured["padding_mask"]),
+            model.config.trunk.latent_dim,
+            captured["dtype"],
+            model.config.sampling,
+            can_be_encoded=tile(captured["can_be_encoded"]),
+            coordinate_condition_mask=tile(captured["coordinate_condition_mask"]),
+            groups=None if captured["groups"] is None else {k: tile(v) for k, v in captured["groups"].items()},
+        )
+    rows = mask.shape[0]
+    assert len(slots) == config.beam_width
+    for replica, slot in enumerate(slots):
+        assert not torch.equal(slot["bb_ca"], slots[0]["bb_ca"]) or replica == 0, "replicas must not repeat a draw"
+    same = [
+        all(torch.equal(slot[name], reference[name][replica * rows : (replica + 1) * rows]) for name in slot)
+        for replica, slot in enumerate(slots)
+    ]
+    assert all(same) is matched
 
 
 def test_rfproteina_search_top_k_is_per_request() -> None:

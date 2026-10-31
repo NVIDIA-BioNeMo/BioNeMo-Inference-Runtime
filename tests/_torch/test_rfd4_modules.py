@@ -27,8 +27,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+import bionemo_ir._torch.graph_optimization.cuda_graph.runtime as graph_runtime
 from bionemo_ir._torch.attention_backend.utils import precompute_pair_masks, precompute_single_masks
-from bionemo_ir._torch.custom_ops.adaln_layernorm_sigmoid._config import SUPPORTED_SMS as ADALN_SUPPORTED_SMS
 from bionemo_ir._torch.custom_ops.fused_ln_proj_moveaxis_pad import LNProjMoveaxisPad
 from bionemo_ir._torch.layers import transition as transition_layer
 from bionemo_ir._torch.layers.attention import AttentionPairBias
@@ -81,6 +81,7 @@ from bionemo_ir.models.rfproteina import (
     rfproteina_trunk_config_from_weights,
 )
 from bionemo_ir.models.rfproteina import modeling as rfproteina_modeling
+from bionemo_ir.models.rfproteina.config import trunk_graph_config
 from bionemo_ir.models.rfproteina.convert import (
     RELEASED_LORA_ALPHA,
     _check_architecture,
@@ -457,8 +458,8 @@ def test_sequence_probability_features_and_recycle_condition() -> None:
     )
     builder = RFProteinaRepresentationBuilder(config, trunk).to(device).eval()
     assert "conditional_residue_embedding.weight" not in builder.state_dict()
-    static, state, times = _sequence_probability_batch(device)
-    packed = builder._sequence_probabilities(static, state)
+    static, _state, times = _sequence_probability_batch(device)
+    packed = builder._sequence_probabilities(static)
     channels = config.num_sequence_probability_channels
     ala = representation_builder.SEQUENCE_PROBABILITY_TOKENS.index("ALA")
     cys = representation_builder.SEQUENCE_PROBABILITY_TOKENS.index("CYS")
@@ -468,25 +469,25 @@ def test_sequence_probability_features_and_recycle_condition() -> None:
     torch.testing.assert_close(packed[..., cys], torch.full((1, 3), 0.25, device=device))
     torch.testing.assert_close(packed[..., arg], torch.zeros(1, 3, device=device))
     torch.testing.assert_close(packed[..., channels + arg], torch.zeros(1, 3, device=device))
-    rasa = builder._rasa_binned(static, state)
+    rasa = builder._rasa_binned(static, static["padding_mask"])
     assert rasa[0, 0, 0].item() == 0
     assert rasa[0, 0, 1].item() == 2
 
     missing = dict(static)
     del missing["condition_sequence-probability-ALA_1_residue"]
     with pytest.raises(KeyError, match="sequence_probabilities requires"):
-        builder._sequence_probabilities(missing, state)
+        builder._sequence_probabilities(missing)
 
     with torch.inference_mode():
-        first = builder._condition(static, state, times, static["padding_mask"], recycle_index=1)
-        stacked = builder.condition_stack(static, state, times, static["padding_mask"], recycle_depth=3)
+        first = builder._condition(static, times, static["padding_mask"], recycle_index=1)
+        stacked = builder.condition_stack(static, times, static["padding_mask"], recycle_depth=3)
     torch.testing.assert_close(stacked[0], first)
     assert not torch.allclose(stacked[0], stacked[1])
     assert not torch.allclose(stacked[1], stacked[2])
     with pytest.raises(ValueError, match="carries a recycle feature"):
         RFProteinaRepresentationBuilder(
             RFProteinaRepresentationConfig(latent_dim=4, pair_adaln_dtype="float32"), trunk
-        ).condition_stack(static, state, times, static["padding_mask"], 2)
+        ).condition_stack(static, times, static["padding_mask"], 2)
 
 
 def test_coordinate_group_permutation_draws_from_the_sampling_stream() -> None:
@@ -516,7 +517,7 @@ def test_coordinate_group_permutation_draws_from_the_sampling_stream() -> None:
             ),
             permutations(lambda n, *, device: torch.randperm(n, device=device, generator=stream)),
         ):
-            builder._coordinate_group(static)
+            builder._coordinate_group(builder._coordinate_groups(static))
             return randn((4,), device=device, dtype=torch.float32)
 
     stream = torch.Generator(device=device)
@@ -559,10 +560,10 @@ def test_remaining_pass_conditioning_counts_down_and_saturates(width: int) -> No
     with pytest.raises(ValueError, match="no remaining count"):
         track(3, 2)
 
-    static, state, times = _sequence_probability_batch(device)
+    static, _state, times = _sequence_probability_batch(device)
     with torch.inference_mode():
-        first = builder._condition(static, state, times, static["padding_mask"], recycle_index=1)
-        stacked = builder.condition_stack(static, state, times, static["padding_mask"], recycle_depth=3)
+        first = builder._condition(static, times, static["padding_mask"], recycle_index=1)
+        stacked = builder.condition_stack(static, times, static["padding_mask"], recycle_depth=3)
     torch.testing.assert_close(stacked[0], first)
     assert not torch.allclose(stacked[1], stacked[2])
 
@@ -577,7 +578,7 @@ def test_absolute_coordinates_use_finite_values_when_the_mask_is_absent() -> Non
         pair_adaln_dtype="float32",
     )
     builder = RFProteinaRepresentationBuilder(config, trunk).to(device).eval()
-    static, state, _times = _sequence_probability_batch(device)
+    static, _state, _times = _sequence_probability_batch(device)
     coordinates = torch.full((1, 3, 37, 3), torch.nan, device=device)
     coordinates[0, 1, 1] = torch.tensor([10.0, 20.0, 30.0], device=device)
     coordinates[0, 1, 2, 0] = 5.0
@@ -585,7 +586,7 @@ def test_absolute_coordinates_use_finite_values_when_the_mask_is_absent() -> Non
 
     feature = builder._conditional_coordinates(
         static,
-        state,
+        static["padding_mask"],
         representation_builder.CONDITION_COORDINATE,
         representation_builder.CONDITION_COORDINATE_MASK,
         finite_marks_conditioned=True,
@@ -606,7 +607,7 @@ def test_absolute_coordinates_use_finite_values_when_the_mask_is_absent() -> Non
     static["condition_coordinate_1_atom"][0, 0, 0] = torch.tensor([10.0, 0.0, 0.0], device=device)
     masked = builder._conditional_coordinates(
         static,
-        state,
+        static["padding_mask"],
         representation_builder.CONDITION_COORDINATE,
         representation_builder.CONDITION_COORDINATE_MASK,
         finite_marks_conditioned=True,
@@ -617,7 +618,7 @@ def test_absolute_coordinates_use_finite_values_when_the_mask_is_absent() -> Non
     static["condition_InternalCoordinate_1_atom"] = torch.ones(1, 3, 37, 3, device=device)
     internal = builder._conditional_coordinates(
         static,
-        state,
+        static["padding_mask"],
         representation_builder.CONDITION_INTERNAL_COORDINATE,
         representation_builder.CONDITION_INTERNAL_COORDINATE_MASK,
     )
@@ -642,7 +643,7 @@ def test_internal_coordinates_read_their_selection_from_the_coordinate_group() -
         pair_adaln_dtype="float32",
     )
     builder = RFProteinaRepresentationBuilder(config, trunk).to(device).eval()
-    static, state, _times = _sequence_probability_batch(device)
+    static, _state, _times = _sequence_probability_batch(device)
     static["condition_InternalCoordinate_1_atom"] = torch.ones(1, 3, 37, 3, device=device)
 
     # Token 1 is internal-coordinate conditioned, token 2 is absolutely
@@ -653,7 +654,7 @@ def test_internal_coordinates_read_their_selection_from_the_coordinate_group() -
 
     feature = builder._conditional_coordinates(
         static,
-        state,
+        static["padding_mask"],
         representation_builder.CONDITION_INTERNAL_COORDINATE,
         representation_builder.CONDITION_INTERNAL_COORDINATE_MASK,
         group_marks_conditioned=True,
@@ -674,7 +675,7 @@ def test_internal_coordinates_read_their_selection_from_the_coordinate_group() -
     static["mask_InternalCoordinate_1_atom"] = explicit
     overridden = builder._conditional_coordinates(
         static,
-        state,
+        static["padding_mask"],
         representation_builder.CONDITION_INTERNAL_COORDINATE,
         representation_builder.CONDITION_INTERNAL_COORDINATE_MASK,
         group_marks_conditioned=True,
@@ -1119,40 +1120,6 @@ def test_rfproteina_fused_masked_residual_matches_vanilla(
     assert actual.data_ptr() == destination.data_ptr()
     torch.testing.assert_close(actual, expected, atol=0, rtol=0)
     assert torch.count_nonzero(actual[~mask]) == 0
-
-
-@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32])
-def test_rfproteina_pair_adaln_conditions_each_design_once(dtype: torch.dtype) -> None:
-    """Per-design gamma and beta through the fused AdaLN match the upstream per-pair formula."""
-    torch.manual_seed(19)
-    device = torch.device("cuda")
-    pair_dim, condition_dim, tokens = 384, 256, 17
-    module = representation_builder._PairAdaptiveLayerNorm(pair_dim, condition_dim, eps=1e-5, dtype=dtype).to(device)
-    with torch.no_grad():
-        module.norm_cond.weight.normal_(1.0, 0.1)
-        for linear in (module.to_gamma[0], module.to_beta):
-            linear.weight.normal_(0.0, condition_dim**-0.5)
-        module.to_gamma[0].bias.normal_(0.0, 0.5)
-    if SM_VERSION in ADALN_SUPPORTED_SMS:
-        assert type(module._adaln).__name__ == "AdaLNLayerNormSigmoidCuTe"
-    pair = torch.randn(2, tokens, tokens, pair_dim, device=device, dtype=dtype)
-    condition = torch.randn(2, condition_dim, device=device, dtype=dtype)
-    token_mask = torch.arange(tokens, device=device) < torch.tensor([[tokens], [tokens - 3]], device=device)
-    pair_mask = token_mask.unsqueeze(-1) & token_mask.unsqueeze(-2)
-
-    with torch.inference_mode():
-        actual = module(pair, condition, pair_mask)
-
-    # The upstream formula, with each design's condition repeated for every pair, in FP32.
-    normed_condition = F.rms_norm(condition.float(), (condition_dim,), module.norm_cond.weight.float(), 1e-5)
-    gamma = torch.sigmoid(
-        F.linear(normed_condition, module.to_gamma[0].weight.float(), module.to_gamma[0].bias.float())
-    )
-    beta = F.linear(normed_condition, module.to_beta.weight.float())
-    expected = F.rms_norm(pair.float(), (pair_dim,), eps=1e-5) * gamma[:, None, None] + beta[:, None, None]
-    tolerance = 3e-2 if dtype == torch.bfloat16 else 1e-4
-    torch.testing.assert_close(actual.float(), expected * pair_mask.unsqueeze(-1), atol=tolerance, rtol=tolerance)
-    assert torch.count_nonzero(actual[~pair_mask]) == 0
 
 
 @pytest.mark.parametrize("with_mask", [False, True], ids=["unmasked", "masked"])
@@ -1796,11 +1763,12 @@ def test_rfproteina_trunk_reads_a_shared_condition_as_one_per_pass() -> None:
 
 
 def test_rfproteina_trunk_recycles_every_pass_including_the_zero_state() -> None:
-    """Every pass recycles, so one captured step serves them all whatever the depth.
+    """Every pass recycles its single first and its pair last, so one captured step serves them all.
 
-    The first pass folds in the zero state, whose bias-free norm and projection are
-    exactly zero. Adding that to the initial state returns it bit for bit, so giving
-    the first pass the same form as the rest costs the result nothing.
+    The first pass folds in the zero single state, whose bias-free norm and projection
+    are exactly zero. Adding that to the initial state returns it bit for bit, so giving
+    the first pass the same form as the rest costs the result nothing. Its pair is the
+    initial pair itself, as recycling the zero pair would leave it.
     """
     torch.manual_seed(37)
     config = _small_config(recycle_enabled=True, dtype="bfloat16")
@@ -1855,6 +1823,18 @@ def test_rfproteina_pair_bias_groups_follow_pair_updates() -> None:
     ]
 
 
+def _trunk_inputs(config: RFProteinaTrunkConfig) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    """BF16 single, pair and condition inputs for two 24-token designs, and their mask: the second ends at 19."""
+    mask = torch.tensor([[1] * 24, [1] * 19 + [0] * 5], device="cuda", dtype=torch.bool)
+    bf16 = {"device": "cuda", "dtype": torch.bfloat16}
+    return (
+        torch.randn(2, 24, config.token_dim, **bf16),
+        torch.randn(2, 24, 24, config.pair_dim, **bf16),
+        torch.randn(2, 24, config.condition_dim, **bf16),
+        mask,
+    )
+
+
 @pytest.mark.parametrize("backend", ["CuTeDSL", "SDPA"])
 def test_rfproteina_trunk_shares_pair_bias_projection_bit_exactly(
     monkeypatch: pytest.MonkeyPatch, backend: str
@@ -1876,15 +1856,7 @@ def test_rfproteina_trunk_shares_pair_bias_projection_bit_exactly(
     init_module_weights(module)
     if 2 not in module._shared_pair_bias:
         pytest.skip("the shared projection needs the streaming pair-bias kernel")
-    batch, length = 2, 24
-    mask = torch.tensor([[1] * length, [1] * 19 + [0] * 5], device="cuda", dtype=torch.bool)
-    bf16 = {"device": "cuda", "dtype": torch.bfloat16}
-    inputs = (
-        torch.randn(batch, length, config.token_dim, **bf16),
-        torch.randn(batch, length, length, config.pair_dim, **bf16),
-        torch.randn(batch, length, config.condition_dim, **bf16),
-        mask,
-    )
+    inputs = _trunk_inputs(config)
     projected_heads = []
     forward = LNProjMoveaxisPad.forward
 
@@ -1894,6 +1866,8 @@ def test_rfproteina_trunk_shares_pair_bias_projection_bit_exactly(
         return out
 
     monkeypatch.setattr(LNProjMoveaxisPad, "forward", record)
+    # The row-sums recycle rounds differently from the norm it replaces, and only the shared arm can take it.
+    monkeypatch.setattr(module, "_recycles_pair_from_sums", lambda: False)
     with torch.inference_mode():
         shared = module(*inputs, recycle_depth=2)
         shared_heads, projected_heads[:] = list(projected_heads), []
@@ -1910,6 +1884,184 @@ def test_rfproteina_trunk_shares_pair_bias_projection_bit_exactly(
             torch.testing.assert_close(shared[head][field], expected, atol=0, rtol=0)
     assert torch.count_nonzero(shared["bb_ca"]["v"][1, 19:]) == 0
     module._shared_pair_bias = projections
+
+
+def test_trunk_recycles_the_pair_from_the_last_bias_projection_row_sums(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A recycling trunk projects its last pair-bias group itself, a single layer included, and recycles the pair at
+    the end of the pass from the row sums that projection leaves instead of normalizing it again.
+
+    Passes after the first write the next pass's pair into their own input; the first, given the initial pair, leaves
+    it for the passes after it. A single pass reads only the initial pair, so its outputs keep the plain recycle's
+    bits. Later passes round the folded weight and the unscaled product where the plain recycle rounds the
+    normalized pair, so they agree to BF16 rounding.
+    """
+    torch.manual_seed(29)
+    config = _small_config(
+        token_dim=128, pair_dim=64, num_layers=4, pair_update_every=2, recycle_enabled=True, dtype="bfloat16"
+    )
+    module = LocalLatentsTransformer(config).cuda().eval()
+    init_module_weights(module)
+    if 1 not in module._shared_pair_bias:
+        pytest.skip("the row sums need the streaming pair-bias kernel")
+    # Layer 0 reads the pass's input pair and projects its own bias; the trunk projects (1, 2) and the last layer.
+    assert module._shared_pair_bias_groups == [(1, 2), (3,)]
+    inputs = _trunk_inputs(config)
+    projections = []
+    forward = LNProjMoveaxisPad.forward
+
+    def record(self, z, *args, **kwargs):
+        projections.append((self in module._shared_pair_bias.values(), kwargs.get("row_sumsq") is not None))
+        return forward(self, z, *args, **kwargs)
+
+    passes = []
+    step = module.trunk_step
+
+    def record_step(**kwargs):
+        pair_in, pair_init, pair_before = kwargs["pair"], kwargs["pair_init"].clone(), kwargs["pair"].clone()
+        single, pair = step(**kwargs)
+        passes.append((pair_in, pair, pair_init, kwargs["pair_init"], pair_before))
+        return single, pair
+
+    monkeypatch.setattr(LNProjMoveaxisPad, "forward", record)
+    monkeypatch.setattr(module, "trunk_step", record_step)
+    with torch.inference_mode():
+        from_sums = {depth: module(*inputs, recycle_depth=depth) for depth in (1, 3)}
+        monkeypatch.setattr(module, "_recycles_pair_from_sums", lambda: False)
+        plain = {depth: module(*inputs, recycle_depth=depth) for depth in (1, 3)}
+
+    # Per pass: layer 0's own projection, then the trunk's two, the last one leaving the sums.
+    assert projections[:12] == [(False, False), (True, False), (True, True)] * 4
+    for index, (pair_in, pair, pair_init_before, pair_init, pair_before) in enumerate(passes[1:4]):
+        assert (pair is pair_in) == (index > 0), "a pass after the first recycles into its own input"
+        assert torch.equal(pair_init, pair_init_before), "no pass writes the initial pair"
+        if index > 0:
+            # The last pass has no next pass to recycle for, so it leaves its pair as it came.
+            assert torch.equal(pair, pair_before) == (index == 2)
+    for head, fields in plain[1].items():
+        for field, expected in fields.items():
+            torch.testing.assert_close(from_sums[1][head][field], expected, atol=0, rtol=0)
+            torch.testing.assert_close(from_sums[3][head][field], plain[3][head][field], atol=2e-3, rtol=1.6e-2)
+    assert torch.count_nonzero(from_sums[3]["bb_ca"]["v"][1, 19:]) == 0
+
+
+@pytest.fixture
+def graph_copies(monkeypatch: pytest.MonkeyPatch) -> list:
+    """The live inputs that CUDA-graph replays copy into their static buffers, in order."""
+    copied = []
+    copy_into = graph_runtime._copy_tensors_into
+    monkeypatch.setattr(
+        graph_runtime, "_copy_tensors_into", lambda dest, src: copied.append(src) or copy_into(dest, src)
+    )
+    return copied
+
+
+def test_graph_steps_read_the_initial_pair_from_the_trunks_own_buffers(graph_copies: list) -> None:
+    """With the passes captured, a step writes its initial pair into the trunk's buffers, which the graph reads in
+    place, so no pair-sized input is copied after capture; a pair already written there gives the same bits."""
+    torch.manual_seed(37)
+    config = _small_config(
+        token_dim=128, pair_dim=64, num_layers=4, pair_update_every=2, recycle_enabled=True, dtype="bfloat16"
+    )
+    module = LocalLatentsTransformer(config).cuda().eval()
+    init_module_weights(module)
+    module.trunk_graph.enable(trunk_graph_config())
+    single, pair, condition, mask = _trunk_inputs(config)
+    with torch.inference_mode():
+        for _ in range(3):
+            plain = module(single, pair, condition, mask, recycle_depth=2)
+        graph_copies.clear()
+        plain = module(single, pair, condition, mask, recycle_depth=2)
+        buffers = module.initial_pair_buffers(2, 24, pair.device)
+        local_latents_transformer._masked_pair(pair, mask, buffers[0].shape[1], out=buffers)
+        written = module(single, buffers[0][:, :24, :24], condition, mask, recycle_depth=2, pair_in_buffers=True)
+
+    tracker = module.trunk_graph.tracker
+    assert tracker.execution_counts["replay"] > 0 and not tracker.fallback_to_eager_by_key
+    (state,) = tracker.graph_state_by_key.values()
+    assert state.static_input_kwargs["pair_init"] is buffers[0] and state.static_input_kwargs["pair"] is buffers[1]
+    assert not any(isinstance(src, torch.Tensor) and src.numel() >= buffers[0].numel() for src in graph_copies)
+    torch.testing.assert_close(written, plain, atol=0, rtol=0)
+
+
+def test_trunk_reuses_the_masks_its_caller_prepares(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A rollout prepares its masks once; calls handed them derive none and return the bits of calls that do."""
+    torch.manual_seed(41)
+    config = _small_config(token_dim=128, pair_dim=64, num_layers=2, recycle_enabled=True, dtype="bfloat16")
+    module = LocalLatentsTransformer(config).cuda().eval()
+    init_module_weights(module)
+    # 21 tokens pad to 24, so the prepared masks carry the trunk's padding.
+    single, pair, condition, mask = (
+        t[:, :21, :21].contiguous() if t.ndim == 4 else t[:, :21].contiguous() for t in _trunk_inputs(config)
+    )
+    builds = []
+    precompute = local_latents_transformer.precompute_single_masks
+    monkeypatch.setattr(
+        local_latents_transformer, "precompute_single_masks", lambda *a, **k: builds.append(1) or precompute(*a, **k)
+    )
+    with torch.no_grad():
+        plain = module(single, pair, condition, mask, recycle_depth=2)
+        assert len(builds) == 1
+        masks = module.prepare_masks(mask)
+        assert masks.padding_mask.shape == (2, 24)
+        reused = [module(single, pair, condition, mask, recycle_depth=2, masks=masks) for _ in range(2)]
+        assert len(builds) == 2
+    for call in reused:
+        torch.testing.assert_close(call, plain, atol=0, rtol=0)
+
+
+def test_masked_pair_pads_and_masks_in_one_pass() -> None:
+    """The trunk's initial pair is the caller's pair padded and then masked, built in one pass."""
+    pair = torch.randn(2, 13, 13, 8, device="cuda", dtype=torch.bfloat16)
+    mask = torch.tensor([[1] * 13, [1] * 9 + [0] * 4], device="cuda", dtype=torch.bool)
+    for tokens in (13, 16):
+        padded = F.pad(pair, (0, 0, 0, tokens - 13, 0, tokens - 13))
+        padded_mask = F.pad(mask, (0, tokens - 13))
+        expected = padded * (padded_mask[:, :, None] & padded_mask[:, None, :]).unsqueeze(-1).to(pair.dtype)
+        assert torch.equal(local_latents_transformer._masked_pair(pair, mask, tokens), expected)
+        # Into the trunk's two buffers, whatever they held.
+        buffers = tuple(torch.full_like(expected, torch.nan) for _ in range(2))
+        assert local_latents_transformer._masked_pair(pair, mask, tokens, out=buffers) is buffers[0]
+        assert all(torch.equal(buffer, expected) for buffer in buffers)
+
+
+def test_captured_trunk_passes_leave_the_next_pair_in_their_static_buffer(
+    monkeypatch: pytest.MonkeyPatch, graph_copies: list
+) -> None:
+    """A replayed pass leaves the next pass's pair in its static pair buffer and hands that buffer back.
+
+    No pass after a call's first copies the pair in or clones it out, and the results stay the eager passes'.
+    """
+    torch.manual_seed(31)
+    config = _small_config(
+        token_dim=128, pair_dim=64, num_layers=4, pair_update_every=2, recycle_enabled=True, dtype="bfloat16"
+    )
+    eager = LocalLatentsTransformer(config).cuda().eval()
+    init_module_weights(eager)
+    graphed = LocalLatentsTransformer(config).cuda().eval()
+    graphed.load_state_dict(eager.state_dict())
+    graphed.trunk_graph.enable(trunk_graph_config())
+    inputs = _trunk_inputs(config)
+    returned = []
+    region_forward = graphed.trunk_graph.forward
+
+    def record(*args, **kwargs):
+        single, pair = region_forward(*args, **kwargs)
+        returned.append(pair)
+        return single, pair
+
+    monkeypatch.setattr(graphed.trunk_graph, "forward", record)
+    with torch.inference_mode():
+        expected = eager(*inputs, recycle_depth=3)
+        calls = [graphed(*inputs, recycle_depth=3) for _ in range(3)]
+
+    tracker = graphed.trunk_graph.tracker
+    assert tracker.execution_counts["replay"] >= 6 and not tracker.fallback_to_eager_by_key
+    (state,) = tracker.graph_state_by_key.values()
+    buffer = state.static_input_kwargs["pair"]
+    assert all(pair is buffer for pair in returned)
+    assert not any(src is buffer for src in graph_copies), "a pass copied the pair it was handed back"
+    torch.testing.assert_close(calls[-1], calls[-2], atol=0, rtol=0)
+    torch.testing.assert_close(calls[-1], expected, atol=1e-5, rtol=1e-4)
 
 
 @pytest.mark.parametrize(

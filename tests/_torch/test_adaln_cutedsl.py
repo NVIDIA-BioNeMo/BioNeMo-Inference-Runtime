@@ -56,7 +56,13 @@ from bionemo_ir._torch.utils.kernel import (
     cute_numeric,
 )
 from bionemo_ir.utils import str_dtype_to_torch
-from tests._torch import SM_VERSION, cutedsl_test_modes, require_cubin_family, run_cutedsl_test_mode
+from tests._torch import (
+    SM_VERSION,
+    cutedsl_test_modes,
+    init_module_weights,
+    require_cubin_family,
+    run_cutedsl_test_mode,
+)
 
 _SOURCE_MODULE = "bionemo_ir._torch.custom_ops.adaln_layernorm_sigmoid._source"
 _CUTEDSL_MODES = cutedsl_test_modes(_SOURCE_MODULE)
@@ -224,6 +230,69 @@ def test_adaln_source_and_cubin(mode, rms_norm, dtype, M, N, monkeypatch):
     )
     reference = _invoke_vanilla_adaln_layernorm_sigmoid(x.clone(), scale, bias, rms_norm=rms_norm)
     torch.testing.assert_close(result, reference, atol=0.05, rtol=0.02)
+
+
+@pytest.mark.parametrize("mode", _CUTEDSL_MODES)
+@pytest.mark.parametrize("rms_norm", [False, True], ids=["layer_norm", "rms_norm"])
+@pytest.mark.parametrize(
+    "dtype,x_shape,s_shape",
+    [
+        (torch.bfloat16, (2, 37, 768), (2, 37, 768)),
+        (torch.float16, (3, 64, 128), (3, 64, 128)),
+        (torch.float32, (2, 3, 21, 256), (2, 1, 21, 256)),
+    ],
+    ids=["bf16", "fp16", "fp32_sample_broadcast"],
+)
+def test_adaln_mask_zeroes_its_rows_in_the_same_launch(
+    mode: str,
+    rms_norm: bool,
+    dtype: torch.dtype,
+    x_shape: tuple[int, ...],
+    s_shape: tuple[int, ...],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A row whose s_scale row is masked out comes out +0, even from a non-finite input, and every other row keeps
+    the maskless op's bits: the op with a mask is the op followed by ``masked_fill``."""
+    _skip_without_adaln_cubin()
+    torch.manual_seed(13)
+    x = torch.randn(x_shape, device="cuda", dtype=dtype)
+    scale = torch.randn(s_shape, device="cuda", dtype=dtype)
+    bias = torch.randn(s_shape, device="cuda", dtype=dtype)
+    # The caller's own form: [B, I], without the broadcast sample axis that s_scale carries as a 1.
+    mask = torch.rand([d for d in s_shape[:-1] if d != 1], device="cuda") > 0.3
+    excluded_rows = ~mask.reshape(s_shape[:-1]).unsqueeze(-1)
+    x.masked_fill_(excluded_rows, float("nan"))
+    op = AdaLNLayerNormSigmoidCuTe(rms_norm=rms_norm)
+
+    masked = run_cutedsl_test_mode(
+        mode, monkeypatch, AdaLNLayerNormSigmoidCuTe, adaln_cutedsl, lambda: op(x.clone(), scale, bias, mask=mask)
+    )
+    unmasked = run_cutedsl_test_mode(
+        mode, monkeypatch, AdaLNLayerNormSigmoidCuTe, adaln_cutedsl, lambda: op(x.clone(), scale, bias)
+    )
+    excluded = excluded_rows.expand_as(masked)
+    assert torch.equal(masked, unmasked.masked_fill(excluded, 0))
+    assert not masked[excluded].signbit().any()
+
+
+@pytest.mark.parametrize("norm_type", ["rms_norm", "layer_norm"])
+def test_adaln_module_masks_inside_the_fused_op(norm_type: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    """AdaLN hands a mask with one flag per row to the fused op instead of filling after it, bit for bit."""
+    _skip_without_adaln_cubin()
+    torch.manual_seed(17)
+    adaln = init_module_weights(AdaLN(768, 256, dtype=torch.bfloat16, norm_type=norm_type).cuda())
+    a = torch.randn(2, 37, 768, device="cuda").to(torch.bfloat16)
+    s = torch.randn(2, 37, 256, device="cuda").to(torch.bfloat16)
+    mask = torch.rand(2, 37, device="cuda") > 0.3
+
+    def no_fill(*_: object) -> torch.Tensor:
+        raise AssertionError("the mask should be applied inside the fused op")
+
+    with torch.inference_mode():
+        expected = adaln(a, s).masked_fill(~mask.unsqueeze(-1), 0)
+        monkeypatch.setattr(AdaLN, "_maybe_mask", staticmethod(no_fill))
+        actual = adaln(a, s, mask=mask)
+    assert torch.equal(actual, expected)
 
 
 def test_adaln_force_cubin_ignores_warmed_source(monkeypatch):

@@ -17,7 +17,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 
 import numpy as np
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from bionemo_ir.configs.base import BaseConfig
 
@@ -80,6 +80,34 @@ class InputRoutingConfig(BaseModel):
             "rollout, and that the module never writes. Under inference mode, identity alone decides the skip."
         ),
     )
+    state_input_kwargs: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Keyword inputs the module overwrites with its next call's input and returns as that same tensor, "
+            "such as a recycled representation. Their static buffers are returned uncloned and hold until the "
+            "module's next call; passing one back costs no copy. A state kwarg cannot also be stable, whose "
+            "check would miss the module's writes."
+        ),
+    )
+    borrowed_input_kwargs: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Keyword inputs whose tensor at capture becomes the static buffer itself, instead of a copy. The "
+            "caller keeps that tensor and writes each call's value into it, so passing it again copies nothing; "
+            "another tensor is copied into it. A borrowed kwarg cannot also be stable, whose check would miss "
+            "those in-place writes."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _written_inputs_are_not_stable(self) -> "InputRoutingConfig":
+        # A stable kwarg skips its copy while its tensor is unchanged, so it would miss writes into its static
+        # buffer: the caller's into a borrowed one, or the module's into a state one.
+        for kind, names in (("borrowed", self.borrowed_input_kwargs), ("state", self.state_input_kwargs)):
+            overlap = sorted(set(names) & set(self.stable_input_kwargs))
+            if overlap:
+                raise ValueError(f"{kind} kwargs cannot also be stable kwargs: {overlap}")
+        return self
 
     class Config:
         extra = "allow"

@@ -35,8 +35,9 @@ def _invoke_vanilla_adaln_layernorm_sigmoid(
     out: torch.Tensor | None = None,
     eps: float = 1e-5,
     rms_norm: bool = False,
+    mask: torch.Tensor | None = None,
 ) -> torch.Tensor:
-    """Compute the fused operation in PyTorch."""
+    """Compute the fused operation in PyTorch; ``mask`` keeps rows as the CuTeDSL op's does."""
     normed = (
         torch.nn.functional.rms_norm(x, (x.shape[-1],), eps=eps)
         if rms_norm
@@ -45,6 +46,9 @@ def _invoke_vanilla_adaln_layernorm_sigmoid(
     result = (torch.sigmoid(s_scale) * normed + s_bias).to(x.dtype)
     destination = x if out is None else out
     destination.copy_(result.expand_as(destination) if result.shape != destination.shape else result)
+    if mask is not None:
+        # One flag per s_scale row, broadcast over x's rows as s_scale is.
+        destination.masked_fill_(~mask.reshape(s_scale.shape[:-1]).unsqueeze(-1), 0)
     return destination
 
 

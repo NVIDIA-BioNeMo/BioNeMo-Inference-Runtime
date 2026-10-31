@@ -16,20 +16,22 @@
 
 from __future__ import annotations
 
+import functools
 import math
 from collections.abc import Mapping
-from typing import TYPE_CHECKING
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, NamedTuple
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from bionemo_ir._torch.custom_ops import get_adaln_layernorm_sigmoid_op
 from bionemo_ir._torch.sampling.random import randperm
+from bionemo_ir.dsl_kernels.triton.rfd4_pair_init import rfd4_pair_init
 from bionemo_ir.utils import str_dtype_to_torch
 
 from .atom_utils import angstrom_to_nanometer, finite_atom_mask
-from .chirality import CHIRAL_FRAME_ATOMS, CHIRAL_SLOT_OWNER, CHIRALITY, align_chirality
+from .chirality import CHIRAL_FRAME_ATOMS, CHIRAL_SLOT_OWNER, CHIRALITY, align_chirality, chiral_frames
 from .contracts import RFProteinaRepresentations
 from .groups import CONDITION_COORDINATE_GROUP
 
@@ -109,10 +111,10 @@ SEQUENCE_PROBABILITY_TOKENS = (
 
 
 class _PairAdaptiveLayerNorm(nn.Module):
-    """Upstream-compatible pair AdaLN used by representation construction.
+    """Upstream-compatible parameters of the pair AdaLN that conditions the pair track on its design.
 
-    The condition holds one row per design, so its gamma and beta are projected once per design rather than per
-    pair. One fused AdaLN kernel normalizes every pair row and applies them; pairs outside the mask are zeroed.
+    The condition holds one row per design, so its scale and bias are projected once per design rather than per
+    pair; :func:`rfd4_pair_init` applies them to every pair as ``sigmoid(scale) * RMSNorm(pair) + bias``.
     """
 
     def __init__(self, pair_dim: int, condition_dim: int, eps: float, dtype: torch.dtype) -> None:
@@ -122,29 +124,20 @@ class _PairAdaptiveLayerNorm(nn.Module):
         # The kernel applies the sigmoid; the module keeps it for the checkpoint layout.
         self.to_gamma = nn.Sequential(nn.Linear(condition_dim, pair_dim, dtype=dtype), nn.Sigmoid())
         self.to_beta = nn.Linear(condition_dim, pair_dim, bias=False, dtype=dtype)
-        self._adaln = get_adaln_layernorm_sigmoid_op(dtype, pair_dim, rms_norm=True)
 
-    def forward(self, pair: torch.Tensor, condition: torch.Tensor, pair_mask: torch.Tensor) -> torch.Tensor:
-        """Condition every pair on its design.
-
-        Args:
-            pair: ``[B, N, N, pair_dim]`` pair features in the module dtype.
-            condition: ``[B, condition_dim]`` condition, one row per design, in the module dtype.
-            pair_mask: ``[B, N, N]`` valid pairs.
-
-        Returns:
-            ``[B, N, N, pair_dim]`` ``sigmoid(gamma) * RMSNorm(pair) + beta``, zero outside ``pair_mask``.
-        """
+    def modulation(self, condition: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        """Each design's ``[B, pair_dim]`` scale, before the kernel's sigmoid, and bias from its ``[B, condition_dim]``
+        condition."""
         condition = self.norm_cond(condition)
-        rows = pair.reshape(pair.shape[0], -1, pair.shape[-1])
-        output = self._adaln(
-            rows,
-            self.to_gamma[0](condition).unsqueeze(1),
-            self.to_beta(condition).unsqueeze(1),
-            out=torch.empty_like(rows),
-            eps=self.eps,
-        )
-        return output.view_as(pair).mul_(pair_mask.unsqueeze(-1).to(output.dtype))
+        return self.to_gamma[0](condition), self.to_beta(condition)
+
+
+@functools.cache
+def _frequencies(half_dim: int, max_positions: int, device: torch.device) -> torch.Tensor:
+    """The sinusoidal embedding's ``[half_dim]`` FP32 frequencies, built once per device as a normal tensor."""
+    exponent = math.log(max_positions) / (half_dim - 1)
+    with torch.inference_mode(False):
+        return torch.exp(torch.arange(half_dim, dtype=torch.float32, device=device) * -exponent)
 
 
 def _time_embedding(
@@ -153,21 +146,77 @@ def _time_embedding(
     """Sinusoidal diffusion-time embedding used by the released model."""
     if t.ndim != 1:
         raise ValueError(f"Expected time tensor [B], got {tuple(t.shape)}")
-    half_dim = embedding_dim // 2
-    exponent = math.log(max_positions) / (half_dim - 1)
-    frequencies = torch.exp(torch.arange(half_dim, dtype=torch.float32, device=t.device) * -exponent)
     phase = (t * max_positions).float().unsqueeze(-1)
-    embedding = torch.cat([torch.sin(phase * frequencies), torch.cos(phase * frequencies)], dim=-1)
+    angles = phase * _frequencies(embedding_dim // 2, max_positions, t.device)
+    embedding = torch.cat([torch.sin(angles), torch.cos(angles)], dim=-1)
     if embedding_dim % 2:
         embedding = F.pad(embedding, (0, 1))
     return embedding
 
 
-def _active_scale(active: bool | torch.Tensor, reference: torch.Tensor) -> torch.Tensor:
-    scale = torch.as_tensor(active, device=reference.device, dtype=reference.dtype)
+def _active_scale(active: bool | torch.Tensor, reference: torch.Tensor) -> torch.Tensor | float:
+    """``active`` as a factor for ``reference``. A host value stays on the host, which spares a blocking copy."""
+    if not isinstance(active, torch.Tensor):
+        return float(active)
+    scale = active.to(device=reference.device, dtype=reference.dtype)
     while scale.ndim < reference.ndim:
         scale = scale.unsqueeze(-1)
     return scale
+
+
+class _CoordinateGroups(NamedTuple):
+    """A design's ``[B, N]`` coordinate groups, which of them are populated, and each populated one's rank among the
+    ``count`` distinct labels; a step only permutes the labels."""
+
+    labels: torch.Tensor
+    populated: torch.Tensor
+    ranks: torch.Tensor
+    count: int
+
+
+class _PairFeatures(NamedTuple):
+    """A design's static pair features as :func:`rfd4_pair_init` reads them, with the projection rows they select."""
+
+    #: FP32 ``[pair_distance_bins - 1]`` edges of the distance bins.
+    edges: torch.Tensor
+    #: int32 ``[B, N, N, 2]`` bond-order class, ``-1`` for none, and bond-path bin.
+    classes: torch.Tensor
+    #: FP32 ``[B, N, N, S]`` scalar channels.
+    scalars: torch.Tensor
+    #: ``[B, N]`` mask of real tokens.
+    mask: torch.Tensor
+    #: FP32 projection rows per distance bin, bond order, bond-path bin and scalar channel, each ``[*, pair_dim]``.
+    weights: tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]
+    #: The pair norm's FP32 weight, its bias for a LayerNorm (``None`` for an RMSNorm), and its epsilon.
+    norm: tuple[torch.Tensor, torch.Tensor | None, float]
+    #: FP32 projection rows ``[bins, pair_dim]`` of the self-conditioning distance bins, for the legacy schema.
+    self_conditioned: torch.Tensor | None
+
+
+@dataclass(frozen=True)
+class StaticTrackParts:
+    """The parts of one design's input tracks that its static features alone fix.
+
+    The builder's ``prepare`` builds them once for a rollout. Each step then adds only what its sampling state
+    changes, and concatenates the same values in the same order as a build from the features alone.
+    """
+
+    #: ``[B, N, 1]`` token mask in the builder dtype.
+    valid: torch.Tensor
+    #: Single features between the state's and the coordinate group.
+    single_static: torch.Tensor
+    #: Chirality vectors, or ``None`` when the checkpoint aligns them to each step's noisy state.
+    chirality: torch.Tensor | None
+    #: :func:`chiral_frames` for that alignment, or ``None`` when the frame tensors are missing.
+    chiral_frames: tuple[torch.Tensor, torch.Tensor, torch.Tensor] | None
+    #: Chain centroids, the last single features.
+    centroid: torch.Tensor
+    #: Coordinate groups, whose labels each step permutes.
+    coordinate_groups: _CoordinateGroups
+    #: ``[B, N, 3 * cath_embedding_dim]`` CATH embeddings of the condition track.
+    cath: torch.Tensor
+    #: The static pair features as :func:`rfd4_pair_init` reads them.
+    pair_features: _PairFeatures
 
 
 class RFProteinaRepresentationBuilder(nn.Module):
@@ -247,14 +296,14 @@ class RFProteinaRepresentationBuilder(nn.Module):
             dtype=self.pair_adaln_dtype,
         )
 
-    def _zeros(self, state: Mapping[str, torch.Tensor], trailing_shape: tuple[int, ...]) -> torch.Tensor:
-        batch, tokens = state["bb_ca"].shape[:2]
-        return torch.zeros((batch, tokens, *trailing_shape), device=state["bb_ca"].device, dtype=self.dtype)
+    def _zeros(self, padding_mask: torch.Tensor, trailing_shape: tuple[int, ...]) -> torch.Tensor:
+        """``[B, N, *trailing_shape]`` zero features for a ``[B, N]`` token mask."""
+        return torch.zeros((*padding_mask.shape[:2], *trailing_shape), device=padding_mask.device, dtype=self.dtype)
 
     def _conditional_coordinates(
         self,
         static_features: Mapping[str, torch.Tensor],
-        state: Mapping[str, torch.Tensor],
+        padding_mask: torch.Tensor,
         coordinate_key: str,
         mask_key: str,
         *,
@@ -265,7 +314,7 @@ class RFProteinaRepresentationBuilder(nn.Module):
 
         Args:
             static_features: Tensorized batch. Coordinates are angstroms.
-            state: Product-space state, used only for the zero-feature shape.
+            padding_mask: ``[B, N]`` token mask, read only for the zero-feature shape.
             coordinate_key: ``[B, N, 37, 3]`` coordinate tensor.
             mask_key: Optional ``[B, N, 37]`` bool mask. When present it selects
                 the conditioned atoms.
@@ -288,7 +337,7 @@ class RFProteinaRepresentationBuilder(nn.Module):
             ``[B, N, 148]``: 37 xyz vectors followed by the 37 mask values.
         """
         if coordinate_key not in static_features:
-            return self._zeros(state, (ATOM37_SIZE * 4,))
+            return self._zeros(padding_mask, (ATOM37_SIZE * 4,))
         raw = static_features[coordinate_key]
         if mask_key in static_features:
             mask = static_features[mask_key].to(torch.bool)
@@ -298,16 +347,16 @@ class RFProteinaRepresentationBuilder(nn.Module):
             groups = static_features[CONDITION_COORDINATE_GROUP].long()
             mask = (groups != COORDINATE_GROUP_UNKNOWN) & (groups != COORDINATE_GROUP_ABSOLUTE)
         else:
-            return self._zeros(state, (ATOM37_SIZE * 4,))
+            return self._zeros(padding_mask, (ATOM37_SIZE * 4,))
         coordinates = angstrom_to_nanometer(torch.nan_to_num(raw, nan=0.0))
         coordinates = coordinates * mask.unsqueeze(-1)
         return torch.cat([coordinates.flatten(-2), mask.to(coordinates.dtype)], dim=-1)
 
     def _conditional_residue_type(
-        self, static_features: Mapping[str, torch.Tensor], state: Mapping[str, torch.Tensor]
+        self, static_features: Mapping[str, torch.Tensor], padding_mask: torch.Tensor
     ) -> torch.Tensor:
         if CONDITION_SEQUENCE not in static_features or CONDITION_SEQUENCE_MASK not in static_features:
-            return self._zeros(state, (self.config.num_conditional_residue_types,))
+            return self._zeros(padding_mask, (self.config.num_conditional_residue_types,))
         mask = static_features[CONDITION_SEQUENCE_MASK].to(torch.bool)
         residue_type = static_features[CONDITION_SEQUENCE].long() * mask
         return self.conditional_residue_embedding(residue_type) * mask.unsqueeze(-1)
@@ -315,23 +364,23 @@ class RFProteinaRepresentationBuilder(nn.Module):
     def _atom_annotation(
         self,
         static_features: Mapping[str, torch.Tensor],
-        state: Mapping[str, torch.Tensor],
+        padding_mask: torch.Tensor,
         key: str,
     ) -> torch.Tensor:
         if key not in static_features:
-            return self._zeros(state, (ATOM37_SIZE,))
+            return self._zeros(padding_mask, (ATOM37_SIZE,))
         atom_mask = static_features["atom37_mask"].to(torch.bool)
         return static_features[key].to(self.dtype) * atom_mask
 
     def _atom_role_annotation(
         self,
         static_features: Mapping[str, torch.Tensor],
-        state: Mapping[str, torch.Tensor],
+        padding_mask: torch.Tensor,
         key: str,
     ) -> torch.Tensor:
         """Encode NONE/FIRST/SECOND/BOTH atom roles as two binary channels."""
         if key not in static_features:
-            return self._zeros(state, (2 * ATOM37_SIZE,))
+            return self._zeros(padding_mask, (2 * ATOM37_SIZE,))
         values = static_features[key].long()
         atom_mask = static_features["atom37_mask"].to(torch.bool)
         first = ((values == 1) | (values == 3)) & atom_mask
@@ -341,10 +390,10 @@ class RFProteinaRepresentationBuilder(nn.Module):
     def _na_state(
         self,
         static_features: Mapping[str, torch.Tensor],
-        state: Mapping[str, torch.Tensor],
+        padding_mask: torch.Tensor,
     ) -> torch.Tensor:
         if CONDITION_NA_SS_STATE not in static_features or CONDITION_NA_SS_STATE_MASK not in static_features:
-            return self._zeros(state, (2,))
+            return self._zeros(padding_mask, (2,))
         value = static_features[CONDITION_NA_SS_STATE].to(self.dtype).unsqueeze(-1)
         mask = static_features[CONDITION_NA_SS_STATE_MASK].to(self.dtype).unsqueeze(-1)
         return torch.cat((value, mask), dim=-1)
@@ -354,11 +403,8 @@ class RFProteinaRepresentationBuilder(nn.Module):
         """Whether each trunk pass gets its own condition track."""
         return self.config.recycle_feature is not None
 
-    def _sequence_probabilities(
-        self, static_features: Mapping[str, torch.Tensor], state: Mapping[str, torch.Tensor]
-    ) -> torch.Tensor:
+    def _sequence_probabilities(self, static_features: Mapping[str, torch.Tensor]) -> torch.Tensor:
         """Probability value and explicit-mask channels in unified token order."""
-        del state
         channels = []
         missing = []
         for token in SEQUENCE_PROBABILITY_TOKENS:
@@ -377,12 +423,10 @@ class RFProteinaRepresentationBuilder(nn.Module):
         specified = ~torch.isnan(probabilities)
         return torch.cat((probabilities.masked_fill(~specified, 0), specified.to(self.dtype)), dim=-1)
 
-    def _rasa_binned(
-        self, static_features: Mapping[str, torch.Tensor], state: Mapping[str, torch.Tensor]
-    ) -> torch.Tensor:
+    def _rasa_binned(self, static_features: Mapping[str, torch.Tensor], padding_mask: torch.Tensor) -> torch.Tensor:
         """Binned RASA; atoms outside the atom37 mask are unspecified (0)."""
         if CONDITION_RASA not in static_features:
-            return self._zeros(state, (ATOM37_SIZE,))
+            return self._zeros(padding_mask, (ATOM37_SIZE,))
         rasa = static_features[CONDITION_RASA].to(self.dtype)
         atom_mask = static_features["atom37_mask"].to(torch.bool)
         return rasa.masked_fill(~atom_mask, 0)
@@ -390,14 +434,14 @@ class RFProteinaRepresentationBuilder(nn.Module):
     def _masked_atom_values(
         self,
         static_features: Mapping[str, torch.Tensor],
-        state: Mapping[str, torch.Tensor],
+        padding_mask: torch.Tensor,
         key: str,
         *,
         nonzero: bool,
     ) -> torch.Tensor:
         """Atom37 contact flags, zero on atoms outside the atom37 mask."""
         if key not in static_features:
-            return self._zeros(state, (ATOM37_SIZE,))
+            return self._zeros(padding_mask, (ATOM37_SIZE,))
         values = static_features[key]
         values = (values != 0).to(self.dtype) if nonzero else values.to(self.dtype)
         return values * static_features["atom37_mask"].to(self.dtype)
@@ -407,8 +451,12 @@ class RFProteinaRepresentationBuilder(nn.Module):
         static_features: Mapping[str, torch.Tensor],
         state: Mapping[str, torch.Tensor],
         padding_mask: torch.Tensor,
+        frame_index: tuple[torch.Tensor, torch.Tensor, torch.Tensor] | None = None,
     ) -> torch.Tensor:
-        """Packed chirality vectors, in the noisy state's frame when the checkpoint was trained that way."""
+        """Packed chirality vectors, in the noisy state's frame when the checkpoint was trained that way.
+
+        ``frame_index`` is the rollout's :func:`chiral_frames`, found here when omitted.
+        """
         vectors = static_features[CHIRALITY]
         rotate, translate = self.config.noise_align_chirality, self.config.noise_align_chirality_translate
         if rotate or translate:
@@ -423,25 +471,39 @@ class RFProteinaRepresentationBuilder(nn.Module):
                 static_features[CHIRAL_SLOT_OWNER],
                 rotate=rotate,
                 translate=translate,
+                frame_index=frame_index,
             )
         return vectors.to(self.dtype)
 
-    def _coordinate_group(self, static_features: Mapping[str, torch.Tensor]) -> torch.Tensor:
-        groups = static_features[CONDITION_COORDINATE_GROUP].long().clone()
-        populated = groups != COORDINATE_GROUP_UNKNOWN
-        unique_groups, inverse = torch.unique(groups[populated], return_inverse=True)
-        permutation = randperm(len(unique_groups), device=groups.device)
-        groups[populated] = permutation[inverse].to(groups.dtype)
-        return groups.to(self.dtype)
+    def _coordinate_groups(self, static_features: Mapping[str, torch.Tensor]) -> _CoordinateGroups:
+        """The design's coordinate groups and the ranks of their distinct labels.
 
-    def _single(
-        self,
-        static_features: Mapping[str, torch.Tensor],
-        state: Mapping[str, torch.Tensor],
-        self_conditioning: Mapping[str, torch.Tensor],
-        self_conditioning_active: bool | torch.Tensor,
-        padding_mask: torch.Tensor,
-    ) -> torch.Tensor:
+        Finding the distinct labels waits on the device, so a rollout does it once, in :meth:`prepare`.
+        """
+        groups = static_features[CONDITION_COORDINATE_GROUP].long()
+        populated = groups != COORDINATE_GROUP_UNKNOWN
+        labels, inverse = torch.unique(groups[populated], return_inverse=True)
+        ranks = torch.zeros_like(groups)
+        ranks[populated] = inverse
+        return _CoordinateGroups(groups, populated, ranks, len(labels))
+
+    def _coordinate_group(self, groups: _CoordinateGroups) -> torch.Tensor:
+        """The coordinate groups with their labels randomly permuted, one draw from the sampling stream."""
+        labels = groups.labels
+        permutation = randperm(groups.count, device=labels.device)
+        if groups.count:
+            labels = torch.where(groups.populated, permutation[groups.ranks].to(labels.dtype), labels)
+        return labels.to(self.dtype)
+
+    def _single_static(
+        self, static_features: Mapping[str, torch.Tensor], padding_mask: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor | None, torch.Tensor]:
+        """The single features the static features alone fix.
+
+        Returns:
+            The features between the state's and the coordinate group, the chirality vectors unless the checkpoint
+            aligns them to the noisy state (then ``None``), and the chain centroids.
+        """
         token_type = static_features["token_type"].long()
         atomized = (token_type == self.config.atomized_token_type).unsqueeze(-1)
 
@@ -451,19 +513,19 @@ class RFProteinaRepresentationBuilder(nn.Module):
                 atom_mask, static_features[CONDITION_RASA], torch.zeros_like(static_features[CONDITION_RASA])
             ).to(self.dtype)
         else:
-            rasa = self._zeros(state, (ATOM37_SIZE,))
+            rasa = self._zeros(padding_mask, (ATOM37_SIZE,))
 
         if CONDITION_SECONDARY_STRUCTURE in static_features:
             secondary_structure = self.secondary_structure_embedding(
                 static_features[CONDITION_SECONDARY_STRUCTURE].long()
             )
         else:
-            secondary_structure = self._zeros(state, (self.config.secondary_structure_embedding_dim,))
+            secondary_structure = self._zeros(padding_mask, (self.config.secondary_structure_embedding_dim,))
 
         if CONDITION_NOT_CYSTEINE in static_features:
             not_cysteine = static_features[CONDITION_NOT_CYSTEINE].to(self.dtype).unsqueeze(-1)
         else:
-            not_cysteine = self._zeros(state, (1,))
+            not_cysteine = self._zeros(padding_mask, (1,))
 
         if "charge" in static_features:
             charge = (static_features["charge"][:, :, 1].long() + self.config.charge_offset).clamp(
@@ -471,76 +533,73 @@ class RFProteinaRepresentationBuilder(nn.Module):
             )
             charge = self.charge_embedding(charge) * atomized
         else:
-            charge = self._zeros(state, (self.config.charge_embedding_dim,))
+            charge = self._zeros(padding_mask, (self.config.charge_embedding_dim,))
 
         if "element" in static_features:
             element = static_features["element"][:, :, 1].long().clamp(0, self.config.max_atomic_number - 1)
             element = self.element_embedding(element) * atomized
         else:
-            element = self._zeros(state, (self.config.element_embedding_dim,))
+            element = self._zeros(padding_mask, (self.config.element_embedding_dim,))
 
-        if CHIRALITY in static_features:
-            chirality = self._chirality(static_features, state, padding_mask)
+        if CHIRALITY not in static_features:
+            chirality = self._zeros(padding_mask, (self.config.chirality_dim,))
+        elif self.config.noise_align_chirality or self.config.noise_align_chirality_translate:
+            chirality = None
         else:
-            chirality = self._zeros(state, (self.config.chirality_dim,))
+            chirality = static_features[CHIRALITY].to(self.dtype)
 
         if CONDITION_CHAIN_CENTROID in static_features:
             centroid = static_features[CONDITION_CHAIN_CENTROID].float()
             included = torch.isfinite(centroid).all(dim=-1, keepdim=True)
             centroid = torch.where(included, angstrom_to_nanometer(centroid), torch.zeros_like(centroid))
         else:
-            centroid = self._zeros(state, (3,))
+            centroid = self._zeros(padding_mask, (3,))
 
         if self.config.input_schema == "sequence_probability":
             features = [
-                state["bb_ca"],
-                state["local_latents"],
                 self.token_type_embedding(token_type),
-                self._sequence_probabilities(static_features, state),
+                self._sequence_probabilities(static_features),
                 self._conditional_coordinates(
                     static_features,
-                    state,
+                    padding_mask,
                     CONDITION_COORDINATE,
                     CONDITION_COORDINATE_MASK,
                     finite_marks_conditioned=True,
                 ),
                 self._conditional_coordinates(
                     static_features,
-                    state,
+                    padding_mask,
                     CONDITION_INTERNAL_COORDINATE,
                     CONDITION_INTERNAL_COORDINATE_MASK,
                     group_marks_conditioned=True,
                 ),
-                self._rasa_binned(static_features, state),
+                self._rasa_binned(static_features, padding_mask),
                 secondary_structure,
-                self._atom_role_annotation(static_features, state, CONDITION_HBOND),
-                self._masked_atom_values(static_features, state, CONDITION_PISTACK_SPECIFIED, nonzero=False),
-                self._atom_role_annotation(static_features, state, CONDITION_PICATION),
-                self._masked_atom_values(static_features, state, CONDITION_SALT_BRIDGE, nonzero=True),
-                self._masked_atom_values(static_features, state, CONDITION_HYDROPHOBIC, nonzero=False),
-                self._masked_atom_values(static_features, state, CONDITION_METAL_COORDINATION, nonzero=True),
-                self._na_state(static_features, state),
-                self._masked_atom_values(static_features, state, CONDITION_HOTSPOT_SPECIFIED, nonzero=False),
+                self._atom_role_annotation(static_features, padding_mask, CONDITION_HBOND),
+                self._masked_atom_values(static_features, padding_mask, CONDITION_PISTACK_SPECIFIED, nonzero=False),
+                self._atom_role_annotation(static_features, padding_mask, CONDITION_PICATION),
+                self._masked_atom_values(static_features, padding_mask, CONDITION_SALT_BRIDGE, nonzero=True),
+                self._masked_atom_values(static_features, padding_mask, CONDITION_HYDROPHOBIC, nonzero=False),
+                self._masked_atom_values(static_features, padding_mask, CONDITION_METAL_COORDINATION, nonzero=True),
+                self._na_state(static_features, padding_mask),
+                self._masked_atom_values(static_features, padding_mask, CONDITION_HOTSPOT_SPECIFIED, nonzero=False),
                 charge,
                 element,
-                self._coordinate_group(static_features),
-                chirality,
-                centroid,
             ]
         else:
             common_features = [
                 self.token_type_embedding(token_type),
-                self._conditional_residue_type(static_features, state),
+                self._conditional_residue_type(static_features, padding_mask),
                 self._conditional_coordinates(
                     static_features,
-                    state,
+                    padding_mask,
                     CONDITION_COORDINATE,
                     CONDITION_COORDINATE_MASK,
                     finite_marks_conditioned=True,
                 ),
                 self._conditional_coordinates(
                     static_features,
-                    state,
+                    padding_mask,
                     CONDITION_INTERNAL_COORDINATE,
                     CONDITION_INTERNAL_COORDINATE_MASK,
                     group_marks_conditioned=True,
@@ -549,40 +608,52 @@ class RFProteinaRepresentationBuilder(nn.Module):
                 secondary_structure,
             ]
             trailing_features = [
-                self._atom_annotation(static_features, state, CONDITION_HOTSPOT),
+                self._atom_annotation(static_features, padding_mask, CONDITION_HOTSPOT),
                 not_cysteine,
                 charge,
                 element,
-                self._coordinate_group(static_features),
-                chirality,
-                centroid,
             ]
             if self.config.input_schema == "latest":
                 features = [
-                    state["bb_ca"],
-                    state["local_latents"],
                     *common_features,
-                    self._atom_role_annotation(static_features, state, CONDITION_HBOND),
-                    self._atom_annotation(static_features, state, CONDITION_PISTACK),
-                    self._atom_role_annotation(static_features, state, CONDITION_PICATION),
-                    self._na_state(static_features, state),
+                    self._atom_role_annotation(static_features, padding_mask, CONDITION_HBOND),
+                    self._atom_annotation(static_features, padding_mask, CONDITION_PISTACK),
+                    self._atom_role_annotation(static_features, padding_mask, CONDITION_PICATION),
+                    self._na_state(static_features, padding_mask),
                     *trailing_features,
                 ]
             else:
-                active = _active_scale(self_conditioning_active, state["bb_ca"])
                 features = [
-                    state["bb_ca"],
-                    state["local_latents"],
-                    self_conditioning["bb_ca"] * active,
-                    self_conditioning["local_latents"]
-                    * _active_scale(self_conditioning_active, self_conditioning["local_latents"]),
                     *common_features,
-                    self._atom_annotation(static_features, state, CONDITION_HBOND),
+                    self._atom_annotation(static_features, padding_mask, CONDITION_HBOND),
                     *trailing_features,
                 ]
+        return torch.cat(features, dim=-1), chirality, centroid
+
+    def _single(
+        self,
+        static_features: Mapping[str, torch.Tensor],
+        state: Mapping[str, torch.Tensor],
+        self_conditioning: Mapping[str, torch.Tensor],
+        self_conditioning_active: bool | torch.Tensor,
+        padding_mask: torch.Tensor,
+        parts: StaticTrackParts,
+    ) -> torch.Tensor:
+        """The projected single track: the state's features around the static ones in ``parts``."""
+        features = [state["bb_ca"], state["local_latents"]]
+        if self.config.input_schema == "legacy_self_conditioned":
+            active = _active_scale(self_conditioning_active, state["bb_ca"])
+            features += [
+                self_conditioning["bb_ca"] * active,
+                self_conditioning["local_latents"]
+                * _active_scale(self_conditioning_active, self_conditioning["local_latents"]),
+            ]
+        chirality = parts.chirality
+        if chirality is None:
+            chirality = self._chirality(static_features, state, padding_mask, parts.chiral_frames)
+        features += [parts.single_static, self._coordinate_group(parts.coordinate_groups), chirality, parts.centroid]
         features = torch.cat(features, dim=-1).to(self.dtype)
-        valid = padding_mask.unsqueeze(-1).to(self.dtype)
-        return self.single_projection(features * valid) * valid
+        return self.single_projection(features * parts.valid) * parts.valid
 
     def _recycle_feature(
         self, feature: str, recycle_index: int, recycle_depth: int, batch: int, device: torch.device
@@ -613,17 +684,10 @@ class RFProteinaRepresentationBuilder(nn.Module):
             remaining[:, min(recycle_depth - recycle_index, width - 1)] = 1.0
         return remaining
 
-    def _condition(
-        self,
-        static_features: Mapping[str, torch.Tensor],
-        state: Mapping[str, torch.Tensor],
-        times: Mapping[str, torch.Tensor],
-        padding_mask: torch.Tensor,
-        recycle_index: int = 1,
-        recycle_depth: int = 1,
-    ) -> torch.Tensor:
+    def _cath(self, static_features: Mapping[str, torch.Tensor]) -> torch.Tensor:
+        """``[B, N, 3 * cath_embedding_dim]`` class, architecture and topology embeddings of the CATH labels."""
         cath_codes = static_features[CONDITION_CATH].long() + 1
-        cath = torch.cat(
+        return torch.cat(
             [
                 self.cath_class_embedding(cath_codes[..., 0]),
                 self.cath_architecture_embedding(cath_codes[..., 1]),
@@ -631,33 +695,68 @@ class RFProteinaRepresentationBuilder(nn.Module):
             ],
             dim=-1,
         )
-        batch, tokens = state["bb_ca"].shape[:2]
-        time = (
-            torch.cat(
-                [
-                    _time_embedding(times["bb_ca"], self.config.time_embedding_dim),
-                    _time_embedding(times["local_latents"], self.config.time_embedding_dim),
-                ],
-                dim=-1,
-            )
-            .unsqueeze(1)
-            .expand(batch, tokens, -1)
+
+    def _time(self, times: Mapping[str, torch.Tensor]) -> torch.Tensor:
+        """``[B, 2 * time_embedding_dim]`` backbone and latent time embeddings, which the condition and pair share."""
+        return torch.cat(
+            [
+                _time_embedding(times["bb_ca"], self.config.time_embedding_dim),
+                _time_embedding(times["local_latents"], self.config.time_embedding_dim),
+            ],
+            dim=-1,
         )
-        features = [time, cath]
+
+    def _condition_from(
+        self,
+        time: torch.Tensor,
+        cath: torch.Tensor,
+        valid: torch.Tensor,
+        recycle_index: int,
+        recycle_depth: int,
+    ) -> torch.Tensor:
+        """One trunk pass's projected condition from the step's time embedding and the design's CATH embeddings."""
+        batch, tokens = cath.shape[:2]
+        features = [time.unsqueeze(1).expand(batch, tokens, -1), cath]
         feature = self.config.recycle_feature
         if feature is not None:
             if recycle_index < 1:
                 raise ValueError(f"recycle_index is one-based, got {recycle_index}")
-            recycle = self._recycle_feature(feature, recycle_index, recycle_depth, batch, state["bb_ca"].device)
+            recycle = self._recycle_feature(feature, recycle_index, recycle_depth, batch, cath.device)
             features.append(recycle.unsqueeze(1).expand(batch, tokens, -1))
-        valid = padding_mask.unsqueeze(-1).to(self.dtype)
         projected = torch.cat(features, dim=-1).to(self.dtype)
         return self.condition_projection(projected * valid) * valid
+
+    def _condition(
+        self,
+        static_features: Mapping[str, torch.Tensor],
+        times: Mapping[str, torch.Tensor],
+        padding_mask: torch.Tensor,
+        recycle_index: int = 1,
+        recycle_depth: int = 1,
+    ) -> torch.Tensor:
+        valid = padding_mask.unsqueeze(-1).to(self.dtype)
+        return self._condition_from(self._time(times), self._cath(static_features), valid, recycle_index, recycle_depth)
+
+    def _conditions(
+        self,
+        time: torch.Tensor,
+        cath: torch.Tensor,
+        valid: torch.Tensor,
+        recycle_depth: int,
+        first: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        """``[recycle_depth, B, N, condition_dim]`` conditions in the output dtype; ``first`` is pass 1's if held."""
+        passes = [
+            first
+            if cycle == 0 and first is not None
+            else self._condition_from(time, cath, valid, cycle + 1, recycle_depth).to(self.output_dtype)
+            for cycle in range(recycle_depth)
+        ]
+        return torch.stack(passes)
 
     def condition_stack(
         self,
         static_features: Mapping[str, torch.Tensor],
-        state: Mapping[str, torch.Tensor],
         times: Mapping[str, torch.Tensor],
         padding_mask: torch.Tensor,
         recycle_depth: int,
@@ -665,103 +764,171 @@ class RFProteinaRepresentationBuilder(nn.Module):
         """One projected condition per trunk pass, ``[recycle_depth, B, N, condition_dim]``.
 
         Pass 0 uses recycle index 1. Only a checkpoint whose condition carries a
-        recycle feature reads a different row on every pass.
+        recycle feature reads a different row on every pass; the passes share
+        one time embedding and the design's CATH embeddings.
         """
         if not self.conditions_per_recycle_pass:
             raise ValueError("condition_stack requires a checkpoint whose condition carries a recycle feature")
         if recycle_depth < 1:
             raise ValueError(f"recycle_depth must be positive, got {recycle_depth}")
-        padding_mask = padding_mask.to(torch.bool)
-        return torch.stack(
-            [
-                self._condition(
-                    static_features, state, times, padding_mask, recycle_index=cycle + 1, recycle_depth=recycle_depth
-                )
-                for cycle in range(recycle_depth)
-            ]
-        ).to(self.output_dtype)
-
-    def _distance_indices(self, coordinates: torch.Tensor) -> torch.Tensor:
-        distances = torch.norm(coordinates.unsqueeze(2) - coordinates.unsqueeze(1), dim=-1)
-        boundaries = torch.linspace(
-            self.config.pair_distance_min,
-            self.config.pair_distance_max,
-            self.config.pair_distance_bins - 1,
-            device=coordinates.device,
-        )
-        return torch.bucketize(distances, boundaries)
+        valid = padding_mask.to(torch.bool).unsqueeze(-1).to(self.dtype)
+        return self._conditions(self._time(times), self._cath(static_features), valid, recycle_depth)
 
     def _pair(
         self,
-        static_features: Mapping[str, torch.Tensor],
+        parts: StaticTrackParts,
         state: Mapping[str, torch.Tensor],
-        times: Mapping[str, torch.Tensor],
+        time: torch.Tensor,
         self_conditioning: Mapping[str, torch.Tensor],
         self_conditioning_active: bool | torch.Tensor,
-        padding_mask: torch.Tensor,
+        out: tuple[torch.Tensor, torch.Tensor] | None = None,
     ) -> torch.Tensor:
+        """The pair track, from one :func:`rfd4_pair_init` launch over the state's distance bins and ``parts``.
+
+        ``out`` are padded buffers that both receive it, as the trunk's initial-pair buffers do.
+        """
+        features = parts.pair_features
+        # One condition row per design; the kernel's AdaLN broadcasts it over the pairs.
+        pair_condition = self.pair_condition_norm(self.pair_condition_projection(time.to(self.dtype)))
+        scale, bias = self.pair_adaln.modulation(pair_condition.to(self.pair_adaln_dtype))
+        conditioned = None
+        if features.self_conditioned is not None:
+            coordinates = self_conditioning["bb_ca"].float()
+            batch = coordinates.shape[0]
+            if isinstance(self_conditioning_active, torch.Tensor):
+                active = self_conditioning_active.to(coordinates.device, torch.float32).reshape(-1).expand(batch)
+                active = active.contiguous()
+            else:
+                # A fill, unlike a tensor made from the host value, does not wait on the device.
+                active = coordinates.new_full((batch,), float(self_conditioning_active))
+            conditioned = (coordinates, active, features.self_conditioned)
+        norm_weight, norm_bias, norm_eps = features.norm
+        return rfd4_pair_init(
+            state["bb_ca"].float(),
+            features.classes,
+            features.scalars,
+            features.mask,
+            features.edges,
+            features.weights,
+            norm_weight,
+            norm_bias,
+            scale,
+            bias,
+            norm_eps=norm_eps,
+            adaln_eps=self.pair_adaln.eps,
+            out_dtype=self.pair_adaln_dtype,
+            self_conditioning=conditioned,
+            out=out,
+        )
+
+    def _pair_features(self, static_features: Mapping[str, torch.Tensor], padding_mask: torch.Tensor) -> _PairFeatures:
+        """The static pair features as :func:`rfd4_pair_init` reads them: one-hot classes as indices, plus scalars.
+
+        The projection's input columns are the distance bins (twice for the legacy schema, which also bins the
+        self-conditioning coordinates), the bond mask, the bond-order one-hot, the aromatic, index-group and
+        molecule flags, the entity flag, the bond-path one-hot, the canonical-ordering channel, and the
+        nucleic-acid pair channel with its mask; the legacy schema has neither the entity flag nor the nucleic-acid
+        channels. A one-hot class selects one row of the transposed projection.
+        """
+        if not padding_mask.is_cuda:
+            raise RuntimeError("the pair track runs on CUDA")
+        config = self.config
+        legacy = config.input_schema == "legacy_self_conditioned"
+        bins, orders, paths = config.pair_distance_bins, config.num_bond_orders, config.token_bond_path_bins
+        start = bins * (2 if legacy else 1)
+        after_bond = start + 1 + orders
+        path_start = after_bond + (3 if legacy else 4)
+        tail = path_start + paths
+        rows = self.pair_projection.weight.detach().T.float()
+        if rows.shape[0] != tail + (1 if legacy else 3):
+            raise ValueError(f"pair projection takes {rows.shape[0]} features, expected {tail + (1 if legacy else 3)}")
+
         batch, tokens = padding_mask.shape
-        zeros = torch.zeros((batch, tokens, tokens), device=padding_mask.device, dtype=self.dtype)
+        zeros = torch.zeros((batch, tokens, tokens), device=padding_mask.device)
         index_group = static_features[CONDITION_INDEX_GROUP].long()
         molecule = static_features["molecule_iid"].long()
-        path_length = static_features["token_bond_path_length"].long().clamp(max=self.config.token_bond_path_bins - 1)
-        pair_mask = padding_mask.unsqueeze(-1) & padding_mask.unsqueeze(-2)
-        xt_distance = F.one_hot(self._distance_indices(state["bb_ca"]), num_classes=self.config.pair_distance_bins).to(
-            self.dtype
-        )
-        if "bond_order" in static_features:
-            bond_order = F.one_hot(static_features["bond_order"].long(), num_classes=self.config.num_bond_orders).to(
-                self.dtype
-            )
-        else:
-            bond_order = torch.zeros((*zeros.shape, self.config.num_bond_orders), device=zeros.device, dtype=self.dtype)
-        pair_features = [
-            xt_distance,
-        ]
-        if self.config.input_schema == "legacy_self_conditioned":
-            self_conditioned_distance = F.one_hot(
-                self._distance_indices(self_conditioning["bb_ca"]), num_classes=self.config.pair_distance_bins
-            ).to(self.dtype)
-            self_conditioned_distance = self_conditioned_distance * _active_scale(
-                self_conditioning_active, self_conditioned_distance
-            )
-            pair_features.append(self_conditioned_distance)
-        pair_features.extend(
-            [
-                static_features.get("bond_mask", zeros).to(self.dtype).unsqueeze(-1),
-                bond_order,
-                static_features.get("is_aromatic", zeros).to(self.dtype).unsqueeze(-1),
-                (index_group.unsqueeze(-1) == index_group.unsqueeze(-2)).to(self.dtype).unsqueeze(-1),
-                (molecule.unsqueeze(-1) == molecule.unsqueeze(-2)).to(self.dtype).unsqueeze(-1),
-            ]
-        )
-        if self.config.input_schema != "legacy_self_conditioned":
-            entity = static_features.get("molecule_entity_id", molecule).long()
-            pair_features.append((entity.unsqueeze(-1) == entity.unsqueeze(-2)).to(self.dtype).unsqueeze(-1))
-        pair_features.extend(
-            [
-                F.one_hot(path_length, num_classes=self.config.token_bond_path_bins).to(self.dtype),
-                static_features.get("canonical_polymer_ordering", zeros).to(self.dtype).unsqueeze(-1),
-            ]
-        )
-        if self.config.input_schema != "legacy_self_conditioned":
-            na_pair = static_features.get(NA_SS_PAIR, zeros).to(self.dtype).unsqueeze(-1)
-            na_pair_mask = static_features.get(NA_SS_PAIR_MASK, zeros).to(self.dtype).unsqueeze(-1)
-            pair_features.extend((na_pair, na_pair_mask))
-        pair_features = torch.cat(pair_features, dim=-1)
-        pair_valid = pair_mask.unsqueeze(-1).to(self.dtype)
-        pair = self.pair_norm(self.pair_projection(pair_features * pair_valid)) * pair_valid
+        path = static_features["token_bond_path_length"].long().clamp(max=paths - 1)
+        has_bond = "bond_order" in static_features
+        bond = static_features["bond_order"].long() if has_bond else torch.full_like(path, -1)
+        # One host read for the class ranges the one-hot encoding requires.
+        if not bool(((bond >= 0 if has_bond else bond == -1) & (bond < orders) & (path >= 0)).all()):
+            raise ValueError(f"bond_order must lie in [0, {orders}) and token_bond_path_length must be non-negative")
 
-        pair_time = torch.cat(
-            [
-                _time_embedding(times["bb_ca"], self.config.time_embedding_dim),
-                _time_embedding(times["local_latents"], self.config.time_embedding_dim),
-            ],
-            dim=-1,
-        ).to(self.dtype)
-        # One condition row per design; the AdaLN broadcasts it over the pairs and masks its output.
-        pair_condition = self.pair_condition_norm(self.pair_condition_projection(pair_time))
-        return self.pair_adaln(pair.to(self.pair_adaln_dtype), pair_condition.to(self.pair_adaln_dtype), pair_mask)
+        def same(ids: torch.Tensor) -> torch.Tensor:
+            return ids.unsqueeze(-1) == ids.unsqueeze(-2)
+
+        # The scalar channels by their projection column, which also orders them.
+        channels = {
+            start: static_features.get("bond_mask", zeros),
+            after_bond: static_features.get("is_aromatic", zeros),
+            after_bond + 1: same(index_group),
+            after_bond + 2: same(molecule),
+            tail: static_features.get("canonical_polymer_ordering", zeros),
+        }
+        if not legacy:
+            channels[after_bond + 3] = same(static_features.get("molecule_entity_id", molecule).long())
+            channels[tail + 1] = static_features.get(NA_SS_PAIR, zeros)
+            channels[tail + 2] = static_features.get(NA_SS_PAIR_MASK, zeros)
+        scalar_rows = sorted(channels)
+        norm = self.pair_norm
+        return _PairFeatures(
+            edges=torch.linspace(
+                config.pair_distance_min, config.pair_distance_max, bins - 1, device=padding_mask.device
+            ),
+            classes=torch.stack((bond, path), dim=-1).to(torch.int32),
+            scalars=torch.stack([channels[row].to(torch.float32) for row in scalar_rows], dim=-1),
+            mask=padding_mask,
+            weights=(
+                rows[:bins].contiguous(),
+                rows[start + 1 : after_bond].contiguous(),
+                rows[path_start:tail].contiguous(),
+                rows[scalar_rows].contiguous(),
+            ),
+            norm=(
+                norm.weight.detach().float(),
+                norm.bias.detach().float() if isinstance(norm, nn.LayerNorm) else None,
+                norm.eps,
+            ),
+            self_conditioned=rows[bins:start].contiguous() if legacy else None,
+        )
+
+    def prepare(
+        self, static_features: Mapping[str, torch.Tensor], padding_mask: torch.Tensor | None = None
+    ) -> StaticTrackParts:
+        """Build the parts of a design's tracks that its static features alone fix, once for its rollout.
+
+        A step then builds only what its sampling state changes: the noisy coordinates and latents, the
+        coordinate-group permutation it draws, chirality aligned to the noisy state, the time and recycle
+        conditions, and the pair distance bins. Finding the coordinate groups' distinct labels and the chiral
+        frames waits on the device, so a step that reuses these parts does neither.
+
+        Args:
+            static_features: The design's tensorized features.
+            padding_mask: ``[B, N]`` mask of real tokens; ``static_features["padding_mask"]`` when omitted.
+
+        Returns:
+            The design's :class:`StaticTrackParts`.
+        """
+        if padding_mask is None:
+            padding_mask = static_features["padding_mask"]
+        padding_mask = padding_mask.to(torch.bool)
+        single_static, chirality, centroid = self._single_static(static_features, padding_mask)
+        frames = None
+        if chirality is None and CHIRAL_FRAME_ATOMS in static_features and CHIRAL_SLOT_OWNER in static_features:
+            frames = chiral_frames(static_features[CHIRAL_FRAME_ATOMS], padding_mask)
+            if frames[0].numel() == 0:
+                # Without a frame the alignment returns the supplied vectors, zero on padding, at every step.
+                chirality = (static_features[CHIRALITY].float() * padding_mask[..., None]).to(self.dtype)
+        return StaticTrackParts(
+            valid=padding_mask.unsqueeze(-1).to(self.dtype),
+            single_static=single_static,
+            chirality=chirality,
+            chiral_frames=frames,
+            centroid=centroid,
+            coordinate_groups=self._coordinate_groups(static_features),
+            cath=self._cath(static_features),
+            pair_features=self._pair_features(static_features, padding_mask),
+        )
 
     def forward(
         self,
@@ -772,24 +939,41 @@ class RFProteinaRepresentationBuilder(nn.Module):
         self_conditioning_active: bool | torch.Tensor,
         padding_mask: torch.Tensor | None = None,
         recycle_index: int = 1,
+        parts: StaticTrackParts | None = None,
+        recycle_depth: int = 1,
+        pair_out: tuple[torch.Tensor, torch.Tensor] | None = None,
     ) -> RFProteinaRepresentations:
         """Construct all velocity-network input tracks.
 
         ``recycle_index`` is the one-based trunk pass used by the
         sequence-probability condition feature. Pass 1 is the default, which
-        matches the condition compared before a recycled trunk run.
+        matches the condition compared before a recycled trunk run. A
+        ``recycle_depth`` above 1, on a checkpoint whose condition carries a
+        recycle feature, gives one condition per trunk pass instead, as
+        :meth:`condition_stack` builds them. ``parts`` are this design's
+        :meth:`prepare` output, which a rollout builds once and hands to every
+        step; a call without them builds its own. ``pair_out`` are two padded
+        buffers in ``pair_adaln_dtype`` that both receive the pair track. When
+        that is also the output dtype, the returned pair is a view of the first.
         """
         if padding_mask is None:
             padding_mask = static_features["padding_mask"]
         padding_mask = padding_mask.to(torch.bool)
+        if parts is None:
+            parts = self.prepare(static_features, padding_mask)
+        time = self._time(times)
 
         # Match upstream evaluation order; coordinate-group randomization in
         # the single factory consumes the global random stream.
-        condition = self._condition(static_features, state, times, padding_mask, recycle_index=recycle_index)
-        single = self._single(static_features, state, self_conditioning, self_conditioning_active, padding_mask)
-        pair = self._pair(static_features, state, times, self_conditioning, self_conditioning_active, padding_mask)
+        condition = self._condition_from(time, parts.cath, parts.valid, recycle_index, 1)
+        single = self._single(static_features, state, self_conditioning, self_conditioning_active, padding_mask, parts)
+        pair = self._pair(parts, state, time, self_conditioning, self_conditioning_active, out=pair_out)
+        condition = condition.to(self.output_dtype)
+        if recycle_depth > 1 and self.conditions_per_recycle_pass:
+            first = condition if recycle_index == 1 else None
+            condition = self._conditions(time, parts.cath, parts.valid, recycle_depth, first)
         return RFProteinaRepresentations(
             single=single.to(self.output_dtype),
             pair=pair.to(self.output_dtype),
-            condition=condition.to(self.output_dtype),
+            condition=condition,
         )

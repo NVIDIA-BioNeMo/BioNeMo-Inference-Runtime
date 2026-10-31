@@ -22,6 +22,7 @@ import torch
 
 from bionemo_ir._torch.utils.kernel import CuTeDSLKernelLibraryError
 
+from .._common import _aligned
 from ._config import config_kernel_abi
 from .cutedsl import WindowAttentionCuTe
 
@@ -72,11 +73,6 @@ def window_attention_supported(
 ) -> bool:
     """Whether :func:`window_attention` serves this configuration on ``device_index`` (default: the current device)."""
     return get_window_attention_op(dtype, head_dim, n_queries, n_keys, device_index) is not None
-
-
-def _aligned(x: torch.Tensor, dims: int) -> bool:
-    """16-byte aligned base, positive 16-byte multiple strides on the leading ``dims`` axes, unit last stride."""
-    return x.stride(-1) == 1 and x.data_ptr() % 16 == 0 and all(s > 0 and s % 8 == 0 for s in x.stride()[:dims])
 
 
 def window_attention(

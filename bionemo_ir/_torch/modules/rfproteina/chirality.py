@@ -60,6 +60,25 @@ def proper_rotation(covariance: torch.Tensor) -> torch.Tensor:
         return (left * signs[..., None, :]) @ right_t
 
 
+def chiral_frames(
+    frame_atoms: torch.Tensor, padding_mask: torch.Tensor
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """``(batch, token, slot)`` indices of the frames :func:`align_chirality` fits, each ``[F]``.
+
+    They depend on the static features alone. Finding them waits on the device, so a rollout finds them
+    once and hands them to every step.
+
+    Args:
+        frame_atoms: ``[B, N, S, 2 + K]`` frame definitions, see :data:`CHIRAL_FRAME_ATOMS`.
+        padding_mask: ``[B, N]`` mask of real tokens.
+
+    Returns:
+        The batch, token and slot index of every frame on a real token.
+    """
+    frames = (frame_atoms[..., 0] >= 0) & padding_mask.to(torch.bool)[..., None]
+    return torch.where(frames)
+
+
 @torch.no_grad()
 def align_chirality(
     vectors: torch.Tensor,
@@ -70,6 +89,7 @@ def align_chirality(
     *,
     rotate: bool = True,
     translate: bool = False,
+    frame_index: tuple[torch.Tensor, torch.Tensor, torch.Tensor] | None = None,
 ) -> torch.Tensor:
     """Express packed chirality vectors in the frame of the current noisy state.
 
@@ -81,6 +101,8 @@ def align_chirality(
         slot_owner: ``[B, N, S]`` slot owners, see :data:`CHIRAL_SLOT_OWNER`.
         rotate: Fit each frame's orientation to its noisy neighbour directions.
         translate: Add the noisy position of the frame's origin atoms, which is their midpoint.
+        frame_index: :func:`chiral_frames` of ``frame_atoms`` and ``padding_mask``, when the caller holds
+            them; found here otherwise.
 
     Returns:
         ``[B, N, 3 * S]`` float32 vectors, zero on padding. Slots without an owner keep the supplied
@@ -95,8 +117,7 @@ def align_chirality(
     batch, tokens, width = vectors.shape
     slots = width // 3
     valid = padding_mask.to(torch.bool)
-    frames = (frame_atoms[..., 0] >= 0) & valid[..., None]
-    batch_index, token_index, slot_index = torch.where(frames)  # each [F]
+    batch_index, token_index, slot_index = chiral_frames(frame_atoms, valid) if frame_index is None else frame_index
     if batch_index.numel() == 0:
         return vectors.float() * valid[..., None]
 

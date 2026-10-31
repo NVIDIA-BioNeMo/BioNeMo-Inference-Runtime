@@ -19,17 +19,21 @@ from __future__ import annotations
 import inspect
 import re
 import weakref
+from collections.abc import Callable, Hashable
 from typing import Any
 
+import torch
+from lru import LRU
 from torch import nn
 
 from bionemo_ir._torch.graph_optimization.config import (
     CUDAGraphOptimizationConfig,
     GraphOptimizationMode,
     InputRoutingConfig,
+    acceptance_max_by_name,
 )
 from bionemo_ir._torch.graph_optimization.cuda_graph.memory import container_device
-from bionemo_ir._torch.graph_optimization.cuda_graph.runtime import CUDAGraphOptimizationTracker
+from bionemo_ir._torch.graph_optimization.cuda_graph.runtime import CUDAGraphOptimizationTracker, graph_eligible
 
 # A positional input routes by its parameter's name; one past the named parameters, which only
 # ``*args`` takes, routes as ``arg{i}`` (``GraphOptimizationTracker._positional_param_names``).
@@ -59,6 +63,8 @@ def _validate_routing_against_signature(sig: inspect.Signature, routing: InputRo
     named_dim_ties = routing.named_dim_ties if routing is not None else ()
     workspace_kwargs = routing.internal_workspace_kwargs if routing is not None else ()
     stable_kwargs = routing.stable_input_kwargs if routing is not None else ()
+    state_kwargs = routing.state_input_kwargs if routing is not None else ()
+    borrowed_kwargs = routing.borrowed_input_kwargs if routing is not None else ()
     static_args = routing.static_args if routing is not None else ()
     for dim in named_dim_ties:
         for tensor_name, _axes in dim.input_dims:
@@ -67,6 +73,10 @@ def _validate_routing_against_signature(sig: inspect.Signature, routing: InputRo
         _check(name, "workspace kwarg")
     for name in stable_kwargs:
         _check(name, "stable kwarg")
+    for name in state_kwargs:
+        _check(name, "state kwarg")
+    for name in borrowed_kwargs:
+        _check(name, "borrowed kwarg")
     for name in static_args:
         _check(name, "static arg")
 
@@ -123,6 +133,8 @@ class GraphRegion(nn.Module):
         self.policy = policy
         self.call = _OwnerCall(owner, name)
         self.tracker: CUDAGraphOptimizationTracker | None = None
+        # Caller-owned buffers for borrowed inputs, per caller key, most recently used last.
+        self._borrowed: LRU | None = None
 
     def enable(self, policy: CUDAGraphOptimizationConfig | None = None) -> None:
         """Capture from the next eligible call, under ``policy`` when given."""
@@ -134,10 +146,48 @@ class GraphRegion(nn.Module):
         self.enabled = True
 
     def reset(self) -> None:
-        """Release the captured graphs and forget the signatures that fell back to eager."""
+        """Release the captured graphs and the borrowed buffers, and forget the signatures that fell back to eager."""
         if self.tracker is not None:
             self.tracker.reset()
         self.tracker = None
+        self._borrowed = None
+
+    def captures(self, **dims: int) -> bool:
+        """Whether a call made now would take the graph path, given its named dimensions such as ``num_tokens``.
+
+        The region must be enabled under an optimizing policy, outside gradients, training, an ``eager_graphs`` scope
+        and any capture, and each named dimension within the policy's acceptance limit.
+        """
+        policy = self.policy
+        if (
+            not self.enabled
+            or policy is None
+            or policy.graph_optimization_mode == GraphOptimizationMode.NO_OPTIMIZATION
+        ):
+            return False
+        if not graph_eligible(self.training):
+            return False
+        routing = policy.input_routing_config
+        limits = acceptance_max_by_name(routing) if routing is not None else {}
+        return all(limits.get(name) is None or value <= limits[name] for name, value in dims.items())
+
+    def borrowed_buffers(self, key: Hashable, make: Callable[[], tuple[torch.Tensor, ...]]) -> tuple[torch.Tensor, ...]:
+        """The caller-owned buffers for ``key``, made by ``make`` on first use, to pass as borrowed inputs.
+
+        The caller writes them in place between calls, and a captured graph reads them where they lie. The region
+        keeps those of as many keys as it keeps graphs, the most recently used, and drops them all on
+        :meth:`reset`.
+        """
+        capacity = self.policy.num_graphs_max_for_this_module
+        if self._borrowed is None:
+            self._borrowed = LRU(capacity)
+        elif self._borrowed.get_size() != capacity:
+            self._borrowed.set_size(capacity)
+        buffers = self._borrowed.get(key)
+        if buffers is None:
+            buffers = make()
+            self._borrowed[key] = buffers
+        return buffers
 
     def forward(self, *args: Any, **kwargs: Any) -> Any:
         policy = self.policy

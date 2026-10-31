@@ -37,6 +37,7 @@ mask is left to the downstream attention kernel. BioIR currently integrates
 cuEquivariance 0.11.1: https://github.com/NVIDIA/cuEquivariance/tree/v0.11.1
 """
 
+import functools
 import math
 from typing import NamedTuple
 
@@ -203,6 +204,43 @@ def _fused_ln_proj_moveaxis_pad_kernel(
     tl.store(out_ptrs, out, mask=store_mask)
 
 
+@triton.jit
+def _streaming_slice(
+    z_rows,
+    mask_j,
+    w_ln_ptr,
+    w_proj_ptr,
+    offs_c,
+    offs_h,
+    mask_h,
+    c,
+    acc,
+    mean,
+    m2,
+    CHUNK: tl.constexpr,
+    DIM_D: tl.constexpr,
+    RMS_NORM: tl.constexpr,
+):
+    """Fold slice ``c`` of a tile's ``z`` into its statistics and its projection ``acc``."""
+    d_c = c * CHUNK + offs_c
+    z = tl.load(z_rows + d_c[None, :], mask=mask_j[:, None], other=0.0)
+    zf = z.to(tl.float32)
+    if RMS_NORM:
+        m2 += tl.sum(zf * zf, axis=1)
+    else:
+        chunk_mean = tl.sum(zf, axis=1) / CHUNK
+        dev = zf - chunk_mean[:, None]
+        delta = chunk_mean - mean
+        mean += delta / (c + 1)
+        m2 += tl.sum(dev * dev, axis=1) + delta * delta * (CHUNK * c / (c + 1))
+    w_c = tl.load(w_proj_ptr + offs_h[None, :] * DIM_D + d_c[:, None], mask=mask_h[None, :], other=0.0)
+    scaled = w_c.to(tl.float32) * tl.load(w_ln_ptr + d_c).to(tl.float32)[:, None]
+    hi = scaled.to(z.dtype)
+    acc = tl.dot(z, hi, acc)
+    acc = tl.dot(z, (scaled - hi.to(tl.float32)).to(z.dtype), acc)
+    return acc, mean, m2
+
+
 @triton.jit(
     do_not_specialize=[
         "I",
@@ -213,6 +251,7 @@ def _fused_ln_proj_moveaxis_pad_kernel(
         "out_stride_b",
         "out_stride_h",
         "out_stride_i",
+        "store_row_sumsq",
     ]
 )
 def _fused_ln_proj_moveaxis_pad_streaming_kernel(
@@ -221,6 +260,7 @@ def _fused_ln_proj_moveaxis_pad_streaming_kernel(
     b_ln_ptr,  # LN bias:   [D]
     w_proj_ptr,  # projection weight: [H, D]
     out_ptr,  # output: [B, H, I, J_padded] contiguous
+    row_sumsq_ptr,  # output: [B, I, J] fp32, each row's sum of squares; written when store_row_sumsq != 0
     I,
     J,
     J_padded,
@@ -229,6 +269,7 @@ def _fused_ln_proj_moveaxis_pad_streaming_kernel(
     out_stride_b,
     out_stride_h,
     out_stride_i,
+    store_row_sumsq,  # RMSNorm only
     TILE_J: tl.constexpr,
     CHUNK: tl.constexpr,  # divides DIM_D
     DIM_D: tl.constexpr,
@@ -236,6 +277,7 @@ def _fused_ln_proj_moveaxis_pad_streaming_kernel(
     BLOCK_H: tl.constexpr,  # next power of two >= NUM_HEADS, at least 16
     EPS: tl.constexpr,
     RMS_NORM: tl.constexpr,
+    STAGES: tl.constexpr,  # > 1: software-pipeline the slice loop this many stages deep
 ):
     """Persistent LayerNorm/RMSNorm + Linear + moveaxis + pad over ``[TILE_J, D]`` tiles.
 
@@ -245,6 +287,10 @@ def _fused_ln_proj_moveaxis_pad_streaming_kernel(
     input dtype, which keeps TF32-level accuracy. Slice statistics merge with Chan's update.
     ``z`` must be contiguous: row addresses come from the constexpr ``DIM_D``, which proves the
     alignment vectorized loads need without specializing the CUBIN on runtime strides.
+    With ``STAGES > 1`` the next slices of ``z`` and ``W`` load while the current slice's dots
+    run; either loop gives the same bits. An RMSNorm launch with ``store_row_sumsq`` set also
+    writes each row's ``sum_d z^2``, the statistic its ``rstd`` comes from, so a later RMSNorm
+    of the same ``z`` need not read it again.
     """
     offs_c = tl.arange(0, CHUNK)
     offs_h = tl.arange(0, BLOCK_H)
@@ -274,26 +320,47 @@ def _fused_ln_proj_moveaxis_pad_streaming_kernel(
         acc = tl.zeros([TILE_J, BLOCK_H], dtype=tl.float32)
         mean = tl.zeros([TILE_J], dtype=tl.float32)
         m2 = tl.zeros([TILE_J], dtype=tl.float32)
-        for c in tl.static_range(DIM_D // CHUNK):
-            d_c = c * CHUNK + offs_c
-            z = tl.load(z_rows + d_c[None, :], mask=mask_j[:, None], other=0.0)
-            zf = z.to(tl.float32)
-            if RMS_NORM:
-                m2 += tl.sum(zf * zf, axis=1)
-            else:
-                chunk_mean = tl.sum(zf, axis=1) / CHUNK
-                dev = zf - chunk_mean[:, None]
-                delta = chunk_mean - mean
-                mean += delta / (c + 1)
-                m2 += tl.sum(dev * dev, axis=1) + delta * delta * (CHUNK * c / (c + 1))
-            w_c = tl.load(w_proj_ptr + offs_h[None, :] * DIM_D + d_c[:, None], mask=mask_h[None, :], other=0.0)
-            scaled = w_c.to(tl.float32) * tl.load(w_ln_ptr + d_c).to(tl.float32)[:, None]
-            hi = scaled.to(z.dtype)
-            acc = tl.dot(z, hi, acc)
-            acc = tl.dot(z, (scaled - hi.to(tl.float32)).to(z.dtype), acc)
+        if STAGES > 1:
+            for c in tl.range(0, DIM_D // CHUNK, num_stages=STAGES):
+                acc, mean, m2 = _streaming_slice(
+                    z_rows,
+                    mask_j,
+                    w_ln_ptr,
+                    w_proj_ptr,
+                    offs_c,
+                    offs_h,
+                    mask_h,
+                    c,
+                    acc,
+                    mean,
+                    m2,
+                    CHUNK,
+                    DIM_D,
+                    RMS_NORM,
+                )
+        else:
+            for c in tl.static_range(DIM_D // CHUNK):
+                acc, mean, m2 = _streaming_slice(
+                    z_rows,
+                    mask_j,
+                    w_ln_ptr,
+                    w_proj_ptr,
+                    offs_c,
+                    offs_h,
+                    mask_h,
+                    c,
+                    acc,
+                    mean,
+                    m2,
+                    CHUNK,
+                    DIM_D,
+                    RMS_NORM,
+                )
 
         rstd = tl.rsqrt(m2 / DIM_D + EPS)
         if RMS_NORM:
+            if store_row_sumsq != 0:
+                tl.store(row_sumsq_ptr + row * J + offs_j, m2, mask=mask_j)
             out = rstd[:, None] * acc
         else:
             out = rstd[:, None] * (acc - mean[:, None] * col_sum[None, :]) + shift[None, :]
@@ -317,6 +384,10 @@ _STREAMING_NUM_STAGES = 1
 #: rebuilt under the matching ``maxnreg`` cap.
 _STREAMING_MIN_CTAS_PER_SM = 2
 _STREAMING_MAX_HEADS = 64
+#: Registers go to warps in blocks of this many.
+_REGISTER_ALLOCATION_UNIT = 256
+#: Shared memory the driver reserves for each resident CTA.
+_RESERVED_SHARED_PER_CTA = 1024
 _STREAMING_DTYPES = (torch.bfloat16, torch.float16)
 
 
@@ -330,6 +401,12 @@ class _StreamingTuning(NamedTuple):
     programs_per_sm: int
     #: Width of the ``z`` slices each step loads; a D it does not divide takes ``_STREAMING_CHUNK``.
     chunk: int = _STREAMING_CHUNK
+    #: ``(TILE_J, num_warps, stages)`` of a variant whose slice loop is software-pipelined ``stages`` deep. RMSNorm
+    #: calls with at least ``pipeline_min_rows_per_sm`` rows of ``z`` per SM take it; smaller calls are bound by
+    #: per-tile latency and keep ``tiles``. LayerNorm calls keep ``tiles`` too: they gained nothing measurable, and
+    #: their per-program column sums would round differently on a tile with fewer warps.
+    pipelined: tuple[int, int, int] | None = None
+    pipeline_min_rows_per_sm: int = 0
 
 
 #: SM versions without an entry in :data:`_STREAMING_TUNING`.
@@ -349,10 +426,17 @@ _STREAMING_TUNING: dict[int, _StreamingTuning] = {
     89: _StreamingTuning(tiles=((32, 4),), programs_per_sm=16, chunk=128),
     # H200 (132 SMs), D in {256, 384}, N up to 2048, B up to 32: the 128-row tile is 4-7% faster
     # unless it pads J further; every pick within 1.06x of the swept best.
-    90: _StreamingTuning(tiles=((64, 4), (128, 8)), programs_per_sm=4),
+    # H100 (132 SMs), RMSNorm at D in {128, 256, 384}, 4-24 heads, B 1-8, N 128-768: from 512 rows per SM, the
+    # 64-row tile with its slice loop three stages deep is 1.02-1.14x the unpipelined pick, bit for bit; below
+    # that it loses up to 1.2x, and the unpipelined tiles stay.
+    90: _StreamingTuning(
+        tiles=((64, 4), (128, 8)), programs_per_sm=4, pipelined=(64, 4, 3), pipeline_min_rows_per_sm=512
+    ),
 }
 #: Device index -> ``(sm_version, sm_count)``.
 _DEVICE_INFO: dict[int, tuple[int, int]] = {}
+#: Device index -> the FP32 buffer a streaming launch without ``row_sumsq`` passes in its slot; never written.
+_NO_ROW_SUMSQ: dict[int, torch.Tensor] = {}
 
 
 def _streaming_supported(D: int, H: int) -> bool:
@@ -371,6 +455,13 @@ def _device_info(device: torch.device) -> tuple[int, int]:
     return _DEVICE_INFO[index]
 
 
+def _no_row_sumsq(device: torch.device) -> torch.Tensor:
+    index = device.index if device.index is not None else torch.cuda.current_device()
+    if index not in _NO_ROW_SUMSQ:
+        _NO_ROW_SUMSQ[index] = torch.empty(1, dtype=torch.float32, device=torch.device("cuda", index))
+    return _NO_ROW_SUMSQ[index]
+
+
 def _streaming_tuning(device: torch.device) -> _StreamingTuning:
     return _STREAMING_TUNING.get(_device_info(device)[0], _STREAMING_DEFAULT_TUNING)
 
@@ -384,7 +475,38 @@ def _streaming_tile(J_padded: int, tiles: tuple[tuple[int, int], ...]) -> tuple[
     return min(tiles, key=lambda tile: (triton.cdiv(J_padded, tile[0]) * tile[0], -tile[0]))
 
 
-def _streaming_grid(device: torch.device, num_tiles: int, programs_per_sm: int) -> int:
+def _streaming_variant(
+    rows: int, J_padded: int, device: torch.device, tuning: _StreamingTuning, rms_norm: bool
+) -> tuple[int, int, int]:
+    """``(TILE_J, num_warps, stages)`` for a call over ``rows`` rows of ``z``."""
+    pipelined = tuning.pipelined if rms_norm else None
+    if pipelined is not None and rows >= tuning.pipeline_min_rows_per_sm * _device_info(device)[1]:
+        return pipelined
+    return (*_streaming_tile(J_padded, tuning.tiles), 1)
+
+
+@functools.cache
+def _resident_programs(kernel: CachedKernel, num_warps: int) -> int:
+    """Programs of ``kernel`` one SM holds at once, as its registers, warp slots and shared memory allow."""
+    compiled = kernel.compiled
+    props = torch.cuda.get_device_properties(torch.cuda.current_device())
+    warp_registers = -(-getattr(compiled, "n_regs", 0) * 32 // _REGISTER_ALLOCATION_UNIT) * _REGISTER_ALLOCATION_UNIT
+    shared = getattr(compiled.metadata, "shared", 0) + _RESERVED_SHARED_PER_CTA
+    return max(
+        1,
+        min(
+            props.max_threads_per_multi_processor // (32 * num_warps),
+            props.regs_per_multiprocessor // max(1, warp_registers * num_warps),
+            props.shared_memory_per_multiprocessor // shared,
+        ),
+    )
+
+
+def _streaming_grid(device: torch.device, num_tiles: int, programs_per_sm: int, resident: int | None = None) -> int:
+    """Persistent programs for ``num_tiles`` tiles: ``programs_per_sm`` per SM, cut to whole waves of the
+    ``resident`` programs an SM holds. A partial wave would run one program per SM after the rest finish."""
+    if resident is not None and programs_per_sm > resident:
+        programs_per_sm = programs_per_sm // resident * resident
     return min(num_tiles, _device_info(device)[1] * programs_per_sm)
 
 
@@ -435,7 +557,7 @@ class FusedLNProjMoveaxisPad(TritonKernelCache):
         self._kernels: dict[torch.dtype | tuple[torch.dtype, ...], CachedKernel] = {}
         self._streaming = _streaming_supported(D, H)
         self._streaming_tuning = _STREAMING_DEFAULT_TUNING
-        self._streaming_kernels: dict[tuple[torch.dtype | tuple[torch.dtype, ...], int], CachedKernel] = {}
+        self._streaming_kernels: dict[tuple[torch.dtype | tuple[torch.dtype, ...], int, int], CachedKernel] = {}
 
         if torch.cuda.is_available():
             self._ensure_compiled()
@@ -512,7 +634,10 @@ class FusedLNProjMoveaxisPad(TritonKernelCache):
             self._streaming_kernels = cached
             return
         result = {}
-        for tile_j, num_warps in tuning.tiles:
+        variants = [(tile_j, num_warps, 1) for tile_j, num_warps in tuning.tiles]
+        if tuning.pipelined is not None and self._rms_norm:
+            variants.append(tuning.pipelined)
+        for tile_j, num_warps, stages in variants:
             common_kwargs = {
                 "TILE_J": tile_j,
                 "CHUNK": _streaming_chunk(self._dim_d, tuning),
@@ -521,20 +646,24 @@ class FusedLNProjMoveaxisPad(TritonKernelCache):
                 "BLOCK_H": _streaming_block_h(self._num_heads),
                 "EPS": self._eps,
                 "RMS_NORM": self._rms_norm,
+                "STAGES": stages,
                 "num_warps": num_warps,
                 "num_stages": _STREAMING_NUM_STAGES,
             }
             plain = self._compile_streaming(low_precision, None, common_kwargs)
             mixed = self._compile_streaming(low_precision, torch.float32, common_kwargs)
-            result.update({(dtype, tile_j): kernel for dtype, kernel in plain.items()})
+            result.update({(dtype, tile_j, stages): kernel for dtype, kernel in plain.items()})
             result.update(
-                {((dtype, torch.float32, torch.float32, dtype), tile_j): kernel for dtype, kernel in mixed.items()}
+                {
+                    ((dtype, torch.float32, torch.float32, dtype), tile_j, stages): kernel
+                    for dtype, kernel in mixed.items()
+                }
             )
             if self._fp32_projection:
                 folded = self._compile_streaming(low_precision, torch.float32, common_kwargs, torch.float32)
                 result.update(
                     {
-                        ((dtype, torch.float32, torch.float32, torch.float32), tile_j): kernel
+                        ((dtype, torch.float32, torch.float32, torch.float32), tile_j, stages): kernel
                         for dtype, kernel in folded.items()
                     }
                 )
@@ -598,6 +727,7 @@ class FusedLNProjMoveaxisPad(TritonKernelCache):
             torch.empty(D, dtype=ln_dtype, device="cuda"),
             torch.empty(H, D, dtype=proj_dtype or dtype, device="cuda"),
             out,
+            torch.empty(1, 2, tj, dtype=torch.float32, device="cuda"),
             2,
             tj,
             tj,
@@ -606,6 +736,7 @@ class FusedLNProjMoveaxisPad(TritonKernelCache):
             out.stride(0),
             out.stride(1),
             out.stride(2),
+            0,
         )
 
     def _launch_streaming(
@@ -613,6 +744,7 @@ class FusedLNProjMoveaxisPad(TritonKernelCache):
         kernel: CachedKernel,
         tile_j: int,
         num_warps: int,
+        stages: int,
         z3: torch.Tensor,
         w_ln: torch.Tensor,
         b_ln: torch.Tensor,
@@ -620,19 +752,23 @@ class FusedLNProjMoveaxisPad(TritonKernelCache):
         out: torch.Tensor,
         J: int,
         J_padded: int,
+        row_sumsq: torch.Tensor | None = None,
     ) -> None:
         B, I = z3.shape[0], z3.shape[1]
         num_j_tiles = triton.cdiv(J_padded, tile_j)
         num_tiles = B * I * num_j_tiles
         if num_tiles == 0:
             return
-        grid = _streaming_grid(z3.device, num_tiles, self._streaming_tuning.programs_per_sm)
+        grid = _streaming_grid(
+            z3.device, num_tiles, self._streaming_tuning.programs_per_sm, _resident_programs(kernel, num_warps)
+        )
         args = (
             z3,
             w_ln,
             b_ln,
             w_proj,
             out,
+            _no_row_sumsq(z3.device) if row_sumsq is None else row_sumsq,
             I,
             J,
             J_padded,
@@ -641,6 +777,7 @@ class FusedLNProjMoveaxisPad(TritonKernelCache):
             out.stride(0),
             out.stride(1),
             out.stride(2),
+            int(row_sumsq is not None),
         )
         # The driver's scalar slots are i32 (compiled from small dummy values); the JIT launch
         # re-types scalars from their runtime values.
@@ -657,6 +794,7 @@ class FusedLNProjMoveaxisPad(TritonKernelCache):
             BLOCK_H=_streaming_block_h(self._num_heads),
             EPS=self._eps,
             RMS_NORM=self._rms_norm,
+            STAGES=stages,
             num_warps=num_warps,
             num_stages=_STREAMING_NUM_STAGES,
         )
@@ -692,6 +830,7 @@ class FusedLNProjMoveaxisPad(TritonKernelCache):
         b_ln: torch.Tensor | None,
         w_proj: torch.Tensor,
         multiple: int = 8,
+        row_sumsq: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """Fused LN/RMS + projection + moveaxis + pad.
 
@@ -701,6 +840,8 @@ class FusedLNProjMoveaxisPad(TritonKernelCache):
             b_ln: LayerNorm bias [D]; ``None`` for RMSNorm (not read).
             w_proj: projection weight [H, D]
             multiple: pad J to next multiple (must be >= 0)
+            row_sumsq: optional contiguous FP32 [*, I, J] output for each row's ``sum_d z^2``. Only an RMSNorm
+                call that takes the streaming kernel fills it.
 
         Returns:
             Projected output [*, H, I, J_padded]
@@ -726,12 +867,28 @@ class FusedLNProjMoveaxisPad(TritonKernelCache):
         b_ln_ptr_src = b_ln if b_ln is not None else w_ln
         signature = (z.dtype, w_ln.dtype, b_ln_ptr_src.dtype, w_proj.dtype)
         kernel_key = z.dtype if len(set(signature)) == 1 else signature
-        tile_j, num_warps = _streaming_tile(J_padded, self._streaming_tuning.tiles)
-        streaming = self._streaming_kernels.get((kernel_key, tile_j)) if self.streams(z.dtype) else None
+        tile_j, num_warps, stages = _streaming_variant(
+            B * I * J, J_padded, z.device, self._streaming_tuning, self._rms_norm
+        )
+        streaming = self._streaming_kernels.get((kernel_key, tile_j, stages)) if self.streams(z.dtype) else None
         kernel = self._kernels.get(kernel_key)
+        if row_sumsq is not None and not (
+            streaming is not None
+            and self._rms_norm
+            and row_sumsq.dtype == torch.float32
+            and row_sumsq.is_contiguous()
+            and row_sumsq.device == z.device
+            and row_sumsq.numel() == B * I * J
+        ):
+            raise ValueError(
+                "row_sumsq needs an RMSNorm call on the streaming kernel and a contiguous FP32 buffer of "
+                f"{B * I * J} elements on {z.device}"
+            )
 
         if streaming is not None:
-            self._launch_streaming(streaming, tile_j, num_warps, z3, w_ln, b_ln_ptr_src, w_proj, out, J, J_padded)
+            self._launch_streaming(
+                streaming, tile_j, num_warps, stages, z3, w_ln, b_ln_ptr_src, w_proj, out, J, J_padded, row_sumsq
+            )
         elif kernel is not None and kernel.driver is not None:
             values = (
                 z3.data_ptr(),
@@ -824,7 +981,9 @@ def fused_ln_proj_moveaxis_pad(
 
     if z3.dtype in _STREAMING_DTYPES and _streaming_supported(D, H):
         tuning = _streaming_tuning(z3.device)
-        stream_tile_j, stream_warps = _streaming_tile(J_padded, tuning.tiles)
+        stream_tile_j, stream_warps, stream_stages = _streaming_variant(
+            B * I * J, J_padded, z3.device, tuning, rms_norm=False
+        )
         num_j_tiles = triton.cdiv(J_padded, stream_tile_j)
         num_tiles = B * I * num_j_tiles
         if num_tiles:
@@ -836,6 +995,7 @@ def fused_ln_proj_moveaxis_pad(
                 b_ln,
                 w_proj,
                 out,
+                _no_row_sumsq(z3.device),
                 I,
                 J,
                 J_padded,
@@ -844,6 +1004,7 @@ def fused_ln_proj_moveaxis_pad(
                 out.stride(0),
                 out.stride(1),
                 out.stride(2),
+                0,
                 TILE_J=stream_tile_j,
                 CHUNK=_streaming_chunk(D, tuning),
                 DIM_D=D,
@@ -851,6 +1012,7 @@ def fused_ln_proj_moveaxis_pad(
                 BLOCK_H=_streaming_block_h(H),
                 EPS=eps,
                 RMS_NORM=False,
+                STAGES=stream_stages,
                 num_warps=stream_warps,
                 num_stages=_STREAMING_NUM_STAGES,
             )

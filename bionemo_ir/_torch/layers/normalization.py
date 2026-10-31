@@ -23,6 +23,7 @@ import torch.nn.functional as F
 from bionemo_ir._torch.custom_ops import get_adaln_layernorm_sigmoid_op
 from bionemo_ir._torch.graph_optimization import rewrite_modules
 from bionemo_ir._torch.layers.linear import Linear, WeightMode, WeightsLoadingConfig
+from bionemo_ir.dsl_kernels.triton.dual_norm_qk import dual_norm_qk
 from bionemo_ir.dsl_kernels.triton.fused_layer_norm_transpose import layer_norm_transpose
 from bionemo_ir.runtime.buffers import PreallocatedBuffers, ensure_buffer
 
@@ -122,7 +123,8 @@ class AdaLN(nn.Module):
             mask: optional binary mask ``[B, I]`` applied after the affine.
                 Broadcasts across a sample axis when ``a`` is ``[B, S, I, d]``.
             excluded: optional ``~mask`` as a bool ``[B, I, 1]``, precomputed by
-                a caller that masks many layers; replaces ``mask``.
+                a caller that masks many layers; replaces ``mask``. Given both,
+                they must exclude the same rows: the fused kernel zeroes by ``mask``.
             projected_condition: ``project_condition(s)``, precomputed; ``s`` is
                 then not read.
 
@@ -161,8 +163,10 @@ class AdaLN(nn.Module):
             out = ensure_buffer(buffers, buffer_key, a.shape, a.dtype, a.device)
             if out is None:
                 out = torch.empty_like(a)
-            out = self._fused_op(a, s_scale, s_bias, out=out, eps=self.eps)
-            return self._maybe_mask(out, mask, excluded)
+            # The op zeroes the rows ``mask`` drops in the same launch. ``excluded`` alone, which no caller of the
+            # fused path passes, is applied after.
+            out = self._fused_op(a, s_scale, s_bias, out=out, eps=self.eps, mask=mask)
+            return out if mask is not None or excluded is None else out.masked_fill_(excluded, 0)
 
         a = self.a_norm(a)
         a = F.sigmoid(s_scale) * a + s_bias
@@ -303,6 +307,32 @@ class FusedRMSNorm(nn.RMSNorm):
             layout="nd->nd",  # codespell:ignore nd
         )
         return out.view(x.shape)
+
+
+def fused_norm_pair(
+    first: nn.Module, second: nn.Module, x_first: torch.Tensor, x_second: torch.Tensor
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """``first(x_first)`` and ``second(x_second)``, in one launch when both are the same fused norm.
+
+    Two :class:`FusedRMSNorm` or two :class:`FusedLayerNorm` of one epsilon share a
+    :func:`~bionemo_ir.dsl_kernels.triton.dual_norm_qk.dual_norm_qk` launch, which gives each
+    module's output bit for bit. Any other pair, or inputs that launch cannot read, runs each module.
+    """
+    if type(first) is type(second) and isinstance(first, FusedRMSNorm | FusedLayerNorm) and first.eps == second.eps:
+        rms = isinstance(first, FusedRMSNorm)
+        normed = dual_norm_qk(
+            x_first,
+            x_second,
+            first.weight,
+            second.weight,
+            None if rms else first.bias,
+            None if rms else second.bias,
+            eps=torch.finfo(x_first.dtype).eps if first.eps is None else first.eps,
+            rms_norm=rms,
+        )
+        if normed is not None:
+            return normed
+    return first(x_first), second(x_second)
 
 
 def replace_with_fused_rmsnorm(

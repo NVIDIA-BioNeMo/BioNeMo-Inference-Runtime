@@ -244,6 +244,41 @@ def test_scalar_values_key_graphs_and_long_inputs_run_eagerly(cuda_model: _Model
     assert counts["capture"] == 2
 
 
+def test_captures_answers_whether_a_call_would_replay(cuda_model: _Model) -> None:
+    """A call within the policy's limits replays only outside gradients, training and eager scopes."""
+    region = cuda_model.graph
+    assert not region.captures(num_tokens=4), "gradients run eagerly"
+    with torch.inference_mode():
+        assert region.captures(num_tokens=8) and not region.captures(num_tokens=9)
+        with eager_graphs():
+            assert not region.captures(num_tokens=4)
+        cuda_model.train()
+        assert not region.captures(num_tokens=4)
+        cuda_model.eval()
+        region.enabled = False
+        assert not region.captures(num_tokens=4)
+
+
+def test_borrowed_buffers_last_as_long_as_the_graphs_they_feed(cuda_model: _Model) -> None:
+    """The region keeps one set of buffers per key, for as many keys as it keeps graphs, until reset."""
+    region = cuda_model.graph
+    made = []
+
+    def buffers(key):
+        return region.borrowed_buffers(key, lambda: made.append(key) or (torch.zeros(1, device="cuda"),))
+
+    first = buffers("first")
+    assert buffers("first") is first and made == ["first"]
+    for key in range(region.policy.num_graphs_max_for_this_module - 1):
+        buffers(key)
+    assert buffers("first") is first, "the region keeps as many keys as graphs"
+    buffers("new")
+    buffers(0)
+    assert made[-1] == 0, "the least recently used key went first"
+    region.reset()
+    assert buffers("first") is not first
+
+
 def test_weight_loading_and_dtype_changes_drop_graphs(cuda_model: _Model) -> None:
     x = torch.ones(1, 4, 4, device="cuda")
     with torch.inference_mode():

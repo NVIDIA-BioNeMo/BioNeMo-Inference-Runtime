@@ -27,7 +27,7 @@ from bionemo_ir._torch.custom_ops.fused_pair_injection import PairInjection
 from bionemo_ir._torch.graph_optimization.config import CUDAGraphOptimizationConfig, GraphOptimizationMode
 from bionemo_ir._torch.graph_optimization.cuda_graph.runtime import CUDAGraphOptimizationTracker
 from bionemo_ir._torch.layers.attention import AttentionPairBias
-from bionemo_ir._torch.layers.normalization import AdaLN
+from bionemo_ir._torch.layers.normalization import AdaLN, fused_norm_pair
 from bionemo_ir._torch.layers.transition import ConditionedTransitionBlock, PairTransition
 from bionemo_ir._torch.layers.triangle_nodes import (
     TriangleMultiplicationMetadata,
@@ -145,7 +145,13 @@ class ConditionedTransformerBlock(nn.Module):
         """
         if self.sanitize_masked_inputs:
             condition = condition.masked_fill(~mask.unsqueeze(-1), 0)
-        return self.adaln.project_condition(condition), self.transition.adaln.project_condition(condition)
+        return self._project_condition(condition)
+
+    def _project_condition(self, condition: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        """Both AdaLNs' ``project_condition`` of ``condition``; their two condition norms share one launch."""
+        attention, transition = self.adaln, self.transition.adaln
+        attention_normed, transition_normed = fused_norm_pair(attention.s_norm, transition.s_norm, condition, condition)
+        return attention.fused_s_scale_s_bias(attention_normed), transition.fused_s_scale_s_bias(transition_normed)
 
     def forward(
         self,
@@ -177,7 +183,7 @@ class ConditionedTransformerBlock(nn.Module):
             excluded = precomputed_single_masks.excluded
             value_mask = precomputed_single_masks.value_mask
             mask_bias = precomputed_single_masks.mask_bias
-        attention_condition, transition_condition = projected_condition or (None, None)
+        attention_condition, transition_condition = projected_condition or self._project_condition(condition)
         residual = x
         attended = self.adaln(x, condition, mask=mask, excluded=excluded, projected_condition=attention_condition)
         # Where tuned, one epilogue kernel gates the attention output, projects it, applies the adaLN-zero gate

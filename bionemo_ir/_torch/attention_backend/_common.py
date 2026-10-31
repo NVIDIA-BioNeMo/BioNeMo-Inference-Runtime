@@ -27,6 +27,11 @@ class SDPAAttentionMetadata(AttentionMetadata):
     pass
 
 
+def _aligned(x: torch.Tensor, dims: int) -> bool:
+    """16-byte aligned base, positive 16-byte multiple strides on the leading ``dims`` axes, unit last stride."""
+    return x.stride(-1) == 1 and x.data_ptr() % 16 == 0 and all(s > 0 and s % 8 == 0 for s in x.stride()[:dims])
+
+
 def _reshape_heads(tensor: torch.Tensor, num_heads: int, head_dim: int) -> torch.Tensor:
     """Reshape ``[..., seq, H*D]`` to ``[..., H, seq, D]``."""
     batch_dims = " ".join([f"b_{i}" for i in range(tensor.ndim - 2)])

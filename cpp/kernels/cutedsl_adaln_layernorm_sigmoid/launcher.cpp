@@ -32,8 +32,24 @@ namespace bioir::cutedsl::adaln_layernorm_sigmoid
 namespace
 {
 
-constexpr char kSM80LaunchAbi[] = "adaln_layernorm_sigmoid_sm80";
-constexpr char kSM90LaunchAbi[] = "adaln_layernorm_sigmoid_sm90";
+/* The eight-parameter bank with the row mask. A payload built before the mask
+ * carries the plain name and seven parameters, so the driver would hand it the
+ * mask descriptor as eps, mult and inner; it is refused instead.
+ */
+constexpr char kSM80LaunchAbi[] = "adaln_layernorm_sigmoid_sm80_mask_v1";
+constexpr char kSM90LaunchAbi[] = "adaln_layernorm_sigmoid_sm90_mask_v1";
+
+/* The kernel lowers a cluster reduction above sm_90 from the same source, so
+ * the ABI generation tracks the target rather than the class.
+ */
+void validate_launch_abi(EmbeddedCubinImage const& cubin)
+{
+  char const* const expected_abi = cubin.kernel_sm >= 90 ? kSM90LaunchAbi : kSM80LaunchAbi;
+  if (cubin.launch_abi == nullptr || std::strcmp(cubin.launch_abi, expected_abi) != 0)
+    throw std::invalid_argument(
+      std::string("AdaLN CUBIN has launch ABI ") + (cubin.launch_abi == nullptr ? "<none>" : cubin.launch_abi)
+      + ", not " + expected_abi + "; its pack predates this launcher and needs a rebuild");
+}
 
 void validate_launch(KernelConfig const& config, LaunchParams const& params)
 {
@@ -44,12 +60,7 @@ void validate_launch(KernelConfig const& config, LaunchParams const& params)
   if (config.cubin.kernel_symbol == nullptr || config.cubin.kernel_symbol[0] == '\0')
     throw std::invalid_argument("kernel_symbol must not be empty");
 
-  /* The kernel lowers a cluster reduction above sm_90 from the same source, so
-   * the ABI generation tracks the target rather than the class.
-   */
-  char const* const expected_abi = config.cubin.kernel_sm >= 90 ? kSM90LaunchAbi : kSM80LaunchAbi;
-  if (config.cubin.launch_abi == nullptr || std::strcmp(config.cubin.launch_abi, expected_abi) != 0)
-    throw std::invalid_argument("AdaLN CUBIN has an incompatible launch ABI");
+  validate_launch_abi(config.cubin);
   if (!cubin_supports_sm(config.cubin, config.spec.target_sm))
     throw std::invalid_argument("AdaLN CUBIN does not support its configured target SM");
 
@@ -100,6 +111,13 @@ void validate_launch(KernelConfig const& config, LaunchParams const& params)
   /* x carries `mult` times as many rows as the gate operands. */
   if (static_cast<std::int64_t>(params.s_scale.shape[0]) * params.mult != params.x.shape[0])
     throw std::invalid_argument("x row count must equal s_scale row count times mult");
+  /* An empty mask (null, extent 0) keeps every row; the kernel never reads it. */
+  if (params.mask.shape[0] != 0)
+  {
+    validate_tensor(params.mask, "mask", 1);
+    if (params.mask.shape[0] != params.s_scale.shape[0])
+      throw std::invalid_argument("mask needs one entry per s_scale row");
+  }
 }
 
 void validate_operand_devices(LaunchParams const& params, std::int32_t device)
@@ -123,6 +141,8 @@ void validate_operand_devices(LaunchParams const& params, std::int32_t device)
   check(params.s_scale.device, "s_scale");
   check(params.s_bias.device, "s_bias");
   check(params.output.device, "output");
+  if (params.mask.shape[0] != 0)
+    check(params.mask.device, "mask");
 }
 
 /* Reproduces the CuTeDSL host launcher's grid exactly:
@@ -202,6 +222,10 @@ KernelConfig make_kernel_config(
 {
   embedded::CubinImage const& image
     = find_embedded_cubin(target_sm, dtype, feature_dim, threads_per_row, num_threads, rms_norm);
+  /* Refuse a stale payload here, where the caller treats a failed lookup as a
+   * missing variant and runs in PyTorch, rather than at launch.
+   */
+  validate_launch_abi(image.cubin);
   KernelSpec const spec{
     target_sm,
     image.feature_dim,
@@ -239,6 +263,7 @@ void launch(KernelConfig const& config, LaunchParams const& params)
   device_params.s_scale = make_tensor2_s1_d1_descriptor(params.s_scale);
   device_params.s_bias = make_tensor2_s1_d1_descriptor(params.s_bias);
   device_params.output = make_tensor2_s1_d1_descriptor(params.output);
+  device_params.mask = make_tensor1_descriptor(params.mask);
   device_params.eps = params.eps;
   device_params.mult = params.mult;
   device_params.inner = params.inner;

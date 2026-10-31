@@ -31,19 +31,19 @@ def _dataclass_fields(value: Any) -> list[tuple[str, Any]]:
     return [(field.name, getattr(value, field.name)) for field in dataclasses.fields(value)]
 
 
-def _clone_tensors(value: Any) -> Any:
-    """Clone every tensor while preserving container structure."""
+def _clone_tensors(value: Any, keep: tuple[torch.Tensor, ...] = ()) -> Any:
+    """Clone every tensor while preserving container structure; a tensor in ``keep`` is returned as itself."""
     if isinstance(value, torch.Tensor):
-        return value.clone()
+        return value if any(value is kept for kept in keep) else value.clone()
     elif isinstance(value, dict):
-        return {k: _clone_tensors(v) for k, v in value.items()}
+        return {k: _clone_tensors(v, keep) for k, v in value.items()}
     elif isinstance(value, (list, tuple)):
-        return type(value)(_clone_tensors(v) for v in value)
+        return type(value)(_clone_tensors(v, keep) for v in value)
     elif _is_dataclass_instance(value):
         # A shallow copy keeps fields that are not ``__init__`` arguments; ``object.__setattr__`` reaches frozen ones.
         cloned = copy.copy(value)
         for name, field_value in _dataclass_fields(value):
-            object.__setattr__(cloned, name, _clone_tensors(field_value))
+            object.__setattr__(cloned, name, _clone_tensors(field_value, keep))
         return cloned
     return value
 

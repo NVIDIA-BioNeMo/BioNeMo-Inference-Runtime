@@ -22,6 +22,7 @@ from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from functools import partial
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 import torch
@@ -47,8 +48,13 @@ from bionemo_ir.dsl_kernels.triton.fused_ln_proj_moveaxis_pad import (
     FusedLNProjMoveaxisPad,
     _fused_ln_proj_moveaxis_pad_kernel,
     _fused_ln_proj_moveaxis_pad_streaming_kernel,
+    _resident_programs,
     _streaming_chunk,
+    _streaming_grid,
     _streaming_supported,
+    _streaming_tuning,
+    _streaming_variant,
+    _StreamingTuning,
     fused_ln_proj_moveaxis_pad,
 )
 from bionemo_ir.dsl_kernels.triton.fused_swiglu import FusedSwiGLU, _fused_swiglu_kernel
@@ -350,7 +356,11 @@ def test_streaming_ln_projection_matches_reference(
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
-@pytest.mark.parametrize(("batch", "tokens", "multiple"), [(1, 136, 8), (2, 45, -1)], ids=["padded", "unpadded-b2"])
+@pytest.mark.parametrize(
+    ("batch", "tokens", "multiple"),
+    [(1, 136, 8), (2, 45, -1), (2, 208, 8)],
+    ids=["padded", "unpadded-b2", "pipelined-b2"],
+)
 def test_fp32_folded_projection_reproduces_each_layers_fold(batch: int, tokens: int, multiple: int) -> None:
     """Two RMSNorm layers' gamma-folded FP32 weights under a unit gamma give each layer's own bias, bit for bit."""
     torch.manual_seed(7)
@@ -366,6 +376,127 @@ def test_fp32_folded_projection_reproduces_each_layers_fold(batch: int, tokens: 
     for index, (gamma, weight) in enumerate(zip(gammas, weights, strict=True)):
         expected = single(z, gamma, None, weight, multiple=multiple)
         torch.testing.assert_close(actual[:, index * heads : (index + 1) * heads], expected, atol=0, rtol=0)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
+@pytest.mark.parametrize(
+    ("dim_d", "heads", "fp32_projection", "tokens", "multiple"),
+    [
+        pytest.param(384, 24, True, 136, 8, id="d384-h24-folded"),
+        pytest.param(384, 12, False, 45, -1, id="d384-h12-unpadded"),
+        pytest.param(256, 16, False, 130, 0, id="d256-h16"),
+        pytest.param(128, 4, False, 199, 8, id="d128-h4-j199"),
+    ],
+)
+def test_pipelined_slice_loop_keeps_the_bits(
+    dim_d: int, heads: int, fp32_projection: bool, tokens: int, multiple: int, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The software-pipelined RMSNorm slice loop gives the unrolled loop's bits."""
+    tuning = _streaming_tuning(torch.device("cuda"))
+    if tuning.pipelined is None:
+        pytest.skip("no pipelined streaming variant on this GPU")
+    torch.manual_seed(5)
+    weight_dtype = torch.float32 if fp32_projection else torch.bfloat16
+    z = torch.randn(2, tokens, tokens, dim_d, device="cuda", dtype=torch.bfloat16)
+    ln_weight = (1 + 0.2 * torch.randn(dim_d, device="cuda")).to(weight_dtype)
+    proj_weight = (torch.randn(heads, dim_d, device="cuda") * dim_d**-0.5).to(weight_dtype)
+    op = FusedLNProjMoveaxisPad(D=dim_d, H=heads, rms_norm=True, fp32_projection=fp32_projection)
+
+    tile_j, num_warps, stages = tuning.pipelined
+    variant = "bionemo_ir.dsl_kernels.triton.fused_ln_proj_moveaxis_pad._streaming_variant"
+    monkeypatch.setattr(variant, lambda *_: (tile_j, num_warps, stages))
+    pipelined = op(z, ln_weight, None, proj_weight, multiple=multiple)
+    monkeypatch.setattr(variant, lambda *_: (tile_j, num_warps, 1))
+    unrolled = op(z, ln_weight, None, proj_weight, multiple=multiple)
+    assert torch.equal(pipelined, unrolled)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
+@pytest.mark.parametrize("pipelined", [False, True], ids=["unrolled", "pipelined"])
+@pytest.mark.parametrize(("batch", "tokens", "multiple"), [(1, 37, 8), (2, 136, -1)], ids=["j37", "unpadded-b2"])
+def test_streaming_rmsnorm_leaves_row_sums_without_changing_the_bias(
+    batch: int, tokens: int, multiple: int, pipelined: bool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``row_sumsq`` receives every row's sum of squares, and asking for it leaves the bias's bits alone."""
+    tuning = _streaming_tuning(torch.device("cuda"))
+    if pipelined and tuning.pipelined is None:
+        pytest.skip("no pipelined streaming variant on this GPU")
+    tile = tuning.pipelined if pipelined else (*tuning.tiles[0], 1)
+    monkeypatch.setattr("bionemo_ir.dsl_kernels.triton.fused_ln_proj_moveaxis_pad._streaming_variant", lambda *_: tile)
+    torch.manual_seed(11)
+    dim_d, heads = 384, 12
+    z = torch.randn(batch, tokens, tokens, dim_d, device="cuda", dtype=torch.bfloat16) * 3
+    z[0, 0, 0] = 0
+    ln_weight = torch.ones(dim_d, device="cuda")
+    proj_weight = torch.randn(heads, dim_d, device="cuda") * dim_d**-0.5
+    op = FusedLNProjMoveaxisPad(D=dim_d, H=heads, rms_norm=True, fp32_projection=True)
+
+    row_sumsq = torch.full((batch, tokens, tokens), float("nan"), device="cuda")
+    bias = op(z, ln_weight, None, proj_weight, multiple=multiple, row_sumsq=row_sumsq)
+    assert torch.equal(bias, op(z, ln_weight, None, proj_weight, multiple=multiple))
+    torch.testing.assert_close(row_sumsq.double(), z.double().square().sum(-1), rtol=1e-6, atol=0)
+    assert row_sumsq[0, 0, 0] == 0
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
+@pytest.mark.parametrize("call", ["layer norm", "fp32 input", "short buffer", "bf16 buffer", "split fallback"])
+def test_row_sums_need_a_streaming_rmsnorm_call_and_a_matching_buffer(call: str) -> None:
+    """Only the streaming RMSNorm kernel forms the sums; any other call, or a buffer that does not fit, raises."""
+    z = torch.randn(1, 8, 8, 128, device="cuda", dtype=torch.bfloat16)
+    weight = torch.ones(128, device="cuda", dtype=torch.bfloat16)
+    proj_weight = torch.randn(4, 128, device="cuda", dtype=torch.bfloat16)
+    row_sumsq = torch.empty(1, 8, 8, device="cuda")
+    rms = FusedLNProjMoveaxisPad(D=128, H=4, rms_norm=True)
+    layer_norm = FusedLNProjMoveaxisPad(D=128, H=4)
+    calls = {
+        "layer norm": lambda: layer_norm(z, weight, torch.zeros_like(weight), proj_weight, row_sumsq=row_sumsq),
+        "fp32 input": lambda: rms(z.float(), weight.float(), None, proj_weight.float(), row_sumsq=row_sumsq),
+        "short buffer": lambda: rms(z, weight, None, proj_weight, row_sumsq=row_sumsq[..., :7]),
+        "bf16 buffer": lambda: rms(z, weight, None, proj_weight, row_sumsq=row_sumsq.bfloat16()),
+        "split fallback": lambda: LNProjMoveaxisPad(D=128, H=4, rms_norm=True)(
+            z.transpose(1, 2), weight, None, proj_weight, row_sumsq=row_sumsq
+        ),
+    }
+    with pytest.raises(ValueError, match="row_sumsq"):
+        calls[call]()
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
+def test_rmsnorm_calls_from_the_row_threshold_take_the_pipelined_variant() -> None:
+    """Below the threshold a call is bound by per-tile latency and keeps the unpipelined tile that pads J least, as
+    LayerNorm calls always do."""
+    device = torch.device("cuda")
+    sms = torch.cuda.get_device_properties(device).multi_processor_count
+    tuning = _StreamingTuning(
+        tiles=((64, 4), (128, 8)), programs_per_sm=4, pipelined=(64, 4, 3), pipeline_min_rows_per_sm=512
+    )
+    assert _streaming_variant(512 * sms, 208, device, tuning, rms_norm=True) == (64, 4, 3)
+    assert _streaming_variant(512 * sms - 1, 208, device, tuning, rms_norm=True) == (128, 8, 1)
+    assert _streaming_variant(512 * sms - 1, 400, device, tuning, rms_norm=True) == (64, 4, 1)
+    assert _streaming_variant(512 * sms, 208, device, tuning, rms_norm=False) == (128, 8, 1)
+
+
+class _CompiledStub:
+    """The parts of a compiled kernel ``_resident_programs`` reads."""
+
+    def __init__(self, n_regs: int, shared: int) -> None:
+        self.compiled = SimpleNamespace(n_regs=n_regs, metadata=SimpleNamespace(shared=shared))
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
+@pytest.mark.parametrize(
+    ("n_regs", "num_warps", "shared", "resident", "per_sm"),
+    [(134, 4, 12288, 3, 3), (85, 4, 10240, 5, 4), (128, 8, 20480, 2, 4)],
+    ids=["three-fit", "all-fit", "two-whole-waves"],
+)
+def test_streaming_grid_runs_whole_waves(n_regs: int, num_warps: int, shared: int, resident: int, per_sm: int) -> None:
+    """Registers bound these variants, and the persistent grid of 4 programs per SM rounds down to whole waves of
+    those an SM holds: with 3 resident, a fourth would run alone on each SM after the others finish."""
+    assert _resident_programs(_CompiledStub(n_regs, shared), num_warps) == resident
+    device = torch.device("cuda")
+    sms = torch.cuda.get_device_properties(device).multi_processor_count
+    assert _streaming_grid(device, 1 << 30, 4, resident) == per_sm * sms
+    assert _streaming_grid(device, 7, 4, resident) == 7
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
@@ -387,7 +518,7 @@ def test_unpadded_pair_bias_takes_the_streaming_kernel() -> None:
     finally:
         type(fused).__call__ = original_call
 
-    assert calls == [{"multiple": -1}]
+    assert calls == [{"multiple": -1, "row_sumsq": None}]
     expected = _ln_proj_moveaxis_pad_reference(z, norm.weight, norm.bias, projection.weight, tokens)
     torch.testing.assert_close(actual.float(), expected, rtol=0.02, atol=0.02)
 
@@ -399,7 +530,7 @@ def test_float16_op_streams_after_a_bfloat16_op_of_the_same_shape(monkeypatch: p
     FusedLNProjMoveaxisPad(D=128, H=4, dtype=torch.bfloat16)
     op = FusedLNProjMoveaxisPad(D=128, H=4, dtype=torch.float16)
     assert op.streams(torch.float16)
-    assert {(torch.float16, tile_j) for tile_j, _ in op._streaming_tuning.tiles} <= set(op._streaming_kernels)
+    assert {(torch.float16, tile_j, 1) for tile_j, _ in op._streaming_tuning.tiles} <= set(op._streaming_kernels)
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")

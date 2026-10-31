@@ -48,6 +48,7 @@ from bionemo_ir._torch.utils.kernel import (
 from bionemo_ir.dsl_kernels.cute_cache import FORCE_CUBIN_ENV, CuteKernelCache
 from bionemo_ir.logger import logger
 
+from .._common import _aligned
 from ..interface import AttentionBackend, AttentionMetadata
 from ._config import (
     _PW_CONFIGS_DIR,
@@ -117,6 +118,17 @@ def _pad_last_dim(t: torch.Tensor, new_size: int, value: float = 0.0) -> torch.T
     if cur >= new_size:
         return t
     return F.pad(t, (0, new_size - cur), value=value)
+
+
+def _kernel_bias(bias: torch.Tensor, num_heads: int, seqlen_q: int, padded_seqlen_kv: int) -> torch.Tensor:
+    """``bias`` as the kernel reads it, ``[B, H, Sq, Sk_padded]``, copied only when its layout needs it.
+
+    The kernel takes any batch, head and row strides that are positive 16-byte multiples over a 16-byte aligned
+    base. One layer's heads sliced from a projection shared by several layers therefore go in as they lie, though
+    at batch > 1 they are not contiguous.
+    """
+    view = _pad_last_dim(bias, padded_seqlen_kv).reshape(-1, num_heads, seqlen_q, padded_seqlen_kv)
+    return view if _aligned(view, 3) else view.contiguous()
 
 
 def _resolve_lse_buffer(
@@ -400,7 +412,7 @@ class PairwiseAttentionCuTeLeftMask(CuteKernelCache, AttentionBackend[PairwiseAt
             raise ValueError(f"actual_s_kv must be on {q.device}; got {actual_s_kv_flat.device}")
 
         padded_seqlen_kv = _align_up(seqlen_kv, align_elems)
-        bias_padded = _pad_last_dim(bias.contiguous(), padded_seqlen_kv).view(-1, num_heads, seqlen_q, padded_seqlen_kv)
+        bias_padded = _kernel_bias(bias, num_heads, seqlen_q, padded_seqlen_kv)
         if bias_padded.shape[0] != batch_size:
             raise ValueError(f"Pair bias batch dim {bias_padded.shape[0]} != actual_s_kv batch dim {batch_size}")
 

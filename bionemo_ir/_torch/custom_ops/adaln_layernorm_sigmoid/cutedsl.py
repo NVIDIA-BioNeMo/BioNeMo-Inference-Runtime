@@ -45,6 +45,9 @@ from ._config import (
 from ._cubin import AdaLNLayerNormSigmoidCubinExecutable
 from .ops import _invoke_vanilla_adaln_layernorm_sigmoid
 
+#: Per device, the empty mask a maskless call passes; the kernel keeps every row for it.
+_NO_MASK: dict[torch.device, torch.Tensor] = {}
+
 __all__ = [
     "AdaLNLayerNormSigmoidCuTe",
     "SHIPPED_N",
@@ -226,6 +229,7 @@ class AdaLNLayerNormSigmoidCuTe(CuteKernelCache):
         s_bias: torch.Tensor,
         out: torch.Tensor | None = None,
         eps: float = 1e-5,
+        mask: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """Run fused LayerNorm/RMSNorm and sigmoid gating.
 
@@ -241,6 +245,10 @@ class AdaLNLayerNormSigmoidCuTe(CuteKernelCache):
             out: Optional contiguous output matching the shape and dtype of
                 ``x``. The operation writes to ``x`` when omitted.
             eps: Normalization epsilon.
+            mask: Optional contiguous boolean keep flag per row of ``s_scale``, such as ``[B, I]`` for
+                ``s_scale`` ``[B, I, N]`` or ``[B, 1, I, N]``. The kernel reads it with ``s_scale``'s own row
+                index, so a sample axis of ``x`` broadcasts as ``s_scale`` does, and writes each row whose
+                flag is false as zeros, as ``out.masked_fill_(~mask, 0)`` after the op would.
 
         Returns:
             The output tensor with shape ``[..., N]``.
@@ -291,13 +299,25 @@ class AdaLNLayerNormSigmoidCuTe(CuteKernelCache):
         s_scale_2d = s_scale.reshape(-1, N)
         s_bias_2d = s_bias.reshape(-1, N)
         M = x_2d.shape[0]
+        if mask is None:
+            mask_rows = _NO_MASK.get(x.device)
+            if mask_rows is None:
+                mask_rows = _NO_MASK.setdefault(x.device, torch.empty(0, dtype=torch.uint8, device=x.device))
+        elif mask.dtype != torch.bool or mask.numel() != s_scale_2d.shape[0] or not mask.is_contiguous():
+            raise ValueError(
+                f"mask must be a contiguous bool tensor with one flag per s_scale row ({s_scale_2d.shape[0]}); "
+                f"got {tuple(mask.shape)}/{mask.dtype}"
+            )
+        else:
+            # The bool storage read as bytes: no copy, no launch.
+            mask_rows = mask.view(-1).view(torch.uint8)
 
         schedule = self._get_or_build_schedule(x.dtype, N)
         executable = self._pick(schedule, M)
         if executable is None:
             return _invoke_vanilla_adaln_layernorm_sigmoid(
-                x, s_scale, s_bias, out=out, eps=eps, rms_norm=self._rms_norm
+                x, s_scale, s_bias, out=out, eps=eps, rms_norm=self._rms_norm, mask=mask
             )
 
-        launch_compiled_kernel(executable, x_2d, s_scale_2d, s_bias_2d, out_2d, eps, mult, inner)
+        launch_compiled_kernel(executable, x_2d, s_scale_2d, s_bias_2d, out_2d, mask_rows, eps, mult, inner)
         return out

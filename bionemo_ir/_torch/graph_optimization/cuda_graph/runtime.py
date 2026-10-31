@@ -58,6 +58,11 @@ from bionemo_ir.utils import is_device_fatal
 _EAGER: ContextVar[bool] = ContextVar("bioir_eager_graphs", default=False)
 
 
+def graph_eligible(training: bool) -> bool:
+    """Whether calls may take the CUDA-graph path: not under gradients, training, :func:`eager_graphs` or a capture."""
+    return not (torch.is_grad_enabled() or training or _EAGER.get() or torch.cuda.is_current_stream_capturing())
+
+
 @contextmanager
 def eager_graphs(enabled: bool = True) -> Iterator[None]:
     """Run graph regions and trackers called in this scope eagerly.
@@ -334,7 +339,7 @@ class CUDAGraphOptimizationTracker(GraphOptimizationTracker):
 
     def forward(self, *args, **kwargs) -> Tensor | tuple[Tensor, ...]:
         """Execute through warmup, capture, replay, or eager fallback."""
-        if torch.is_grad_enabled() or self.training or _EAGER.get() or torch.cuda.is_current_stream_capturing():
+        if not graph_eligible(self.training):
             return self.inner_module(*args, **kwargs)
 
         key_method = self.graph_optimization_config.input_key_method
@@ -516,7 +521,7 @@ class CUDAGraphOptimizationTracker(GraphOptimizationTracker):
         if state.static_input_arg is None:
             state.static_input_arg = _clone_tensors(args)
         if state.static_input_kwargs is None:
-            state.static_input_kwargs = _clone_tensors(kwargs)
+            state.static_input_kwargs = _clone_tensors(kwargs, self._borrowed_tensors(kwargs))
             state.stable_sources = {
                 name: _leaf_sources(kwargs[name]) for name in self._stable_input_kwargs() if name in kwargs
             }
@@ -573,12 +578,15 @@ class CUDAGraphOptimizationTracker(GraphOptimizationTracker):
         if not replay_ok:
             return self.inner_module(*args, **kwargs)
 
-        output = _clone_tensors(state.static_output)
+        output = self._caller_output(state)
 
         return output
 
     def _verify_capture(self, args: tuple, kwargs: dict, input_key: str) -> bool:
         """Compare capture output with eager and revert on mismatch.
+
+        The verifying replay writes the static buffers, and a borrowed kwarg's buffer is the caller's own tensor,
+        so its value is put back for the call's own replay or eager fallback.
 
         Returns:
             Whether outputs match.
@@ -592,10 +600,13 @@ class CUDAGraphOptimizationTracker(GraphOptimizationTracker):
                 _clone_tensors(kwargs),
                 input_tensor_shapes=state.static_unadjusted_input_tensor_shapes,
             )
+        borrowed = self._borrowed_tensors(kwargs)
+        saved = _clone_tensors(borrowed)
         with torch.random.fork_rng(devices=devices):
             self._refresh_inputs(args, kwargs, state)
             state.graph.replay()
             replay_out = _clone_tensors(state.static_output)
+        _copy_tensors_into(borrowed, saved)
         try:
             _assert_equal_but_distinct(eager_out, replay_out)
             return True
@@ -615,7 +626,19 @@ class CUDAGraphOptimizationTracker(GraphOptimizationTracker):
         if not replay_ok:
             return self.inner_module(*args, **kwargs)
 
-        return _clone_tensors(state.static_output)
+        return self._caller_output(state)
+
+    def _caller_output(self, state: CUDAGraphState) -> Tensor | tuple[Tensor, ...]:
+        """Clone the static output for the caller, except a state kwarg's static buffer the module returned.
+
+        That buffer goes back as itself: the caller hands it to the next call, which then copies nothing in.
+        """
+        state_kwargs = self._state_input_kwargs()
+        if not state_kwargs:
+            return _clone_tensors(state.static_output)
+        static_kwargs = self._graph_input_kwargs(state.static_input_kwargs)
+        keep = tuple(static_kwargs[name] for name in state_kwargs if isinstance(static_kwargs.get(name), Tensor))
+        return _clone_tensors(state.static_output, keep)
 
     def _refresh_inputs(self, args: tuple, kwargs: dict, state: CUDAGraphState) -> None:
         """Restore dynamic inputs before replay, including a capturing call."""
@@ -627,6 +650,9 @@ class CUDAGraphOptimizationTracker(GraphOptimizationTracker):
         )
         stable = self._stable_input_kwargs()
         for name, value in live_kwargs.items():
+            # A state kwarg's static buffer, passed back, already holds this call's input.
+            if value is static_kwargs[name]:
+                continue
             if name in stable and _unchanged_since_copy(state.stable_sources.get(name), value):
                 continue
             _copy_tensors_into(dest=static_kwargs[name], src=value)
@@ -637,6 +663,23 @@ class CUDAGraphOptimizationTracker(GraphOptimizationTracker):
         """Return the kwargs whose unchanged tensors skip replay copies."""
         routing = self.graph_optimization_config.input_routing_config
         return frozenset(routing.stable_input_kwargs) if routing is not None else frozenset()
+
+    def _state_input_kwargs(self) -> tuple[str, ...]:
+        """Return the kwargs whose static buffers the module updates in place and returns uncloned."""
+        routing = self.graph_optimization_config.input_routing_config
+        return tuple(routing.state_input_kwargs) if routing is not None else ()
+
+    def _borrowed_tensors(self, kwargs: dict) -> tuple[Tensor, ...]:
+        """The borrowed kwargs' tensors that become their own static buffers at capture.
+
+        A tensor the call also passes under another name stays out: one buffer cannot be two inputs, so each
+        name gets its own copy.
+        """
+        routing = self.graph_optimization_config.input_routing_config
+        names = routing.borrowed_input_kwargs if routing is not None else ()
+        leaves = [leaf for value in kwargs.values() for leaf in _tensor_leaves(value)]
+        borrowed = (kwargs[name] for name in names if isinstance(kwargs.get(name), Tensor))
+        return tuple(tensor for tensor in borrowed if sum(leaf is tensor for leaf in leaves) == 1)
 
     def _evict_key(self, key: str) -> None:
         """Free and remove a key's cached graph state.

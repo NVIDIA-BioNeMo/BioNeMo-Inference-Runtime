@@ -95,6 +95,7 @@ class LNProjMoveaxisPad(nn.Module):
         proj_weight: torch.Tensor,
         pad_multiple: int = -1,
         proj_z: nn.Module | None = None,
+        row_sumsq: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """Compute LN/RMS + Linear + moveaxis + pad.
 
@@ -108,6 +109,10 @@ class LNProjMoveaxisPad(nn.Module):
             proj_z: ``nn.Sequential(Norm, Linear)`` or similar module
                 used to identify optional normalization and projection bias,
                 or to run a projection-only path.
+            row_sumsq: Optional contiguous FP32 ``[*, I, J]`` buffer the call
+                fills with each row's ``sum_d z^2``. Only an RMSNorm call on the
+                streaming kernel (see :meth:`streams`) can fill it; any other
+                call raises.
 
         Returns:
             ``[*, H, I, J_padded]`` contiguous tensor.
@@ -125,7 +130,9 @@ class LNProjMoveaxisPad(nn.Module):
         )
 
         if use_fused:
-            return self._fused_kernel(z, ln_weight, ln_bias, proj_weight, multiple=pad_multiple)
+            return self._fused_kernel(z, ln_weight, ln_bias, proj_weight, multiple=pad_multiple, row_sumsq=row_sumsq)
+        if row_sumsq is not None:
+            raise ValueError("row_sumsq needs the fused streaming kernel")
 
         # Split fallback: use the existing single-pass normalization kernels,
         # then let cuBLAS handle the projection before the fused layout move.

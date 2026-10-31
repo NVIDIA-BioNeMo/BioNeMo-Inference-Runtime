@@ -60,7 +60,12 @@ from .nucleic_acid import (
 from .partial_redesign import materialize_partial_redesign_output
 from .representation_builder import RFProteinaRepresentationBuilder
 from .rollout import RFProteinaFlowMatchingIntegrator
-from .sampler import RFProteinaPartialRolloutSetup, RFProteinaProductSpaceSampler, sample_reference_state
+from .sampler import (
+    RFProteinaPartialRolloutSetup,
+    RFProteinaProductSpaceSampler,
+    sample_reference_beam,
+    sample_reference_state,
+)
 from .search import index_prediction, run_rfproteina_beam_search
 from .schedules import (
     compute_tsr_ratio,
@@ -137,6 +142,7 @@ __all__ = [
     "partial_num_steps",
     "resolve_partial_times",
     "run_rfproteina_beam_search",
+    "sample_reference_beam",
     "sample_reference_state",
     "score_to_velocity",
     "velocity_flow_step",

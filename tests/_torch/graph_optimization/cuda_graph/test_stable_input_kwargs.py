@@ -18,13 +18,11 @@ import pytest
 import torch
 import torch.nn as nn
 
-import bionemo_ir._torch.graph_optimization.cuda_graph.runtime as trk
 from bionemo_ir._torch.graph_optimization.config import CUDAGraphOptimizationConfig, InputRoutingConfig
 from bionemo_ir._torch.graph_optimization.cuda_graph.runtime import (
     CUDAGraphOptimizationTracker,
     CUDAGraphPreparationState,
 )
-from bionemo_ir._torch.graph_optimization.tensor_copy_utils import _tensor_leaves
 
 pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA-graph tests require CUDA")
 
@@ -53,20 +51,6 @@ def _inputs(seed: int) -> tuple[torch.Tensor, dict[str, torch.Tensor], torch.Ten
 
 def _reference(x: torch.Tensor, cond: dict[str, torch.Tensor], scale: torch.Tensor) -> torch.Tensor:
     return (x + cond["bias"]) * cond["gain"] + scale
-
-
-@pytest.fixture
-def copied(monkeypatch) -> list[int]:
-    """Record the ids of the tensors each replay copies into static buffers."""
-    ids: list[int] = []
-    original = trk._copy_tensors_into
-
-    def recording(dest, src):
-        ids.extend(id(leaf) for leaf in _tensor_leaves(src))
-        return original(dest, src)
-
-    monkeypatch.setattr(trk, "_copy_tensors_into", recording)
-    return ids
 
 
 def _capture(tracker, x, cond, scale) -> None:

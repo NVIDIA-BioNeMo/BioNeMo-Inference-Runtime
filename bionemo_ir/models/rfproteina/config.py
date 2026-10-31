@@ -52,17 +52,25 @@ def trunk_graph_config(max_tokens: int = TRUNK_GRAPH_MAX_TOKENS) -> CUDAGraphOpt
         repeated=True,
         static_args=("metadata",),
         workspace_kwargs=("buffers",),
-        # A denoising step resolves these once and every recycle of that step is handed the same
-        # tensors, so only the running state and the pass's condition are copied in after the
-        # first. The runtime still compares each against what it last copied.
+        # A denoising step resolves these once and hands every recycle of that step the same
+        # tensors. The runtime copies one in only when it is not what it last copied: a pass's own
+        # condition, or the recycle flag at a step's first and last pass.
         stable_kwargs=(
             "single_init",
-            "pair_init",
+            "condition",
+            "recycles",
             "padding_mask",
             "trimul_metadata",
             "precomputed_masks",
             "precomputed_single_masks",
         ),
+        # A pass leaves the next pass's pair in its own pair buffer and returns it, so the pair, the
+        # largest tensor of the step, is neither cloned out nor copied back in between passes.
+        state_kwargs=("pair",),
+        # The trunk owns the initial-pair buffers and the graph reads them in place, so a step's
+        # initial pair is written once, by its producer, and never copied in. Any other tensor
+        # passed for them is copied, which is why they are not stable.
+        borrowed_kwargs=("pair", "pair_init"),
     )
 
 

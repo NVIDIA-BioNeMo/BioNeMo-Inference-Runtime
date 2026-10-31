@@ -88,6 +88,62 @@ def sample_reference_state(
     return _zero_unencodable_latents(state, padding_mask, can_be_encoded)
 
 
+def sample_reference_beam(
+    padding_mask: torch.Tensor,
+    latent_dim: int,
+    dtype: torch.dtype,
+    config: RFProteinaSamplingConfig,
+    beam_width: int,
+    generator: torch.Generator | None = None,
+    can_be_encoded: torch.Tensor | None = None,
+    coordinate_condition_mask: torch.Tensor | None = None,
+    groups: Mapping[str, torch.Tensor | None] | None = None,
+) -> list[RFProteinaState]:
+    """Draw a beam's initial states as the reference does: one draw for every row of every replica.
+
+    The reference stacks the replicas, ``padding_mask`` repeated ``beam_width`` times, and draws all
+    ``beam_width * B`` rows at once, so a replica's rows are the stream's draws at its own offset. Drawing the
+    replicas one after another would give each of them the rows the stream starts with.
+
+    Args:
+        padding_mask: ``[B, N]`` mask of the tokens each replica generates.
+        latent_dim: Width of the local latents.
+        dtype: Precision of the returned states.
+        config: Sampling configuration, which supplies each modality's reference-noise settings.
+        beam_width: Number of replicas.
+        generator: Random stream for the draw; ``None`` uses the default device stream. A stream installed with
+            :func:`~bionemo_ir._torch.sampling.random.normal_draws` takes its place.
+        can_be_encoded: ``[B, N]`` mask of the tokens the autoencoder can encode. Latents elsewhere start at zero;
+            ``None`` leaves every latent as drawn.
+        coordinate_condition_mask: ``[B, N]``, true for tokens pinned to absolute coordinates. Every stochastic
+            centering scope except ``all`` leaves these at the origin.
+        groups: Token-level group tensors from :func:`~.groups.extract_groups`, read only by the ``per_group``
+            stochastic centering scope.
+
+    Returns:
+        One ``[B, N, ...]`` state per replica, in replica order.
+    """
+
+    def tile(value: torch.Tensor | None) -> torch.Tensor | None:
+        return None if value is None else value.repeat(beam_width, *([1] * (value.ndim - 1)))
+
+    state = sample_reference_state(
+        tile(padding_mask),
+        latent_dim,
+        dtype,
+        config,
+        generator=generator,
+        can_be_encoded=tile(can_be_encoded),
+        coordinate_condition_mask=tile(coordinate_condition_mask),
+        groups=None if groups is None else {name: tile(value) for name, value in groups.items()},
+    )
+    rows = padding_mask.shape[0]
+    return [
+        {modality: tensor[replica * rows : (replica + 1) * rows] for modality, tensor in state.items()}
+        for replica in range(beam_width)
+    ]
+
+
 @dataclass(frozen=True)
 class RFProteinaPartialRolloutSetup:
     """Forward-marginal initialization and schedules for a partial rollout."""

@@ -301,6 +301,26 @@ def _launch(executable, args):
     )
 
 
+@pytest.mark.parametrize("mode", _MODES)
+def test_one_layers_slice_of_a_shared_bias_goes_in_without_a_copy(monkeypatch, mode):
+    """At batch > 1, one layer's heads of a bias projected for two layers are not contiguous. The kernel reads them
+    where they lie and gives the contiguous copy's output, bit for bit."""
+    head_dim = _tuned_head_dims()[0]
+    num_heads, batch, seqlen = 4, 3, 96
+    q, k, v, _, actual_s_kv = _make_inputs(batch, 1, seqlen, seqlen, num_heads, head_dim, torch.bfloat16, False)
+    shared = torch.randn(batch, 2 * num_heads, seqlen, seqlen, dtype=torch.bfloat16, device="cuda")
+    layer_bias = shared.narrow(1, num_heads, num_heads)
+    assert not layer_bias.is_contiguous()
+    assert pw_cutedsl._kernel_bias(layer_bias, num_heads, seqlen, seqlen).data_ptr() == layer_bias.data_ptr()
+    # A layout the kernel cannot read is still copied.
+    transposed = shared.transpose(-1, -2).narrow(1, 0, num_heads)
+    assert pw_cutedsl._kernel_bias(transposed, num_heads, seqlen, seqlen).is_contiguous()
+
+    in_place = _run(mode, monkeypatch, q, k, v, layer_bias, actual_s_kv, num_heads, head_dim, False)
+    copied = _run(mode, monkeypatch, q, k, v, layer_bias.contiguous(), actual_s_kv, num_heads, head_dim, False)
+    assert torch.equal(in_place, copied)
+
+
 def test_cubin_launch_rejects_an_operand_on_another_device():
     """Descriptors carry bare addresses, so a foreign pointer must not launch."""
     executable, args = _cubin_launch_args(_tuned_head_dims()[0])

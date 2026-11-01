@@ -112,6 +112,11 @@ class _EpilogueUDF(StatefulStageUDF):
         }
 
 
+class _FailingPrepareUDF(_PrologueUDF):
+    def prepare(self) -> None:
+        raise OSError("no CCD")
+
+
 class _WritingEpilogueUDF(_EpilogueUDF):
     def __init__(self, *args: Any, output_path: str, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
@@ -341,6 +346,31 @@ def test_prefetch_bounds_the_prologue() -> None:
     assert sorted(seen) == list(range(1, 9))
 
 
+def test_prologue_prepares_before_the_first_call() -> None:
+    prepared = threading.Event()
+
+    class _Preparing(_PrologueUDF):
+        def prepare(self) -> None:
+            super().prepare()
+            prepared.set()
+
+    stages = _stages()
+    stages[0] = StatefulStage(fn=_Preparing)
+    with PipelinedSerialProcessor(ProcessorConfig(model_source="test"), stages, workers="thread") as processor:
+        assert prepared.is_set()
+        rows = processor(_records(2))
+    assert [row["prepared"] for row in rows] == [1, 1]
+
+
+@pytest.mark.parametrize("workers", WORKERS)
+def test_prepare_failure_surfaces_on_the_first_call(workers: str) -> None:
+    stages = _stages()
+    stages[0] = StatefulStage(fn=_FailingPrepareUDF)
+    with PipelinedSerialProcessor(ProcessorConfig(model_source="test"), stages, workers=workers) as processor:
+        with pytest.raises(RuntimeError, match="no CCD"):
+            processor(_records(1))
+
+
 def test_without_device_stage_runs_serially() -> None:
     stages = [StatefulStage(fn=_PrologueUDF)]
     records = _records(3)
@@ -407,6 +437,37 @@ def test_build_processor_uses_threads() -> None:
     assert processor.prefetch == 2
     assert "stage_overlap" not in type(config).model_fields
     assert "prefetch" not in type(config).model_fields
+
+
+def test_process_processor_can_be_constructed_at_module_scope(tmp_path: Path) -> None:
+    script = tmp_path / "module_processor.py"
+    script.write_text(
+        """
+import sys
+sys.path.insert(0, sys.argv[1])
+sys.path.insert(0, sys.argv[2])
+import test_pipelined_processor as fakes
+from bionemo_ir.pipeline.processor.base import ProcessorConfig
+from bionemo_ir.pipeline.processor.pipelined import PipelinedSerialProcessor
+
+processor = PipelinedSerialProcessor(ProcessorConfig(model_source="test"), fakes._stages(), workers="process")
+
+if __name__ == "__main__":
+    with processor:
+        rows = processor(fakes._records(2))
+        assert [row["value"] for row in rows] == [1, 2]
+        assert all(row["prepared"] == 1 for row in rows)
+    print("processed", flush=True)
+"""
+    )
+    proc = subprocess.run(
+        [sys.executable, str(script), str(Path(__file__).parent), str(Path(__file__).resolve().parents[2])],
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout.strip() == "processed"
 
 
 _ORPHAN_SCRIPT = """

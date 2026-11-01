@@ -16,7 +16,9 @@
 """Native feature contracts that do not require checkpoint or CCD downloads."""
 
 from pathlib import Path
+from typing import TYPE_CHECKING
 
+import biotite.structure as struc
 import numpy as np
 import pytest
 import torch
@@ -27,6 +29,9 @@ from bionemo_ir.data.writers.pdb_writer import PDBWriter
 from bionemo_ir.pipeline.models.protenix.msa import alignment_rows
 from bionemo_ir.pipeline.models.protenix.postprocessor import PostProcessor
 from tests.pipeline.models.protenix.golden_io import build_conformer_dir, load_tensors
+
+if TYPE_CHECKING:
+    from bionemo_ir.pipeline.models.protenix.structure import ComponentStore
 
 
 def test_msa_insertions_and_duplicate_rows() -> None:
@@ -121,6 +126,48 @@ def _golden_polymers(sample: dict) -> list[dict]:
         chain += body["count"]
         polymers.append({"polymer_type": polymer_type, "sequence": sequence, "chain_id": ids})
     return polymers
+
+
+def _assemble_per_residue(store: "ComponentStore", sequence: str, kind: str) -> struc.AtomArray:
+    """Reference polymer: fresh components, leaving atoms removed, links added bond by bond."""
+    from bionemo_ir.pipeline.models.protenix.const import DNA_CODES, PROTEIN_CODES, RNA_CODES
+
+    alphabet = {"protein": PROTEIN_CODES, "rna": RNA_CODES, "dna": DNA_CODES}[kind]
+    parts = []
+    for index, letter in enumerate(sequence):
+        atoms = store.component(alphabet[letter])
+        atoms.res_id[:] = index + 1
+        leaving = (
+            "OXT" if kind == "protein" and index < len(sequence) - 1 else "OP3" if kind != "protein" and index else ""
+        )
+        parts.append(atoms[atoms.atom_name != leaving])
+    result = struc.concatenate(parts)
+    offsets = np.cumsum([0] + [len(p) for p in parts])
+    outgoing, incoming = ("C", "N") if kind == "protein" else ("O3'", "P")
+    for index in range(len(parts) - 1):
+        left = int(np.flatnonzero(parts[index].atom_name == outgoing)[0])
+        right = int(np.flatnonzero(parts[index + 1].atom_name == incoming)[0])
+        result.bonds.add_bond(int(offsets[index]) + left, int(offsets[index + 1]) + right, 1)
+    return result
+
+
+@pytest.mark.parametrize("sequence,kind", [("CHKMWYC", "protein"), ("M", "protein"), ("ACGUA", "rna"), ("TGCA", "dna")])
+def test_polymer_atoms_match_per_residue_assembly(tmp_path: Path, sequence: str, kind: str) -> None:
+    from bionemo_ir.pipeline.models.protenix.structure import ComponentStore, polymer_atoms
+
+    mol_dir = build_conformer_dir(_DATA / "multimol_conformers_golden.json", tmp_path / "mols")
+    store = ComponentStore({"ccd_mols_path": str(mol_dir)})
+    expected = _assemble_per_residue(store, sequence, kind)
+    first = polymer_atoms(store, sequence, kind)
+    first.coord[:] = np.nan
+    first.res_id[:] = 0
+    first.bonds = None
+    actual = polymer_atoms(store, sequence, kind)
+    assert actual.get_annotation_categories() == expected.get_annotation_categories()
+    for name in expected.get_annotation_categories():
+        np.testing.assert_array_equal(actual.get_annotation(name), expected.get_annotation(name), err_msg=name)
+    np.testing.assert_array_equal(actual.coord, expected.coord)
+    np.testing.assert_array_equal(actual.bonds.as_array(), expected.bonds.as_array())
 
 
 def _pairwise_by_group(positions: torch.Tensor, groups: torch.Tensor) -> list[torch.Tensor]:

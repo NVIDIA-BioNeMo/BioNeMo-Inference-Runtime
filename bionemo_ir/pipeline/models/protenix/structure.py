@@ -47,6 +47,12 @@ def _ccd_column(category: str, name: str, column: str) -> pdbx.BinaryCIFColumn:
     return value
 
 
+def preload_ccd() -> None:
+    """Decode the CCD categories components read; Biotite takes about a second on first access."""
+    for category in ("chem_comp", "chem_comp_atom", "chem_comp_bond"):
+        ccd.get_from_ccd(category, "ALA")
+
+
 def conformer_dir(path: Path) -> Path:
     """Return a ``load_component_mol`` directory, splitting a release pickle once into the cache.
 
@@ -109,6 +115,7 @@ class ComponentStore:
             raise FileNotFoundError("Protenix metadata missing: ccd_mols_path")
         self.mol_dir = conformer_dir(Path(metadata["ccd_mols_path"]))
         self.components: dict[str, struc.AtomArray] = {}
+        self._residues: dict[tuple[str, tuple[str, ...]], struc.AtomArray] = {}
 
     def component(self, name: str) -> struc.AtomArray:
         """Return a fresh heavy-atom component, including leaving atoms."""
@@ -133,6 +140,19 @@ class ComponentStore:
             atoms.set_annotation("ref_mask", mask)
             self.components[name] = atoms
         return self.components[name].copy()
+
+    def residue(self, name: str, removed: tuple[str, ...]) -> struc.AtomArray:
+        """Return a shared component without the ``removed`` atoms; callers must not modify it.
+
+        Args:
+            name: CCD component identifier.
+            removed: Atom names to exclude from the component.
+        """
+        key = (name, removed)
+        if key not in self._residues:
+            atoms = self.component(name)
+            self._residues[key] = atoms[~np.isin(atoms.atom_name, list(removed))]
+        return self._residues[key]
 
     def kind(self, name: str) -> str:
         """Polymer kind of a CCD component from ``_chem_comp.type``, as the release assigns it."""
@@ -160,34 +180,36 @@ class ComponentStore:
 def polymer_atoms(store: ComponentStore, sequence: str, kind: str) -> struc.AtomArray:
     """Join standard residues and remove polymer-bond leaving groups."""
     alphabet = {"protein": PROTEIN_CODES, "rna": RNA_CODES, "dna": DNA_CODES}[kind]
-    parts = []
-    for index, letter in enumerate(sequence):
+    for letter in sequence:
         if letter not in alphabet:
             raise ValueError(f"Invalid {kind} residue: {letter}")
-        atoms = store.component(alphabet[letter])
-        atoms.res_id[:] = index + 1
-        parts.append(atoms)
-    if not parts:
+    if not sequence:
         raise ValueError("Empty Protenix polymer sequence")
-    for index, atoms in enumerate(parts):
+    parts = []
+    for index, letter in enumerate(sequence):
         # Leaving oxygens depend on terminal position.
-        removed = set()
-        if kind == "protein" and index < len(parts) - 1:
-            removed.add("OXT")
+        removed = ()
+        if kind == "protein" and index < len(sequence) - 1:
+            removed = ("OXT",)
         if kind in {"rna", "dna"} and index > 0:
-            removed.add("OP3")
-        parts[index] = atoms[~np.isin(atoms.atom_name, list(removed))]
+            removed = ("OP3",)
+        parts.append(store.residue(alphabet[letter], removed))
     result = struc.concatenate(parts)
-    if result.bonds is None:
-        result.bonds = struc.BondList(len(result))
-    offsets = np.cumsum([0] + [len(p) for p in parts])
+    sizes = [len(p) for p in parts]
+    result.res_id[:] = np.repeat(np.arange(1, len(parts) + 1), sizes)
+    offsets = np.cumsum([0, *sizes])
     outgoing, incoming = ("C", "N") if kind == "protein" else ("O3'", "P")
+    links = []
     for index in range(len(parts) - 1):
         left = np.flatnonzero(parts[index].atom_name == outgoing)
         right = np.flatnonzero(parts[index + 1].atom_name == incoming)
         if left.size != 1 or right.size != 1:
             raise ValueError("Protenix polymer connection atoms missing")
-        result.bonds.add_bond(int(offsets[index] + left[0]), int(offsets[index + 1] + right[0]), 1)
+        links.append((offsets[index] + left[0], offsets[index + 1] + right[0], 1))
+    bonds = result.bonds.as_array() if result.bonds is not None else np.zeros((0, 3), dtype=np.uint32)
+    # Links follow the residue bonds in sequence order, as BondList.add_bond appends them.
+    links = np.asarray(links, dtype=np.uint32).reshape(-1, 3)
+    result.bonds = struc.BondList(len(result), np.concatenate([bonds, links]))
     return result
 
 

@@ -163,11 +163,13 @@ def test_external_draw_survives() -> None:
         random_seed: int | None = None,
         *,
         retry_seed: Callable[[], int] = fc._draw_conformer_seed,
+        pending: list | None = None,
+        fingerprint: tuple | None = None,
     ) -> tuple[Chem.Mol | None, np.ndarray]:
         if retry_seed is fc._defer_conformer_retry:
             entered.set()
             assert release.wait(timeout=10)
-        return build(ccd_code, random_seed, retry_seed=retry_seed)
+        return build(ccd_code, random_seed, retry_seed=retry_seed, pending=pending, fingerprint=fingerprint)
 
     random.seed(42)
     external_seed = random.randint(0, 10**9)

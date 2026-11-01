@@ -105,7 +105,9 @@ def test_short_retry_parity(failure: str) -> None:
             expected = [_build_nucleotide_rdkit_mol(code) for code in codes]
             expected_state = random.getstate()
             random.seed(42)
-            actual = fc._prefetch_serial_mols(codes, fc._nucleotide_rdkit_topology, _build_nucleotide_rdkit_mol)
+            actual = fc._prefetch_serial_mols(
+                codes, "nucleotide", fc._nucleotide_rdkit_topology, _build_nucleotide_rdkit_mol
+            )
         assert actual is not None
         assert random.getstate() == expected_state
         for (mol, mask), (reference, reference_mask) in zip(actual, expected, strict=True):

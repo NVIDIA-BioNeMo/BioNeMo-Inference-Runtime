@@ -24,6 +24,8 @@ from __future__ import annotations
 import logging
 import os
 import random
+import threading
+from collections import OrderedDict
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from functools import lru_cache, partial
@@ -33,8 +35,9 @@ import biotite.structure as struc
 import biotite.structure.info as struc_info
 import numpy as np
 from biotite.interface.rdkit import to_mol as biotite_to_mol
-from rdkit import Chem
+from rdkit import Chem, rdBase
 from rdkit.Chem import AllChem
+from rdkit.Chem.rdDistGeom import EmbedParameters
 from rdkit.Geometry import Point3D
 
 from bionemo_ir.data.schemas.basic import InputParsed
@@ -182,6 +185,152 @@ def _nucleotide_rdkit_topology(ccd_code: str) -> tuple[Chem.Mol, np.ndarray]:
 _CONFORMER_WORKERS = min(16, len(os.sched_getaffinity(0)))
 
 
+def _etkdg_params(random_seed: int) -> EmbedParameters:
+    params = AllChem.ETKDGv3()
+    params.randomSeed = random_seed
+    params.clearConfs = False
+    return params
+
+
+def _params_key(params: EmbedParameters) -> tuple:
+    """Every scalar embedding setting except the seed, plus the RDKit version.
+
+    Bounds matrices, CPCI and coordinate maps are write-only on
+    ``EmbedParameters`` and so are not part of the key; no caller sets them.
+    """
+    settings = []
+    for name in dir(params):
+        if name.startswith("_") or name == "randomSeed":
+            continue
+        value = getattr(params, name)
+        if isinstance(value, (bool, int, float, str)):
+            settings.append((name, value))
+    return (rdBase.rdkitVersion, *settings)
+
+
+_FINGERPRINTS: dict[tuple, tuple] = {}
+
+
+def _etkdg_fingerprint() -> tuple:
+    """Key the settings ``_etkdg_params`` gives every embedding now, so a changed setting misses.
+
+    Equal fingerprints come back as one object: cache keys holding it then
+    compare by identity instead of field by field on every lookup.
+    """
+    fingerprint = _params_key(_etkdg_params(0))
+    return _FINGERPRINTS.setdefault(fingerprint, fingerprint)
+
+
+_CONFORMER_CACHE_SIZE = 16384
+
+
+class _ConformerCache:
+    """Process-wide LRU of embedded reference conformers.
+
+    ETKDG is deterministic for a topology, parameter set and seed, and the
+    request RNG hands every request with the same seed the same seed
+    sequence. Repeated requests, and requests sharing a leading chain, thus
+    re-embed the same keys; this cache returns the earlier result instead.
+
+    Entries hold conformer coordinates only. The first mol stored for a
+    (kind, CCD code) is kept as that code's template, and a hit is a copy
+    of the template with the entry's coordinates written in: embeddings of
+    one topology differ only in coordinates. A template leaves with the
+    last entry of its code. Callers get copies, never stored objects.
+
+    Args:
+        maxsize: Most entries kept; least recently used ones are evicted.
+    """
+
+    def __init__(self, maxsize: int) -> None:
+        self.maxsize = maxsize
+        self._entries: OrderedDict[tuple, np.ndarray] = OrderedDict()
+        self._templates: dict[tuple, list] = {}
+        self._lock = threading.Lock()
+
+    def __len__(self) -> int:
+        return len(self._entries)
+
+    def get(self, key: tuple) -> tuple[Chem.Mol, np.ndarray] | None:
+        with self._lock:
+            positions = self._entries.get(key)
+            if positions is None:
+                return None
+            self._entries.move_to_end(key)
+            template, crop_mask, _ = self._templates[key[:2]]
+            mol = Chem.Mol(template)
+        mol.GetConformer().SetPositions(positions)
+        return mol, crop_mask.copy()
+
+    def put(self, key: tuple, mol: Chem.Mol, crop_mask: np.ndarray) -> None:
+        self.put_many([(key, mol, crop_mask)])
+
+    def put_many(self, items: list[tuple[tuple, Chem.Mol, np.ndarray]]) -> None:
+        if self.maxsize <= 0:
+            return
+        entries = [(key, mol.GetConformer().GetPositions(), mol, crop_mask) for key, mol, crop_mask in items]
+        with self._lock:
+            for key, positions, mol, crop_mask in entries:
+                if key not in self._entries:
+                    template = self._templates.get(key[:2])
+                    if template is None:
+                        self._templates[key[:2]] = [Chem.Mol(mol), crop_mask.copy(), 1]
+                    else:
+                        template[2] += 1
+                self._entries[key] = positions
+                self._entries.move_to_end(key)
+            while len(self._entries) > self.maxsize:
+                evicted, _ = self._entries.popitem(last=False)
+                template = self._templates[evicted[:2]]
+                template[2] -= 1
+                if template[2] == 0:
+                    del self._templates[evicted[:2]]
+
+    def clear(self) -> None:
+        with self._lock:
+            self._entries.clear()
+            self._templates.clear()
+
+
+_CONFORMERS = _ConformerCache(_CONFORMER_CACHE_SIZE)
+
+
+def _conformer_key(kind: str, ccd_code: str, random_seed: int | None, fingerprint: tuple) -> tuple:
+    return (kind, ccd_code, random_seed, fingerprint)
+
+
+def _embed_conformer(
+    mol_h: Chem.Mol,
+    random_seed: int | None = None,
+    *,
+    retry_seed: Callable[[], int] | None = None,
+) -> tuple[int, bool]:
+    """Embed one 3-D conformer into *mol_h*.
+
+    Returns:
+        The conformer id (-1 on failure), and whether it came from the first,
+        seeded attempt; only such a conformer is a function of the seed alone.
+    """
+    if mol_h.GetNumAtoms() == 1:
+        conf = Chem.Conformer(1)
+        conf.SetAtomPosition(0, Point3D(0.0, 0.0, 0.0))
+        mol_h.RemoveAllConformers()
+        return mol_h.AddConformer(conf, assignId=True), True
+
+    params = _etkdg_params(_python_rng().randint(0, 10**9) if random_seed is None else random_seed)
+    conf_id = AllChem.EmbedMolecule(mol_h, params)
+    if conf_id != -1:
+        return conf_id, True
+    params.useRandomCoords = True
+    if retry_seed is not None:
+        params.randomSeed = retry_seed()
+    else:
+        params.randomSeed = (
+            _python_rng().randint(0, 10**9) if random_seed is None else random.Random(random_seed).randint(0, 10**9)
+        )
+    return AllChem.EmbedMolecule(mol_h, params), False
+
+
 def _embed_conformer_inplace(
     mol_h: Chem.Mol,
     random_seed: int | None = None,
@@ -199,26 +348,48 @@ def _embed_conformer_inplace(
     directly — numerically identical to what ETKDG produces for one atom,
     without the warning or the wasted embedding attempt.
     """
-    if mol_h.GetNumAtoms() == 1:
-        conf = Chem.Conformer(1)
-        conf.SetAtomPosition(0, Point3D(0.0, 0.0, 0.0))
-        mol_h.RemoveAllConformers()
-        return mol_h.AddConformer(conf, assignId=True)
+    return _embed_conformer(mol_h, random_seed, retry_seed=retry_seed)[0]
 
-    params = AllChem.ETKDGv3()
-    params.randomSeed = _python_rng().randint(0, 10**9) if random_seed is None else random_seed
-    params.clearConfs = False
-    conf_id = AllChem.EmbedMolecule(mol_h, params)
-    if conf_id == -1:
-        params.useRandomCoords = True
-        if retry_seed is not None:
-            params.randomSeed = retry_seed()
+
+@lru_cache(maxsize=500)
+def _hydrogenated_atom_count(topology: Callable[[str], tuple[Chem.Mol, np.ndarray]], ccd_code: str) -> int:
+    return Chem.AddHs(Chem.Mol(topology(ccd_code)[0])).GetNumAtoms()
+
+
+def _embed_topology(
+    kind: str,
+    topology: Callable[[str], tuple[Chem.Mol, np.ndarray]],
+    ccd_code: str,
+    random_seed: int | None,
+    retry_seed: Callable[[], int] | None,
+    pending: list | None = None,
+    fingerprint: tuple | None = None,
+) -> tuple[Chem.Mol, np.ndarray]:
+    """Return a heavy-atom copy of a CCD topology with one embedded conformer.
+
+    An unseeded call draws its seed here, where ``_embed_conformer`` would
+    draw it, so the request RNG advances exactly as without the cache.
+    With *pending*, the caller has looked the key up already, and a new
+    conformer is appended there for the caller to store. *fingerprint* is
+    the caller's ``_etkdg_fingerprint()`` for this request.
+    """
+    mol, in_crop_mask = topology(ccd_code)
+    if random_seed is None and _hydrogenated_atom_count(topology, ccd_code) > 1:
+        random_seed = _draw_conformer_seed()
+        retry_seed = retry_seed or _draw_conformer_seed
+    key = _conformer_key(kind, ccd_code, random_seed, _etkdg_fingerprint() if fingerprint is None else fingerprint)
+    cached = None if pending is not None else _CONFORMERS.get(key)
+    if cached is not None:
+        return cached
+    mol_h = Chem.AddHs(Chem.Mol(mol))
+    _, reproducible = _embed_conformer(mol_h, random_seed, retry_seed=retry_seed)
+    mol_h = Chem.RemoveHs(mol_h)
+    if reproducible:
+        if pending is None:
+            _CONFORMERS.put(key, mol_h, in_crop_mask)
         else:
-            params.randomSeed = (
-                _python_rng().randint(0, 10**9) if random_seed is None else random.Random(random_seed).randint(0, 10**9)
-            )
-        conf_id = AllChem.EmbedMolecule(mol_h, params)
-    return conf_id
+            pending.append((key, mol_h, in_crop_mask))
+    return mol_h, in_crop_mask.copy()
 
 
 def _build_nucleotide_rdkit_mol(
@@ -226,6 +397,8 @@ def _build_nucleotide_rdkit_mol(
     random_seed: int | None = None,
     *,
     retry_seed: Callable[[], int] | None = None,
+    pending: list | None = None,
+    fingerprint: tuple | None = None,
 ) -> tuple[Chem.Mol | None, np.ndarray]:
     """Convert a CCD nucleotide residue to an RDKit Mol with 3D conformer.
 
@@ -239,11 +412,9 @@ def _build_nucleotide_rdkit_mol(
         in_crop_mask[i] = True for atoms to keep (non-leaving).
     """
     try:
-        mol, in_crop_mask = _nucleotide_rdkit_topology(ccd_code)
-        mol_h = Chem.AddHs(Chem.Mol(mol))
-        _embed_conformer_inplace(mol_h, random_seed, retry_seed=retry_seed)
-        mol_h = Chem.RemoveHs(mol_h)
-        return mol_h, in_crop_mask.copy()
+        return _embed_topology(
+            "nucleotide", _nucleotide_rdkit_topology, ccd_code, random_seed, retry_seed, pending, fingerprint
+        )
     except Exception as e:
         _logger.debug("Failed to build RDKit mol for nucleotide %s: %s", ccd_code, e)
         return None, np.array([], dtype=bool)
@@ -294,6 +465,8 @@ def _build_residue_rdkit_mol(
     random_seed: int | None = None,
     *,
     retry_seed: Callable[[], int] = _draw_conformer_seed,
+    pending: list | None = None,
+    fingerprint: tuple | None = None,
 ) -> tuple[Chem.Mol | None, np.ndarray]:
     """Convert a CCD residue to an RDKit Mol with 3D conformer.
 
@@ -309,30 +482,66 @@ def _build_residue_rdkit_mol(
     _get_residue_from_ccd_with_oxt(ccd_code)
 
     try:
-        mol, in_crop_mask = _residue_rdkit_topology(ccd_code)
-        mol_h = Chem.AddHs(Chem.Mol(mol))
-        _embed_conformer_inplace(mol_h, random_seed, retry_seed=retry_seed)
-        mol_h = Chem.RemoveHs(mol_h)
-        return mol_h, in_crop_mask.copy()
+        return _embed_topology(
+            "residue", _residue_rdkit_topology, ccd_code, random_seed, retry_seed, pending, fingerprint
+        )
     except Exception as e:
         _logger.debug("Failed to build RDKit mol for %s: %s", ccd_code, e)
         return None, np.array([], dtype=bool)
 
 
-def _prefetch_protein_mols(ccd_codes: list[str]) -> list[tuple[Chem.Mol | None, np.ndarray]] | None:
-    return _prefetch_serial_mols(ccd_codes, _residue_rdkit_topology, _build_residue_rdkit_mol)
+def _build_parallel(
+    kind: str,
+    builder: Callable[..., tuple[Chem.Mol | None, np.ndarray]],
+    ccd_codes: list[str],
+    seeds: list[int],
+    fingerprint: tuple | None = None,
+    **kwargs: Any,
+) -> list[tuple[Chem.Mol | None, np.ndarray]]:
+    """Build one mol per (code, seed): cached conformers inline, the rest on the conformer pool.
+
+    Pool workers only embed; the new conformers enter the cache after the
+    pool joins. Copying them in from the workers, while the other workers
+    embed, makes a fully uncached request about a quarter slower.
+    """
+    if fingerprint is None:
+        fingerprint = _etkdg_fingerprint()
+    results = [
+        _CONFORMERS.get(_conformer_key(kind, code, seed, fingerprint))
+        for code, seed in zip(ccd_codes, seeds, strict=True)
+    ]
+    misses = [index for index, result in enumerate(results) if result is None]
+    if misses:
+        pending: list = []
+        build = partial(builder, pending=pending, fingerprint=fingerprint, **kwargs)
+        with ThreadPoolExecutor(max_workers=_CONFORMER_WORKERS) as executor:
+            built = executor.map(build, [ccd_codes[index] for index in misses], [seeds[index] for index in misses])
+            for index, result in zip(misses, built, strict=True):
+                results[index] = result
+        _CONFORMERS.put_many(pending)
+    return results
+
+
+def _prefetch_protein_mols(
+    ccd_codes: list[str], fingerprint: tuple | None = None
+) -> list[tuple[Chem.Mol | None, np.ndarray]] | None:
+    return _prefetch_serial_mols(ccd_codes, "residue", _residue_rdkit_topology, _build_residue_rdkit_mol, fingerprint)
 
 
 def _prefetch_serial_mols(
     ccd_codes: list[str],
+    kind: str,
     topology: Callable[[str], tuple[Chem.Mol, np.ndarray]],
     builder: Callable[..., tuple[Chem.Mol | None, np.ndarray]],
+    fingerprint: tuple | None = None,
 ) -> list[tuple[Chem.Mol | None, np.ndarray]] | None:
     """Speculate primary embeddings; commit draws in order.
 
     Failed speculation and shifted seeds replay serially. Workers never draw
     from the global RNG, and replay never restores its state.
     """
+    if fingerprint is None:
+        fingerprint = _etkdg_fingerprint()
     try:
         for ccd_code in dict.fromkeys(ccd_codes):
             mol, _ = topology(ccd_code)
@@ -341,9 +550,9 @@ def _prefetch_serial_mols(
         predictor = random.Random()
         predictor.setstate(_python_rng().getstate())
         seeds = [predictor.randint(0, 10**9) for _ in ccd_codes]
-        build = partial(builder, retry_seed=_defer_conformer_retry)
-        with ThreadPoolExecutor(max_workers=_CONFORMER_WORKERS) as executor:
-            speculative = list(executor.map(build, ccd_codes, seeds))
+        speculative = _build_parallel(
+            kind, builder, ccd_codes, seeds, fingerprint=fingerprint, retry_seed=_defer_conformer_retry
+        )
     except Exception as e:
         _logger.debug("Conformer prefetch failed: %s", e)
         return None
@@ -351,12 +560,12 @@ def _prefetch_serial_mols(
     results = []
     for ccd_code, predicted_seed, result in zip(ccd_codes, seeds, speculative, strict=True):
         if result[0] is None:
-            result = builder(ccd_code, retry_seed=_draw_conformer_seed)
+            result = builder(ccd_code, retry_seed=_draw_conformer_seed, fingerprint=fingerprint)
         else:
             # Never rewind another caller's random draws.
             seed = _draw_conformer_seed()
             if seed != predicted_seed:
-                result = builder(ccd_code, seed, retry_seed=_draw_conformer_seed)
+                result = builder(ccd_code, seed, retry_seed=_draw_conformer_seed, fingerprint=fingerprint)
         results.append(result)
     return results
 
@@ -431,6 +640,7 @@ def _build_structure_from_polymers(
 
     all_entities = sorted({_entity_repr(p) for p in polymers})
     entity_to_id: dict[str, int] = {e: i + 1 for i, e in enumerate(all_entities)}
+    fingerprint = _etkdg_fingerprint()
 
     for poly in polymers:
         sequence = poly.get("sequence", "")
@@ -494,7 +704,7 @@ def _build_structure_from_polymers(
                 # builder helper internally also retains OXT for conformer
                 # topology — we pass an all-ones crop mask so no atoms are
                 # excluded post-conformer-gen (ligands keep every atom).
-                mol, _proto_crop_mask = _build_residue_rdkit_mol(resname_3)
+                mol, _proto_crop_mask = _build_residue_rdkit_mol(resname_3, fingerprint=fingerprint)
                 # Override crop mask to all-ones — keep every atom including
                 # any OXT, matching OSS LIGAND_CCD behavior.
                 in_crop_mask = np.ones(len(res_atom_names), dtype=bool)
@@ -638,7 +848,7 @@ def _build_structure_from_polymers(
         for cid in chain_ids:
             prebuilt_mols = None
             if polymer_type == "protein" and len(sequence) >= 8 and all(char in resname_1_to_3 for char in sequence):
-                prebuilt_mols = _prefetch_protein_mols([resname_1_to_3[char] for char in sequence])
+                prebuilt_mols = _prefetch_protein_mols([resname_1_to_3[char] for char in sequence], fingerprint)
             if (
                 polymer_type in ("rna", "dna")
                 and 8 <= len(sequence) < 32
@@ -646,8 +856,10 @@ def _build_structure_from_polymers(
             ):
                 prebuilt_mols = _prefetch_serial_mols(
                     [resname_1_to_3[char] for char in sequence],
+                    "nucleotide",
                     _nucleotide_rdkit_topology,
                     _build_nucleotide_rdkit_mol,
+                    fingerprint,
                 )
             # Retain legacy retry seeds for long nucleotides.
             if (
@@ -663,8 +875,9 @@ def _build_structure_from_polymers(
                     _logger.debug("Nucleotide topology prefetch failed: %s", e)
                 else:
                     seeds = [_python_rng().randint(0, 10**9) for _ in sequence]
-                    with ThreadPoolExecutor(max_workers=_CONFORMER_WORKERS) as executor:
-                        prebuilt_mols = list(executor.map(_build_nucleotide_rdkit_mol, ccd_codes, seeds))
+                    prebuilt_mols = _build_parallel(
+                        "nucleotide", _build_nucleotide_rdkit_mol, ccd_codes, seeds, fingerprint=fingerprint
+                    )
             for res_idx, res_char in enumerate(sequence):
                 # Resolve 3-letter residue code
                 if res_char in resname_1_to_3:
@@ -703,7 +916,7 @@ def _build_structure_from_polymers(
 
                 # Build RDKit mol for conformer generation
                 if prebuilt_mols is None:
-                    mol, in_crop_mask = _build_mol_fn(resname_3)
+                    mol, in_crop_mask = _build_mol_fn(resname_3, fingerprint=fingerprint)
                 else:
                     mol, in_crop_mask = prebuilt_mols[res_idx]
                 residue_mols.append(mol)
@@ -836,6 +1049,10 @@ class OpenFold3ContextGenerator(ContextGeneratorBase):
     @required_kwargs.setter
     def required_kwargs(self, value: list[str]) -> None:
         self._required_kwargs = value
+
+    def prepare(self) -> None:
+        # Biotite decodes its whole bundled CCD on first access, about a second.
+        _get_residue_from_ccd_with_oxt("ALA")
 
     def __call__(self, parsed: InputParsed) -> dict[str, Any]:
         polymers = parsed.get("polymers")

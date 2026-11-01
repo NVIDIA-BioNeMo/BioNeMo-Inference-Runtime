@@ -23,7 +23,7 @@ from bionemo_ir.pipeline.base import ContextGeneratorBase
 from bionemo_ir.pipeline.models.boltz2.const import res_to_center_atom
 
 from .const import MOL_TYPES, RES_ATOMS_DICT, RESTYPES
-from .structure import ComponentStore, polymer_atoms, smiles_atoms
+from .structure import ComponentStore, polymer_atoms, preload_ccd, smiles_atoms
 
 
 class ProtenixContextGenerator(ContextGeneratorBase):
@@ -37,6 +37,7 @@ class ProtenixContextGenerator(ContextGeneratorBase):
         # Each worker loads local metadata; never ship the CCD through Ray.
         if self.store is None:
             self.store = ComponentStore(self.metadata or {})
+            preload_ccd()
 
     def __call__(self, parsed: dict) -> dict:
         self.prepare()

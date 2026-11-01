@@ -134,6 +134,10 @@ class _StageGroupWorker:
     def result(self) -> tuple[int, dict[str, Any]]:
         raise NotImplementedError
 
+    def wait_prepared(self) -> None:
+        """Block until the stages are built and prepared, or failed; a failure surfaces on the first result."""
+        raise NotImplementedError
+
     def close(self, abort: bool = False) -> None:
         raise NotImplementedError
 
@@ -148,12 +152,21 @@ def _next_request(requests: Any, parent_pid: int | None) -> tuple[int, dict[str,
                 return None
 
 
-def _serve(stages: StageGroup, requests: Any, results: Any, shared_memory: bool, parent_pid: int | None = None) -> None:
+def _serve(
+    stages: StageGroup,
+    requests: Any,
+    results: Any,
+    shared_memory: bool,
+    prepared: Any,
+    parent_pid: int | None = None,
+) -> None:
     try:
         udfs = _build_udfs(stages)
     except Exception:
         results.put((-1, None, traceback.format_exc()))
         return
+    finally:
+        prepared.set()
     while (item := _next_request(requests, parent_pid)) is not None:
         index, batch = item
         try:
@@ -168,9 +181,9 @@ def _serve(stages: StageGroup, requests: Any, results: Any, shared_memory: bool,
             results.put((index, batch, None))
 
 
-def _serve_process(stages_blob: bytes, requests: Any, results: Any, parent_pid: int) -> None:
+def _serve_process(stages_blob: bytes, requests: Any, results: Any, prepared: Any, parent_pid: int) -> None:
     # A spawned worker outlives a killed parent; the pid check lets it exit instead of idling forever.
-    _serve(pickle.loads(stages_blob), requests, results, shared_memory=True, parent_pid=parent_pid)
+    _serve(pickle.loads(stages_blob), requests, results, shared_memory=True, prepared=prepared, parent_pid=parent_pid)
 
 
 def _drain(requests: Any) -> None:
@@ -185,9 +198,10 @@ class _ThreadWorker(_StageGroupWorker):
     def __init__(self, stages: StageGroup) -> None:
         self._requests: queue.Queue[tuple[int, dict[str, Any]] | None] = queue.Queue()
         self._results: queue.Queue[_Message] = queue.Queue()
+        self._prepared = threading.Event()
         self._thread = threading.Thread(
             target=_serve,
-            args=(stages, self._requests, self._results, False),
+            args=(stages, self._requests, self._results, False, self._prepared),
             name="bioir-stage-group",
             daemon=True,
         )
@@ -202,6 +216,9 @@ class _ThreadWorker(_StageGroupWorker):
             raise RuntimeError(f"stage worker failed:\n{error}")
         return index, batch
 
+    def wait_prepared(self) -> None:
+        self._prepared.wait()
+
     def close(self, abort: bool = False) -> None:
         _drain(self._requests)
         self._requests.put(None)
@@ -213,9 +230,10 @@ class _ProcessWorker(_StageGroupWorker):
         context = multiprocessing.get_context("spawn")
         self._requests = context.Queue()
         self._results = context.Queue()
+        self._prepared = context.Event()
         self._process = context.Process(
             target=_serve_process,
-            args=(pickle.dumps(stages), self._requests, self._results, os.getpid()),
+            args=(pickle.dumps(stages), self._requests, self._results, self._prepared, os.getpid()),
             name="bioir-stage-group",
             daemon=True,
         )
@@ -235,6 +253,11 @@ class _ProcessWorker(_StageGroupWorker):
             if error is not None:
                 raise RuntimeError(f"stage worker failed:\n{error}")
             return index, _unpack_batch(batch)
+
+    def wait_prepared(self) -> None:
+        while not self._prepared.wait(timeout=1.0):
+            if not self._process.is_alive():
+                return
 
     def close(self, abort: bool = False) -> None:
         if self._process.is_alive():
@@ -259,8 +282,11 @@ class PipelinedSerialProcessor(SerialProcessor):
     run on the calling thread, so request ``N+1`` is parsed and featurized
     while the engine runs request ``N``. The epilogue receives buffered
     outputs only after every device batch succeeds, preventing writer side
-    effects on engine failure. Workers start on the first call and persist
-    across calls; :meth:`close` stops them.
+    effects on engine failure. Thread workers start with the processor, and
+    the constructor waits for their stages to prepare. Process workers start
+    on the first call so module-level construction is safe when a spawned
+    child imports the application. Workers persist across calls;
+    :meth:`close` stops them and the next call restarts them.
 
     Output rows keep the order of the input records and the per-row error
     semantics of :class:`SerialProcessor`; an engine exception still aborts the
@@ -293,6 +319,11 @@ class PipelinedSerialProcessor(SerialProcessor):
         self.prefetch = prefetch
         self._prologue: _StageGroupWorker | None = None
         self._epilogue: _StageGroupWorker | None = None
+        if self.workers == "thread":
+            self._start_workers()
+            for worker in (self._prologue, self._epilogue):
+                if worker is not None:
+                    worker.wait_prepared()
 
     def _stage_groups(self) -> tuple[StageGroup, StageGroup, StageGroup]:
         items = list(self.stages.items())
@@ -328,6 +359,15 @@ class PipelinedSerialProcessor(SerialProcessor):
             return _ProcessWorker(stages)
         return _ThreadWorker(stages)
 
+    def _start_workers(self) -> None:
+        prologue_stages, device_stages, epilogue_stages = self._stage_groups()
+        if not device_stages:
+            return
+        if self._prologue is None:
+            self._prologue = self._spawn(prologue_stages)
+        if self._epilogue is None:
+            self._epilogue = self._spawn(epilogue_stages)
+
     def __call__(self, records: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Run all stages on the given records, overlapping CPU stages across requests.
 
@@ -339,13 +379,10 @@ class PipelinedSerialProcessor(SerialProcessor):
             List of output dicts (flat, no packing), one per record, in order.
         """
         self._validate_input_keys(key for record in records for key in record)
-        prologue_stages, device_stages, epilogue_stages = self._stage_groups()
+        _, device_stages, _ = self._stage_groups()
         if not records or not device_stages:
             return super().__call__(records)
-        if self._prologue is None:
-            self._prologue = self._spawn(prologue_stages)
-        if self._epilogue is None:
-            self._epilogue = self._spawn(epilogue_stages)
+        self._start_workers()
         batches = [self._rows_to_columnar([record]) for record in records]
         try:
             outputs = self._run_pipeline(batches, device_stages)

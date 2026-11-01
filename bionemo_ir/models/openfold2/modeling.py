@@ -230,6 +230,7 @@ class OpenFold2(nn.Module, OptimizedModuleSetterMixin):
         pair_mask: torch.Tensor,
         templ_dim: int,
         is_template_present: bool | None = None,
+        template_mask_any: bool = True,
     ) -> dict[str, torch.Tensor]:
 
         skip_template_pair_stack = self.config.skip_template_pair_stack
@@ -269,8 +270,20 @@ class OpenFold2(nn.Module, OptimizedModuleSetterMixin):
                 pair_mask,
                 templ_dim,
                 skip_template_pair_stack=skip_template_pair_stack,
+                template_mask_any=template_mask_any,
             )
         return template_embeds
+
+    def template_mask_any(self, feats: dict[str, torch.Tensor]) -> bool:
+        """Whether any monomer ``template_mask`` entry is set; one host read.
+
+        ``is_template_present`` derives from resolved template atoms and can
+        be false while ``template_mask`` is set, so it cannot certify a zero
+        pair embedding.
+        """
+        if not self.config.enable_template or self.is_multimer or "template_mask" not in feats:
+            return True
+        return bool(feats["template_mask"].any())
 
     def tolerance_reached(self, prev_pos, next_pos, mask, eps=1e-8) -> bool:
         """
@@ -308,8 +321,13 @@ class OpenFold2(nn.Module, OptimizedModuleSetterMixin):
         x_prev: torch.Tensor,
         seq_mask: torch.Tensor,
         template_present: bool,
+        template_mask_any: bool = True,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        """Run the recycle trunk; structure generation and host checks stay outside."""
+        """Run the recycle trunk; structure generation and host checks stay outside.
+
+        ``template_mask_any=False`` asserts that every ``template_mask`` entry
+        is 0, so the monomer template pair embedding is omitted.
+        """
         # Resolve the template flag before capture and keep template mutations local.
         feats = dict(feats)
         # Prep some features
@@ -337,8 +355,12 @@ class OpenFold2(nn.Module, OptimizedModuleSetterMixin):
                 pair_mask.to(z),
                 no_batch_dims,
                 is_template_present=template_present,
+                template_mask_any=template_mask_any,
             )
-            z = z + template_embeds.pop("template_pair_embedding")
+            # Absent when every template is masked: the embedding would be exactly zero.
+            template_pair_embedding = template_embeds.pop("template_pair_embedding", None)
+            if template_pair_embedding is not None:
+                z = z + template_pair_embedding
 
             if "template_single_embedding" in template_embeds:
                 # [*, S = S_c + S_t, N, C_m]
@@ -405,6 +427,7 @@ class OpenFold2(nn.Module, OptimizedModuleSetterMixin):
             template_present = bool(template_present.any().item()) if template_present.numel() else False
         else:
             template_present = bool(template_present)
+        template_mask_any = self.template_mask_any(feats)
         # Pipeline timings and record metadata vary per request but are not
         # trunk inputs. Preserve tensor order and exclude those host values.
         trunk_feats = {key: value for key, value in feats.items() if torch.is_tensor(value)}
@@ -415,6 +438,7 @@ class OpenFold2(nn.Module, OptimizedModuleSetterMixin):
             x_prev=x_prev.contiguous(),
             seq_mask=feats["seq_mask"],
             template_present=template_present,
+            template_mask_any=template_mask_any,
         )
 
         structure_output = {}

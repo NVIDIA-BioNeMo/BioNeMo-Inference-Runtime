@@ -562,10 +562,39 @@ class TemplateEmbedder(nn.Module):
         pair_mask: torch.Tensor,
         templ_dim: int,
         skip_template_pair_stack: bool = False,
+        template_mask_any: bool = True,
+    ) -> dict[str, torch.Tensor]:
+        """Embed the templates.
+
+        ``template_mask_any=False`` asserts that every ``template_mask`` entry
+        is 0. The pair embedding is then the pointwise attention times 0, so
+        the ``template_pair_embedding`` entry is omitted instead of computed.
+        """
+        ret = {}
+        if template_mask_any:
+            ret["template_pair_embedding"] = self._embed_pair(batch, z, pair_mask, templ_dim, skip_template_pair_stack)
+
+        if self.config.embed_angles:
+            desired_dtype = self.config.template_single_embedder.torch_dtype
+            template_angle_feat = build_template_angle_feat(batch)
+
+            # [*, S_t, N, C_m]
+            a = self.template_single_embedder(template_angle_feat.to(dtype=desired_dtype))
+
+            ret["template_single_embedding"] = a
+
+        return ret
+
+    def _embed_pair(
+        self,
+        batch: dict[str, torch.Tensor],
+        z: torch.Tensor,
+        pair_mask: torch.Tensor,
+        templ_dim: int,
+        skip_template_pair_stack: bool,
     ) -> torch.Tensor:
         # Embed the templates one at a time (with a poor man's vmap)
         pair_embeds = []
-        z.shape[-2]
         n_templ = batch["template_aatype"].shape[templ_dim]
 
         for i in range(n_templ):
@@ -614,20 +643,7 @@ class TemplateEmbedder(nn.Module):
         # Append singletons
         t_mask = t_mask.reshape(*t_mask.shape, *([1] * (len(t.shape) - len(t_mask.shape))))
 
-        t = t * t_mask.to(t)
-
-        ret = {"template_pair_embedding": t}
-
-        if self.config.embed_angles:
-            desired_dtype = self.config.template_single_embedder.torch_dtype
-            template_angle_feat = build_template_angle_feat(batch)
-
-            # [*, S_t, N, C_m]
-            a = self.template_single_embedder(template_angle_feat.to(dtype=desired_dtype))
-
-            ret["template_single_embedding"] = a
-
-        return ret
+        return t * t_mask.to(t)
 
 
 class TemplatePairEmbedderMultimer(nn.Module):

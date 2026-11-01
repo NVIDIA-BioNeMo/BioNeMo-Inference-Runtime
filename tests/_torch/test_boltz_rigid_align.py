@@ -295,3 +295,73 @@ def test_kernel_rejects_unsupported_inputs() -> None:
     assert not supports_rigid_align(true_coords.double(), pred_coords, weights, mask)
     assert not supports_rigid_align(true_coords.mT.contiguous().mT, pred_coords, weights, mask)
     assert not supports_rigid_align(true_coords, pred_coords, weights[..., :1], mask)
+
+
+@_CUDA
+@pytest.mark.parametrize("num_points", [257, 2560, 7680, 14336])
+@pytest.mark.parametrize("offset", [0.0, 1000.0])
+def test_kernel_fp32_covariance_is_translation_stable(num_points: int, offset: float) -> None:
+    inputs = list(_inputs("cuda", num_points=num_points))
+    inputs[0] += offset
+    inputs[1] += offset
+    actual = weighted_rigid_align(*inputs)
+    expected = _svd_reference(*inputs).float()
+    torch.testing.assert_close(actual, expected, atol=3e-4, rtol=0)
+
+
+@_CUDA
+def test_kernel_fp32_collapsed_cloud_with_offset() -> None:
+    true_coords, pred_coords, weights, mask = _inputs("cuda", num_points=2560)
+    true_coords.fill_(1000.0)
+    pred_coords.fill_(-300.0)
+    rotation, shift = rigid_align_transform(true_coords, pred_coords, weights, mask)
+    torch.testing.assert_close(rotation, torch.eye(3, device="cuda").expand_as(rotation), atol=2e-5, rtol=2e-5)
+    actual = weighted_rigid_align(true_coords, pred_coords, weights, mask)
+    torch.testing.assert_close(actual, pred_coords, atol=2e-4, rtol=2e-5)
+
+
+@_CUDA
+@pytest.mark.parametrize("first_valid", [1, 1025])
+def test_kernel_centroid_ignores_masked_outlier(first_valid: int) -> None:
+    inputs = list(_inputs("cuda", num_points=2560))
+    inputs[3][..., :first_valid] = 0
+    inputs[0][..., :first_valid, :] = 1e8
+    inputs[1][..., :first_valid, :] = -1e8
+    actual = weighted_rigid_align(*inputs)
+    expected = _svd_reference(*inputs).float()
+    # Ignore the masked atoms when checking the fitted cloud.
+    torch.testing.assert_close(actual[..., first_valid:, :], expected[..., first_valid:, :], atol=2e-5, rtol=2e-5)
+
+
+@_CUDA
+@pytest.mark.parametrize("outlier", [1e4, 1e6, 1e8])
+@pytest.mark.parametrize("first_regular", [1, 1025])
+def test_kernel_centroid_ignores_negligible_weight_outlier(outlier: float, first_regular: int) -> None:
+    true_coords, pred_coords, weights, mask = _inputs("cuda", num_points=2560)
+    true_coords[..., :first_regular, :] = outlier
+    rotation = torch.tensor([[0, -1, 0], [1, 0, 0], [0, 0, 1]], device="cuda", dtype=true_coords.dtype)
+    translation = torch.tensor([2, -3, 1], device="cuda", dtype=true_coords.dtype)
+    pred_coords[..., :first_regular, :] = true_coords[..., :first_regular, :] @ rotation.T + translation
+    weights[..., :first_regular] = 1e-20
+    mask[..., :first_regular] = 1
+    actual = weighted_rigid_align(true_coords, pred_coords, weights, mask)
+    expected = _svd_reference(true_coords, pred_coords, weights, mask).float()
+    # The outlier's scale must not loosen the tolerance on ordinary atoms.
+    torch.testing.assert_close(actual[..., first_regular:, :], expected[..., first_regular:, :], atol=2e-5, rtol=2e-5)
+
+
+@_CUDA
+def test_kernel_nearly_isotropic_reflection_keeps_optimal_residual() -> None:
+    generator = torch.Generator(device="cuda").manual_seed(72)
+    axes = torch.eye(3, device="cuda")
+    points = torch.cat((axes, -axes)).view(1, 1, 6, 3).expand(1, 64, 6, 3)
+    rotations, _ = torch.linalg.qr(torch.randn((2, 64, 3, 3), device="cuda", generator=generator))
+    rotations *= torch.det(rotations)[..., None, None]
+    true_coords = (points @ rotations[0]).contiguous()
+    pred_coords = ((points * torch.tensor([1.0, 1.0, -1.0 + 1e-7], device="cuda")) @ rotations[1]).contiguous()
+    weights = torch.ones(true_coords.shape[:-1], device="cuda")
+    actual = weighted_rigid_align(true_coords, pred_coords, weights, weights)
+    expected = _svd_reference(true_coords, pred_coords, weights, weights)
+    actual_loss = ((actual.double() - pred_coords.double()) ** 2).sum((-2, -1))
+    expected_loss = ((expected - pred_coords.double()) ** 2).sum((-2, -1))
+    assert torch.all(actual_loss <= expected_loss + 1e-4)

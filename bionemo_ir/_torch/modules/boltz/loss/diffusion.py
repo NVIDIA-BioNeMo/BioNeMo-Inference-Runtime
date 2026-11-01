@@ -77,8 +77,8 @@ def weighted_rigid_align(
 
     Contiguous CUDA float32 inputs take a fused solver and pointwise rotation
     with no host synchronization (CUDA-graph safe); other inputs run the
-    batched torch path below. Both solve the same Horn/Kabsch rotation in
-    float64.
+    batched torch path below. The fused solver uses float32; the torch
+    eigensolver uses float64.
 
     Parameters
     ----------

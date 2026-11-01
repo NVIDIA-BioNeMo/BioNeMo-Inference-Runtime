@@ -472,6 +472,10 @@ def _launch_params(
     tile_d = triton.next_power_of_2(max(D, D_OUT))
     if tile_d * _MIN_TILE_N > _SINGLE_TILE_MAX_ELEMS:
         return _TILE_D, 64, 8, False
+    if sm_version == 100 and layout == Layout.BND_BND and D == D_OUT == 384 and B * N >= 8192:
+        # Narrower CTAs expose more independent rows in the large contiguous
+        # normalization used by the pair transition. Keep the full row in registers.
+        return tile_d, 8, 2, True
     tuning = _LAUNCH_TUNING.get(sm_version)
     if tuning is None:
         return _default_launch_params(tile_d, B * N, layout, sm_count, cache_resident)

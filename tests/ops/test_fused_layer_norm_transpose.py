@@ -78,6 +78,28 @@ def test_fused_layer_norm_supports_optional_affine(
 
 
 @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16, torch.float32])
+@pytest.mark.parametrize("shape", [(1, 8193, 384), (2, 6001, 384)])
+@pytest.mark.parametrize("rms_norm", [False, True], ids=["layer_norm", "rms_norm"])
+def test_large_contiguous_norm_with_partial_row_tile(
+    dtype: torch.dtype, shape: tuple[int, int, int], rms_norm: bool
+) -> None:
+    torch.manual_seed(23)
+    x = torch.randn(shape, device="cuda", dtype=dtype)
+    weight = torch.randn(384, device="cuda", dtype=dtype)
+    bias = None if rms_norm else torch.randn(384, device="cuda", dtype=dtype)
+
+    with torch.inference_mode():
+        actual = layer_norm_transpose(x, weight, bias, rms_norm=rms_norm, layout="bnd->bnd")
+        if rms_norm:
+            expected = F.rms_norm(x.float(), (384,), weight.float(), eps=1e-5).to(dtype)
+        else:
+            expected = F.layer_norm(x.float(), (384,), weight.float(), bias.float(), 1e-5).to(dtype)
+
+    tolerance = {torch.float16: 2e-3, torch.bfloat16: 2e-2, torch.float32: 2e-5}[dtype]
+    torch.testing.assert_close(actual, expected, atol=tolerance, rtol=tolerance)
+
+
+@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16, torch.float32])
 @pytest.mark.parametrize("with_weight", [False, True], ids=["no_affine", "weight"])
 @pytest.mark.parametrize("shape", [(2, 17, 196), (1, 512, 384), (3, 7, 768)])
 def test_fused_layer_norm_transpose_supports_rms_norm(

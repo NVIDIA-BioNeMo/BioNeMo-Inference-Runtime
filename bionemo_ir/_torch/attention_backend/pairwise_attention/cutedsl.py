@@ -22,10 +22,22 @@ instead.
 Requires the KV-side mask to be left-aligned (``1...1 0...0``). The kernel takes
 one ``actual_s_kv`` count of leading 1s per batch instead of a ``[B, Sk]`` mask.
 
+SM100 and SM103 run the Blackwell FMHA kernel, and the Ampere kernel for short
+sequences, from source or from CUBINs. A kernel library built before their
+CUBINs shipped cannot provide them, so there a call that cannot compile the
+kernel runs on SDPA instead.
+
 Logical input shapes, and the flattened / padded forms passed to the kernel:
   Q, K, V, O  : [*, S, H, D]      ->  [B*mult, S, H, ceil(D / 16) * 16]
   bias        : [*, H, Sq, Sk]    ->  [B, H, Sq, ceil(Sk / align) * align]
   actual_s_kv : [B] int32         ->  [B]            broadcasts over mult
+                                      (the Blackwell kernel reads it as a
+                                      [mult, B] view with a zero mult stride)
+
+Every bias column must be finite, including padded columns and columns at or
+past a batch's valid-key count: the kernels mask those scores, but a NaN or
+Inf in the bias can reach valid outputs before the mask applies. Finite values
+there need not be zero; the backend's own key padding writes zeros.
 """
 
 from __future__ import annotations
@@ -53,10 +65,12 @@ from ..interface import AttentionBackend, AttentionMetadata
 from ._config import (
     _PW_CONFIGS_DIR,
     PairwiseAttentionLeftMaskKernelConfig,
+    get_bucket_kernel_abi,
     get_kernel_config,
     get_nearest_bucket,
 )
-from ._cubin import PairwiseAttentionCubinExecutable
+from ._cubin import PairwiseAttentionCubinExecutable, PairwiseAttentionCubinMissing
+from .sdpa import _empty_with_aligned_rows, _sum_with_aligned_rows
 
 __all__ = [
     "PairwiseAttentionCuTeLeftMask",
@@ -68,6 +82,9 @@ __all__ = [
 ]
 
 _DTYPES = (torch.float16, torch.bfloat16)
+# SMs whose CUBINs shipped after earlier kernel libraries: a library without
+# them runs the call on SDPA rather than failing.
+_SDPA_FALLBACK_SMS = frozenset({100, 103})
 
 
 class PairwiseAttentionCuTeLeftMaskMetadata(AttentionMetadata):
@@ -84,6 +101,7 @@ class _PairwiseAttentionVariant:
     head_dim: int
     bucket: int
     kv_packed: bool
+    kernel_abi: str = "sm80"
 
 
 @dataclass(frozen=True)
@@ -153,6 +171,37 @@ def _resolve_lse_buffer(
     return torch.empty(0, *shape[1:], dtype=torch.float32, device=device)
 
 
+def _attend_with_sdpa(inputs: _PairwiseAttentionLaunchInputs) -> None:
+    """Write ``inputs.output`` with SDPA, the route a source-free build takes where no CUBIN ships.
+
+    Masks the keys at or past each batch's count, shares each batch's bias
+    across its samples, and sums mask and bias into 16-byte aligned rows, which
+    cuDNN needs for its fast kernel. Padded head columns are zero, so they leave
+    the scores and the output's valid columns unchanged. Skips the LSE store.
+    """
+    counts = inputs.actual_s_kv
+    if counts.ndim == 2:  # The Blackwell kernel's [mult, B] view.
+        counts = counts[0]
+    q, k, v = (operand.transpose(1, 2) for operand in (inputs.q, inputs.k, inputs.v))
+    seqlen_kv = k.shape[-2]
+    masked = torch.arange(seqlen_kv, device=q.device) >= counts[:, None, None, None]
+    # SDPA defines an all-negative-infinity row as zero, like the kernel's
+    # empty prefix. A finite sentinel spreads such a row over invalid keys.
+    mask = torch.zeros(masked.shape, dtype=q.dtype, device=q.device).masked_fill_(masked, float("-inf"))
+    attn_mask = _sum_with_aligned_rows([mask, inputs.bias[..., :seqlen_kv]])
+    batch = attn_mask.shape[0]
+    if batch == 1:
+        attn_mask = attn_mask.expand(q.shape[0], *attn_mask.shape[1:])
+    elif inputs.mult > 1:
+        # Row b * mult + m reads batch b's mask; the fold has to copy, so it copies into aligned rows.
+        expanded = attn_mask[:, None].expand(batch, inputs.mult, *attn_mask.shape[1:])
+        attn_mask = _empty_with_aligned_rows(expanded, expanded.shape)
+        attn_mask.copy_(expanded)
+        attn_mask = attn_mask.flatten(0, 1)
+    output = F.scaled_dot_product_attention(q, k, v, attn_mask=attn_mask, scale=inputs.softmax_scale)
+    inputs.output.copy_(output.transpose(1, 2))
+
+
 def _to_actual_s_kv_int32(actual_s_kv: torch.Tensor) -> torch.Tensor:
     """Normalize ``actual_s_kv`` to a contiguous ``[B]`` int32 tensor.
 
@@ -190,7 +239,7 @@ class PairwiseAttentionCuTeLeftMask(CuteKernelCache, AttentionBackend[PairwiseAt
 
     Metadata = PairwiseAttentionCuTeLeftMaskMetadata
 
-    _compiled_cache: dict[tuple[int, _PairwiseAttentionVariant], Any] = {}
+    _compiled_cache: dict[tuple[int, _PairwiseAttentionVariant, bool], Any] = {}
 
     def __init__(
         self,
@@ -206,11 +255,18 @@ class PairwiseAttentionCuTeLeftMask(CuteKernelCache, AttentionBackend[PairwiseAt
         major, minor = torch.cuda.get_device_capability()
         self._sm_version = major * 10 + minor
         self._last_executable = None
-        self._last_variant: _PairwiseAttentionVariant | None = None
+        self._last_call: tuple[_PairwiseAttentionVariant, bool] | None = None
         self._last_variant_slot: tuple[tuple, _PairwiseAttentionVariant] | None = None
 
-    def _disk_cache_key(self, variant: _PairwiseAttentionVariant) -> tuple:
-        return (
+    def _cache_key(self, variant: _PairwiseAttentionVariant) -> tuple[int, _PairwiseAttentionVariant, bool]:
+        """Key ``variant``'s executable per setting of ``CUTEDSL_FORCE_CUBIN``, so a forced call never runs a
+        source executable and clearing the switch runs the source one again."""
+        return (self._sm_version, variant, self.force_cubin())
+
+    def _disk_cache_key(
+        self, variant: _PairwiseAttentionVariant, config: PairwiseAttentionLeftMaskKernelConfig
+    ) -> tuple:
+        key = (
             "attn_pair_bias_cute_left_mask",
             2,
             self._sm_version,
@@ -219,6 +275,12 @@ class PairwiseAttentionCuTeLeftMask(CuteKernelCache, AttentionBackend[PairwiseAt
             variant.bucket,
             variant.kv_packed,
         )
+        # SM100 and SM103 anchors name their kernel, which also sets the
+        # actual_s_kv layout; keying on it and the tile keeps a retuned anchor
+        # from reloading a stale kernel.
+        if self._sm_version in _SDPA_FALLBACK_SMS:
+            return (*key, variant.kernel_abi, *config.cache_identity)
+        return key
 
     def _resolve_source_kernel(
         self,
@@ -237,7 +299,7 @@ class PairwiseAttentionCuTeLeftMask(CuteKernelCache, AttentionBackend[PairwiseAt
         variant: _PairwiseAttentionVariant,
         source_error: Exception | None = None,
     ):
-        cache_key = (self._sm_version, variant)
+        cache_key = self._cache_key(variant)
         try:
             executable = populate_compiled_cache_from_library(
                 PairwiseAttentionCuTeLeftMask._compiled_cache,
@@ -254,6 +316,13 @@ class PairwiseAttentionCuTeLeftMask(CuteKernelCache, AttentionBackend[PairwiseAt
                 ),
             )
         except CuTeDSLKernelLibraryError as library_error:
+            if self._sm_version in _SDPA_FALLBACK_SMS and isinstance(library_error, PairwiseAttentionCubinMissing):
+                logger.warning(
+                    f"CuTeDSL pairwise attention (left-mask): the kernel library has no CUBIN for "
+                    f"SM{self._sm_version}, head_dim={variant.head_dim}, bucket={variant.bucket}; "
+                    f"running on SDPA: {library_error}"
+                )
+                return None
             if source_error is None:
                 raise RuntimeError(
                     f"{FORCE_CUBIN_ENV} is set but the precompiled kernel "
@@ -284,8 +353,8 @@ class PairwiseAttentionCuTeLeftMask(CuteKernelCache, AttentionBackend[PairwiseAt
         sm_scale: float,
         mult: int,
     ):
-        cache_key = (self._sm_version, variant)
-        disk_key = self._disk_cache_key(variant)
+        cache_key = self._cache_key(variant)
+        disk_key = self._disk_cache_key(variant, config)
         executable = self.load_from_cache(disk_key)
         if executable is not None:
             logger.info(
@@ -326,7 +395,7 @@ class PairwiseAttentionCuTeLeftMask(CuteKernelCache, AttentionBackend[PairwiseAt
         sm_scale: float,
         mult: int,
     ):
-        cache_key = (self._sm_version, variant)
+        cache_key = self._cache_key(variant)
         executable = PairwiseAttentionCuTeLeftMask._compiled_cache.get(cache_key)
         if executable is not None:
             return executable
@@ -427,13 +496,19 @@ class PairwiseAttentionCuTeLeftMask(CuteKernelCache, AttentionBackend[PairwiseAt
         if last is not None and last[0] == variant_key:
             variant = last[1]
         else:
+            bucket = get_nearest_bucket(self._sm_version, padded_head_dim, _compute_S(seqlen_q, seqlen_kv))
             variant = _PairwiseAttentionVariant(
                 dtype=q_flat.dtype,
                 head_dim=padded_head_dim,
-                bucket=get_nearest_bucket(self._sm_version, padded_head_dim, _compute_S(seqlen_q, seqlen_kv)),
+                bucket=bucket,
                 kv_packed=kv_packed,
+                kernel_abi=get_bucket_kernel_abi(self._sm_version, padded_head_dim, bucket),
             )
             self._last_variant_slot = (variant_key, variant)
+        if variant.kernel_abi == "sm100":
+            # The Blackwell kernel reads the count of row b * mult + m; a zero
+            # stride over mult lands it on count b.
+            actual_s_kv_flat = actual_s_kv_flat.view(1, batch_size).expand(mult, batch_size)
         return _PairwiseAttentionLaunchInputs(
             q=q_flat,
             k=k_flat,
@@ -473,15 +548,21 @@ class PairwiseAttentionCuTeLeftMask(CuteKernelCache, AttentionBackend[PairwiseAt
                 actual_s_kv: ``[B]`` int32 — count of leading 1s along Sk. A
                              left-aligned ``[*, Sk]`` float binary mask is
                              accepted as a convenience.
-                pair_bias  : ``[*, H, Sq, Sk]``.
+                pair_bias  : ``[*, H, Sq, Sk]``, finite in every column,
+                             masked and padded ones included.
             output: Optional ``[B_flat, Sq, H, D_padded]`` buffer written in
                 place.
             output_lse: Optional ``[B_flat, Sq, H, 1]`` float32 buffer written
-                in place, honored by both the Ampere and Hopper kernels.
-                ``None`` or a shape/dtype/device mismatch skips the LSE store.
+                in place, honored by every kernel.
+                ``None`` or a shape/dtype/device mismatch skips the LSE store,
+                as does the SDPA route on SM100 and SM103 (see below).
 
         Returns:
             Output tensor ``[*, Sq, H, D]``.
+
+        On SM100 and SM103, a call that cannot compile the kernel, under
+        ``CUTEDSL_FORCE_CUBIN=1`` or without the sources, runs on SDPA when
+        the kernel library predates their CUBINs.
         """
         if biases is None or len(biases) < 2:
             raise ValueError("CuTeDSL pairwise attention (left-mask) expects biases=[actual_s_kv, pair_bias]")
@@ -500,7 +581,8 @@ class PairwiseAttentionCuTeLeftMask(CuteKernelCache, AttentionBackend[PairwiseAt
             output,
             output_lse,
         )
-        if launch_inputs.variant == self._last_variant:
+        call_key = (launch_inputs.variant, self.force_cubin())
+        if call_key == self._last_call:
             executable = self._last_executable
         else:
             executable = self._get_executable(
@@ -509,22 +591,25 @@ class PairwiseAttentionCuTeLeftMask(CuteKernelCache, AttentionBackend[PairwiseAt
                 launch_inputs.softmax_scale,
                 launch_inputs.mult,
             )
-            self._last_variant = launch_inputs.variant
+            self._last_call = call_key
             self._last_executable = executable
 
-        launch_compiled_kernel(
-            executable,
-            launch_inputs.q,
-            launch_inputs.k,
-            launch_inputs.v,
-            launch_inputs.bias,
-            launch_inputs.actual_s_kv,
-            launch_inputs.output,
-            launch_inputs.lse,
-            launch_inputs.softmax_scale * _LOG2_E,
-            launch_inputs.softmax_scale,
-            launch_inputs.mult,
-        )
+        if executable is None:
+            _attend_with_sdpa(launch_inputs)
+        else:
+            launch_compiled_kernel(
+                executable,
+                launch_inputs.q,
+                launch_inputs.k,
+                launch_inputs.v,
+                launch_inputs.bias,
+                launch_inputs.actual_s_kv,
+                launch_inputs.output,
+                launch_inputs.lse,
+                launch_inputs.softmax_scale * _LOG2_E,
+                launch_inputs.softmax_scale,
+                launch_inputs.mult,
+            )
         output_shape = (
             *launch_inputs.batch_shape,
             launch_inputs.seqlen_q,

@@ -32,6 +32,10 @@ from bionemo_ir._torch.utils.kernel import (
 )
 
 
+class PairwiseAttentionCubinMissing(CuTeDSLKernelVariantUnavailable):
+    """The kernel library carries no image for the requested SM, head dimension, dtype and output layout."""
+
+
 class PairwiseAttentionCubinExecutable(CuTeDSLKernelLibraryExecutable):
     """Match the CuTeDSL compiled-function call ABI using the C++ launcher."""
 
@@ -54,14 +58,13 @@ class PairwiseAttentionCubinExecutable(CuTeDSLKernelLibraryExecutable):
         except KeyError as error:
             raise CuTeDSLKernelVariantUnavailable(f"pairwise attention CUBINs do not support {dtype}") from error
 
+        variant = f"SM{target_sm}, head_dim={head_dim}, bucket={bucket}, dtype={dtype}, kv_packed={kv_packed}"
         try:
             config = launcher.make_kernel_config(target_sm, head_dim, bucket, library_dtype, kv_packed)
+        except IndexError as error:
+            raise PairwiseAttentionCubinMissing(f"No pairwise attention CUBIN for {variant}") from error
         except (RuntimeError, TypeError, ValueError) as error:
-            raise CuTeDSLKernelVariantUnavailable(
-                f"No pairwise attention CUBIN for SM{target_sm}, "
-                f"head_dim={head_dim}, bucket={bucket}, dtype={dtype}, "
-                f"kv_packed={kv_packed}"
-            ) from error
+            raise CuTeDSLKernelVariantUnavailable(f"Pairwise attention CUBIN for {variant} cannot launch") from error
         if not config.spec.supports_direct_launch:
             raise CuTeDSLKernelVariantUnavailable(
                 f"Pairwise attention SM{target_sm}, head_dim={head_dim} uses "
@@ -93,6 +96,9 @@ class PairwiseAttentionCubinExecutable(CuTeDSLKernelLibraryExecutable):
         params.q = tensor_s3_d2_static(self._kernel_library, q)
         params.k = tensor_s3_d2_static(self._kernel_library, k)
         params.v = tensor_s3_d2_static(self._kernel_library, v)
+        if actual_s_kv.ndim == 2:
+            # The Blackwell kernel's [mult, B] view; the launcher rebuilds it from the counts and mult.
+            actual_s_kv = actual_s_kv[0]
         params.actual_s_kv = tensor_s1_d0(self._kernel_library, actual_s_kv)
         params.bias = tensor_s4_d3(self._kernel_library, bias)
         params.output = tensor_s3_d2_static(self._kernel_library, output)

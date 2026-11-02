@@ -1,0 +1,15 @@
+{
+  "kernel_abi": "sm100",
+  "note": "Copied from the SM100 anchors; not measured on SM103, where no Protenix or OpenFold3 call has D=64.",
+  "configs": {
+    "S=512": {
+      "kernel_abi": "sm80",
+      "m_block_size": 64,
+      "n_block_size": 128,
+      "num_threads": 128,
+      "swizzle_b": 3,
+      "load_bias_before_gemm": true
+    },
+    "S=640": {}
+  }
+}

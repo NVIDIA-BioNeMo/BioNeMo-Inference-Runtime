@@ -31,7 +31,7 @@ import torch.nn.functional as F
 
 from bionemo_ir._torch.custom_ops import fused_ln_proj_moveaxis_pad
 from bionemo_ir._torch.layers.attention import AttentionPairBias
-from tests._torch import init_module_weights, skip_if_cutedsl
+from tests._torch import SM_VERSION, init_module_weights, packaged_cubin_kernels, skip_if_cutedsl
 
 SEED = 42
 
@@ -199,7 +199,7 @@ _VELOCITY_CUTEDSL = Scenario(
 )
 def test_prep_mask_bias_shapes(sc: Scenario):
     """pair_bias and mask_bias must be broadcastable to q after _prep_qkvg."""
-    skip_if_cutedsl(sc.backend)
+    skip_if_cutedsl(sc.backend, "pairwise_attention")
     device = torch.device("cuda")
     attn = AttentionPairBias(
         layer_idx=0,
@@ -329,7 +329,7 @@ def test_full_forward_sdpa(sc: Scenario):
 )
 def test_full_forward_cutedsl(sc: Scenario):
     """Full AttentionPairBias.forward must succeed with CuTeDSL backend."""
-    skip_if_cutedsl(sc.backend)
+    skip_if_cutedsl(sc.backend, "pairwise_attention")
     device = torch.device("cuda")
 
     attn = AttentionPairBias(
@@ -370,7 +370,7 @@ def test_cutedsl_uses_fused_triton_kernel(sc: Scenario):
     """Verify the CuTeDSL path dispatches through the fused Triton
     ``LNProjMoveaxisPad._fused_kernel`` rather than the vanilla fallback.
     """
-    skip_if_cutedsl(sc.backend)
+    skip_if_cutedsl(sc.backend, "pairwise_attention")
     device = torch.device("cuda")
 
     attn = AttentionPairBias(
@@ -645,6 +645,43 @@ def test_rms_qk_bias_cutedsl_attention_matches_sdpa() -> None:
     with torch.inference_mode():
         expected = reference(node, pair, mask)
         actual = actual_module(node, pair, mask)
+    torch.testing.assert_close(actual, expected, atol=5e-2, rtol=5e-2)
+
+
+@pytest.mark.skipif(SM_VERSION not in (100, 103), reason="covers the SM100 and SM103 SDPA fallback")
+@pytest.mark.parametrize(
+    ("token_dim", "s_shape"), [(768, (1, 5, 37)), (384, (1, 37))], ids=["token_D48_x5", "pairformer_D24"]
+)
+def test_cutedsl_layer_matches_sdpa_under_force_cubin(token_dim: int, s_shape: tuple[int, ...]) -> None:
+    """Model tests set CUTEDSL_FORCE_CUBIN after building their layers. A layer built on CuTeDSL then runs
+    the SM100 CUBINs, or SDPA on a kernel library that predates them, and matches an SDPA layer, padded heads
+    included."""
+    skip_if_cutedsl("CuTeDSL", "pairwise_attention")
+    device = torch.device("cuda")
+    pair_dim, num_heads, keys = 16, 16, s_shape[-1]
+    layers = {
+        backend: AttentionPairBias(
+            layer_idx=0,
+            c_s=token_dim,
+            c_z=pair_dim,
+            num_heads=num_heads,
+            dtype=torch.bfloat16,
+            bias_proj=True,
+            initial_norm=True,
+            attn_backend=backend,
+        ).to(device)
+        for backend in ("SDPA", "CuTeDSL")
+    }
+    init_module_weights(layers["SDPA"])
+    layers["CuTeDSL"].load_state_dict(layers["SDPA"].state_dict())
+    s = torch.randn(*s_shape, token_dim, device=device, dtype=torch.bfloat16)
+    z = torch.randn(1, keys, keys, pair_dim, device=device, dtype=torch.bfloat16)
+    mask = torch.arange(keys, device=device)[None, :] < keys - 5
+
+    with torch.inference_mode():
+        expected = layers["SDPA"](s, z, mask)
+        with packaged_cubin_kernels():
+            actual = layers["CuTeDSL"](s, z, mask)
     torch.testing.assert_close(actual, expected, atol=5e-2, rtol=5e-2)
 
 

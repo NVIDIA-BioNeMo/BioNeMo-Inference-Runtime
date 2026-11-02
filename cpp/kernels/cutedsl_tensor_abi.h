@@ -75,6 +75,13 @@ extern "C"
     int64_t dynamic_strides[1];
   } cute_tensor_s1_d1_t;
 
+  /* Two dynamic extents and fully static strides. */
+  typedef struct
+  {
+    CUdeviceptr data;
+    int32_t dynamic_shapes[2];
+  } cute_tensor_s2_d0_t;
+
   /* Two dynamic extents and one dynamic outer stride. */
   typedef struct
   {
@@ -137,6 +144,7 @@ extern "C"
   CUTE_ABI_ASSERT(sizeof(cute_tensor_s1_d0_t) == 16, "unexpected CuTe tensor s1_d0 ABI");
   CUTE_ABI_ASSERT(sizeof(cute_tensor_s1_d1_t) == 24, "unexpected CuTe tensor s1_d1 ABI");
   CUTE_ABI_ASSERT(offsetof(cute_tensor_s1_d1_t, dynamic_strides) == 16, "unexpected CuTe tensor s1_d1 stride offset");
+  CUTE_ABI_ASSERT(sizeof(cute_tensor_s2_d0_t) == 16, "unexpected CuTe tensor s2_d0 ABI");
   CUTE_ABI_ASSERT(sizeof(cute_tensor_s2_d1_t) == 24, "unexpected CuTe tensor s2_d1 ABI");
   CUTE_ABI_ASSERT(offsetof(cute_tensor_s2_d1_t, dynamic_strides) == 16, "unexpected CuTe tensor s2_d1 stride offset");
   CUTE_ABI_ASSERT(sizeof(cute_tensor_s2_d3_t) == 40, "unexpected CuTe tensor s2_d3 ABI");

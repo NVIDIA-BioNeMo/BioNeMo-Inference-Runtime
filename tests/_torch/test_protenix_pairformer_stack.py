@@ -58,8 +58,8 @@ def _rmse_ratio(a: torch.Tensor, b: torch.Tensor) -> float:
     ids=["fp32", "bf16", "cutedsl"],
 )
 def test_protenix_pairformer_stack(sc: Scenario):
-    skip_if_cutedsl(sc.tri_backend)
-    skip_if_cutedsl(sc.pair_backend)
+    skip_if_cutedsl(sc.tri_backend, "triangle_attention")
+    skip_if_cutedsl(sc.pair_backend, "pairwise_attention")
     torch.manual_seed(42)
     os.environ["TORCH_ALLOW_TF32_CUBLAS_OVERRIDE"] = "0"
     os.environ["NVIDIA_TF32_OVERRIDE"] = "0"

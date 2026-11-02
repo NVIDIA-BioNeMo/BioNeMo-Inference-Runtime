@@ -1,0 +1,31 @@
+{
+  "kernel_abi": "sm100",
+  "note": "Measured on B300 (pairformer single attention): Ampere 64x64 up to S=48, Ampere 64x128 up to S=608 (S=64 keeps it for the 32x128 local-atom call), the Blackwell kernel above S=608 (SM100: 1088).",
+  "configs": {
+    "S=32": {
+      "kernel_abi": "sm80",
+      "m_block_size": 64,
+      "n_block_size": 64,
+      "num_threads": 128,
+      "swizzle_b": 3,
+      "load_bias_before_gemm": true
+    },
+    "S=64": {
+      "kernel_abi": "sm80",
+      "m_block_size": 64,
+      "n_block_size": 128,
+      "num_threads": 128,
+      "swizzle_b": 3,
+      "load_bias_before_gemm": true
+    },
+    "S=576": {
+      "kernel_abi": "sm80",
+      "m_block_size": 64,
+      "n_block_size": 128,
+      "num_threads": 128,
+      "swizzle_b": 3,
+      "load_bias_before_gemm": true
+    },
+    "S=640": {}
+  }
+}

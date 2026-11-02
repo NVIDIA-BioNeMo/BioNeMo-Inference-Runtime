@@ -24,6 +24,7 @@ from typing import Any
 
 from bionemo_ir._torch.utils.kernel import (
     CutlassNumeric,
+    KernelConfigBundle,
     get_config_file_name,
     load_kernel_configs,
     load_source_module,
@@ -40,6 +41,8 @@ class PairwiseAttentionLeftMaskKernelConfig:
     arch: str
     kernel_factory: Callable[[int], Any]
     can_implement: Callable[[CutlassNumeric, int], bool]
+    # Everything the bound kernel's machine code depends on beyond the variant.
+    cache_identity: tuple = ()
 
 
 _PW_CONFIGS_DIR = os.path.join(os.path.dirname(__file__), "configs")
@@ -79,6 +82,26 @@ def get_nearest_bucket(sm_version: int, head_dim: int, S: int) -> int:
     return bucket
 
 
+def _anchor_kernel_abi(bundle: KernelConfigBundle, tile_params: dict[str, Any]) -> str:
+    """Pop an anchor's own ``kernel_abi``, which overrides the bundle's for that anchor."""
+    kernel_abi = tile_params.pop("kernel_abi", bundle.kernel_abi)
+    if kernel_abi not in ("sm80", "sm90", "sm100"):
+        raise ValueError(f"{bundle.source_path}: unsupported pairwise-attention kernel_abi {kernel_abi!r}")
+    return kernel_abi
+
+
+def get_bucket_kernel_abi(sm_version: int, head_dim: int, bucket: int) -> str:
+    """Return the kernel ABI that serves the tuned ``S=<bucket>`` anchor.
+
+    An anchor may name its own ``kernel_abi``: on SM100 and SM103 short
+    sequences run the Ampere kernel, whose smaller tiles pad less than the
+    Blackwell kernel's 256-row work items.
+    """
+    bundle = _load_config_bundle(sm_version, head_dim)
+    _, tile_params = _nearest_variant(bundle.configs, bucket)
+    return _anchor_kernel_abi(bundle, tile_params)
+
+
 def get_kernel_config(
     sm_version: int,
     head_dim: int,
@@ -87,9 +110,15 @@ def get_kernel_config(
     """Resolve the source kernel at the nearest tuned ``S`` anchor."""
     bundle = _load_config_bundle(sm_version, head_dim)
     _, tile_params = _nearest_variant(bundle.configs, S)
+    kernel_abi = _anchor_kernel_abi(bundle, tile_params)
     source = load_source_module(__package__)
-    implementation = source.source_implementation(bundle.kernel_abi, None, bundle.kernel_variant)
+    implementation = source.source_implementation(kernel_abi, None, bundle.kernel_variant)
     kernel_cls = resolve_implementation(implementation)
+    if kernel_abi == "sm100":
+        unknown = set(tile_params) - {"tail_split", "dynamic_scheduler"}
+        if unknown:
+            raise ValueError(f"Unknown SM100 pairwise-attention parameters {sorted(unknown)} in {bundle.source_path}")
+        return source._build_sm100_config(kernel_cls, **tile_params)
     if "mma_tiler_mn" in tile_params:
         return source._build_sm90_config(kernel_cls, **tile_params)
     return source._build_sm80_config(kernel_cls, sm_version=sm_version, **tile_params)

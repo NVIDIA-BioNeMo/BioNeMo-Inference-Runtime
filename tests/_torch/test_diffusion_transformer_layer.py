@@ -167,7 +167,7 @@ class Scenario:
     ],
 )
 def test_diffusion_transformer_layer(sc: Scenario, monkeypatch: pytest.MonkeyPatch):
-    _skip_if_cutedsl(sc.backend)
+    _skip_if_cutedsl(sc.backend, "pairwise_attention")
     torch.manual_seed(42)
     monkeypatch.setenv("TORCH_ALLOW_TF32_CUBLAS_OVERRIDE", "0")
     monkeypatch.setenv("NVIDIA_TF32_OVERRIDE", "0")
@@ -292,7 +292,7 @@ def test_diffusion_transformer_layer(sc: Scenario, monkeypatch: pytest.MonkeyPat
 )
 def test_diffusion_transformer_layer_precomputed_masks(sc: Scenario, monkeypatch: pytest.MonkeyPatch):
     """Outputs with precomputed single masks must exactly match the original path."""
-    _skip_if_cutedsl(sc.backend)
+    _skip_if_cutedsl(sc.backend, "pairwise_attention")
     torch.manual_seed(42)
     monkeypatch.setenv("TORCH_ALLOW_TF32_CUBLAS_OVERRIDE", "0")
     monkeypatch.setenv("NVIDIA_TF32_OVERRIDE", "0")

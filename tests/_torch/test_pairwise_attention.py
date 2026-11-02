@@ -102,3 +102,37 @@ def test_pairwise_attention_backend(sc: Scenario):
 
         assert abs(diff0_max - diff1_max) / torch.min(diff0_max, diff1_max) <= 0.5
         assert abs(diff0_mean - diff1_mean) <= 0.2
+
+
+@pytest.mark.parametrize("batch", [1, 2])
+@pytest.mark.parametrize("keys", [37, 40])
+def test_sdpa_sums_the_mask_into_aligned_rows(monkeypatch: pytest.MonkeyPatch, keys: int, batch: int) -> None:
+    """cuDNN slows down on mask rows that are not 16-byte aligned, so the summed mask keeps aligned rows.
+
+    With two batches of five samples, folding the mask to rank 4 copies it; the copy keeps them too.
+    """
+    from bionemo_ir._torch.attention_backend.pairwise_attention import SDPAPairwiseAttention, VanillaPairwiseAttention
+
+    torch.manual_seed(0)
+    heads, head_dim, mult = 4, 32, 5
+    q, k, v = (torch.randn(batch, mult, keys, heads * head_dim, dtype=torch.bfloat16, device="cuda") for _ in range(3))
+    valid = torch.arange(keys, device="cuda")[None, :] < torch.tensor([[keys - 3], [keys - 9]], device="cuda")[:batch]
+    mask_bias = ((~valid).float() * -1e9)[:, None, None, None, :]
+    pair_bias = torch.randn(batch, 1, heads, keys, keys, dtype=torch.bfloat16, device="cuda")
+    seen: list[torch.Tensor | None] = []
+    sdpa = torch.nn.functional.scaled_dot_product_attention
+
+    def recording_sdpa(*args: object, attn_mask: torch.Tensor | None = None, **kwargs: object) -> torch.Tensor:
+        seen.append(attn_mask)
+        return sdpa(*args, attn_mask=attn_mask, **kwargs)
+
+    monkeypatch.setattr(torch.nn.functional, "scaled_dot_product_attention", recording_sdpa)
+    actual = SDPAPairwiseAttention(0, heads, head_dim, heads).forward(q, k, v, biases=[mask_bias, pair_bias])
+
+    (mask,) = seen
+    assert mask.stride(-1) == 1
+    assert all(stride % 8 == 0 for stride in mask.stride()[:-1] if stride)
+    expected = VanillaPairwiseAttention(0, heads, head_dim, heads).forward(
+        q.float(), k.float(), v.float(), biases=[mask_bias, pair_bias.float()]
+    )
+    torch.testing.assert_close(actual.float(), expected, atol=2e-2, rtol=1e-2)

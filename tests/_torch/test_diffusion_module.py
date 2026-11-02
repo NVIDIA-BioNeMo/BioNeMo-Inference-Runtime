@@ -120,7 +120,7 @@ def init_config(sc: Scenario, ref_module: RefDiffusionModule):
     ],
 )
 def test_diffusion_module(sc: Scenario):
-    _skip_if_cutedsl(sc.pairwise_attn_backend)
+    _skip_if_cutedsl(sc.pairwise_attn_backend, "pairwise_attention")
     torch.manual_seed(42)
     os.environ["TORCH_ALLOW_TF32_CUBLAS_OVERRIDE"] = "0"
     os.environ["NVIDIA_TF32_OVERRIDE"] = "0"

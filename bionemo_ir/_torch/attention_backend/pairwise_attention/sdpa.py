@@ -21,6 +21,27 @@ from .._common import SDPAAttentionMetadata, prep_qkv_for_sdpa
 from ..interface import AttentionBackend, AttentionMetadata
 
 
+def _empty_with_aligned_rows(like: torch.Tensor, shape: torch.Size) -> torch.Tensor:
+    """An uninitialized ``shape`` view whose rows start 16-byte aligned.
+
+    cuDNN takes a much slower kernel when the mask's row stride is not 16-byte
+    aligned, as at any key count not divisible by 8 in bf16, so the buffer pads
+    each row and the view keeps the keys.
+    """
+    keys = shape[-1]
+    align = 16 // like.element_size()
+    return like.new_empty(*shape[:-1], -(-keys // align) * align)[..., :keys]
+
+
+def _sum_with_aligned_rows(terms: list[torch.Tensor]) -> torch.Tensor:
+    """Sum broadcastable mask terms into a view whose rows start 16-byte aligned."""
+    out = _empty_with_aligned_rows(terms[0], torch.broadcast_shapes(*(term.shape for term in terms)))
+    out.copy_(terms[0])
+    for term in terms[1:]:
+        out.add_(term)
+    return out
+
+
 class SDPAPairwiseAttention(AttentionBackend[SDPAAttentionMetadata]):
     """Pairwise attention using ``torch.nn.functional.scaled_dot_product_attention``.
 
@@ -68,8 +89,8 @@ class SDPAPairwiseAttention(AttentionBackend[SDPAAttentionMetadata]):
             if mask_bias.ndim == 2:
                 mask_bias = mask_bias[:, None, None, :]
             attn_mask = mask_bias.to(q)
-            for bias in biases[1:]:
-                attn_mask = attn_mask + bias.to(q)
+            if len(biases) > 1:
+                attn_mask = _sum_with_aligned_rows([attn_mask, *(bias.to(q) for bias in biases[1:])])
 
         # SDPA's fused kernels take rank-4 operands; a higher rank silently
         # selects the math backend, which materializes FP32 logits. Fold the
@@ -85,7 +106,15 @@ class SDPAPairwiseAttention(AttentionBackend[SDPAAttentionMetadata]):
                 # axes and would pair its batch axis with a window axis.
                 while attn_mask.ndim < q_ndim:
                     attn_mask = attn_mask.unsqueeze(-4)
-                attn_mask = attn_mask.expand(*batch_dims, *attn_mask.shape[-3:]).reshape(-1, *attn_mask.shape[-3:])
+                expanded = attn_mask.expand(*batch_dims, *attn_mask.shape[-3:])
+                folded_shape = (-1, *expanded.shape[-3:])
+                try:
+                    attn_mask = expanded.view(folded_shape)
+                except RuntimeError:
+                    # The fold has to copy, so copy into aligned rows too.
+                    attn_mask = _empty_with_aligned_rows(expanded, expanded.shape)
+                    attn_mask.copy_(expanded)
+                    attn_mask = attn_mask.view(folded_shape)
 
         a = F.scaled_dot_product_attention(q, k, v, attn_mask=attn_mask)
 

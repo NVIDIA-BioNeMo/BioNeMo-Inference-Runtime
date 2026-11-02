@@ -145,7 +145,8 @@ graphs](api.md#cuda-graphs).
 ## Fused Kernels
 
 `get_pretrained_config` selects the **Heuristic** triangle-attention backend and
-CuTeDSL pairwise attention on SM80 / SM86 / SM89 / SM90 for fp16 / bf16.
+CuTeDSL pairwise attention on SM80 / SM86 / SM89 / SM90 / SM100 / SM103 for
+fp16 / bf16.
 Heuristic sends SM90 BF16 D=32 triangle attention of at least 23M attention
 scores (`batch * i_dim * tokens^2 * heads`, for example 184 tokens with four
 heads) to the source-visible **ClaudeKit** CUDA kernel and every other shape to
@@ -163,7 +164,7 @@ and `bionemo_ir._torch.custom_ops`). Layers wrap the same ops:
 | Kernel                              | Used for                                      | Implementation                                                  | SM (optimized)                                | Calling interface                                                                                                                                                                           |
 | ----------------------------------- | --------------------------------------------- | --------------------------------------------------------------- | --------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Triangle attention                  | Pairformer / Evoformer triangle attn          | Heuristic → ClaudeKit CUDA / CuTeDSL CUBIN; else CUEQUIV / SDPA | 80, 86, 89, 90; CUEQUIV on 100, 103, 120, 121 | [`create_attention`](../../bionemo_ir/_torch/attention_backend/utils.py) (`AttentionType.TRIANGLE`)                                                                                         |
-| Pairwise attention                  | Token / atom attention with pair bias         | CuTeDSL → CUBIN; else SDPA                                      | 80, 86, 89, 90                                | [`create_attention`](../../bionemo_ir/_torch/attention_backend/utils.py) (`AttentionType.PAIRWISE`)                                                                                         |
+| Pairwise attention                  | Token / atom attention with pair bias         | CuTeDSL source (when present) / CUBIN; else SDPA                | 80, 86, 89, 90, 100, 103                      | [`create_attention`](../../bionemo_ir/_torch/attention_backend/utils.py) (`AttentionType.PAIRWISE`)                                                                                         |
 | Windowed atom attention             | Diffusion atom encoder / decoder attention    | CuTeDSL → CUBIN; else SDPA                                      | 80, 86, 89, 90, 100, 103                      | [`auto_select_window_attention_backend`](../../bionemo_ir/_torch/attention_backend/utils.py) → [`create_window_attention`](../../bionemo_ir/_torch/attention_backend/utils.py)              |
 | Dual-GEMM `x_x`                     | Triangle multiplication; SwiGLU projection    | CuTeDSL → CUBIN; else CUEQUIV / PyTorch                         | 80, 86, 89, 90, 100, 103; CUEQUIV on 120, 121 | [`get_dual_gemm_x_x_op`](../../bionemo_ir/_torch/custom_ops/dual_gemm_x_x/ops.py) / [`get_cute_dual_gemm_x_x_op`](../../bionemo_ir/_torch/custom_ops/dual_gemm_x_x/ops.py)                  |
 | Dual-GEMM `x0_x1`                   | Triangle multiplication                       | CuTeDSL → CUBIN; else CUEQUIV                                   | 80, 86, 89, 90, 100, 103; CUEQUIV on 120, 121 | [`get_dual_gemm_x0_x1_op`](../../bionemo_ir/_torch/custom_ops/dual_gemm_x0_x1/ops.py)                                                                                                       |

@@ -85,6 +85,7 @@ _SM90_LAUNCH_SHAPES = {
 _SM100_LAUNCH_SHAPES = {
     "dual_gemm_x0_x1": (("x0", "x1", "w0", "w1", "residual", "output"), 2, True, 256),
     "dual_gemm_x_x": (("x", "w0", "w1", "output"), 2, True, 256),
+    "pairwise_attention": (("q", "k", "v", "bias", "output"), 4, False, 512),
     "triangle_attention": (("q", "k", "v", "bias", "output"), 4, False, 512),
 }
 
@@ -224,11 +225,7 @@ def _metadata(family: str, dtype: str, kernel_sm: int) -> dict[str, object]:
             "is_bfloat16": dtype == "bf16",
             "packed_output": False,
             "sm90_launch": _sm90_launch(family, dtype) if kernel_sm == 90 else None,
-            **(
-                {"sm100_launch": _sm100_launch(family, dtype) if kernel_sm == 100 else None}
-                if family == "triangle_attention"
-                else {}
-            ),
+            "sm100_launch": _sm100_launch(family, dtype) if kernel_sm == 100 else None,
         }
     elif family == "transition_mlp":
         concrete = {
@@ -844,8 +841,8 @@ def test_trimul_kf_k1_padded_image_renders_its_row_chunk_map(tmp_path: Path, mon
         materializer.verify_packs([(family, index)])
 
 
-def test_sm100_registry_renders_tma_metadata(tmp_path: Path) -> None:
-    family = "triangle_attention"
+@pytest.mark.parametrize("family", ["pairwise_attention", "triangle_attention"])
+def test_sm100_registry_renders_tma_metadata(tmp_path: Path, family: str) -> None:
     index = _write_case(tmp_path / "source", family, kernel_sm=100)
     result = materializer.materialize([(family, index)], tmp_path / "build")
     header = (result.output_dir / f"{family}_registry.h").read_text()
@@ -858,8 +855,8 @@ def test_sm100_registry_renders_tma_metadata(tmp_path: Path) -> None:
     assert "    true," in source
 
 
-def test_sm100_registry_requires_launch_metadata(tmp_path: Path) -> None:
-    family = "triangle_attention"
+@pytest.mark.parametrize("family", ["pairwise_attention", "triangle_attention"])
+def test_sm100_registry_requires_launch_metadata(tmp_path: Path, family: str) -> None:
     index = _write_case(tmp_path / "source", family, kernel_sm=100)
     _mutate_records(index, lambda value: value["variants"][0]["runtime_metadata"].pop("sm100_launch"))
 
@@ -867,8 +864,8 @@ def test_sm100_registry_requires_launch_metadata(tmp_path: Path) -> None:
         materializer.verify_packs([(family, index)])
 
 
-def test_sm100_registry_requires_nonportable_cluster_attribute(tmp_path: Path) -> None:
-    family = "triangle_attention"
+@pytest.mark.parametrize("family", ["pairwise_attention", "triangle_attention"])
+def test_sm100_registry_requires_nonportable_cluster_attribute(tmp_path: Path, family: str) -> None:
     index = _write_case(tmp_path / "source", family, kernel_sm=100)
 
     def disable_nonportable_cluster(value: dict[str, object]) -> None:
@@ -886,14 +883,12 @@ def test_sm100_registry_requires_nonportable_cluster_attribute(tmp_path: Path) -
         materializer.verify_packs([(family, index)])
 
 
-def test_sm80_registry_rejects_sm100_launch_metadata(tmp_path: Path) -> None:
-    family = "triangle_attention"
+@pytest.mark.parametrize("family", ["pairwise_attention", "triangle_attention"])
+def test_sm80_registry_rejects_sm100_launch_metadata(tmp_path: Path, family: str) -> None:
     index = _write_case(tmp_path / "source", family)
     _mutate_records(
         index,
-        lambda value: value["variants"][0]["runtime_metadata"].update(
-            sm100_launch=_sm100_launch("triangle_attention", "fp16")
-        ),
+        lambda value: value["variants"][0]["runtime_metadata"].update(sm100_launch=_sm100_launch(family, "fp16")),
     )
 
     with pytest.raises(materializer.MaterializationError, match="sm100_launch must be null"):
@@ -938,8 +933,8 @@ def test_dual_gemm_x0_x1_sm100_launch_requires_residual_map(tmp_path: Path) -> N
         materializer.verify_packs([(family, index)])
 
 
-def test_triangle_attention_sm100_launch_rejects_cluster_dims(tmp_path: Path) -> None:
-    family = "triangle_attention"
+@pytest.mark.parametrize("family", ["pairwise_attention", "triangle_attention"])
+def test_attention_sm100_launch_rejects_cluster_dims(tmp_path: Path, family: str) -> None:
     index = _write_case(tmp_path / "source", family, kernel_sm=100)
     _mutate_records(
         index,

@@ -1,0 +1,40 @@
+{
+  "kernel_abi": "sm100",
+  "note": "Measured on B300 (diffusion token attention, 5 samples): each anchor is the fastest kernel there; the Ampere/Blackwell choice alternates with the Blackwell kernel's 256-row work items.",
+  "configs": {
+    "S=64": {
+      "kernel_abi": "sm80",
+      "m_block_size": 64,
+      "n_block_size": 64,
+      "num_threads": 128,
+      "swizzle_b": 3,
+      "load_bias_before_gemm": true
+    },
+    "S=112": {
+      "kernel_abi": "sm80",
+      "m_block_size": 64,
+      "n_block_size": 128,
+      "num_threads": 128,
+      "swizzle_b": 3,
+      "load_bias_before_gemm": true
+    },
+    "S=176": {
+      "kernel_abi": "sm80",
+      "m_block_size": 64,
+      "n_block_size": 64,
+      "num_threads": 128,
+      "swizzle_b": 3,
+      "load_bias_before_gemm": true
+    },
+    "S=240": {},
+    "S=304": {
+      "kernel_abi": "sm80",
+      "m_block_size": 64,
+      "n_block_size": 64,
+      "num_threads": 128,
+      "swizzle_b": 3,
+      "load_bias_before_gemm": true
+    },
+    "S=346": {}
+  }
+}

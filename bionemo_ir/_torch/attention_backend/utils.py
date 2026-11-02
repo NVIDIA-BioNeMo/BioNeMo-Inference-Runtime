@@ -94,14 +94,14 @@ def auto_select_pairwise_attention_backend(
     """Return the fastest available pairwise attention backend name.
 
     Selection priority (highest to lowest):
-      1. **CuTeDSL** — SM80/SM86/SM89/SM90, fp16/bf16 only.
+      1. **CuTeDSL** — SM80/SM86/SM89/SM90/SM100/SM103, fp16/bf16 only.
       2. **SDPA** — PyTorch scaled-dot-product attention, all SKUs/dtypes.
       3. **VANILLA** — pure-PyTorch reference.
     """
     sm = get_sm_version()
     is_half = dtype in (torch.float16, torch.bfloat16)
 
-    if sm in (80, 86, 89, 90) and is_half:
+    if sm in (80, 86, 89, 90, 100, 103) and is_half:
         return "CuTeDSL"
 
     return "SDPA"

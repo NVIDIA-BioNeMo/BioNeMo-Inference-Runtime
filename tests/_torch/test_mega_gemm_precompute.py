@@ -124,7 +124,7 @@ def _build_models(sc: Scenario, device: torch.device):
 )
 def test_mega_gemm_vs_per_layer(sc: Scenario):
     """Mega-GEMM precomputed bias must match per-layer bias projection."""
-    skip_if_cutedsl(sc.backend)
+    skip_if_cutedsl(sc.backend, "pairwise_attention")
     device = torch.device("cuda")
     dtype = torch.float32 if sc.dtype == "float32" else torch.bfloat16
 
@@ -163,7 +163,7 @@ def test_mega_gemm_vs_per_layer(sc: Scenario):
 def test_mega_gemm_bias_correctness(sc: Scenario):
     """Verify the fused W_mega produces the same per-layer biases as the
     original LN + Linear projection."""
-    skip_if_cutedsl(sc.backend)
+    skip_if_cutedsl(sc.backend, "pairwise_attention")
     device = torch.device("cuda")
     dtype = torch.bfloat16
 

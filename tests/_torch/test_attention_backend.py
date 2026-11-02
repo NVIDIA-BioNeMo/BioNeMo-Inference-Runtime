@@ -27,7 +27,11 @@ from bionemo_ir._torch.attention_backend import pairwise_attention, triangle_att
 from bionemo_ir._torch.attention_backend import utils as attention_utils
 from bionemo_ir._torch.attention_backend.triangle_attention.cuequiv import cuequiv_supports
 from tests import require_public_cutedsl_library
-from tests._torch import CUTEDSL_TEST_MODES_ENV, cutedsl_test_modes, make_left_aligned_pair_mask
+from tests._torch import (
+    CUTEDSL_TEST_MODES_ENV,
+    cutedsl_test_modes,
+    make_left_aligned_pair_mask,
+)
 
 
 @pytest.mark.parametrize(
@@ -91,6 +95,15 @@ def test_triangle_auto_select_uses_heur_on_supported_sm(monkeypatch, sm):
     monkeypatch.setattr(attention_utils, "get_sm_version", lambda: sm)
 
     assert attention_backend.auto_select_triangle_attention_backend(torch.bfloat16) == "Heuristic"
+
+
+@pytest.mark.parametrize("sm", [80, 86, 89, 90, 100, 103])
+def test_pairwise_auto_select_uses_cutedsl_where_cubins_ship(monkeypatch: pytest.MonkeyPatch, sm: int) -> None:
+    monkeypatch.setattr(attention_utils, "get_sm_version", lambda: sm)
+    monkeypatch.setenv("CUTEDSL_FORCE_CUBIN", "1")
+
+    assert attention_backend.auto_select_pairwise_attention_backend(torch.bfloat16) == "CuTeDSL"
+    assert attention_backend.auto_select_pairwise_attention_backend(torch.float32) == "SDPA"
 
 
 @pytest.mark.parametrize("sm", [100, 103])

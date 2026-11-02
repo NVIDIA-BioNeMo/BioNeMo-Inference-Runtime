@@ -216,7 +216,7 @@ def _make_features(device: torch.device, ref, sc: Scenario) -> dict:
 @pytest.mark.parametrize("precompute_bias", [False, True], ids=["per_layer_bias", "mega_bias"])
 def test_token_transformer_broadcasts_sample_independent_pair(backend: str, precompute_bias: bool):
     """Match sample-independent pair broadcast to explicit ``B*S`` expansion."""
-    skip_if_cutedsl(backend)
+    skip_if_cutedsl(backend, "pairwise_attention")
     torch.manual_seed(123)
     device = torch.device("cuda")
     dtype = torch.bfloat16
@@ -632,7 +632,7 @@ def test_shared_noise_level_matches_per_sample_levels(sc: Scenario, use_cache: b
     level expanded to ``[B, S]``, with and without the rollout cache and for a batch of two. The token
     transformer runs on CuTeDSL, the production backend (SDPA cannot broadcast a ``[B, H, N, N]`` pair
     bias over ``B * S`` folded samples when ``B > 1``, on either level shape)."""
-    skip_if_cutedsl("CuTeDSL")
+    skip_if_cutedsl("CuTeDSL", "pairwise_attention")
     torch.backends.cuda.matmul.allow_tf32 = False
     torch.backends.cudnn.allow_tf32 = False
     torch.manual_seed(0)

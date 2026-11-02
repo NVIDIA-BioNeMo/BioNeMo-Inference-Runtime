@@ -37,7 +37,7 @@ namespace bioir::cutedsl::pairwise_attention::embedded
 struct CubinImage;
 }
 
-/* Direct CUDA Driver launch ABIs for Ampere and Hopper pairwise attention.
+/* Direct CUDA Driver launch ABIs for Ampere, Hopper and Blackwell pairwise attention.
  * These are device-kernel ABIs, not the high-level CuTeDSL __call__ ABI, and
  * were read back from the compiled CUBINs' EIATTR_KPARAM_INFO.
  */
@@ -46,6 +46,9 @@ namespace bioir::cutedsl::pairwise_attention::abi
 
 inline constexpr std::size_t kSM80ParameterCount = 12;
 inline constexpr std::size_t kSM90ParameterCount = 21;
+inline constexpr std::size_t kSM100ParameterCount = 20;
+/* Images that fold the bias on the tensor core (D <= 64) also take its tiled MMA. */
+inline constexpr std::size_t kSM100BiasMmaParameterCount = kSM100ParameterCount + 1;
 
 struct SM80Params
 {
@@ -157,8 +160,89 @@ inline void pack_sm90_kernel_params(SM90Params* params, void* kernel_params[kSM9
   kernel_params[20] = &params->scheduler_batch_flat;
 }
 
+/* Blackwell passes each tiled MMA as a 3-byte record the kernel never reads
+ * and its scheduler divisors as precomputed FastDivmod values.
+ */
+struct SM100TiledMmaDescriptor
+{
+  std::uint8_t fields[3]{};
+};
+
+struct SM100FastDivmod
+{
+  std::int32_t divisor;
+  std::uint32_t multiplier;
+  std::uint8_t shift_right_1;
+  std::uint8_t shift_right_2;
+  std::uint8_t reserved[2]{};
+};
+
+/* The kernel reads one key count per flattened row b * mult + m, so
+ * actual_s_kv is a [mult, B] view with static strides (0, 1).
+ */
+struct SM100Params
+{
+  CoordTensorS3 q_coord;
+  CoordTensorS3 k_coord;
+  CoordTensorS3 v_coord;
+  CoordTensorS3 output_coord;
+  cute_tensor_s3_d2_t lse;
+  cute_tensor_s2_d0_t actual_s_kv;
+  CoordTensorS4 bias_coord;
+  std::int32_t mult;
+  CUtensorMap q_tma;
+  CUtensorMap k_tma;
+  CUtensorMap v_tma;
+  CUtensorMap output_tma;
+  CUtensorMap bias_tma;
+  float softmax_scale_log2;
+  float softmax_scale;
+  SM100TiledMmaDescriptor qk_tiled_mma;
+  SM100TiledMmaDescriptor pv_tiled_mma;
+  SM100TiledMmaDescriptor bias_tiled_mma;
+  SM100FastDivmod scheduler_num_blocks;
+  SM100FastDivmod scheduler_num_heads;
+  std::int32_t scheduler_total_blocks;
+};
+
+inline void
+pack_sm100_kernel_params(SM100Params* params, bool bias_mma, void* kernel_params[kSM100BiasMmaParameterCount])
+{
+  kernel_params[0] = &params->q_coord;
+  kernel_params[1] = &params->k_coord;
+  kernel_params[2] = &params->v_coord;
+  kernel_params[3] = &params->output_coord;
+  kernel_params[4] = &params->lse;
+  kernel_params[5] = &params->actual_s_kv;
+  kernel_params[6] = &params->bias_coord;
+  kernel_params[7] = &params->mult;
+  kernel_params[8] = &params->q_tma;
+  kernel_params[9] = &params->k_tma;
+  kernel_params[10] = &params->v_tma;
+  kernel_params[11] = &params->output_tma;
+  kernel_params[12] = &params->bias_tma;
+  kernel_params[13] = &params->softmax_scale_log2;
+  kernel_params[14] = &params->softmax_scale;
+  kernel_params[15] = &params->qk_tiled_mma;
+  kernel_params[16] = &params->pv_tiled_mma;
+  std::size_t const scheduler = bias_mma ? 18 : 17;
+  if (bias_mma)
+    kernel_params[17] = &params->bias_tiled_mma;
+  kernel_params[scheduler] = &params->scheduler_num_blocks;
+  kernel_params[scheduler + 1] = &params->scheduler_num_heads;
+  kernel_params[scheduler + 2] = &params->scheduler_total_blocks;
+}
+
 static_assert(sizeof(CUtensorMap) == 128);
 static_assert(alignof(CUtensorMap) >= 64);
+static_assert(sizeof(SM100TiledMmaDescriptor) == 3);
+static_assert(alignof(SM100TiledMmaDescriptor) == 1);
+static_assert(sizeof(SM100FastDivmod) == 12);
+static_assert(alignof(SM100FastDivmod) == 4);
+static_assert(offsetof(SM100FastDivmod, divisor) == 0);
+static_assert(offsetof(SM100FastDivmod, multiplier) == 4);
+static_assert(offsetof(SM100FastDivmod, shift_right_1) == 8);
+static_assert(offsetof(SM100FastDivmod, shift_right_2) == 9);
 
 } // namespace bioir::cutedsl::pairwise_attention::abi
 
@@ -200,7 +284,18 @@ struct KernelSpecSM90
   bool persistent;
 };
 
-using KernelSpec = std::variant<KernelSpecSM80, KernelSpecSM90>;
+struct KernelSpecSM100
+{
+  std::int32_t target_sm;
+  std::int32_t head_dim;
+  std::int32_t bucket;
+
+  std::uint32_t tile_m;
+  std::uint32_t tile_n;
+  std::uint32_t num_threads;
+};
+
+using KernelSpec = std::variant<KernelSpecSM80, KernelSpecSM90, KernelSpecSM100>;
 
 struct KernelConfig
 {
@@ -255,11 +350,23 @@ constexpr KernelSpecSM90 make_sm90_spec(
   };
 }
 
+constexpr KernelSpecSM100 make_sm100_spec(std::int32_t target_sm, std::int32_t head_dim, std::int32_t bucket)
+{
+  return KernelSpecSM100{
+    target_sm,
+    head_dim,
+    bucket,
+    256,
+    128,
+    512,
+  };
+}
+
 /* One entry for every (target SM, head dimension, S anchor) production
  * configuration in configs/pairwise_attention. Dtype and packed output select
  * distinct CUBINs but do not change launch geometry.
  */
-inline std::array<KernelSpec, 24> const kKernelSpecs = {
+inline std::array<KernelSpec, 42> const kKernelSpecs = {
   /* SM80 */
   make_sm80_spec(80, 32, 0, 128, 128, 128),
   make_sm80_spec(80, 32, 512, 128, 128, 128),
@@ -291,6 +398,31 @@ inline std::array<KernelSpec, 24> const kKernelSpecs = {
   make_sm90_spec(48, 512, 64, 192, 5, 2),
   make_sm90_spec(64, 0, 64, 64, 7, 1),
   make_sm90_spec(64, 512, 64, 128, 7, 0),
+
+  /* SM100 and SM103 take the Ampere ABI below each head dimension's
+   * Blackwell anchor, where its 64-row tiles pad less than a 256-row
+   * Blackwell work item.
+   */
+  make_sm80_spec(100, 32, 1024, 64, 128, 128),
+  make_sm80_spec(100, 48, 320, 64, 64, 128),
+  make_sm80_spec(100, 64, 512, 64, 128, 128),
+  make_sm80_spec(103, 32, 32, 64, 64, 128),
+  make_sm80_spec(103, 32, 64, 64, 128, 128),
+  make_sm80_spec(103, 32, 576, 64, 128, 128),
+  make_sm80_spec(103, 48, 64, 64, 64, 128),
+  make_sm80_spec(103, 48, 112, 64, 128, 128),
+  make_sm80_spec(103, 48, 176, 64, 64, 128),
+  make_sm80_spec(103, 48, 304, 64, 64, 128),
+  make_sm80_spec(103, 64, 512, 64, 128, 128),
+
+  /* Native Blackwell entries use the same device ABI on SM100 and SM103. */
+  make_sm100_spec(100, 32, 1152),
+  make_sm100_spec(100, 48, 352),
+  make_sm100_spec(100, 64, 640),
+  make_sm100_spec(103, 32, 640),
+  make_sm100_spec(103, 48, 240),
+  make_sm100_spec(103, 48, 346),
+  make_sm100_spec(103, 64, 640),
 };
 
 inline std::int32_t spec_target_sm(KernelSpec const& spec)
@@ -324,7 +456,8 @@ inline KernelSpec const& find_kernel_spec(std::int32_t target_sm, std::int32_t h
 
 inline bool supports_direct_launch(KernelSpec const& spec)
 {
-  return std::holds_alternative<KernelSpecSM80>(spec) || std::holds_alternative<KernelSpecSM90>(spec);
+  return std::holds_alternative<KernelSpecSM80>(spec) || std::holds_alternative<KernelSpecSM90>(spec)
+    || std::holds_alternative<KernelSpecSM100>(spec);
 }
 
 inline KernelSpecSM80 const& sm80_spec(KernelSpec const& spec)
@@ -340,6 +473,14 @@ inline KernelSpecSM90 const& sm90_spec(KernelSpec const& spec)
   auto const* typed_spec = std::get_if<KernelSpecSM90>(&spec);
   if (typed_spec == nullptr)
     throw std::invalid_argument("pairwise-attention kernel does not use the SM90 launch ABI");
+  return *typed_spec;
+}
+
+inline KernelSpecSM100 const& sm100_spec(KernelSpec const& spec)
+{
+  auto const* typed_spec = std::get_if<KernelSpecSM100>(&spec);
+  if (typed_spec == nullptr)
+    throw std::invalid_argument("pairwise-attention kernel does not use the SM100 launch ABI");
   return *typed_spec;
 }
 

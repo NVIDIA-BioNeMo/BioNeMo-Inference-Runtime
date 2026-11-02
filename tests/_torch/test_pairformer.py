@@ -38,9 +38,9 @@ from tests._torch import make_left_aligned_mask
 from tests._torch import skip_if_cutedsl as _skip_if_cutedsl_single
 
 
-def _skip_if_cutedsl(*backend_names: str):
-    for name in backend_names:
-        _skip_if_cutedsl_single(name)
+def _skip_if_cutedsl(triangle_backend: str, pairwise_backend: str) -> None:
+    _skip_if_cutedsl_single(triangle_backend, "triangle_attention")
+    _skip_if_cutedsl_single(pairwise_backend, "pairwise_attention")
 
 
 @dataclass(kw_only=True, frozen=True)

@@ -21,8 +21,10 @@ carrying kernel sources defaults to ``source``; a source-free build defaults to
 
 from __future__ import annotations
 
+import functools
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 import torch
@@ -38,14 +40,42 @@ from bionemo_ir._torch.attention_backend.pairwise_attention import _config as pw
 from bionemo_ir._torch.attention_backend.pairwise_attention import _cubin as pw_cubin
 from bionemo_ir._torch.attention_backend.pairwise_attention import cutedsl as pw_cutedsl
 from bionemo_ir._torch.utils.kernel import _cutedsl_kernel_library as library_runtime
-from tests._torch import SM_VERSION, cutedsl_test_modes, require_cubin_library, skip_cutedsl
+from tests._torch import (
+    SM_VERSION,
+    cutedsl_test_modes,
+    require_cubin_library,
+    skip_cutedsl_for,
+    source_module_available,
+)
 
-pytestmark = skip_cutedsl
+pytestmark = skip_cutedsl_for("pairwise_attention")
 
 FORCE_CUBIN_ENV = pw_cutedsl.FORCE_CUBIN_ENV
 _SOURCE_MODULE = "bionemo_ir._torch.attention_backend.pairwise_attention._source"
+_BLACKWELL = SM_VERSION in (100, 103)
 _MODES = cutedsl_test_modes(_SOURCE_MODULE)
 _HEAD_DIMS = (32, 48, 64)
+loud_on_missing_cubin = pytest.mark.skipif(
+    _BLACKWELL, reason=f"SM{SM_VERSION} runs on SDPA when the kernel library has no CUBIN for it"
+)
+
+
+@functools.cache
+def _library_misses_a_tuned_image() -> bool:
+    launcher = require_cubin_library().pairwise_attention
+    try:
+        for head_dim in _tuned_head_dims():
+            for anchor in _tuned_anchors(head_dim):
+                launcher.make_kernel_config(SM_VERSION, head_dim, anchor, launcher.DType.BFLOAT16, False)
+    except IndexError:
+        return True
+    return False
+
+
+def _require_blackwell_cubins() -> None:
+    """Skip a CUBIN run on SM100/SM103 when the kernel library predates their images: it runs SDPA there."""
+    if _BLACKWELL and _library_misses_a_tuned_image():
+        pytest.skip(f"this kernel library has no pairwise-attention CUBIN for every SM{SM_VERSION} anchor yet")
 
 
 def _tuned_head_dims() -> tuple[int, ...]:
@@ -62,6 +92,11 @@ def _tuned_anchors(head_dim: int) -> tuple[int, ...]:
     with path.open() as handle:
         configs = json.load(handle)["configs"]
     return tuple(sorted(int(key.removeprefix("S=")) for key in configs))
+
+
+def _anchor_seqlen(anchor: int) -> int:
+    """A sequence length served by the tuned anchor, not a multiple of any tile, so the masked tail runs."""
+    return 96 if anchor == 0 else anchor + 1
 
 
 def _make_inputs(batch, mult, seqlen_q, seqlen_kv, num_heads, head_dim, dtype, kv_packed, seed=7):
@@ -85,6 +120,7 @@ def _make_inputs(batch, mult, seqlen_q, seqlen_kv, num_heads, head_dim, dtype, k
 def _run(mode, monkeypatch, q, k, v, pair_bias, actual_s_kv, num_heads, head_dim, kv_packed, output_lse=None):
     """Run one backend instance through exactly one implementation path."""
     if mode == "cubin":
+        _require_blackwell_cubins()
 
         def missing_source(_implementation):
             raise ModuleNotFoundError("CuTeDSL kernel source removed")
@@ -134,11 +170,15 @@ def _reference(q, k, v, pair_bias, actual_s_kv, num_heads, head_dim, seqlen_kv):
 def test_pairwise_attention_matches_reference(monkeypatch, mode, dtype, kv_packed, head_dim):
     if head_dim not in _tuned_head_dims():
         pytest.skip(f"no tuned D{head_dim} config for SM{SM_VERSION}")
-    num_heads, batch, mult, seqlen = 4, 2, 2, 96
-    inputs = _make_inputs(batch, mult, seqlen, seqlen, num_heads, head_dim, dtype, kv_packed)
-    actual = _run(mode, monkeypatch, *inputs, num_heads, head_dim, kv_packed)
-    expected = _reference(inputs[0], inputs[1], inputs[2], inputs[3], inputs[4], num_heads, head_dim, seqlen)
-    torch.testing.assert_close(actual.float(), expected.float(), atol=_ATOL[dtype], rtol=1e-2)
+    num_heads, batch, mult = 4, 2, 2
+    # Every anchor, since an anchor can name its own kernel (SM100 runs two).
+    for anchor in _tuned_anchors(head_dim):
+        seqlen = _anchor_seqlen(anchor)
+        inputs = _make_inputs(batch, mult, seqlen, seqlen, num_heads, head_dim, dtype, kv_packed)
+        with monkeypatch.context() as patch:
+            actual = _run(mode, patch, *inputs, num_heads, head_dim, kv_packed)
+        expected = _reference(inputs[0], inputs[1], inputs[2], inputs[3], inputs[4], num_heads, head_dim, seqlen)
+        torch.testing.assert_close(actual.float(), expected.float(), atol=_ATOL[dtype], rtol=1e-2)
 
 
 @pytest.mark.parametrize("mode", _MODES)
@@ -147,21 +187,23 @@ def test_lse_is_written_only_when_requested(monkeypatch, mode, head_dim):
     """A null LSE pointer skips the store; a buffer receives the reference LSE."""
     if head_dim not in _tuned_head_dims():
         pytest.skip(f"no tuned D{head_dim} config for SM{SM_VERSION}")
-    num_heads, batch, mult, seqlen = 4, 2, 2, 96
-    q, k, v, pair_bias, actual_s_kv = _make_inputs(
-        batch, mult, seqlen, seqlen, num_heads, head_dim, torch.bfloat16, False
-    )
-    without_lse = _run(mode, monkeypatch, q, k, v, pair_bias, actual_s_kv, num_heads, head_dim, False).clone()
-    lse = torch.full((batch * mult, seqlen, num_heads, 1), torch.nan, device="cuda")
-    with_lse = _run(mode, monkeypatch, q, k, v, pair_bias, actual_s_kv, num_heads, head_dim, False, output_lse=lse)
-    assert torch.equal(with_lse, without_lse)
+    num_heads, batch, mult = 4, 2, 2
+    for anchor in _tuned_anchors(head_dim):
+        seqlen = _anchor_seqlen(anchor)
+        q, k, v, pair_bias, actual_s_kv = _make_inputs(
+            batch, mult, seqlen, seqlen, num_heads, head_dim, torch.bfloat16, False
+        )
+        without_lse = _run(mode, monkeypatch, q, k, v, pair_bias, actual_s_kv, num_heads, head_dim, False).clone()
+        lse = torch.full((batch * mult, seqlen, num_heads, 1), torch.nan, device="cuda")
+        with_lse = _run(mode, monkeypatch, q, k, v, pair_bias, actual_s_kv, num_heads, head_dim, False, output_lse=lse)
+        assert torch.equal(with_lse, without_lse)
 
-    q_heads, k_heads = (t.float().unflatten(-1, (num_heads, head_dim)) for t in (q, k))
-    scores = torch.einsum("bqhd,bkhd->bhqk", q_heads, k_heads) * head_dim**-0.5
-    scores = scores + pair_bias.float().repeat_interleave(mult, dim=0)
-    keep = torch.arange(seqlen, device="cuda") < actual_s_kv.repeat_interleave(mult)[:, None]
-    expected = torch.logsumexp(scores.masked_fill(~keep[:, None, None, :], -torch.inf), dim=-1)
-    torch.testing.assert_close(lse[..., 0], expected.transpose(1, 2), atol=1e-2, rtol=1e-3)
+        q_heads, k_heads = (t.float().unflatten(-1, (num_heads, head_dim)) for t in (q, k))
+        scores = torch.einsum("bqhd,bkhd->bhqk", q_heads, k_heads) * head_dim**-0.5
+        scores = scores + pair_bias.float().repeat_interleave(mult, dim=0)
+        keep = torch.arange(seqlen, device="cuda") < actual_s_kv.repeat_interleave(mult)[:, None]
+        expected = torch.logsumexp(scores.masked_fill(~keep[:, None, None, :], -torch.inf), dim=-1)
+        torch.testing.assert_close(lse[..., 0], expected.transpose(1, 2), atol=1e-2, rtol=1e-3)
 
 
 @pytest.mark.skipif(
@@ -179,7 +221,7 @@ def test_source_and_cubin_agree_bitwise(monkeypatch, dtype, kv_packed, head_dim)
     for anchor in _tuned_anchors(head_dim):
         # Land squarely inside each tuned anchor, and use a sequence length
         # that is not a multiple of the tile so the masked tail is exercised.
-        seqlen = 96 if anchor == 0 else anchor + 33
+        seqlen = _anchor_seqlen(anchor)
         inputs = _make_inputs(batch, mult, seqlen, seqlen, num_heads, head_dim, dtype, kv_packed)
         with monkeypatch.context() as source_patch:
             source = _run("source", source_patch, *inputs, num_heads, head_dim, kv_packed)
@@ -192,17 +234,239 @@ def test_source_and_cubin_agree_bitwise(monkeypatch, dtype, kv_packed, head_dim)
 
 
 @pytest.mark.parametrize("mode", _MODES)
-def test_rectangular_and_broadcast_batch(monkeypatch, mode):
-    """Sq != Sk with mult > 1: the bias and actual_s_kv broadcast over mult."""
-    head_dim = _tuned_head_dims()[0]
-    num_heads, batch, mult, seqlen_q, seqlen_kv = 2, 3, 4, 64, 80
+@pytest.mark.parametrize(
+    ("head_dim", "seqlens"),
+    [(32, (64, 80)), (32, (320, 264)), (48, (600, 900)), (48, (1100, 520))],
+    ids=["D32-short", "D32-long", "D48-wide", "D48-tall"],
+)
+def test_rectangular_and_broadcast_batch(
+    monkeypatch: pytest.MonkeyPatch, mode: str, head_dim: int, seqlens: tuple[int, int]
+) -> None:
+    """Sq != Sk with mult > 1: the bias and actual_s_kv broadcast over mult.
+
+    The D=48 cases sit past the SM100 crossover, so on SM100 and SM103 they run the Blackwell kernel.
+    """
+    if head_dim not in _tuned_head_dims():
+        pytest.skip(f"no tuned D{head_dim} config for SM{SM_VERSION}")
+    seqlen_q, seqlen_kv = seqlens
+    num_heads, batch, mult = 2, 3, 4
     inputs = _make_inputs(batch, mult, seqlen_q, seqlen_kv, num_heads, head_dim, torch.bfloat16, False)
     actual = _run(mode, monkeypatch, *inputs, num_heads, head_dim, False)
     expected = _reference(inputs[0], inputs[1], inputs[2], inputs[3], inputs[4], num_heads, head_dim, seqlen_kv)
     assert actual.shape == (batch * mult, seqlen_q, num_heads, head_dim)
     torch.testing.assert_close(actual.float(), expected.float(), atol=_ATOL[torch.bfloat16], rtol=1e-2)
+    if _BLACKWELL and head_dim == 48:
+        ((_, variant, _),) = PairwiseAttentionCuTeLeftMask._compiled_cache
+        assert variant.kernel_abi == "sm100"
 
 
+@pytest.mark.parametrize("sm", [100, 103])
+@pytest.mark.parametrize("head_dim", _HEAD_DIMS)
+def test_blackwell_anchors_name_their_kernel(sm: int, head_dim: int) -> None:
+    """Short sequences take the Ampere kernel; long ones the Blackwell kernel."""
+    short = pw_config.get_nearest_bucket(sm, head_dim, 128)
+    long = pw_config.get_nearest_bucket(sm, head_dim, 2048)
+    assert pw_config.get_bucket_kernel_abi(sm, head_dim, short) == "sm80"
+    assert pw_config.get_bucket_kernel_abi(sm, head_dim, long) == "sm100"
+
+
+def test_blackwell_disk_cache_key_names_the_kernel_and_tile() -> None:
+    """A retuned SM100 anchor must not reload the kernel an older tile compiled; SM80-SM90 keys keep their form."""
+    backend = PairwiseAttentionCuTeLeftMask(0, 4, 48, num_kv_heads=4)
+    variant = pw_cutedsl._PairwiseAttentionVariant(torch.bfloat16, 48, 0, True, "sm80")
+    first = SimpleNamespace(cache_identity=(64, 64, 128, 3, True))
+    second = SimpleNamespace(cache_identity=(64, 128, 128, 3, True))
+    backend._sm_version = 100
+    assert backend._disk_cache_key(variant, first) != backend._disk_cache_key(variant, second)
+    backend._sm_version = 90
+    assert backend._disk_cache_key(variant, first) == backend._disk_cache_key(variant, second)
+
+
+@pytest.mark.skipif("source" not in _MODES, reason="builds the source kernel object")
+def test_blackwell_kernel_skips_the_tail_split() -> None:
+    """A pairwise call has few work items, so a serialized single-tile tail launch costs more than it saves."""
+    kernel = pw_config.get_kernel_config(100, 48, 1142).kernel_factory(48)
+    assert kernel.tail_split is False
+    assert kernel.dynamic_scheduler is True
+
+
+def test_anchor_kernel_abi_is_validated(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    bundle = {"kernel_abi": "sm100", "configs": {"S=0": {"kernel_abi": "sm70"}}}
+    (tmp_path / "D48_sm100.json").write_text(json.dumps(bundle))
+    monkeypatch.setattr(pw_config, "_PW_CONFIGS_DIR", str(tmp_path))
+    with pytest.raises(ValueError, match="sm70"):
+        pw_config.get_bucket_kernel_abi(100, 48, 0)
+
+
+@pytest.mark.skipif(not _BLACKWELL, reason="the Blackwell pairwise kernel runs on SM100 and SM103")
+@pytest.mark.parametrize(
+    ("head_dim", "seqlen"),
+    [
+        (48, 959),
+        (32, 1189),
+        # SM103 alone sends this D=48 size to the Blackwell kernel (its S=240 anchor).
+        pytest.param(48, 241, marks=pytest.mark.skipif(SM_VERSION != 103, reason="an SM103-only Blackwell window")),
+    ],
+)
+def test_blackwell_kernel_serves_the_diffusion_token_shape(
+    head_dim: int, seqlen: int, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Five samples share each bias, the token count is not a multiple of 8, and two batches mask
+    different key counts; the bias's padding columns hold large finite values the mask must hide.
+    Every selected mode runs the Blackwell kernel, and with both selected they agree bitwise."""
+    num_heads, batch, mult = 4, 2, 5
+    q, k, v, pair_bias, _ = _make_inputs(batch, mult, seqlen, seqlen, num_heads, head_dim, torch.bfloat16, True)
+    masked = 259 if seqlen > 518 else seqlen // 2
+    actual_s_kv = torch.tensor([seqlen, seqlen - masked], dtype=torch.int32, device="cuda")
+    padded_bias = torch.full(
+        (batch, num_heads, seqlen, (seqlen + 7) // 8 * 8), 1e4, dtype=torch.bfloat16, device="cuda"
+    )
+    padded_bias[..., :seqlen] = pair_bias
+    expected = _reference(q, k, v, pair_bias, actual_s_kv, num_heads, head_dim, seqlen)
+    outputs = []
+    for mode in _MODES:
+        with monkeypatch.context() as patch:
+            actual = _run(mode, patch, q, k, v, padded_bias, actual_s_kv, num_heads, head_dim, True)
+        ((_, variant, _),) = PairwiseAttentionCuTeLeftMask._compiled_cache
+        assert variant.kernel_abi == "sm100"
+        if mode == "cubin":
+            (executable,) = PairwiseAttentionCuTeLeftMask._compiled_cache.values()
+            assert type(executable._config.spec).__name__ == "KernelSpecSM100"
+        torch.testing.assert_close(actual.float(), expected.float(), atol=_ATOL[torch.bfloat16], rtol=1e-2)
+        outputs.append(actual)
+    assert all(torch.equal(outputs[0], output) for output in outputs[1:])
+
+
+@pytest.mark.skipif(not _BLACKWELL, reason="only SM100 and SM103 fall back to SDPA on a library without their CUBINs")
+@pytest.mark.parametrize("graph", [False, True], ids=["eager", "graph"])
+@pytest.mark.parametrize("cause", ["force_cubin", "no_sources"])
+@pytest.mark.parametrize(("batch", "mult", "head_dim", "seqlen"), [(1, 5, 48, 959), (2, 5, 48, 301), (2, 1, 24, 200)])
+def test_call_without_a_kernel_takes_sdpa(
+    monkeypatch: pytest.MonkeyPatch, graph: bool, cause: str, batch: int, mult: int, head_dim: int, seqlen: int
+) -> None:
+    """Model tests set CUTEDSL_FORCE_CUBIN after building their layers, and a source-free build has no kernel to
+    compile. A kernel library built before the SM100 and SM103 CUBINs shipped cannot load one either, so the call
+    runs on SDPA instead of raising: eagerly and under graph capture."""
+    num_heads = 4
+    backend = PairwiseAttentionCuTeLeftMask(0, num_heads, head_dim, num_kv_heads=num_heads)
+    q, k, v, pair_bias, actual_s_kv = _make_inputs(
+        batch, mult, seqlen, seqlen, num_heads, head_dim, torch.bfloat16, True
+    )
+
+    def library_without_this_sm(*_args, **_kwargs):
+        raise pw_cubin.PairwiseAttentionCubinMissing(f"no pairwise-attention CUBIN for SM{SM_VERSION}")
+
+    monkeypatch.setattr(pw_cutedsl, "populate_compiled_cache_from_library", library_without_this_sm)
+    if cause == "force_cubin":
+        monkeypatch.setenv(FORCE_CUBIN_ENV, "1")
+    else:
+
+        def missing_source(_package: str) -> None:
+            raise ModuleNotFoundError("CuTeDSL kernel source removed")
+
+        monkeypatch.setattr(pw_cutedsl, "load_source_module", missing_source)
+    monkeypatch.setattr(PairwiseAttentionCuTeLeftMask, "_compiled_cache", {})
+    metadata = PairwiseAttentionCuTeLeftMaskMetadata()
+
+    def call() -> torch.Tensor:
+        return backend.forward(q, k, v, biases=[actual_s_kv, pair_bias], metadata=metadata)
+
+    actual = call()
+    if graph:
+        captured = torch.cuda.CUDAGraph()
+        with torch.cuda.graph(captured):
+            actual = call()
+        captured.replay()
+        torch.cuda.synchronize()
+    assert not PairwiseAttentionCuTeLeftMask._compiled_cache
+    expected = _reference(q, k, v, pair_bias, actual_s_kv, num_heads, head_dim, seqlen)
+    torch.testing.assert_close(actual.float(), expected.float(), atol=_ATOL[torch.bfloat16], rtol=1e-2)
+
+
+@pytest.mark.parametrize("route", [*_MODES, "sdpa"])
+@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
+@pytest.mark.parametrize("head_dim", [24, 48])
+def test_an_empty_prefix_attends_to_nothing(
+    monkeypatch: pytest.MonkeyPatch, route: str, dtype: torch.dtype, head_dim: int
+) -> None:
+    """A batch whose key prefix is empty gets zero output rows, as SDPA defines a fully masked row, on every route.
+
+    Its samples share the call with a batch whose prefix is not empty, which still matches the reference. A
+    finite mask value fails this in float16, where it is too small to swamp the scores.
+    """
+    if route == "sdpa" and not _BLACKWELL:
+        pytest.skip("only SM100 and SM103 fall back to SDPA on a library without their CUBINs")
+    num_heads, batch, mult, seqlen = 4, 2, 2, 200
+    q, k, v, pair_bias, actual_s_kv = _make_inputs(batch, mult, seqlen, seqlen, num_heads, head_dim, dtype, False)
+    actual_s_kv = torch.tensor([0, 77], dtype=torch.int32, device=q.device)
+    if route == "sdpa":
+
+        def library_without_this_sm(*_args, **_kwargs):
+            raise pw_cubin.PairwiseAttentionCubinMissing(f"no pairwise-attention CUBIN for SM{SM_VERSION}")
+
+        monkeypatch.setattr(pw_cutedsl, "populate_compiled_cache_from_library", library_without_this_sm)
+        monkeypatch.setenv(FORCE_CUBIN_ENV, "1")
+        monkeypatch.setattr(PairwiseAttentionCuTeLeftMask, "_compiled_cache", {})
+        backend = PairwiseAttentionCuTeLeftMask(0, num_heads, head_dim, num_kv_heads=num_heads)
+        actual = backend.forward(
+            q, k, v, biases=[actual_s_kv, pair_bias], metadata=PairwiseAttentionCuTeLeftMaskMetadata()
+        )
+    else:
+        actual = _run(route, monkeypatch, q, k, v, pair_bias, actual_s_kv, num_heads, head_dim, False)
+    torch.testing.assert_close(actual[:mult], torch.zeros_like(actual[:mult]), atol=0, rtol=0)
+    expected = _reference(q, k, v, pair_bias, actual_s_kv, num_heads, head_dim, seqlen)
+    torch.testing.assert_close(actual[mult:].float(), expected[mult:].float(), atol=_ATOL[dtype], rtol=1e-2)
+
+
+@pytest.mark.skipif(not _BLACKWELL, reason="only SM100 and SM103 fall back to SDPA on a library without their CUBINs")
+@pytest.mark.parametrize(
+    "fault",
+    [
+        library_runtime.CuTeDSLKernelLibraryUnavailable("the kernel library failed to load"),
+        library_runtime.CuTeDSLKernelVariantUnavailable("the CUBIN config cannot launch"),
+    ],
+    ids=["library", "config"],
+)
+def test_a_broken_kernel_library_raises_instead_of_taking_sdpa(
+    monkeypatch: pytest.MonkeyPatch, fault: Exception
+) -> None:
+    """Only a library without the image falls back to SDPA: one that fails to load, or whose image cannot launch,
+    is a broken installation and must not degrade silently."""
+
+    def broken_library(*_args, **_kwargs):
+        raise fault
+
+    monkeypatch.setattr(pw_cutedsl, "populate_compiled_cache_from_library", broken_library)
+    monkeypatch.setenv(FORCE_CUBIN_ENV, "1")
+    monkeypatch.setattr(PairwiseAttentionCuTeLeftMask, "_compiled_cache", {})
+    backend, metadata, inputs = _forced_backend(48)
+    with pytest.raises(RuntimeError, match=FORCE_CUBIN_ENV):
+        backend.forward(inputs[0], inputs[1], inputs[2], biases=[inputs[4], inputs[3]], metadata=metadata)
+
+
+@pytest.mark.parametrize(
+    ("raised", "missing"), [(IndexError, True), (ValueError, False), (TypeError, False), (RuntimeError, False)]
+)
+def test_the_cubin_adapter_tells_a_missing_image_from_a_bad_config(raised: type[Exception], missing: bool) -> None:
+    """The launcher reports a registry miss as IndexError; any other config failure is not a missing image."""
+
+    def make_kernel_config(*_args: object) -> None:
+        raise raised("make_kernel_config failed")
+
+    launcher = SimpleNamespace(DType=SimpleNamespace(FLOAT16=0, BFLOAT16=1), make_kernel_config=make_kernel_config)
+    with pytest.raises(library_runtime.CuTeDSLKernelVariantUnavailable) as error:
+        pw_cubin.PairwiseAttentionCubinExecutable(None, launcher, 100, 48, 959, torch.bfloat16, True)
+    assert isinstance(error.value, pw_cubin.PairwiseAttentionCubinMissing) is missing
+
+
+def test_the_launcher_reports_a_missing_image_as_index_error() -> None:
+    """The registry miss the SDPA fallback keys on comes from the C++ lookup, not from argument checks."""
+    launcher = require_cubin_library().pairwise_attention
+    with pytest.raises(IndexError, match="No embedded pairwise-attention CUBIN"):
+        launcher.make_kernel_config(100, 96, 128, launcher.DType.BFLOAT16, False)
+
+
+@loud_on_missing_cubin
 def test_unavailable_cubin_variant_raises(monkeypatch):
     """A missing CUBIN must fail loudly rather than silently degrade."""
     require_cubin_library()
@@ -238,7 +502,7 @@ def _forced_backend(head_dim, num_heads=4):
 
 def test_force_cubin_takes_the_library_path_with_sources_present(monkeypatch):
     """The flag must reach the CUBINs without deleting the kernel sources."""
-    require_cubin_library()
+    _require_blackwell_cubins()
     monkeypatch.setenv(FORCE_CUBIN_ENV, "1")
     PairwiseAttentionCuTeLeftMask._compiled_cache.clear()
 
@@ -250,6 +514,55 @@ def test_force_cubin_takes_the_library_path_with_sources_present(monkeypatch):
     assert isinstance(cached[0], library_runtime.CuTeDSLKernelLibraryExecutable)
 
 
+@pytest.mark.skipif(not source_module_available(_SOURCE_MODULE), reason="the CuTeDSL kernel sources are not installed")
+@pytest.mark.parametrize("library", ["installed", "without_this_sm"])
+def test_forcing_cubins_after_a_source_call_loads_the_cubin(monkeypatch: pytest.MonkeyPatch, library: str) -> None:
+    """Model tests set CUTEDSL_FORCE_CUBIN after their layers ran: the next call loads the CUBIN, or runs on SDPA
+    on SM100/SM103 from a library without their CUBINs, rather than reuse the source executable. Clearing the
+    switch, caches kept, runs the source executable again."""
+    if library == "without_this_sm" and not _BLACKWELL:
+        pytest.skip("only SM100 and SM103 fall back to SDPA on a library without their CUBINs")
+    monkeypatch.delenv(FORCE_CUBIN_ENV, raising=False)
+    monkeypatch.setattr(PairwiseAttentionCuTeLeftMask, "_compiled_cache", {})
+    head_dim = _tuned_head_dims()[0]
+    backend, metadata, (q, k, v, pair_bias, actual_s_kv) = _forced_backend(head_dim)
+
+    def call() -> torch.Tensor:
+        return backend.forward(q, k, v, biases=[actual_s_kv, pair_bias], metadata=metadata).clone()
+
+    expected = call()
+    source_executable = backend._last_executable
+    assert source_executable is not None
+    assert not isinstance(source_executable, library_runtime.CuTeDSLKernelLibraryExecutable)
+    lookups = []
+    populate = pw_cutedsl.populate_compiled_cache_from_library
+
+    def counting_populate(*args, **kwargs):
+        lookups.append(args)
+        if library == "without_this_sm":
+            raise pw_cubin.PairwiseAttentionCubinMissing(f"no pairwise-attention CUBIN for SM{SM_VERSION}")
+        return populate(*args, **kwargs)
+
+    if library == "installed":
+        require_cubin_library()
+    monkeypatch.setattr(pw_cutedsl, "populate_compiled_cache_from_library", counting_populate)
+    monkeypatch.setenv(FORCE_CUBIN_ENV, "1")
+    forced = call()
+    assert len(lookups) == 1
+    if library == "installed" and not (_BLACKWELL and _library_misses_a_tuned_image()):
+        assert isinstance(backend._last_executable, library_runtime.CuTeDSLKernelLibraryExecutable)
+        assert torch.equal(forced, expected)
+    else:
+        assert backend._last_executable is None
+        reference = _reference(q, k, v, pair_bias, actual_s_kv, 4, head_dim, q.shape[1])
+        torch.testing.assert_close(forced.float(), reference.float(), atol=_ATOL[torch.bfloat16], rtol=1e-2)
+    monkeypatch.delenv(FORCE_CUBIN_ENV)
+    assert torch.equal(call(), expected)
+    assert backend._last_executable is source_executable
+    assert len(lookups) == 1
+
+
+@loud_on_missing_cubin
 def test_force_cubin_error_names_the_flag(monkeypatch):
     """A forced run must not blame absent sources when the CUBIN is missing."""
     require_cubin_library()
@@ -268,6 +581,7 @@ def test_force_cubin_error_names_the_flag(monkeypatch):
 
 def _cubin_launch_args(head_dim, num_heads=4, batch=2, seqlen=96):
     """One valid launch through the CUBIN adapter, ready to be perturbed."""
+    _require_blackwell_cubins()
     library = require_cubin_library()
     executable = pw_cubin.PairwiseAttentionCubinExecutable(
         library, library.pairwise_attention, SM_VERSION, head_dim, 0, torch.float16, False

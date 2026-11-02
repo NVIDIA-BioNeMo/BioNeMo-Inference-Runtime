@@ -237,12 +237,6 @@ _ATTENTION_SPEC = _FamilySpec(
     ),
     runtime_key=("head_dim", "bucket", "is_bfloat16", "packed_output"),
     sm90=_Sm90Spec("enabled", ("q", "k", "v", "bias", "output")),
-)
-
-_TRIANGLE_ATTENTION_SPEC = _FamilySpec(
-    fields=_ATTENTION_SPEC.fields,
-    runtime_key=_ATTENTION_SPEC.runtime_key,
-    sm90=_ATTENTION_SPEC.sm90,
     sm100=_Sm100Spec("enabled", ("q", "k", "v", "bias", "output")),
 )
 
@@ -327,7 +321,7 @@ _FAMILY_SPECS: dict[str, _FamilySpec] = {
         ),
     ),
     "pairwise_attention": _ATTENTION_SPEC,
-    "triangle_attention": _TRIANGLE_ATTENTION_SPEC,
+    "triangle_attention": _ATTENTION_SPEC,
     "dual_gemm_x_x": _FamilySpec(
         fields=(
             _Field("K", _POSITIVE, "std::int32_t K;"),

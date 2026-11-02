@@ -327,7 +327,22 @@ class RFProteinaSearchCost:
 
 @dataclass(frozen=True)
 class RFProteinaSearchCandidate:
-    """One scored beam member or kept intermediate."""
+    """One scored beam member or kept intermediate.
+
+    ``prediction`` is decoded from a completion rollout to the end of the
+    schedule, so it answers "what would this branch become". ``state`` is the
+    noisy ``x_t`` the branch actually holds at ``checkpoint``, which is what a
+    later search must be handed to continue this branch rather than restart it.
+    The two are different points on the trajectory and only ``state`` is
+    resumable. ``clean_prediction`` is the branch's ``x_1`` at the same
+    checkpoint; a continuation needs it because the first step of a resumed
+    segment self-conditions on it, and omitting it feeds zeros instead, which
+    continues a different trajectory while looking like success.
+
+    Both are ``None`` unless the search was run with ``export_states=True``,
+    because carrying them costs ``n_branch * beam_width * num_requests`` pairs
+    of states per checkpoint.
+    """
 
     prediction: RFProteinaPredictionOutput
     metrics: dict[str, float]
@@ -339,6 +354,8 @@ class RFProteinaSearchCandidate:
     checkpoint: int
     seed: int
     is_intermediate: bool
+    state: RFProteinaState | None = None
+    clean_prediction: RFProteinaState | None = None
 
 
 @dataclass(frozen=True)

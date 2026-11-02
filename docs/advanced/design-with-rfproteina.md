@@ -316,6 +316,104 @@ sum, where negative weights mean "minimize", so a less negative reward is
 better. `slot` is the beam position, not a quality rank — the script sorts by
 reward and reports the best first.
 
+### Pruning the beam yourself
+
+`RFProteina.search` owns the beam: it branches, scores, and prunes at every
+checkpoint. A caller that wants to apply its own judgement between checkpoints
+— a human review, a slow oracle, a scheduler that reorders work — has to stop
+the search and start it again, and a search cannot be restarted from a
+structure. The structure a candidate carries is decoded from a completion
+rollout to the end of the schedule, not from the point the beam had reached.
+
+Pass `export_states=True` to get the resumable point instead. Every scored
+candidate then also carries `state`, the noisy `x_t` the branch holds at
+`checkpoint`, and `clean_prediction`, its `x_1` at the same step.
+
+`export_states` also lets `step_checkpoints` end before `num_steps`. Such a
+search branches and scores its last checkpoint, returns every candidate there
+instead of the top `beam_width`, and stops. That is the shape to reach for: a
+caller who is going to replace the prune should not pay for the rest of the
+schedule first. Each returned candidate still carries a `prediction`, decoded
+from a completion rollout, because an external scorer ranks finished
+structures rather than mid-trajectory states.
+
+Hand the chosen ones back as `resume_states` and `resume_clean`, with
+`resume_step` set to the checkpoint they came from and `step_checkpoints`
+starting there:
+
+```python
+stopped = model.search(
+    features,
+    replace(config, step_checkpoints=[0, 2]),
+    seed=11,
+    export_states=True,
+)
+kept = choose(stopped.final_candidates)  # your judgement, your metric
+
+resumed = model.search(
+    features,
+    replace(config, step_checkpoints=[2, num_steps]),
+    seed=11,
+    resume_states=[c.state for c in kept],
+    resume_clean=[c.clean_prediction for c in kept],
+    resume_step=2,
+)
+```
+
+A search that runs the whole schedule can export too. Set
+`intermediate_save_min_reward` to keep the candidates at checkpoints before
+the last one, which are otherwise dropped once the prune has run. Use that to
+inspect a beam, not to drive an external prune: it has already spent the
+compute the prune was meant to redirect.
+
+`resume_states` is a keep list. Branches that are not in it do not continue,
+and the list's length is the width of the resumed beam, so a caller may narrow
+four slots to one, or widen, part-way through a run.
+
+Four things decide whether the result is the beam you cut or a different one.
+
+**Both tensors are required.** The first resumed step self-conditions on
+`clean_prediction`. A resume given only `state` would be fed zeros and
+continue a different trajectory while still returning plausible structures, so
+the call is refused rather than allowed to do that quietly.
+
+**Order is meaningful.** The branch seed is derived from the slot index, so
+the same survivor placed in slot 0 and in slot 1 draws different noise.
+`select_beam_indices` returns survivors rank-major, slot 0 being the highest
+reward, and a caller reproducing the internal prune must send them back in
+that order.
+
+**A slot spans every request.** An exported candidate carries one row, which
+is one request; a slot carries all of them. With a batch, pick one candidate
+per request per slot and stack them in request order. Stacking them wrongly
+keeps the shapes valid and silently mixes results between requests.
+
+**A resumed schedule still ends at `num_steps`.** Resuming shortens the
+schedule rather than leaving it unfinished, so every returned survivor is as
+fully denoised as one from an uninterrupted run. Only an export-and-stop may
+end early, and what it returns is explicitly part-denoised.
+
+With those held, a cut-and-resumed beam is not merely similar to the
+uninterrupted one, it is identical:
+`test_rfproteina_search_resume_matches_the_server_prune_exactly` reproduces the
+internal top-k on a `beam_width=2`, `n_branch=2` beam, compares the finals at
+`rtol=0, atol=0`, and then sends the same survivors back reversed to show the
+comparison is not vacuous. That works because the per-interval seed is keyed on
+the interval's start step rather than on how many intervals preceded it, so a
+resumed interval draws the noise the uninterrupted one would have drawn. The
+generator itself is not restored; resuming continues the beam, not an RNG
+stream.
+
+`test_rfproteina_search_exports_and_stops_without_pruning` makes the same
+claim about the cheap path: an export-and-stop at step 2 plus a resume of the
+survivors the internal prune would have chosen reproduces the uninterrupted
+beam at `rtol=0, atol=0`, for fewer velocity steps than the full search.
+
+Nothing requires the caller to use one metric throughout. Each stop is scored
+by whoever holds the candidates, so a run may filter on clashes at the first
+checkpoint and on designability at the second. `search()` itself cannot do
+that: it takes one objective for the whole rollout.
+
 ## Related pages
 
 - [RFProteína architecture](../ref/rfproteina.md) — networks, shapes, kernels,

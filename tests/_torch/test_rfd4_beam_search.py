@@ -540,16 +540,19 @@ def test_rfproteina_search_runs_custom_oracle_provider() -> None:
     assert CLASH_METRIC_KEY in result.final_candidates[0].metrics
 
 
-@pytest.mark.skipif(
+requires_released_checkpoints = pytest.mark.skipif(
     os.environ.get("BIOIR_TEST_RFPROTEINA_SEARCH_PARITY") != "1",
     reason="set BIOIR_TEST_RFPROTEINA_SEARCH_PARITY=1 to run released-checkpoint search smoke",
 )
-def test_rfproteina_released_checkpoint_search_smoke() -> None:
+
+
+def _released_model_and_features(num_steps: int, tokens: int = 8):
+    """The released velocity and autoencoder checkpoints, sized and on the GPU."""
     checkpoint = resolve_rfproteina_checkpoint()
     autoencoder = resolve_rfproteina_autoencoder_checkpoint()
     if checkpoint is None or autoencoder is None:
         pytest.skip("released RFProteína checkpoints are not available")
-    sampling = _deterministic_sampling_config(num_steps=2)
+    sampling = _deterministic_sampling_config(num_steps=num_steps)
     # The released flow checkpoint carries unmerged LoRA adapters; this entry point folds them and sizes the model.
     model = RFProteina.from_reference_state_dicts(
         load_rfproteina_checkpoint_state(checkpoint),
@@ -558,12 +561,18 @@ def test_rfproteina_released_checkpoint_search_smoke() -> None:
     )
     model.sampler = type(model.sampler)(sampling, latent_dim=model.config.trunk.latent_dim)
     model = model.cuda().eval()
-    mask = torch.ones(1, 8, dtype=torch.bool, device="cuda")
+    mask = torch.ones(1, tokens, dtype=torch.bool, device="cuda")
     static_features = _native_static_features(mask)
     # The released network reads per-residue sequence probabilities; NaN leaves a residue unspecified.
     for token in SEQUENCE_PROBABILITY_TOKENS:
         key = f"condition_sequence-probability-{token}_1_residue"
         static_features[key] = torch.full(mask.shape, torch.nan, device=mask.device)
+    return model, static_features
+
+
+@requires_released_checkpoints
+def test_rfproteina_released_checkpoint_search_smoke() -> None:
+    model, static_features = _released_model_and_features(num_steps=2)
     result = model.search(
         static_features,
         _clash_search_config(2, step_checkpoints=[0, 2], n_branch=1, beam_width=1),
@@ -571,3 +580,352 @@ def test_rfproteina_released_checkpoint_search_smoke() -> None:
     )
     assert result.final_candidates
     assert all(candidate.reward == candidate.reward for candidate in result.final_candidates)
+
+
+@requires_released_checkpoints
+def test_rfproteina_released_checkpoint_resume_matches_the_uninterrupted_beam() -> None:
+    """The bit-exact claim, on the weights that ship.
+
+    Every other test here runs a randomly initialised six-residue model, which
+    proves the control flow and the seed derivation but not that they survive
+    the real network's depth, its LoRA-merged weights or its latent width.
+    This runs the same export-and-stop, prune, resume on the released
+    checkpoints and compares coordinates at ``rtol=0, atol=0``.
+    """
+    model, static_features = _released_model_and_features(num_steps=4)
+
+    def config(**updates):
+        return _clash_search_config(4, n_branch=2, beam_width=1, **updates)
+
+    full = model.search(static_features, config(), seed=0)
+
+    stopped = model.search(
+        static_features,
+        config(step_checkpoints=[0, 2]),
+        seed=0,
+        export_states=True,
+    )
+    assert len(stopped.final_candidates) == 2
+    assert stopped.cost.velocity_steps < full.cost.velocity_steps
+
+    ordered = sorted(enumerate(stopped.final_candidates), key=lambda pair: (-pair[1].reward, pair[0]))
+    kept = ordered[0][1]
+    resumed = model.search(
+        static_features,
+        config(step_checkpoints=[2, 4]),
+        seed=0,
+        resume_states=[kept.state],
+        resume_clean=[kept.clean_prediction],
+        resume_step=2,
+    )
+    torch.testing.assert_close(
+        resumed.final_candidates[0].prediction.coordinates,
+        full.final_candidates[0].prediction.coordinates,
+        rtol=0,
+        atol=0,
+    )
+
+
+def test_rfproteina_search_resume_reproduces_the_uninterrupted_beam() -> None:
+    """A beam cut at a checkpoint and resumed from the export is the same beam.
+
+    One branch and one slot make selection trivial, so any difference is the
+    continuation itself rather than which candidate was kept. The resumed run
+    derives the same per-interval seed, because that seed is keyed on the root
+    seed and the interval's start step, not on how many intervals came before.
+    """
+    model = _tiny_model(num_steps=4)
+    mask = torch.ones(1, 6, dtype=torch.bool, device="cuda")
+    static_features = _native_static_features(mask)
+
+    full = model.search(
+        static_features,
+        _clash_search_config(4, n_branch=1, beam_width=1, intermediate_save_min_reward=float("-inf")),
+        seed=11,
+        export_states=True,
+    )
+    exported = [candidate for candidate in full.intermediate_candidates if candidate.checkpoint == 2]
+    assert len(exported) == 1
+    carried = exported[0]
+    assert carried.state is not None
+    assert carried.clean_prediction is not None
+
+    resumed = model.search(
+        static_features,
+        _clash_search_config(4, step_checkpoints=[2, 4], n_branch=1, beam_width=1),
+        seed=11,
+        resume_states=[carried.state],
+        resume_clean=[carried.clean_prediction],
+        resume_step=2,
+    )
+    assert len(resumed.final_candidates) == 1
+    torch.testing.assert_close(
+        resumed.final_candidates[0].prediction.coordinates,
+        full.final_candidates[0].prediction.coordinates,
+    )
+    assert resumed.cost.velocity_steps < full.cost.velocity_steps
+
+
+def test_rfproteina_search_exports_a_midflight_state_not_a_prediction() -> None:
+    model = _tiny_model(num_steps=4)
+    mask = torch.ones(1, 6, dtype=torch.bool, device="cuda")
+    static_features = _native_static_features(mask)
+    result = model.search(
+        static_features,
+        _clash_search_config(4, intermediate_save_min_reward=float("-inf")),
+        seed=5,
+        export_states=True,
+    )
+    midflight = [candidate for candidate in result.intermediate_candidates if candidate.checkpoint == 2]
+    assert midflight
+    for candidate in midflight:
+        assert set(candidate.state) == set(candidate.clean_prediction)
+        # the decoded prediction is a completion rollout to step 4; x_t at step 2 is not it
+        assert not torch.allclose(candidate.state["bb_ca"], candidate.clean_prediction["bb_ca"])
+
+    without_export = model.search(
+        static_features,
+        _clash_search_config(4, intermediate_save_min_reward=float("-inf")),
+        seed=5,
+    )
+    assert all(candidate.state is None for candidate in without_export.candidates)
+
+
+def test_rfproteina_search_resume_refuses_an_incomplete_contract() -> None:
+    model = _tiny_model(num_steps=4)
+    mask = torch.ones(1, 6, dtype=torch.bool, device="cuda")
+    static_features = _native_static_features(mask)
+    state = {
+        "bb_ca": torch.zeros(1, 6, 3, device="cuda"),
+        "local_latents": torch.zeros(1, 6, model.config.trunk.latent_dim, device="cuda"),
+    }
+    config = _clash_search_config(4, step_checkpoints=[2, 4], n_branch=1, beam_width=1)
+
+    with pytest.raises(ValueError, match="must be given together"):
+        model.search(static_features, config, seed=0, resume_states=[state], resume_step=2)
+    with pytest.raises(ValueError, match="must equal step_checkpoints"):
+        model.search(static_features, config, seed=0, resume_states=[state], resume_clean=[state], resume_step=3)
+    with pytest.raises(ValueError, match="requires resume_states"):
+        model.search(static_features, _clash_search_config(4), seed=0, resume_step=2)
+    with pytest.raises(ValueError, match="cannot be combined with partial_config"):
+        model.search(
+            static_features,
+            config,
+            seed=0,
+            resume_states=[state],
+            resume_clean=[state],
+            resume_step=2,
+            partial_config=RFProteinaPartialSimulationConfig(partial_t_backbone=0.2, partial_t_latent=0.2),
+        )
+
+
+def test_rfproteina_search_resume_continues_only_what_the_caller_sends() -> None:
+    """``resume_states`` is a keep list: what is not sent does not continue.
+
+    The caller names the branches to carry on with, not the ones to drop, so
+    the beam it gets is exactly as wide as the list it sent. Keeping the
+    lowest-reward candidate is what proves the choice is the caller's and not
+    a re-derivation of the internal ranking, which would have kept the
+    highest. The scores come from the evaluator rather than from geometry,
+    because a six-residue random model clashes identically everywhere and
+    would tie every candidate at zero.
+    """
+    model = _tiny_model(num_steps=4)
+    mask = torch.ones(1, 6, dtype=torch.bool, device="cuda")
+    static_features = _native_static_features(mask)
+
+    def ranked(prediction, _features):
+        batch = prediction.coordinates.shape[0]
+        return [{"score": float(index + 1)} for index in range(batch)]
+
+    def config(**updates):
+        values = {
+            "step_checkpoints": [0, 2, 4],
+            "n_branch": 2,
+            "beam_width": 2,
+            "rewards": RFProteinaSearchRewardConfig(weights={"score": 1.0}),
+        }
+        values.update(updates)
+        return RFProteinaBeamSearchConfig(**values)
+
+    first = model.search(
+        static_features,
+        config(intermediate_save_min_reward=float("-inf")),
+        evaluators=[ranked],
+        seed=19,
+        export_states=True,
+    )
+    at_checkpoint = [candidate for candidate in first.intermediate_candidates if candidate.checkpoint == 2]
+    assert len(at_checkpoint) == 4
+
+    by_reward = sorted(at_checkpoint, key=lambda candidate: candidate.reward)
+    worst, best = by_reward[0], by_reward[-1]
+    assert worst.reward < best.reward
+
+    def resume_from(candidate):
+        return model.search(
+            static_features,
+            config(step_checkpoints=[2, 4], beam_width=1),
+            evaluators=[ranked],
+            seed=19,
+            resume_states=[candidate.state],
+            resume_clean=[candidate.clean_prediction],
+            resume_step=2,
+        )
+
+    from_worst = resume_from(worst)
+    from_best = resume_from(best)
+    assert len(from_worst.final_candidates) == 1
+    assert not torch.allclose(
+        from_worst.final_candidates[0].prediction.coordinates,
+        from_best.final_candidates[0].prediction.coordinates,
+    )
+
+
+def test_rfproteina_search_resume_matches_the_server_prune_exactly() -> None:
+    """Same metric, same survivors, same numbers -- on a beam wider than one.
+
+    The caller reproduces the internal prune: top ``beam_width`` by reward per
+    request, ties broken by the lower candidate index, kept in that order.
+    That order is the slot order, because ``select_beam_indices`` returns its
+    survivors rank-major. Sending them back in it must give the uninterrupted
+    beam bit for bit; sending them back reversed must not, which is what makes
+    the first assertion mean something.
+    """
+    model = _tiny_model(num_steps=4)
+    mask = torch.ones(1, 6, dtype=torch.bool, device="cuda")
+    static_features = _native_static_features(mask)
+
+    def ranked(prediction, _features):
+        batch = prediction.coordinates.shape[0]
+        return [{"score": float(index + 1)} for index in range(batch)]
+
+    def config(**updates):
+        values = {
+            "step_checkpoints": [0, 2, 4],
+            "n_branch": 2,
+            "beam_width": 2,
+            "rewards": RFProteinaSearchRewardConfig(weights={"score": 1.0}),
+        }
+        values.update(updates)
+        return RFProteinaBeamSearchConfig(**values)
+
+    full = model.search(
+        static_features,
+        config(intermediate_save_min_reward=float("-inf")),
+        evaluators=[ranked],
+        seed=23,
+        export_states=True,
+    )
+    at_two = [candidate for candidate in full.intermediate_candidates if candidate.checkpoint == 2]
+    assert len(at_two) == 4
+
+    # intermediates are appended in ascending candidate-row order, so the
+    # position here is the index select_beam_indices would have ranked
+    ordered = sorted(enumerate(at_two), key=lambda pair: (-pair[1].reward, pair[0]))
+    survivors = [candidate for _, candidate in ordered[:2]]
+
+    def resume(kept):
+        return model.search(
+            static_features,
+            config(step_checkpoints=[2, 4]),
+            evaluators=[ranked],
+            seed=23,
+            resume_states=[candidate.state for candidate in kept],
+            resume_clean=[candidate.clean_prediction for candidate in kept],
+            resume_step=2,
+        )
+
+    same_order = resume(survivors)
+    assert len(same_order.final_candidates) == len(full.final_candidates) == 2
+    for resumed_candidate, full_candidate in zip(same_order.final_candidates, full.final_candidates, strict=True):
+        torch.testing.assert_close(
+            resumed_candidate.prediction.coordinates,
+            full_candidate.prediction.coordinates,
+            rtol=0,
+            atol=0,
+        )
+
+    reversed_order = resume(list(reversed(survivors)))
+    assert not torch.allclose(
+        reversed_order.final_candidates[0].prediction.coordinates,
+        full.final_candidates[0].prediction.coordinates,
+    )
+
+
+def test_rfproteina_search_exports_and_stops_without_pruning() -> None:
+    """A schedule that ends early hands back every branch and spends less doing it.
+
+    The point of letting a caller prune is to stop before the beam commits.
+    So an export-and-stop returns all ``n_branch * beam_width`` candidates
+    rather than the top ``beam_width``, costs fewer velocity steps than the
+    whole search, and what it hands over is enough to finish the same beam:
+    resuming with the survivors the internal prune would have chosen
+    reproduces the uninterrupted run bit for bit.
+    """
+    model = _tiny_model(num_steps=4)
+    mask = torch.ones(1, 6, dtype=torch.bool, device="cuda")
+    static_features = _native_static_features(mask)
+
+    def ranked(prediction, _features):
+        batch = prediction.coordinates.shape[0]
+        return [{"score": float(index + 1)} for index in range(batch)]
+
+    def config(**updates):
+        values = {
+            "step_checkpoints": [0, 2, 4],
+            "n_branch": 2,
+            "beam_width": 2,
+            "rewards": RFProteinaSearchRewardConfig(weights={"score": 1.0}),
+        }
+        values.update(updates)
+        return RFProteinaBeamSearchConfig(**values)
+
+    full = model.search(static_features, config(), evaluators=[ranked], seed=23)
+
+    stopped = model.search(
+        static_features,
+        config(step_checkpoints=[0, 2]),
+        evaluators=[ranked],
+        seed=23,
+        export_states=True,
+    )
+    assert len(stopped.final_candidates) == 4
+    assert not stopped.intermediate_candidates
+    assert {candidate.checkpoint for candidate in stopped.final_candidates} == {2}
+    assert all(candidate.state is not None for candidate in stopped.final_candidates)
+    assert all(candidate.clean_prediction is not None for candidate in stopped.final_candidates)
+    assert stopped.cost.velocity_steps < full.cost.velocity_steps
+
+    ordered = sorted(enumerate(stopped.final_candidates), key=lambda pair: (-pair[1].reward, pair[0]))
+    survivors = [candidate for _, candidate in ordered[:2]]
+    resumed = model.search(
+        static_features,
+        config(step_checkpoints=[2, 4]),
+        evaluators=[ranked],
+        seed=23,
+        resume_states=[candidate.state for candidate in survivors],
+        resume_clean=[candidate.clean_prediction for candidate in survivors],
+        resume_step=2,
+    )
+    for resumed_candidate, full_candidate in zip(resumed.final_candidates, full.final_candidates, strict=True):
+        torch.testing.assert_close(
+            resumed_candidate.prediction.coordinates,
+            full_candidate.prediction.coordinates,
+            rtol=0,
+            atol=0,
+        )
+
+
+def test_rfproteina_search_refuses_an_early_stop_without_export() -> None:
+    """A short schedule with no export would just lose the beam."""
+    model = _tiny_model(num_steps=4)
+    mask = torch.ones(1, 6, dtype=torch.bool, device="cuda")
+    config = RFProteinaBeamSearchConfig(
+        step_checkpoints=[0, 2],
+        n_branch=1,
+        beam_width=1,
+        rewards=RFProteinaSearchRewardConfig(weights={"score": 1.0}),
+    )
+    with pytest.raises(ValueError, match="must equal num_steps=4"):
+        model.search(_native_static_features(mask), config, evaluators=[lambda *_: [{"score": 1.0}]], seed=23)

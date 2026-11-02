@@ -459,7 +459,9 @@ class RFProteinaBeamSearchConfig(BaseModel):
 
     step_checkpoints: list[int] = Field(
         description=(
-            "Inclusive global steps to branch, score, and prune. Must start at 0, increase, and end at num_steps."
+            "Inclusive global steps to branch, score, and prune. Must increase. Starts at 0 for a fresh "
+            "search, or at the step a resumed beam was exported at. Ends at num_steps, or earlier when "
+            "export_states stops the beam there for a caller to prune."
         )
     )
     n_branch: int = Field(default=4, ge=1, description="Stochastic continuations spawned from each survivor.")
@@ -480,8 +482,8 @@ class RFProteinaBeamSearchConfig(BaseModel):
         checkpoints = self.step_checkpoints
         if len(checkpoints) < 2:
             raise ValueError("step_checkpoints must have at least 2 entries (start and end)")
-        if checkpoints[0] != 0:
-            raise ValueError("step_checkpoints must begin at 0")
+        if checkpoints[0] < 0:
+            raise ValueError("step_checkpoints must begin at 0, or at the step a resumed beam starts from")
         if any(later <= earlier for earlier, later in zip(checkpoints, checkpoints[1:], strict=False)):
             raise ValueError("step_checkpoints must be strictly increasing")
         return self

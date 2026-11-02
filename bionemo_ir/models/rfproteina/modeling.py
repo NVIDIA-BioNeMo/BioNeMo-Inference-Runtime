@@ -1330,6 +1330,10 @@ class RFProteina(nn.Module, OptimizedModuleSetterMixin):
         coordinates: torch.Tensor | None = None,
         clean_state: RFProteinaState | None = None,
         sample_latent: bool = True,
+        resume_states: Sequence[RFProteinaState] | None = None,
+        resume_clean: Sequence[RFProteinaState] | None = None,
+        resume_step: int = 0,
+        export_states: bool = False,
     ) -> RFProteinaSearchOutput:
         """Run metric-weighted beam search over product-space rollouts.
 
@@ -1352,6 +1356,20 @@ class RFProteina(nn.Module, OptimizedModuleSetterMixin):
             seed: Root seed. Child replica/branch/checkpoint streams are derived
                 from it and do not depend on chunk processing order.
             generator: If given, only its ``initial_seed()`` is used as the root.
+            resume_states: One ``x_t`` per beam slot, exported by an earlier
+                search at ``resume_step``. When given, the beam is entered at
+                that step instead of being initialized, so a caller can prune
+                between checkpoints and continue the branches it kept.
+            resume_clean: The matching ``x_1`` per slot. Required with
+                ``resume_states``; the first resumed step self-conditions on it.
+            resume_step: Global step the exported states belong to. Must equal
+                ``search_config.step_checkpoints[0]``.
+            export_states: Attach ``state`` and ``clean_prediction`` to every
+                scored candidate, which is what makes a later resume possible.
+                Off by default because it holds one state pair per candidate.
+                It also permits a schedule that ends before the last sampling
+                step: such a search branches and scores its last checkpoint,
+                returns every candidate unpruned, and stops there.
 
         Returns:
             Intermediates (if a save threshold is set) followed by the final
@@ -1361,6 +1379,24 @@ class RFProteina(nn.Module, OptimizedModuleSetterMixin):
             raise ValueError("static_features must carry 'padding_mask' for search")
         if coordinates is not None and clean_state is not None:
             raise ValueError("provide either coordinates or clean_state, not both")
+        if (resume_states is None) != (resume_clean is None):
+            raise ValueError("resume_states and resume_clean must be given together")
+        if resume_states is None and resume_step != 0:
+            raise ValueError(f"resume_step={resume_step} requires resume_states")
+        if resume_states is not None:
+            if partial_config is not None:
+                raise ValueError(
+                    "resume_states cannot be combined with partial_config: the exported state already "
+                    "carries the corruption the partial schedule would re-apply"
+                )
+            if len(resume_states) != search_config.beam_width:
+                raise ValueError(
+                    f"resume_states must contain beam_width={search_config.beam_width} states, got {len(resume_states)}"
+                )
+            if resume_step != search_config.step_checkpoints[0]:
+                raise ValueError(
+                    f"resume_step={resume_step} must equal step_checkpoints[0]={search_config.step_checkpoints[0]}"
+                )
         resolved_evaluators = (RFProteinaLocalMetricEvaluator(),) if evaluators is None else tuple(evaluators)
         evaluator = CompositeMetricEvaluator(resolved_evaluators)
         padding_mask = static_features["padding_mask"].to(torch.bool)
@@ -1449,7 +1485,9 @@ class RFProteina(nn.Module, OptimizedModuleSetterMixin):
                 "bb_ca": create_modality_schedule(self.config.sampling.backbone, num_steps, device),
                 "local_latents": create_modality_schedule(self.config.sampling.local_latents, num_steps, device),
             }
-            if self.config.sampling.match_reference_rng:
+            if resume_states is not None:
+                initial_slots = list(resume_states)
+            elif self.config.sampling.match_reference_rng:
                 # The reference draws the whole beam at once, so one stream, not one per replica.
                 initial_slots = sample_reference_beam(
                     rollout_mask,
@@ -1540,6 +1578,9 @@ class RFProteina(nn.Module, OptimizedModuleSetterMixin):
             target_backbone=target_backbone,
             scoring_chunk_size=search_config.scoring_chunk_size,
             intermediate_save_min_reward=search_config.intermediate_save_min_reward,
+            initial_clean=None if resume_clean is None else list(resume_clean),
+            resume_step=resume_step,
+            export_states=export_states,
             root_seed=root_seed,
         )
 

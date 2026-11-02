@@ -21,12 +21,20 @@ from collections.abc import Sequence
 import torch
 
 
-def validate_step_checkpoints(step_checkpoints: Sequence[int], num_steps: int) -> tuple[int, ...]:
-    """Require a ``0``-started, strictly increasing schedule that ends at ``num_steps``.
+def validate_step_checkpoints(
+    step_checkpoints: Sequence[int], num_steps: int, *, start_step: int = 0, allow_early_stop: bool = False
+) -> tuple[int, ...]:
+    """Require a strictly increasing schedule from ``start_step`` to ``num_steps``.
 
     Args:
         step_checkpoints: Inclusive step indices, typically ``[0, ..., num_steps]``.
         num_steps: Number of integration intervals in the rollout plan.
+        start_step: Global step the beam is entered at. ``0`` is a fresh
+            rollout; a larger value resumes a beam whose states were exported
+            at that checkpoint by an earlier search.
+        allow_early_stop: Permit a schedule that ends before ``num_steps``. A
+            beam that stops early leaves its states part-denoised, so this is
+            only for a search that exports them for a caller to continue.
 
     Returns:
         The checkpoints as a tuple of ints.
@@ -37,14 +45,17 @@ def validate_step_checkpoints(step_checkpoints: Sequence[int], num_steps: int) -
     checkpoints = tuple(int(step) for step in step_checkpoints)
     if len(checkpoints) < 2:
         raise ValueError(f"step_checkpoints must have at least 2 entries (start and end), got {step_checkpoints}")
-    if checkpoints[0] != 0:
+    if start_step < 0 or start_step >= num_steps:
+        raise ValueError(f"start_step={start_step} must be in [0, num_steps={num_steps})")
+    if checkpoints[0] != start_step:
         raise ValueError(
-            f"step_checkpoints must begin at 0 (the beam is initialized at the start of the schedule), "
-            f"got {checkpoints[0]}"
+            f"step_checkpoints must begin at start_step={start_step} (the beam is entered there), got {checkpoints[0]}"
         )
     if any(later <= earlier for earlier, later in zip(checkpoints, checkpoints[1:], strict=False)):
         raise ValueError(f"step_checkpoints must be strictly increasing; got {step_checkpoints}")
-    if checkpoints[-1] != num_steps:
+    if checkpoints[-1] > num_steps:
+        raise ValueError(f"step_checkpoints[-1]={checkpoints[-1]} must not exceed num_steps={num_steps}")
+    if checkpoints[-1] != num_steps and not allow_early_stop:
         raise ValueError(
             f"step_checkpoints[-1]={checkpoints[-1]} must equal num_steps={num_steps}. "
             "The last checkpoint must coincide with the end of the schedule so surviving "

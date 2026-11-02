@@ -13,6 +13,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import dataclasses
+import inspect
 import math
 from collections.abc import Mapping
 
@@ -20,6 +22,8 @@ import pytest
 import torch
 from pydantic import ValidationError
 
+from bionemo_ir._torch.modules.rfproteina.contracts import RFProteinaSearchCandidate
+from bionemo_ir._torch.modules.rfproteina.search import run_rfproteina_beam_search
 from bionemo_ir._torch.sampling.contracts import SamplingContext
 from bionemo_ir._torch.sampling.flow_matching import (
     FlowMatchingIntegrator,
@@ -57,7 +61,7 @@ def _linear_plan(num_steps: int, device: torch.device | None = None) -> FlowMatc
 
 def test_validate_step_checkpoints_requires_full_cover() -> None:
     assert validate_step_checkpoints([0, 2, 4], 4) == (0, 2, 4)
-    with pytest.raises(ValueError, match="begin at 0"):
+    with pytest.raises(ValueError, match="begin at start_step=0"):
         validate_step_checkpoints([1, 4], 4)
     with pytest.raises(ValueError, match="strictly increasing"):
         validate_step_checkpoints([0, 2, 2, 4], 4)
@@ -140,9 +144,15 @@ def test_beam_search_config_rejects_unknown_fields_and_bad_checkpoints() -> None
         )
     with pytest.raises(ValidationError, match="begin at 0"):
         RFProteinaBeamSearchConfig(
-            step_checkpoints=[1, 4],
+            step_checkpoints=[-1, 4],
             rewards=RFProteinaSearchRewardConfig(weights={"clash": -1.0}),
         )
+    RFProteinaBeamSearchConfig(
+        step_checkpoints=[1, 4],
+        rewards=RFProteinaSearchRewardConfig(weights={"clash": -1.0}),
+    )
+    with pytest.raises(ValueError, match="begin at start_step=0"):
+        validate_step_checkpoints([1, 4], 4)
     config = RFProteinaBeamSearchConfig(
         step_checkpoints=[0, 2, 4],
         n_branch=2,
@@ -400,3 +410,41 @@ def test_score_metrics_zero_weight_skips_missing_key() -> None:
     objective = build_weighted_objective(weights={"clash": 0.0, "rmsd": 1.0})
     assert objective.score({"rmsd": 2.0}) == 2.0
     assert math.isfinite(objective.score({"rmsd": 2.0}))
+
+
+def test_validate_step_checkpoints_accepts_an_early_stop_only_when_asked() -> None:
+    assert validate_step_checkpoints([0, 2], 4, allow_early_stop=True) == (0, 2)
+    with pytest.raises(ValueError, match="must equal num_steps=4"):
+        validate_step_checkpoints([0, 2], 4)
+    with pytest.raises(ValueError, match="must not exceed num_steps=4"):
+        validate_step_checkpoints([0, 5], 4, allow_early_stop=True)
+
+
+def test_validate_step_checkpoints_accepts_a_resumed_start() -> None:
+    assert validate_step_checkpoints([2, 4], 4, start_step=2) == (2, 4)
+    with pytest.raises(ValueError, match="begin at start_step=2"):
+        validate_step_checkpoints([0, 4], 4, start_step=2)
+    with pytest.raises(ValueError, match="must equal num_steps"):
+        validate_step_checkpoints([2, 3], 4, start_step=2)
+    with pytest.raises(ValueError, match=r"start_step=4 must be in \[0, num_steps=4\)"):
+        validate_step_checkpoints([4, 4], 4, start_step=4)
+
+
+def test_search_candidate_carries_no_latent_unless_exported() -> None:
+    fields_by_name = {field.name: field for field in dataclasses.fields(RFProteinaSearchCandidate)}
+    for name in ("state", "clean_prediction"):
+        assert fields_by_name[name].default is None, f"{name} must default to None so existing callers are unchanged"
+
+
+def test_beam_search_resume_requires_the_clean_prediction() -> None:
+    parameters = inspect.signature(run_rfproteina_beam_search).parameters
+    for name in ("initial_clean", "resume_step", "export_states"):
+        assert name in parameters, f"run_rfproteina_beam_search lost {name}"
+    assert parameters["resume_step"].default == 0
+    assert parameters["export_states"].default is False
+
+    from bionemo_ir.models.rfproteina import RFProteina
+
+    search_parameters = inspect.signature(RFProteina.search).parameters
+    for name in ("resume_states", "resume_clean", "resume_step", "export_states"):
+        assert name in search_parameters, f"RFProteina.search lost {name}"

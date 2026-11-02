@@ -17,7 +17,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import fields, is_dataclass
+from dataclasses import fields, is_dataclass, replace
 
 import torch
 
@@ -153,6 +153,9 @@ def run_rfproteina_beam_search(
     target_backbone: torch.Tensor | None = None,
     scoring_chunk_size: int | None = None,
     intermediate_save_min_reward: float | None = None,
+    initial_clean: Sequence[RFProteinaState | None] | None = None,
+    resume_step: int = 0,
+    export_states: bool = False,
     root_seed: int,
 ) -> RFProteinaSearchOutput:
     """Run checkpointed branching, completion scoring, and stable per-request pruning.
@@ -162,10 +165,28 @@ def run_rfproteina_beam_search(
     carry the parent's clean prediction after the first interval. The beam
     keeps noisy ``x_t`` at each checkpoint; last-checkpoint survivors are
     already complete and are not decoded a second time.
+
+    ``resume_step`` enters an existing beam instead of starting one: the
+    schedule then begins there, ``initial_slots`` are the states a previous
+    search exported at that checkpoint, and ``initial_clean`` are their
+    ``x_1`` predictions, which the first segment self-conditions on.
+    ``export_states`` attaches both to every scored candidate so a caller can
+    prune the beam itself and resume from what it kept.
+
+    A schedule whose last checkpoint is ``num_steps`` finishes the beam, with
+    or without ``export_states``. One that ends earlier is an export-and-stop:
+    it is legal only under ``export_states``, it branches and scores that last
+    checkpoint but does not prune it, and it returns every candidate for the
+    caller to choose among. Stopping is what makes an external prune cheap;
+    running the beam to the end first would spend the rest of the schedule on
+    survivors the caller is about to replace.
     """
     padding_mask = padding_mask.to(torch.bool)
     num_requests = padding_mask.shape[0]
-    checkpoints = validate_step_checkpoints(step_checkpoints, num_steps)
+    checkpoints = validate_step_checkpoints(
+        step_checkpoints, num_steps, start_step=resume_step, allow_early_stop=export_states
+    )
+    stop_after_export = checkpoints[-1] < num_steps
     objective.validate_checkpoint_steps(checkpoints[1:])
     if len(initial_slots) != beam_width:
         raise ValueError(f"initial_slots must contain beam_width={beam_width} states, got {len(initial_slots)}")
@@ -174,14 +195,25 @@ def run_rfproteina_beam_search(
     if chunk_rows < 1:
         raise ValueError("scoring_chunk_size must be positive")
 
+    if initial_clean is not None and len(initial_clean) != beam_width:
+        raise ValueError(f"initial_clean must contain beam_width={beam_width} entries, got {len(initial_clean)}")
+    if resume_step > 0 and (initial_clean is None or any(clean is None for clean in initial_clean)):
+        raise ValueError(
+            "resuming at resume_step>0 requires initial_clean for every slot: the first resumed step "
+            "self-conditions on it, and omitting it silently substitutes zeros"
+        )
     slot_states = [_clone_state(state) for state in initial_slots]
-    slot_clean: list[RFProteinaState | None] = [None] * beam_width
+    slot_clean: list[RFProteinaState | None] = (
+        [None] * beam_width
+        if initial_clean is None
+        else [None if clean is None else _clone_state(clean) for clean in initial_clean]
+    )
     slot_parents: list[list[str | None]] = [[None] * num_requests for _ in range(beam_width)]
     device = padding_mask.device
     intermediates: list[RFProteinaSearchCandidate] = []
     velocity_steps = 0
     completion_rollouts = 0
-    last_select = torch.empty(0, dtype=torch.long, device=device)
+    last_select: torch.Tensor | None = torch.empty(0, dtype=torch.long, device=device)
     last_candidates: list[RFProteinaSearchCandidate] = []
 
     def _run_segment(
@@ -388,6 +420,21 @@ def run_rfproteina_beam_search(
             row_ids,
             checkpoint_objective,
         )
+        if export_states:
+            scored_candidates = [
+                replace(
+                    candidate,
+                    state=_slice_state(xt, index, index + 1),
+                    clean_prediction=_slice_state(x1, index, index + 1),
+                )
+                for index, candidate in enumerate(scored_candidates)
+            ]
+        if stop_after_export and interval == len(checkpoints) - 2:
+            # Export-and-stop: the caller prunes this checkpoint, so do not.
+            last_select = None
+            last_candidates = scored_candidates
+            break
+
         try:
             select = select_beam_indices(rewards, n_branch, beam_width, num_requests)
         except ValueError as error:
@@ -414,6 +461,8 @@ def run_rfproteina_beam_search(
                         checkpoint=candidate.checkpoint,
                         seed=candidate.seed,
                         is_intermediate=True,
+                        state=candidate.state,
+                        clean_prediction=candidate.clean_prediction,
                     )
                 )
 
@@ -430,6 +479,19 @@ def run_rfproteina_beam_search(
             slot_parents[replica] = selected_ids[start:end]
         last_select = select
         last_candidates = scored_candidates
+
+    if last_select is None:
+        return RFProteinaSearchOutput(
+            candidates=tuple(intermediates + list(last_candidates)),
+            cost=RFProteinaSearchCost(
+                num_requests=num_requests,
+                beam_width=beam_width,
+                n_branch=n_branch,
+                num_checkpoints=len(checkpoints),
+                completion_rollouts=completion_rollouts,
+                velocity_steps=velocity_steps,
+            ),
+        )
 
     finals: list[RFProteinaSearchCandidate] = []
     for rank, index in enumerate(last_select.tolist()):
@@ -448,6 +510,8 @@ def run_rfproteina_beam_search(
                 checkpoint=candidate.checkpoint,
                 seed=candidate.seed,
                 is_intermediate=False,
+                state=candidate.state,
+                clean_prediction=candidate.clean_prediction,
             )
         )
 

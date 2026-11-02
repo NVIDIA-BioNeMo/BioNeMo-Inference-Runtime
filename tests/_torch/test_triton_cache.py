@@ -292,6 +292,48 @@ def test_streaming_chunk_divides_every_streamed_feature_dim(sm: int | None) -> N
             assert dim_d % _streaming_chunk(dim_d, tuning) == 0, dim_d
 
 
+@pytest.mark.parametrize(("sm", "sms"), [(100, 148), (100, 144), (103, 148)])
+@pytest.mark.parametrize("dim_d", [256, 384])
+def test_blackwell_streaming_pipeline_threshold(sm: int, sms: int, dim_d: int, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Blackwell stages populated RMSNorm grids and keeps smaller calls and LayerNorm unrolled."""
+    monkeypatch.setattr("bionemo_ir.dsl_kernels.triton.fused_ln_proj_moveaxis_pad._device_info", lambda _: (sm, sms))
+    tuning = _STREAMING_TUNING[sm]
+    device = torch.device("cuda", 0)
+    assert _streaming_variant(sms * 64 - 1, 200, device, tuning, True, dim_d) == (64, 4, 1)
+    assert _streaming_variant(sms * 64, 200, device, tuning, True, dim_d) == (64, 4, 3)
+    assert _streaming_variant(sms * 1024, 200, device, tuning, False, dim_d) == (64, 4, 1)
+
+
+@pytest.mark.parametrize("sm", [100, 103])
+def test_blackwell_streaming_keeps_d128_unrolled(sm: int, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep the existing loop for the D128/N400 case that regressed in the Blackwell screen."""
+    monkeypatch.setattr("bionemo_ir.dsl_kernels.triton.fused_ln_proj_moveaxis_pad._device_info", lambda _: (sm, 148))
+    assert _streaming_variant(400 * 400, 400, torch.device("cuda", 0), _STREAMING_TUNING[sm], True, 128) == (64, 4, 1)
+
+
+@pytest.mark.parametrize("sm", [90, 100, 103])
+@pytest.mark.parametrize("dim_d", [64, 128, 192, 256, 384, 512])
+def test_streaming_compiles_only_admitted_pipeline_widths(sm: int, dim_d: int, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Compile stage-3 variants only for widths that can dispatch to them."""
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+    monkeypatch.setattr(torch.cuda, "current_device", lambda: 0)
+    monkeypatch.setattr(FusedLNProjMoveaxisPad, "_global_cache", {})
+    monkeypatch.setattr(
+        "bionemo_ir.dsl_kernels.triton.fused_ln_proj_moveaxis_pad._streaming_tuning", lambda _: _STREAMING_TUNING[sm]
+    )
+    stages = []
+
+    def compile_stub(self, dtypes, norm_dtype, kwargs, projection_dtype=None):
+        stages.append(kwargs["STAGES"])
+        return {}
+
+    monkeypatch.setattr(FusedLNProjMoveaxisPad, "_compile_streaming", compile_stub)
+    op = FusedLNProjMoveaxisPad(D=dim_d, H=16, rms_norm=True)
+    op._ensure_streaming_compiled([torch.bfloat16])
+    assert stages.count(3) == (2 if sm == 90 or dim_d in (256, 384) else 0)
+    assert stages.count(1) == 2 * len(_STREAMING_TUNING[sm].tiles)
+
+
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
 @pytest.mark.parametrize(
     "tile_j",
@@ -379,6 +421,7 @@ def test_fp32_folded_projection_reproduces_each_layers_fold(batch: int, tokens: 
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
+@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16])
 @pytest.mark.parametrize(
     ("dim_d", "heads", "fp32_projection", "tokens", "multiple"),
     [
@@ -389,18 +432,27 @@ def test_fp32_folded_projection_reproduces_each_layers_fold(batch: int, tokens: 
     ],
 )
 def test_pipelined_slice_loop_keeps_the_bits(
-    dim_d: int, heads: int, fp32_projection: bool, tokens: int, multiple: int, monkeypatch: pytest.MonkeyPatch
+    dim_d: int,
+    heads: int,
+    fp32_projection: bool,
+    tokens: int,
+    multiple: int,
+    dtype: torch.dtype,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The software-pipelined RMSNorm slice loop gives the unrolled loop's bits."""
     tuning = _streaming_tuning(torch.device("cuda"))
     if tuning.pipelined is None:
         pytest.skip("no pipelined streaming variant on this GPU")
+    # This test forces the pipeline even for widths excluded by dispatch.
+    tuning = tuning._replace(pipeline_dims=None)
+    monkeypatch.setattr("bionemo_ir.dsl_kernels.triton.fused_ln_proj_moveaxis_pad._streaming_tuning", lambda _: tuning)
     torch.manual_seed(5)
-    weight_dtype = torch.float32 if fp32_projection else torch.bfloat16
-    z = torch.randn(2, tokens, tokens, dim_d, device="cuda", dtype=torch.bfloat16)
+    weight_dtype = torch.float32 if fp32_projection else dtype
+    z = torch.randn(2, tokens, tokens, dim_d, device="cuda", dtype=dtype)
     ln_weight = (1 + 0.2 * torch.randn(dim_d, device="cuda")).to(weight_dtype)
     proj_weight = (torch.randn(heads, dim_d, device="cuda") * dim_d**-0.5).to(weight_dtype)
-    op = FusedLNProjMoveaxisPad(D=dim_d, H=heads, rms_norm=True, fp32_projection=fp32_projection)
+    op = FusedLNProjMoveaxisPad(D=dim_d, H=heads, dtype=dtype, rms_norm=True, fp32_projection=fp32_projection)
 
     tile_j, num_warps, stages = tuning.pipelined
     variant = "bionemo_ir.dsl_kernels.triton.fused_ln_proj_moveaxis_pad._streaming_variant"

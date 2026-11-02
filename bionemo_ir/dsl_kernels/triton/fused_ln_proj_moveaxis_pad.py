@@ -407,6 +407,8 @@ class _StreamingTuning(NamedTuple):
     #: their per-program column sums would round differently on a tile with fewer warps.
     pipelined: tuple[int, int, int] | None = None
     pipeline_min_rows_per_sm: int = 0
+    #: Feature widths qualified for the pipelined variant; ``None`` allows every streamed width.
+    pipeline_dims: tuple[int, ...] | None = None
 
 
 #: SM versions without an entry in :data:`_STREAMING_TUNING`.
@@ -431,6 +433,14 @@ _STREAMING_TUNING: dict[int, _StreamingTuning] = {
     # that it loses up to 1.2x, and the unpipelined tiles stay.
     90: _StreamingTuning(
         tiles=((64, 4), (128, 8)), programs_per_sm=4, pipelined=(64, 4, 3), pipeline_min_rows_per_sm=512
+    ),
+    # B200 and B300, D256/D384: keep the 64-wide reduction and stage the RMSNorm slice loop once each
+    # SM has at least one 64-row tile. D128 regresses at N400; it, smaller calls and LayerNorm stay unrolled.
+    100: _StreamingTuning(
+        tiles=((64, 4),), programs_per_sm=4, pipelined=(64, 4, 3), pipeline_min_rows_per_sm=64, pipeline_dims=(256, 384)
+    ),
+    103: _StreamingTuning(
+        tiles=((64, 4),), programs_per_sm=4, pipelined=(64, 4, 3), pipeline_min_rows_per_sm=64, pipeline_dims=(256, 384)
     ),
 }
 #: Device index -> ``(sm_version, sm_count)``.
@@ -476,10 +486,16 @@ def _streaming_tile(J_padded: int, tiles: tuple[tuple[int, int], ...]) -> tuple[
 
 
 def _streaming_variant(
-    rows: int, J_padded: int, device: torch.device, tuning: _StreamingTuning, rms_norm: bool
+    rows: int,
+    J_padded: int,
+    device: torch.device,
+    tuning: _StreamingTuning,
+    rms_norm: bool,
+    dim_d: int | None = None,
 ) -> tuple[int, int, int]:
     """``(TILE_J, num_warps, stages)`` for a call over ``rows`` rows of ``z``."""
-    pipelined = tuning.pipelined if rms_norm else None
+    qualified_dim = tuning.pipeline_dims is None or dim_d in tuning.pipeline_dims
+    pipelined = tuning.pipelined if rms_norm and qualified_dim else None
     if pipelined is not None and rows >= tuning.pipeline_min_rows_per_sm * _device_info(device)[1]:
         return pipelined
     return (*_streaming_tile(J_padded, tuning.tiles), 1)
@@ -635,7 +651,8 @@ class FusedLNProjMoveaxisPad(TritonKernelCache):
             return
         result = {}
         variants = [(tile_j, num_warps, 1) for tile_j, num_warps in tuning.tiles]
-        if tuning.pipelined is not None and self._rms_norm:
+        qualified_dim = tuning.pipeline_dims is None or self._dim_d in tuning.pipeline_dims
+        if tuning.pipelined is not None and self._rms_norm and qualified_dim:
             variants.append(tuning.pipelined)
         for tile_j, num_warps, stages in variants:
             common_kwargs = {
@@ -868,7 +885,7 @@ class FusedLNProjMoveaxisPad(TritonKernelCache):
         signature = (z.dtype, w_ln.dtype, b_ln_ptr_src.dtype, w_proj.dtype)
         kernel_key = z.dtype if len(set(signature)) == 1 else signature
         tile_j, num_warps, stages = _streaming_variant(
-            B * I * J, J_padded, z.device, self._streaming_tuning, self._rms_norm
+            B * I * J, J_padded, z.device, self._streaming_tuning, self._rms_norm, D
         )
         streaming = self._streaming_kernels.get((kernel_key, tile_j, stages)) if self.streams(z.dtype) else None
         kernel = self._kernels.get(kernel_key)
@@ -982,7 +999,7 @@ def fused_ln_proj_moveaxis_pad(
     if z3.dtype in _STREAMING_DTYPES and _streaming_supported(D, H):
         tuning = _streaming_tuning(z3.device)
         stream_tile_j, stream_warps, stream_stages = _streaming_variant(
-            B * I * J, J_padded, z3.device, tuning, rms_norm=False
+            B * I * J, J_padded, z3.device, tuning, rms_norm=False, dim_d=D
         )
         num_j_tiles = triton.cdiv(J_padded, stream_tile_j)
         num_tiles = B * I * num_j_tiles

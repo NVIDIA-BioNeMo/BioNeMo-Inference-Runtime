@@ -192,6 +192,27 @@ def test_public_citations_must_ship_in_their_release(tmp_path: Path) -> None:
     assert errors == [f"GitHub tag v0.2.0 points at {public_later}; the mirror of release/0.2.0 is {public_second}"]
 
 
+def test_pinned_public_tag_keeps_target_and_citation_checks(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    repo = _repo(tmp_path / "repo")
+    first = _commit(repo, "released change")
+    _git(repo, "tag", "release/0.2.1")
+    later = _commit(repo, "main documentation change")
+    public_first, public_later = _mirror(repo, [first, later])
+    _git(repo, "update-ref", f"{PUBLIC_TAGS}/v0.2.1", public_later)
+    monkeypatch.setattr(release_notes, "PUBLIC_TAG_EXCEPTIONS", {"0.2.1": public_later})
+
+    assert verify_public_commits(repo, {}) == []
+    notes = {"0.2.1": release_notes.Note("0.2.1", "", (public_later,))}
+    assert verify_public_commits(repo, notes) == [
+        f"0.2.1: {public_later} mirrors {later}, which is not in release/0.2.1"
+    ]
+
+    _git(repo, "update-ref", f"{PUBLIC_TAGS}/v0.2.1", public_first)
+    assert verify_public_commits(repo, {}) == [
+        f"GitHub tag v0.2.1 points at {public_first}; the mirror of release/0.2.1 is {public_later}"
+    ]
+
+
 def test_preview_site_puts_working_tree_first(tmp_path: Path) -> None:
     sync_site(REPO_ROOT, tmp_path, preview=True, release_tags=[])
     config = (tmp_path / "fern/docs.yml").read_text()

@@ -50,9 +50,13 @@ PUBLIC_REPOSITORY = "https://github.com/NVIDIA-BioNeMo/BioNeMo-Inference-Runtime
 PUBLIC_REMOTE_PREFIX = "refs/remotes/public-github"
 PUBLIC_MAIN = f"{PUBLIC_REMOTE_PREFIX}/main"
 PUBLIC_TAGS = f"{PUBLIC_REMOTE_PREFIX}/tags"
-# GitHub tags published before the mirror mapped them from internal tags.
+# GitHub tags whose published targets differ from the internal ancestry map.
 # v0.1.0 points at a standalone snapshot commit outside public main.
-PUBLIC_TAG_EXCEPTIONS = {"0.1.0": "a768bda05e51855b70193e70310ad80a312e942c"}
+# v0.2.1 points at the main commit cherry-picked onto the release branch.
+PUBLIC_TAG_EXCEPTIONS = {
+    "0.1.0": "a768bda05e51855b70193e70310ad80a312e942c",
+    "0.2.1": "dc63a0990eefdf10f779d51b034c3ba6473bd6fd",
+}
 CHANGELOG_HEADER = (
     "---\n"
     "# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.\n"

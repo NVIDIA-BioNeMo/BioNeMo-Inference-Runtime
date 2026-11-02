@@ -1,5 +1,5 @@
 {
-  "compile_fingerprint": "b4e4e51eb708d9f0409ddfd9b4b5e085f59127b90c2ac437c1126bb76b461602",
+  "compile_fingerprint": "f96379cf347f4cfb1ed01c7b11d2084ef7bae5b9cdf1d6050edf4d721fd88505",
   "family": "dual_gemm_x_x",
   "format": "bioir-cubin-pack-v2",
   "packs": {

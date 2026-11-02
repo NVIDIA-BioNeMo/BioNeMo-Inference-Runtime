@@ -56,6 +56,18 @@
       "non_portable_cluster_size_allowed": true,
       "target_arch": "sm_103a",
       "target_sm": 103
+    },
+    "b8fbc6cbde233226dd6c22278a082312e35e463460cf3c6b6ea56e581d6d1e76": {
+      "dtype": "fp16",
+      "dynamic_smem_bytes": 217088,
+      "image_sha256": "353affe77905b7c328d0534df105df80f73e1fdc067d7d290df1c568ccf01cd3",
+      "image_size": 151520,
+      "kernel_sm": 100,
+      "kernel_symbol": "70605b5ff1a9f0cfccb3ed4e9d987ae145ab0c302563c466bc9aef1a9590ca60",
+      "launch_abi": "triangle_attention_sm100_bias_mma_nullable_lse_v1",
+      "non_portable_cluster_size_allowed": true,
+      "target_arch": "sm_100a",
+      "target_sm": 100
     }
   },
   "kernel_symbols": {
@@ -292,7 +304,7 @@
       "variant_id": "bad81b263095dbeba2bd"
     },
     {
-      "executable": "ab1086959221daf34ef5f4056e2840b9d721910df4b78a90475fe98212266424",
+      "executable": "b8fbc6cbde233226dd6c22278a082312e35e463460cf3c6b6ea56e581d6d1e76",
       "runtime_metadata": {
         "bucket": 65,
         "head_dim": 64,

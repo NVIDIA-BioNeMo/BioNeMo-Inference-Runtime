@@ -16,7 +16,7 @@
 """Small shared utilities used across the framework."""
 
 import os
-from functools import lru_cache
+from functools import cache
 
 import torch
 
@@ -50,10 +50,29 @@ def torch_dtype_to_str(dtype: torch.dtype) -> str:
     return _TORCH_DTYPE_TO_STR[dtype]
 
 
-@lru_cache(maxsize=1)
-def get_sm_version() -> int:
-    """Return the compute capability as an integer, for example SM90 -> 90."""
-    properties = torch.cuda.get_device_properties(0)
+def get_sm_version(device: torch.device | int | None = None) -> int:
+    """Return a CUDA device's compute capability, for example SM90 -> 90.
+
+    Args:
+        device: A CUDA device index, a CUDA ``torch.device``, or ``None``.
+            ``None`` and a ``torch.device`` without an index use the current
+            CUDA device.
+    """
+    if device is None:
+        device_index = torch.cuda.current_device()
+    elif isinstance(device, torch.device):
+        device_index = device.index
+        if device_index is None:
+            device_index = torch.cuda.current_device()
+    else:
+        device_index = device
+    return _get_sm_version(device_index)
+
+
+@cache
+def _get_sm_version(device_index: int) -> int:
+    """Return one device's cached compute capability."""
+    properties = torch.cuda.get_device_properties(device_index)
     return properties.major * 10 + properties.minor
 
 

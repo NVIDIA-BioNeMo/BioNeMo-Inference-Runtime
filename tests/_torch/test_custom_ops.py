@@ -13,18 +13,26 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import threading
+
 import pytest
 import torch
 import torch.nn as nn
 import triton
 
+import bionemo_ir.dsl_kernels.triton.fused_pair_injection as pair_injection_triton
 from bionemo_ir._torch.custom_ops.dual_gemm_x0_x1 import get_dual_gemm_x0_x1_op
 from bionemo_ir._torch.custom_ops.dual_gemm_x_x import get_dual_gemm_x_x_op
 from bionemo_ir._torch.custom_ops.fused_masked_residual import fused_masked_residual
 from bionemo_ir._torch.custom_ops.fused_pair_injection import PairInjection
 from bionemo_ir.dsl_kernels.triton.fused_pair_injection import (
     _BLOCK_D_CANDIDATES,
+    _BLOCK_J_DEFAULT,
+    FusedPairInjection,
     _pick_block_d,
+    _pick_launch_config,
+    _resolve_device_launch_config,
+    _resolve_launch_config,
     fused_pair_injection,
 )
 
@@ -106,7 +114,7 @@ def test_fused_sigmoid_gated_dual_gemm_dual_x():
 #: the partial tiles along both axes carry masked lanes. ``1`` degenerates both
 #: axes, and ``385`` and ``130`` are a residue past a tile boundary.
 _UNALIGNED_TOKENS = (1, 7, 17, 31, 33, 63)
-_UNALIGNED_PAIR_DIMS = (1, 48, 100, 130, 196, 385)
+_UNALIGNED_PAIR_DIMS = (1, 48, 100, 130, 196, 384, 385)
 
 
 def _injection_operands(
@@ -197,6 +205,10 @@ def test_pair_injection_custom_op_matches_its_eager_fallback(pair_write: str) ->
     torch.testing.assert_close(actual, expected, atol=0, rtol=0)
     # Injection must hand back owned storage; the caller accumulates into it.
     assert actual.data_ptr() != operands[0].data_ptr()
+    cache_key = fused._fused_kernel._last_launch.cache_key
+    assert cache_key is not None
+    major, minor = torch.cuda.get_device_capability(operands[0].device)
+    assert cache_key[:2] == (operands[0].device.index, major * 10 + minor)
 
 
 @pytest.mark.parametrize("pair_dim", [*_UNALIGNED_PAIR_DIMS, 128, 256, 384, 512])
@@ -214,6 +226,421 @@ def test_pair_injection_tile_heuristic_minimizes_idle_lanes(pair_dim: int) -> No
     else:
         # Narrower than every candidate, so one rounded-up tile covers the width.
         assert triton.cdiv(pair_dim, picked) == 1
+
+
+@pytest.mark.parametrize("sm_version", [100, 103])
+def test_pair_injection_uses_exact_sm_tuning(sm_version: int) -> None:
+    """Released Blackwell architectures use their measured C=384 constants."""
+    config = _pick_launch_config(pair_dim=384, sm_version=sm_version)
+    assert config == (32, 128, 4, 3)
+
+
+def test_pair_injection_preserves_sm90_defaults() -> None:
+    """Untuned architectures retain the H100 constants and Triton launch defaults."""
+    config = _pick_launch_config(pair_dim=384, sm_version=90)
+    assert config.block_j == _BLOCK_J_DEFAULT
+    assert config.block_d == _pick_block_d(384)
+    assert config.num_warps is None
+    assert config.num_stages is None
+
+
+@pytest.mark.parametrize("sm_version", [80, 89, 90, 107, 120, 121, 999])
+@pytest.mark.parametrize("pair_dim", [128, 196, 384, 512])
+def test_pair_injection_untuned_sms_preserve_defaults(sm_version: int, pair_dim: int) -> None:
+    """Every architecture outside the exact table retains the prior defaults."""
+    config = _pick_launch_config(pair_dim=pair_dim, sm_version=sm_version)
+    assert config.block_j == _BLOCK_J_DEFAULT
+    assert config.block_d == _pick_block_d(pair_dim)
+    assert config.num_warps is None
+    assert config.num_stages is None
+
+
+@pytest.mark.parametrize("sm_version", [100, 103])
+@pytest.mark.parametrize("pair_dim", [128, 196, 512])
+def test_pair_injection_untuned_widths_preserve_defaults(sm_version: int, pair_dim: int) -> None:
+    """Blackwell tuning applies only to the measured C=384 width."""
+    config = _pick_launch_config(pair_dim=pair_dim, sm_version=sm_version)
+    assert config.block_j == _BLOCK_J_DEFAULT
+    assert config.block_d == _pick_block_d(pair_dim)
+    assert config.num_warps is None
+    assert config.num_stages is None
+
+
+@pytest.mark.parametrize(
+    ("block_j", "block_d", "expected"),
+    [
+        (8, None, (8, 128, None, None)),
+        (None, 64, (16, 64, None, None)),
+        (8, 64, (8, 64, None, None)),
+    ],
+)
+def test_pair_injection_explicit_overrides_bypass_tuning(
+    block_j: int | None,
+    block_d: int | None,
+    expected: tuple[int, int, None, None],
+) -> None:
+    """Diagnostic tile overrides never inherit tuned launch options."""
+    assert _resolve_launch_config(384, block_j, block_d, sm_version=100) == expected
+
+
+def test_pair_injection_uses_executing_device_in_heterogeneous_process(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Functional dispatch must not reuse logical GPU 0's architecture."""
+    sms = {0: 100, 1: 90}
+    monkeypatch.setattr(
+        pair_injection_triton,
+        "get_sm_version",
+        lambda device=None: sms[torch.device(device).index if not isinstance(device, int) else device],
+    )
+    assert _resolve_device_launch_config(384, None, None, torch.device("cuda:0")) == (32, 128, 4, 3)
+    assert _resolve_device_launch_config(384, None, None, torch.device("cuda:1")) == (16, 128, None, None)
+
+
+class _FakeCudaDeviceContext:
+    """Model CUDA current-device restoration without requiring multiple GPUs."""
+
+    def __init__(self, device: torch.device | int, state: dict[str, int], events: list[tuple[str, int]]) -> None:
+        self.device = device if isinstance(device, int) else device.index
+        assert self.device is not None
+        self.state = state
+        self.events = events
+        self.previous = state["current"]
+
+    def __enter__(self) -> None:
+        self.events.append(("enter", self.device))
+        self.state["current"] = self.device
+
+    def __exit__(self, *_exc: object) -> None:
+        self.events.append(("exit", self.device))
+        self.state["current"] = self.previous
+
+
+class _FakeCudaTensor:
+    """Tensor contract used by pair-injection validation and launch code."""
+
+    def __init__(self, shape: tuple[int, ...], device: int = 1) -> None:
+        self.shape = shape
+        self.ndim = len(shape)
+        self.device = torch.device("cuda", device)
+        self.dtype = torch.bfloat16
+        strides = []
+        stride = 1
+        for size in reversed(shape):
+            strides.append(stride)
+            stride *= size
+        self._strides = tuple(reversed(strides))
+
+    def is_contiguous(self) -> bool:
+        return True
+
+    def get_device(self) -> int:
+        return self.device.index
+
+    def stride(self, dim: int | None = None) -> tuple[int, ...] | int:
+        return self._strides if dim is None else self._strides[dim]
+
+    def data_ptr(self) -> int:
+        return id(self)
+
+
+@pytest.mark.parametrize(
+    ("sm_version", "pair_dim", "block_j", "block_d", "expected"),
+    [
+        (100, 384, None, None, (32, 128, 4, 3)),
+        (103, 384, None, None, (32, 128, 4, 3)),
+        (90, 384, None, None, (16, 128, None, None)),
+        (100, 196, None, None, (16, 128, None, None)),
+        (100, 384, 8, 64, (8, 64, None, None)),
+    ],
+)
+def test_pair_injection_functional_launch_uses_resolved_config(
+    monkeypatch: pytest.MonkeyPatch,
+    sm_version: int,
+    pair_dim: int,
+    block_j: int | None,
+    block_d: int | None,
+    expected: tuple[int, int, int | None, int | None],
+) -> None:
+    """The functional launch consumes the exact table, fallback, or override."""
+    state = {"current": 0}
+    events: list[tuple[str, int]] = []
+    launched = {}
+
+    class FakeKernel:
+        def __getitem__(self, grid: tuple[int, int, int]):
+            def launch(*_args: object, **kwargs: int | bool) -> None:
+                launched.update(current_device=state["current"], grid=grid, kwargs=kwargs)
+
+            return launch
+
+    monkeypatch.setattr(
+        torch.cuda,
+        "device",
+        lambda device: _FakeCudaDeviceContext(device, state, events),
+    )
+    monkeypatch.setattr(pair_injection_triton, "get_sm_version", lambda _device: sm_version)
+    monkeypatch.setattr(pair_injection_triton, "_fused_pair_injection_kernel", FakeKernel())
+
+    pair = _FakeCudaTensor((1, 17, 17, pair_dim))
+    row = _FakeCudaTensor((1, 17, pair_dim))
+    column = _FakeCudaTensor((1, 17, pair_dim))
+    mask = _FakeCudaTensor((1, 17, 17, 1))
+    output = _FakeCudaTensor(pair.shape)
+    fused_pair_injection(
+        pair,
+        row,
+        column,
+        mask,
+        hadamard=True,
+        output=output,
+        block_j=block_j,
+        block_d=block_d,
+    )
+
+    expected_j, expected_d, expected_warps, expected_stages = expected
+    kwargs = launched["kwargs"]
+    assert launched["current_device"] == pair.device.index
+    assert kwargs["BLOCK_J"] == expected_j
+    assert kwargs["BLOCK_D"] == expected_d
+    assert kwargs.get("num_warps") == expected_warps
+    assert kwargs.get("num_stages") == expected_stages
+    assert state["current"] == 0
+    assert events == [("enter", 1), ("exit", 1)]
+
+
+@pytest.mark.parametrize(
+    ("sm_version", "block_j", "block_d", "expected"),
+    [
+        (100, None, None, (32, 128, 4, 3)),
+        (103, None, None, (32, 128, 4, 3)),
+        (90, None, None, (16, 128, None, None)),
+        (100, 8, 64, (8, 64, None, None)),
+    ],
+)
+def test_pair_injection_class_compile_uses_resolved_config(
+    monkeypatch: pytest.MonkeyPatch,
+    sm_version: int,
+    block_j: int | None,
+    block_d: int | None,
+    expected: tuple[int, int, int | None, int | None],
+) -> None:
+    """The cached API passes the selected constants to its compile boundary."""
+    state = {"current": 1}
+    events: list[tuple[str, int]] = []
+    compiled = {}
+
+    def compile_for_dtypes(_self: FusedPairInjection, _kernel: object, **kwargs: object) -> dict:
+        compiled.update(kwargs)
+        return {torch.bfloat16: object()}
+
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "current_device", lambda: state["current"])
+    monkeypatch.setattr(
+        torch.cuda,
+        "device",
+        lambda device: _FakeCudaDeviceContext(device, state, events),
+    )
+    monkeypatch.setattr(pair_injection_triton, "get_sm_version", lambda _device: sm_version)
+    monkeypatch.setattr(FusedPairInjection, "_global_cache", {})
+    monkeypatch.setattr(FusedPairInjection, "compile_for_dtypes", compile_for_dtypes)
+
+    kernel = FusedPairInjection(384, hadamard=True, block_j=block_j, block_d=block_d)
+    expected_j, expected_d, expected_warps, expected_stages = expected
+    assert kernel._last_launch.config == expected
+    assert compiled["BLOCK_J"] == expected_j
+    assert compiled["BLOCK_D"] == expected_d
+    assert compiled.get("num_warps") == expected_warps
+    assert compiled.get("num_stages") == expected_stages
+
+
+@pytest.mark.parametrize("use_driver", [False, True])
+def test_pair_injection_class_launch_uses_operand_device(
+    monkeypatch: pytest.MonkeyPatch,
+    use_driver: bool,
+) -> None:
+    """Both cached launch paths use the operand device and restore the caller."""
+    state = {"current": 0}
+    events: list[tuple[str, int]] = []
+    launches = []
+
+    class FakeDriver:
+        def launch_with(self, _values: tuple[int, ...], *_grid: int) -> None:
+            launches.append(("driver", state["current"]))
+
+    class FakeCachedKernel:
+        driver = FakeDriver() if use_driver else None
+
+        def launch(self, _grid: tuple[int, int, int], *_args: object) -> None:
+            launches.append(("fallback", state["current"]))
+
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+    monkeypatch.setattr(torch.cuda, "current_device", lambda: state["current"])
+    monkeypatch.setattr(
+        torch.cuda,
+        "device",
+        lambda device: _FakeCudaDeviceContext(device, state, events),
+    )
+    monkeypatch.setattr(pair_injection_triton, "get_sm_version", lambda _device: 100)
+    monkeypatch.setattr(
+        FusedPairInjection,
+        "_global_cache",
+        {(1, 100, 384, True, torch.bfloat16, 32, 128, 4, 3): {torch.bfloat16: FakeCachedKernel()}},
+    )
+
+    kernel = FusedPairInjection(384, hadamard=True)
+    pair = _FakeCudaTensor((1, 17, 17, 384))
+    row = _FakeCudaTensor((1, 17, 384))
+    column = _FakeCudaTensor((1, 17, 384))
+    mask = _FakeCudaTensor((1, 17, 17, 1))
+    output = _FakeCudaTensor(pair.shape)
+    kernel(pair, row, column, mask, output=output)
+
+    assert launches == [(("driver" if use_driver else "fallback"), 1)]
+    assert kernel._last_launch.config == (32, 128, 4, 3)
+    assert state["current"] == 0
+    assert events == [("enter", 1), ("exit", 1)]
+
+
+def test_pair_injection_shared_instance_keeps_device_kernel_through_launch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Concurrent calls keep the kernel selected for each operand device."""
+    thread_state = threading.local()
+    thread_state.current = 0
+    device_zero_ready = threading.Event()
+    device_one_done = threading.Event()
+    launches: list[tuple[int, int]] = []
+
+    class ThreadCudaDeviceContext:
+        def __init__(self, device: torch.device | int) -> None:
+            self.device = device if isinstance(device, int) else device.index
+            assert self.device is not None
+            self.previous = getattr(thread_state, "current", 0)
+
+        def __enter__(self) -> None:
+            thread_state.current = self.device
+
+        def __exit__(self, *_exc: object) -> None:
+            thread_state.current = self.previous
+
+    class FakeDriver:
+        def __init__(self, compiled_device: int) -> None:
+            self.compiled_device = compiled_device
+
+        def launch_with(self, _values: tuple[int, ...], *_grid: int) -> None:
+            launches.append((getattr(thread_state, "current", 0), self.compiled_device))
+
+    class FakeCachedKernel:
+        def __init__(self, compiled_device: int) -> None:
+            self.driver = FakeDriver(compiled_device)
+
+    def empty_like(tensor: _FakeCudaTensor) -> _FakeCudaTensor:
+        assert tensor.device.index is not None
+        if tensor.device.index == 0:
+            device_zero_ready.set()
+            assert device_one_done.wait(timeout=10), "device 1 did not finish before device 0 launched"
+        return _FakeCudaTensor(tensor.shape, device=tensor.device.index)
+
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+    monkeypatch.setattr(torch.cuda, "current_device", lambda: getattr(thread_state, "current", 0))
+    monkeypatch.setattr(torch.cuda, "device", ThreadCudaDeviceContext)
+    monkeypatch.setattr(torch, "empty_like", empty_like)
+    monkeypatch.setattr(
+        pair_injection_triton,
+        "get_sm_version",
+        lambda device: {0: 100, 1: 103}[device if isinstance(device, int) else device.index],
+    )
+
+    config = (32, 128, 4, 3)
+    monkeypatch.setattr(
+        FusedPairInjection,
+        "_global_cache",
+        {
+            (device, sm, 384, True, torch.bfloat16, *config): {torch.bfloat16: FakeCachedKernel(device)}
+            for device, sm in ((0, 100), (1, 103))
+        },
+    )
+    kernel = FusedPairInjection(384, hadamard=True)
+
+    def call(device: int) -> None:
+        pair = _FakeCudaTensor((1, 17, 17, 384), device=device)
+        row = _FakeCudaTensor((1, 17, 384), device=device)
+        column = _FakeCudaTensor((1, 17, 384), device=device)
+        mask = _FakeCudaTensor((1, 17, 17, 1), device=device)
+        kernel(pair, row, column, mask)
+        if device == 1:
+            device_one_done.set()
+
+    thread_zero = threading.Thread(target=call, args=(0,))
+    thread_one = threading.Thread(target=call, args=(1,))
+    thread_zero.start()
+    assert device_zero_ready.wait(timeout=10)
+    thread_one.start()
+    thread_zero.join(timeout=15)
+    thread_one.join(timeout=15)
+
+    assert not thread_zero.is_alive()
+    assert not thread_one.is_alive()
+    assert sorted(launches) == [(0, 0), (1, 1)]
+
+
+@pytest.mark.parametrize("hadamard", [False, True])
+@pytest.mark.parametrize("extra_dtype_first", [False, True])
+def test_pair_injection_instances_keep_requested_dtype_after_cache_warmup(
+    monkeypatch: pytest.MonkeyPatch,
+    hadamard: bool,
+    extra_dtype_first: bool,
+) -> None:
+    """An instance requesting an extra dtype works regardless of cache order."""
+    monkeypatch.setattr(FusedPairInjection, "_global_cache", {})
+    dtypes = [torch.bfloat16, torch.float64]
+    if extra_dtype_first:
+        dtypes.reverse()
+
+    for dtype in [*dtypes, *dtypes]:
+        kernel = FusedPairInjection(384, hadamard=hadamard, dtype=dtype)
+        pair = torch.full((1, 17, 17, 384), 2, device="cuda", dtype=dtype)
+        row = torch.full((1, 17, 384), 3, device="cuda", dtype=dtype)
+        column = torch.full_like(row, 4)
+        mask = torch.ones((1, 17, 17, 1), device="cuda", dtype=dtype)
+        mask[:, -1] = 0
+        expected = torch.full_like(pair, 14 if hadamard else 9) * mask
+
+        actual = kernel(pair, row, column, mask)
+
+        torch.testing.assert_close(actual, expected, atol=0, rtol=0)
+
+
+@pytest.mark.parametrize("pair_write", ["sum", "hadamard"])
+@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16, torch.float32])
+@pytest.mark.parametrize("tokens", [17, 33])
+def test_tuned_pair_injection_matches_old_config_and_eager_bytes(
+    pair_write: str,
+    dtype: torch.dtype,
+    tokens: int,
+) -> None:
+    """The C=384 table entry executes without changing any output byte."""
+    major, minor = torch.cuda.get_device_capability()
+    if major * 10 + minor not in (100, 103):
+        pytest.skip("the tuned launch requires SM100 or SM103")
+
+    torch.manual_seed(43)
+    operands = _injection_operands(1, tokens, 384, dtype)
+    expected = _eager_injection(*operands, pair_write)
+    hadamard = pair_write == "hadamard"
+    tuned = fused_pair_injection(*operands, hadamard=hadamard)
+    old = fused_pair_injection(*operands, hadamard=hadamard, block_j=16, block_d=128)
+    cached_kernel = FusedPairInjection(384, hadamard=hadamard, dtype=dtype)
+    cached = cached_kernel(*operands)
+
+    assert cached_kernel._last_launch.config == (32, 128, 4, 3)
+    assert torch.equal(tuned.view(torch.uint8), old.view(torch.uint8))
+    assert torch.equal(tuned.view(torch.uint8), cached.view(torch.uint8))
+    valid = operands[-1].bool().expand_as(expected)
+    expected_valid = expected[valid].contiguous().view(torch.uint8)
+    for actual in (tuned, old, cached):
+        assert torch.equal(actual, expected)
+        assert torch.equal(actual[valid].contiguous().view(torch.uint8), expected_valid)
+        assert torch.count_nonzero(actual[~valid]) == 0
 
 
 def _residual_operands(

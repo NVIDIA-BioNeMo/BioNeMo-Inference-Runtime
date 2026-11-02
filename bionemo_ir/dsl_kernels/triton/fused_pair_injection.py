@@ -24,11 +24,17 @@ The kernel performs one pair-tensor pass and is bit-identical to the eager
 operations at valid positions. Invalid positions are exact zero.
 """
 
+from collections.abc import Mapping
+from contextlib import nullcontext
+from types import MappingProxyType
+from typing import NamedTuple
+
 import torch
 import triton
 import triton.language as tl
 
 from bionemo_ir.dsl_kernels.triton_cache import CachedKernel, TritonKernelCache
+from bionemo_ir.utils import get_sm_version
 
 # ---------------------------------------------------------------------------
 # Triton kernel
@@ -126,6 +132,32 @@ _BLOCK_J_DEFAULT = 16
 _BLOCK_D_CANDIDATES = (128, 256, 64)
 
 
+class _LaunchConfig(NamedTuple):
+    """Launch constants for one pair width and SM version."""
+
+    block_j: int
+    block_d: int
+    num_warps: int | None
+    num_stages: int | None
+
+
+class _CompiledLaunch(NamedTuple):
+    """Device-specific launch state kept local from selection through launch."""
+
+    config: _LaunchConfig
+    d_tiles: int
+    kernels: Mapping[torch.dtype, CachedKernel]
+    cache_key: tuple
+
+
+#: Exact-SM tuning for released pair widths. Unknown architectures, including
+#: SM90, retain the H100 defaults above.
+_LAUNCH_TUNING: dict[tuple[int, int], _LaunchConfig] = {
+    (100, 384): _LaunchConfig(block_j=32, block_d=128, num_warps=4, num_stages=3),
+    (103, 384): _LaunchConfig(block_j=32, block_d=128, num_warps=4, num_stages=3),
+}
+
+
 def _pick_block_d(pair_dim: int) -> int:
     """Pick the feature tile that leaves the fewest lanes masked off.
 
@@ -136,6 +168,56 @@ def _pick_block_d(pair_dim: int) -> int:
     if not candidates:
         return triton.next_power_of_2(pair_dim)
     return min(candidates, key=lambda block_d: triton.cdiv(pair_dim, block_d) * block_d - pair_dim)
+
+
+def _pick_launch_config(pair_dim: int, sm_version: int) -> _LaunchConfig:
+    """Return exact-SM tuning, or the unchanged H100-compatible defaults."""
+    tuned = _LAUNCH_TUNING.get((sm_version, pair_dim))
+    if tuned is not None:
+        return tuned
+    return _LaunchConfig(
+        block_j=_BLOCK_J_DEFAULT,
+        block_d=_pick_block_d(pair_dim),
+        num_warps=None,
+        num_stages=None,
+    )
+
+
+def _resolve_launch_config(
+    pair_dim: int,
+    block_j: int | None,
+    block_d: int | None,
+    sm_version: int | None = None,
+) -> _LaunchConfig:
+    """Apply explicit diagnostic overrides, otherwise select exact-SM tuning."""
+    if block_j is not None or block_d is not None:
+        return _LaunchConfig(
+            block_j=block_j if block_j is not None else _BLOCK_J_DEFAULT,
+            block_d=block_d if block_d is not None else _pick_block_d(pair_dim),
+            num_warps=None,
+            num_stages=None,
+        )
+    return _pick_launch_config(pair_dim, get_sm_version() if sm_version is None else sm_version)
+
+
+def _resolve_device_launch_config(
+    pair_dim: int,
+    block_j: int | None,
+    block_d: int | None,
+    device: torch.device | int,
+) -> _LaunchConfig:
+    """Resolve launch constants against the device that will execute them."""
+    return _resolve_launch_config(pair_dim, block_j, block_d, get_sm_version(device))
+
+
+def _launch_options(config: _LaunchConfig) -> dict[str, int]:
+    """Triton launch keywords, omitted on architectures whose defaults stay unchanged."""
+    options = {}
+    if config.num_warps is not None:
+        options["num_warps"] = config.num_warps
+    if config.num_stages is not None:
+        options["num_stages"] = config.num_stages
+    return options
 
 
 def _grid(num_tokens: int, pair_dim: int, batch_size: int, block_j: int, block_d: int) -> tuple[int, int, int]:
@@ -174,6 +256,10 @@ def _check_operands(
         raise ValueError(
             f"all operands must share a dtype, got {pair.dtype}, {row.dtype}, {column.dtype}, {mask.dtype}"
         )
+    if not (pair.get_device() == row.get_device() == column.get_device() == mask.get_device()):
+        raise ValueError(
+            f"all operands must share a device, got {pair.device}, {row.device}, {column.device}, {mask.device}"
+        )
     return batch, tokens, pair_dim
 
 
@@ -185,10 +271,11 @@ def _check_operands(
 class FusedPairInjection(TritonKernelCache):
     """Fused pair injection with a pre-compiled kernel and driver launch.
 
-    Compiles once per ``(pair_dim, hadamard, block shape)`` across the common
-    dtypes so each call is a bare launch, sharing compilations between instances
-    through a class-level cache. ``num_tokens`` and the batch size stay runtime
-    values, so one instance serves every shape a rollout visits.
+    Compiles once per ``(device, SM, pair_dim, hadamard, dtype, block shape)`` across
+    the common dtypes so each call is a bare launch, sharing compilations
+    between instances through a class-level cache. ``num_tokens`` and the batch
+    size stay runtime values, so one instance serves every shape a rollout
+    visits.
     """
 
     _global_cache: dict[tuple, dict] = {}
@@ -197,55 +284,96 @@ class FusedPairInjection(TritonKernelCache):
         self,
         pair_dim: int,
         hadamard: bool,
-        block_j: int = _BLOCK_J_DEFAULT,
+        block_j: int | None = None,
         block_d: int | None = None,
         dtype: torch.dtype = torch.bfloat16,
     ) -> None:
+        """Create a cached pair-injection kernel.
+
+        Args:
+            pair_dim: Pair representation width.
+            hadamard: Multiply row and column representations instead of adding them.
+            block_j: Optional token-axis tile override.
+            block_d: Optional feature-axis tile override.
+            dtype: Initial compilation dtype, alongside FP32, BF16 and FP16.
+
+        Setting either tile override bypasses exact-SM tuning. An unspecified
+        tile then uses its H100-compatible default.
+        """
         self.pair_dim = pair_dim
         self.hadamard = hadamard
-        self._block_j = block_j
-        self._block_d = block_d if block_d is not None else _pick_block_d(pair_dim)
-        self._d_tiles = triton.cdiv(pair_dim, self._block_d)
-        self._kernels: dict[torch.dtype, CachedKernel] = {}
+        self._block_j_override = block_j
+        self._block_d_override = block_d
+        # Each launch is immutable and read once per call, so concurrent calls on
+        # different devices never mix one device's constants with another's kernels.
+        self._launches: dict[int, _CompiledLaunch] = {}
+        self._last_launch: _CompiledLaunch | None = None
         self._dtype = dtype
 
         if torch.cuda.is_available():
-            self._ensure_compiled()
+            self._ensure_compiled(torch.cuda.current_device())
 
-    def _ensure_compiled(self) -> None:
-        if self._kernels:
-            return
-        cache_key = (self.pair_dim, self.hadamard, self._block_j, self._block_d)
+    def _ensure_compiled(self, device: torch.device | int) -> _CompiledLaunch:
+        device_index = device if isinstance(device, int) else device.index
+        if device_index is None:
+            device_index = torch.cuda.current_device()
+        launch = self._launches.get(device_index)
+        if launch is None:
+            launch = self._compile_launch(device_index)
+            self._launches[device_index] = launch
+        self._last_launch = launch
+        return launch
+
+    def _compile_launch(self, device_index: int) -> _CompiledLaunch:
+        sm_version = get_sm_version(device_index)
+        config = _resolve_launch_config(
+            self.pair_dim,
+            self._block_j_override,
+            self._block_d_override,
+            sm_version,
+        )
+        cache_key = (
+            device_index,
+            sm_version,
+            self.pair_dim,
+            self.hadamard,
+            self._dtype,
+            config.block_j,
+            config.block_d,
+            config.num_warps,
+            config.num_stages,
+        )
+        d_tiles = triton.cdiv(self.pair_dim, config.block_d)
         cached = FusedPairInjection._global_cache.get(cache_key)
-        if cached:
-            self._kernels = cached
-            return
+        if cached is not None:
+            return _CompiledLaunch(config, d_tiles, MappingProxyType(dict(cached)), cache_key)
 
         pair_dim = self.pair_dim
-        result = self.compile_for_dtypes(
-            _fused_pair_injection_kernel,
-            dtypes=[self._dtype, torch.float32, torch.bfloat16, torch.float16],
-            make_dummy_args=lambda dt: (
-                torch.empty(1, 1, 1, pair_dim, dtype=dt, device="cuda"),
-                torch.empty(1, 1, 1, pair_dim, dtype=dt, device="cuda"),
-                torch.empty(1, 1, pair_dim, dtype=dt, device="cuda"),
-                torch.empty(1, 1, pair_dim, dtype=dt, device="cuda"),
-                torch.empty(1, 1, 1, dtype=dt, device="cuda"),
-                1,
-                pair_dim,
-                pair_dim,
-            ),
-            grid=(1, 1, 1),
-            HADAMARD=self.hadamard,
-            PAIR_DIM=pair_dim,
-            BLOCK_J=self._block_j,
-            BLOCK_D=self._block_d,
-            D_TILES=self._d_tiles,
-        )
+        with torch.cuda.device(device_index):
+            result = self.compile_for_dtypes(
+                _fused_pair_injection_kernel,
+                dtypes=[self._dtype, torch.float32, torch.bfloat16, torch.float16],
+                make_dummy_args=lambda dt: (
+                    torch.empty(1, 1, 1, pair_dim, dtype=dt, device="cuda"),
+                    torch.empty(1, 1, 1, pair_dim, dtype=dt, device="cuda"),
+                    torch.empty(1, 1, pair_dim, dtype=dt, device="cuda"),
+                    torch.empty(1, 1, pair_dim, dtype=dt, device="cuda"),
+                    torch.empty(1, 1, 1, dtype=dt, device="cuda"),
+                    1,
+                    pair_dim,
+                    pair_dim,
+                ),
+                grid=(1, 1, 1),
+                HADAMARD=self.hadamard,
+                PAIR_DIM=pair_dim,
+                BLOCK_J=config.block_j,
+                BLOCK_D=config.block_d,
+                D_TILES=d_tiles,
+                **_launch_options(config),
+            )
 
-        if result:
-            self._kernels = result
-            FusedPairInjection._global_cache[cache_key] = result
+        kernels = FusedPairInjection._global_cache.setdefault(cache_key, result)
+        return _CompiledLaunch(config, d_tiles, MappingProxyType(dict(kernels)), cache_key)
 
     def __call__(
         self,
@@ -272,43 +400,48 @@ class FusedPairInjection(TritonKernelCache):
         batch, tokens, pair_dim = _check_operands(pair, row, column, mask)
         if pair_dim != self.pair_dim:
             raise ValueError(f"pair width {pair_dim} does not match the compiled width {self.pair_dim}")
+        device_index = pair.get_device()
+        switch = device_index != torch.cuda.current_device()
+        with torch.cuda.device(device_index) if switch else nullcontext():
+            launch = self._ensure_compiled(device_index)
 
-        out = output if output is not None else torch.empty_like(pair)
-        if out.shape != pair.shape or not out.is_contiguous():
-            raise ValueError("output must be a contiguous tensor shaped like pair")
+            out = output if output is not None else torch.empty_like(pair)
+            if out.shape != pair.shape or out.get_device() != device_index or not out.is_contiguous():
+                raise ValueError("output must be a contiguous tensor shaped like pair on the same device")
 
-        grid = _grid(tokens, pair_dim, batch, self._block_j, self._block_d)
-        kernel = self._kernels[pair.dtype]
-        drv = kernel.driver
-        if drv is not None:
-            values = (
-                out.data_ptr(),
-                pair.data_ptr(),
-                row.data_ptr(),
-                column.data_ptr(),
-                mask.data_ptr(),
-                tokens,
-                row.stride(0),
-                row.stride(1),
-            )
-            drv.launch_with(values, *grid)
-        else:
-            kernel.launch(
-                grid,
-                out,
-                pair,
-                row,
-                column,
-                mask,
-                tokens,
-                row.stride(0),
-                row.stride(1),
-                self.hadamard,
-                pair_dim,
-                self._block_j,
-                self._block_d,
-                self._d_tiles,
-            )
+            config = launch.config
+            grid = _grid(tokens, pair_dim, batch, config.block_j, config.block_d)
+            kernel = launch.kernels[pair.dtype]
+            drv = kernel.driver
+            if drv is not None:
+                values = (
+                    out.data_ptr(),
+                    pair.data_ptr(),
+                    row.data_ptr(),
+                    column.data_ptr(),
+                    mask.data_ptr(),
+                    tokens,
+                    row.stride(0),
+                    row.stride(1),
+                )
+                drv.launch_with(values, *grid)
+            else:
+                kernel.launch(
+                    grid,
+                    out,
+                    pair,
+                    row,
+                    column,
+                    mask,
+                    tokens,
+                    row.stride(0),
+                    row.stride(1),
+                    self.hadamard,
+                    pair_dim,
+                    config.block_j,
+                    config.block_d,
+                    launch.d_tiles,
+                )
         return out
 
 
@@ -324,7 +457,7 @@ def fused_pair_injection(
     mask: torch.Tensor,
     hadamard: bool,
     output: torch.Tensor | None = None,
-    block_j: int = _BLOCK_J_DEFAULT,
+    block_j: int | None = None,
     block_d: int | None = None,
 ) -> torch.Tensor:
     """Fused sequence-to-pair injection with masking.
@@ -339,34 +472,36 @@ def fused_pair_injection(
         mask: Contiguous ``[B, N, N]`` or ``[B, N, N, 1]`` mask of 0 or 1.
         hadamard: Multiply ``row`` and ``column`` instead of adding both.
         output: Optional pre-allocated ``[B, N, N, C]`` buffer.
-        block_j: Token-axis tile.
-        block_d: Feature-axis tile. Defaults to :func:`_pick_block_d`.
+        block_j: Optional token-axis tile override.
+        block_d: Optional feature-axis tile override.
 
     Returns:
         The injected pair representation.
     """
     batch, tokens, pair_dim = _check_operands(pair, row, column, mask)
     out = output if output is not None else torch.empty_like(pair)
-    if out.shape != pair.shape or not out.is_contiguous():
-        raise ValueError("output must be a contiguous tensor shaped like pair")
+    if out.shape != pair.shape or out.device != pair.device or not out.is_contiguous():
+        raise ValueError("output must be a contiguous tensor shaped like pair on the same device")
     if tokens == 0:
         return out
 
-    chosen_d = block_d if block_d is not None else _pick_block_d(pair_dim)
-    grid = _grid(tokens, pair_dim, batch, block_j, chosen_d)
-    _fused_pair_injection_kernel[grid](
-        out,
-        pair,
-        row,
-        column,
-        mask,
-        tokens,
-        row.stride(0),
-        row.stride(1),
-        HADAMARD=hadamard,
-        PAIR_DIM=pair_dim,
-        BLOCK_J=block_j,
-        BLOCK_D=chosen_d,
-        D_TILES=triton.cdiv(pair_dim, chosen_d),
-    )
+    with torch.cuda.device(pair.device):
+        config = _resolve_device_launch_config(pair_dim, block_j, block_d, pair.device)
+        grid = _grid(tokens, pair_dim, batch, config.block_j, config.block_d)
+        _fused_pair_injection_kernel[grid](
+            out,
+            pair,
+            row,
+            column,
+            mask,
+            tokens,
+            row.stride(0),
+            row.stride(1),
+            HADAMARD=hadamard,
+            PAIR_DIM=pair_dim,
+            BLOCK_J=config.block_j,
+            BLOCK_D=config.block_d,
+            D_TILES=triton.cdiv(pair_dim, config.block_d),
+            **_launch_options(config),
+        )
     return out

@@ -549,6 +549,23 @@ class OpenFold3DiffusionTransformer(_WindowAttentionLayers, nn.Module):
             biases = _prepare_layer_biases(self.layers, z)
         return _add_key_masks(self.layers, biases, mask, attn_metadata)
 
+    def prepare_local_conditioning(
+        self, s: torch.Tensor, attn_metadata: AttentionMetadata
+    ) -> list[tuple[torch.Tensor, ...]] | None:
+        """Project a step-invariant atom conditioning for every layer once per rollout.
+
+        Args:
+            s: ``[B, 1, K, W, c]`` blocked conditioning, as :meth:`forward` receives it.
+            attn_metadata: Sequence-local metadata whose ``query_to_keys`` gathers the key windows.
+
+        Returns:
+            Per layer, the :class:`LocalLayerConditioning` fields as a tuple, or ``None`` when a layer does not
+            condition through separate query and key AdaLNs.
+        """
+        if not _local_conditioning_supported(self.layers):
+            return None
+        return _project_local_conditioning(self.layers, s.to(self.dtype), attn_metadata)
+
     def load_weights(self, weights: dict):
         loaded_weight = recursive_calling_load_weights(self, weights)
         # Every entry of ``weights`` must have been consumed.
@@ -567,8 +584,16 @@ class OpenFold3DiffusionTransformer(_WindowAttentionLayers, nn.Module):
         attn_metadata: AttentionMetadata | None = None,
         buffers: PreallocatedBuffers | None = None,
         prepared_pair_biases: list[torch.Tensor] | None = None,
+        prepared_conditioning: list[tuple[torch.Tensor, ...]] | None = None,
         **kwargs,
     ) -> torch.Tensor:
+        """
+        Args:
+            prepared_conditioning: :meth:`prepare_local_conditioning` of ``s``; replaces every layer's
+                projections of ``s``. Needs ``prepared_pair_biases`` that carry the key mask, with ``mask=None``.
+        """
+        if prepared_conditioning is not None and (prepared_pair_biases is None or mask is not None):
+            raise ValueError("prepared conditioning needs prepared pair biases that carry the mask")
         if prepared_pair_biases is None and hasattr(self, "layer_norm_z"):
             z = self.layer_norm_z(z)
 
@@ -592,7 +617,12 @@ class OpenFold3DiffusionTransformer(_WindowAttentionLayers, nn.Module):
                 )
         else:
             with _projected_pair_biases(self.layers, biases):
-                for layer, bias in zip(self.layers, biases, strict=True):
+                for index, (layer, bias) in enumerate(zip(self.layers, biases, strict=True)):
+                    if prepared_conditioning is not None:
+                        a = _conditioned_local_layer(
+                            layer, a, bias, attn_metadata, buffers, prepared_conditioning[index]
+                        )
+                        continue
                     a = layer(
                         a,
                         s,
@@ -666,6 +696,60 @@ class LocalLayerConditioning(NamedTuple):
     transition_scale: torch.Tensor
     transition_shift: torch.Tensor
     cond: torch.Tensor
+
+
+def _local_conditioning_supported(layers: nn.ModuleList) -> bool:
+    """Whether every atom layer conditions only through separate query and key AdaLNs, the output gate and the
+    transition, so that :func:`_conditioned_local_layer` can run it on projected conditioning."""
+    for layer in layers:
+        attention = layer.pair_bias_attn
+        if (
+            layer.initial_norm
+            or layer.post_lnorm is not None
+            or not (attention.use_separate_layer_norm and attention.use_ada_layer_norm)
+            or attention.output_projection is None
+            or attention.output_projection.bias is None
+            or layer.transition.output_projection.bias is None
+        ):
+            return False
+    return True
+
+
+def _project_local_conditioning(
+    layers: nn.ModuleList, s_q: torch.Tensor, attn_metadata: AttentionMetadata
+) -> list[tuple[torch.Tensor, ...]]:
+    """Project the blocked atom conditioning ``s_q`` ``[B, 1, K, W, c]`` with each layer's own modules.
+
+    Each projection reads the rows the layer's own call would: the key AdaLN the gathered key windows, or the
+    query rows on the windowed kernel.
+    """
+    windowed = [layer.pair_bias_attn.window_attention is not None for layer in layers]
+    s_k = None if all(windowed) else attn_metadata.query_to_keys(s_q)  # [B, 1, K, H, c]
+    conditioning = []
+    for layer, layer_windowed in zip(layers, windowed, strict=True):
+        attention, transition = layer.pair_bias_attn, layer.transition
+
+        def project(adaln: AdaLN, rows: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+            return adaln.project_condition(rows).split([adaln.dim, adaln.dim], dim=-1)
+
+        q_scale, q_shift = project(attention.layer_norm_a_q, s_q)
+        k_scale, k_shift = project(attention.layer_norm_a_k, s_q if layer_windowed else s_k)
+        transition_scale, transition_shift = project(transition.adaln, s_q)
+        conditioning.append(
+            tuple(
+                LocalLayerConditioning(
+                    q_scale,
+                    q_shift,
+                    k_scale,
+                    k_shift,
+                    attention.output_projection(s_q),
+                    transition_scale,
+                    transition_shift,
+                    s_q,
+                )
+            )
+        )
+    return conditioning
 
 
 def _conditioned_local_layer(
@@ -893,50 +977,12 @@ class ProtenixDiffusionTransformer(_WindowAttentionLayers, nn.Module):
 
         Returns:
             Per layer, the :class:`LocalLayerConditioning` fields as a tuple, or ``None`` when a layer does not
-            chain its key AdaLN.
+            condition through separate query and key AdaLNs.
         """
-        for layer in self.layers:
-            attention = layer.pair_bias_attn
-            if (
-                layer.initial_norm
-                or layer.post_lnorm is not None
-                or not (attention.use_separate_layer_norm and attention.use_ada_layer_norm and attention.chain_kv_norm)
-                or attention.output_projection is None
-                or attention.output_projection.bias is None
-                or layer.transition.output_projection.bias is None
-            ):
-                return None
-        s = s.to(self.dtype)
-        s_q = to_blocks(s, num_blocks, n_queries).unsqueeze(1)  # [B, 1, K, W, c]
-        # Key conditioning in each layer's key rows: the query rows on the windowed kernel, else the gathered
-        # key windows.
-        windowed = [layer.pair_bias_attn.window_attention is not None for layer in self.layers]
-        s_k = None if all(windowed) else attn_metadata.query_to_keys(s_q)  # [B, 1, K, H, c]
-        conditioning = []
-        for layer, layer_windowed in zip(self.layers, windowed, strict=True):
-            attention, transition = layer.pair_bias_attn, layer.transition
-
-            def project(adaln: AdaLN, rows: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-                return adaln.fused_s_scale_s_bias(adaln.s_norm(rows)).split([adaln.dim, adaln.dim], dim=-1)
-
-            q_scale, q_shift = project(attention.layer_norm_a_q, s_q)
-            k_scale, k_shift = project(attention.layer_norm_a_k, s_q if layer_windowed else s_k)
-            transition_scale, transition_shift = project(transition.adaln, s_q)
-            conditioning.append(
-                tuple(
-                    LocalLayerConditioning(
-                        q_scale,
-                        q_shift,
-                        k_scale,
-                        k_shift,
-                        attention.output_projection(s_q),
-                        transition_scale,
-                        transition_shift,
-                        s_q,
-                    )
-                )
-            )
-        return conditioning
+        if not _local_conditioning_supported(self.layers):
+            return None
+        s_q = to_blocks(s.to(self.dtype), num_blocks, n_queries).unsqueeze(1)  # [B, 1, K, W, c]
+        return _project_local_conditioning(self.layers, s_q, attn_metadata)
 
     def prepare_pair_biases(
         self,

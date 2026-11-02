@@ -55,6 +55,8 @@ def _diffusion_graph_config() -> CUDAGraphOptimizationConfig:
             "prepared_atom_plm",
             "prepared_atom_encoder_pair_biases",
             "prepared_atom_decoder_pair_biases",
+            "prepared_atom_encoder_conditioning",
+            "prepared_atom_decoder_conditioning",
             "prepared_token_pair_biases",
         ),
     )

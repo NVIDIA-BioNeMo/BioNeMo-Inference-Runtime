@@ -124,6 +124,57 @@ def test_prepared_atom_biases(
         assert all(layer.pair_bias_attn.bias_proj for layer in model.layers)
 
 
+@pytest.mark.parametrize("windowed", [False, True])
+@pytest.mark.parametrize("dtype", ["float32", "bfloat16"])
+@pytest.mark.parametrize("batch_size", [1, 2])
+def test_prepared_openfold3_atom_conditioning(windowed: bool, dtype: str, batch_size: int) -> None:
+    """Conditioning projected once matches each layer's own projections of the same ``s`` bit for bit."""
+    torch.manual_seed(0)
+    config = DiffusionTransformerConfig(
+        num_blocks=2,
+        num_heads=4,
+        dim=128,
+        dim_single_cond=128,
+        dim_pairwise=16,
+        bias_proj=True,
+        shared_pair_norm=True,
+        initial_norm=False,
+        use_ada_layer_norm=True,
+        use_separate_layer_norm=True,
+        conditioned_transition_using_silu=True,
+        dtype=dtype,
+        pairwise_attention_backend="SDPA",
+        version="v1",
+    )
+    model = OpenFold3DiffusionTransformer(config).cuda().eval()
+    with torch.no_grad():
+        for param in model.parameters():
+            param.normal_(std=0.1)
+    windows, queries, keys = 3, 32, 128
+    if windowed:
+        model.enable_window_attention(queries, keys)
+        if model.layers[0].pair_bias_attn.window_attention is None:
+            pytest.skip("no windowed attention backend for this dtype and device")
+    td = config.torch_dtype
+    samples = 3
+    a = torch.randn(batch_size, samples, windows, queries, 128, device="cuda", dtype=td)
+    s = torch.randn(batch_size, 1, windows, queries, 128, device="cuda", dtype=td)
+    z = torch.randn(batch_size, 1, windows, queries, keys, 16, device="cuda", dtype=td)
+    mask = torch.ones(batch_size, 1, windows, queries, device="cuda", dtype=td)
+    mask[..., -1, 7:] = 0
+    metadata = ProtenixDiffusionTransformer.build_attn_metadata(windows, queries, keys, a.device)
+    with torch.inference_mode():
+        biases = model.prepare_pair_biases(z, mask, metadata)
+        conditioning = model.prepare_local_conditioning(s, metadata)
+        assert conditioning is not None
+        kwargs = {"a": a, "s": s, "z": z, "mask": None, "attn_metadata": metadata, "prepared_pair_biases": biases}
+        expected = model(**kwargs)
+        actual = model(**kwargs, prepared_conditioning=conditioning)
+        assert torch.equal(actual, expected)
+        with pytest.raises(ValueError, match="carry the mask"):
+            model(**{**kwargs, "mask": mask}, prepared_conditioning=conditioning)
+
+
 @pytest.mark.parametrize("prepared", ["none", "single", "pair"])
 def test_incomplete_atom_cache(prepared: str) -> None:
     encoder = AtomAttentionEncoder.__new__(AtomAttentionEncoder)

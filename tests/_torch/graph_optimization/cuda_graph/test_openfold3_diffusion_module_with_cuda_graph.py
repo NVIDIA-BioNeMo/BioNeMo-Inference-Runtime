@@ -52,12 +52,14 @@ _NUM_DRIVE_CALLS = 4
 _SAMPLE_IDS = ("T1038", "T1047s1")
 # Rollout caches a capture may carry; tests needing a raw step drop them.
 _BIAS_KEYS = ("prepared_atom_encoder_pair_biases", "prepared_atom_decoder_pair_biases")
+_CONDITIONING_KEYS = ("prepared_atom_encoder_conditioning", "prepared_atom_decoder_conditioning")
 _PREPARED_KEYS = (
     "prepared_zij",
     "prepared_si",
     "prepared_atom_cl",
     "prepared_atom_plm",
     *_BIAS_KEYS,
+    *_CONDITIONING_KEYS,
     "prepared_token_pair_biases",
 )
 
@@ -226,6 +228,8 @@ def _prepare_atom_cache(module: DiffusionModule, kwargs: dict, pair: torch.Tenso
         "prepared_atom_decoder_pair_biases": module.atom_attn_dec.prepare_pair_biases(
             plm, kwargs["atom_mask"], kwargs["attn_metadata"]
         ),
+        "prepared_atom_encoder_conditioning": module.atom_attn_enc.prepare_conditioning(cl, kwargs["attn_metadata"]),
+        "prepared_atom_decoder_conditioning": module.atom_attn_dec.prepare_conditioning(cl, kwargs["attn_metadata"]),
     }
 
 
@@ -259,17 +263,21 @@ def test_of3_prepared_atom_conditioning_matches_uncached_step(_of3_diffusion_cap
             uncached = module(**kwargs).clone()
             pair = module.diffusion_conditioning.prepare_pair(batch=kwargs["batch"], zij_trunk=kwargs["zij_trunk"])
             atom_cache = _prepare_atom_cache(module, kwargs, pair)
+            conditioning = {key: atom_cache.pop(key) for key in _CONDITIONING_KEYS}
+            assert all(conditioning.values()), "the atom layers should take prepared conditioning"
             biases = {key: atom_cache.pop(key) for key in _BIAS_KEYS}
             cached = module(**kwargs, prepared_zij=pair, **atom_cache)
             cached_biases = module(**kwargs, prepared_zij=pair, **atom_cache, **biases)
+            cached_conditioning = module(**kwargs, prepared_zij=pair, **atom_cache, **biases, **conditioning)
             token_biases = _prepare_token_biases(module, pair)
-            cached_token = module(**kwargs, prepared_zij=pair, **atom_cache, **biases, **token_biases)
+            cached_token = module(**kwargs, prepared_zij=pair, **atom_cache, **biases, **conditioning, **token_biases)
             cached_single = module(
                 **kwargs,
                 prepared_zij=pair,
                 prepared_si=_prepare_single(module, kwargs),
                 **atom_cache,
                 **biases,
+                **conditioning,
                 **token_biases,
             )
     finally:
@@ -277,6 +285,7 @@ def test_of3_prepared_atom_conditioning_matches_uncached_step(_of3_diffusion_cap
             block.atom_transformer.enable_window_attention(block.n_query, block.n_key)
     assert torch.equal(cached, uncached)
     assert torch.equal(cached_biases, uncached)
+    assert torch.equal(cached_conditioning, uncached)
     assert torch.equal(cached_token, uncached)
     assert torch.equal(cached_single, uncached)
 

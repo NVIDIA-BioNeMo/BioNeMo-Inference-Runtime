@@ -318,6 +318,11 @@ def test_openfold3_sampler_composes_shared_edm_runtime(use_conditioning: bool, u
     prepare_encoder_biases = Mock(return_value=encoder_biases)
     prepare_decoder_biases = Mock(return_value=decoder_biases)
     prepare_biases = (prepare_encoder_biases, prepare_decoder_biases)
+    encoder_conditioning = [(torch.ones(1, 1, 1, 4, 2),)]
+    decoder_conditioning = [(torch.zeros(1, 1, 1, 4, 2),)]
+    prepare_encoder_conditioning = Mock(return_value=encoder_conditioning)
+    prepare_decoder_conditioning = Mock(return_value=decoder_conditioning)
+    prepare_conditioning = (prepare_encoder_conditioning, prepare_decoder_conditioning)
     token_biases = (torch.full((1, 1, 1, 2, 2), 2.0),)
     token_transformer = Mock(spec=OpenFold3DiffusionTransformer)
     token_transformer.prepare_pair_biases.return_value = token_biases
@@ -328,12 +333,15 @@ def test_openfold3_sampler_composes_shared_edm_runtime(use_conditioning: bool, u
             super().__init__()
             self.config = BaseConfig()
             self.calls = 0
-            # The encoder and decoder prepare their biases with the atom key mask.
+            # The encoder and decoder prepare their biases with the atom key mask, and their conditioning from cl.
             self.atom_attn_enc = SimpleNamespace(
                 get_atom_reps=get_atom_reps,
                 prepare_pair_biases=prepare_encoder_biases,
+                prepare_conditioning=prepare_encoder_conditioning,
             )
-            self.atom_attn_dec = SimpleNamespace(prepare_pair_biases=prepare_decoder_biases)
+            self.atom_attn_dec = SimpleNamespace(
+                prepare_pair_biases=prepare_decoder_biases, prepare_conditioning=prepare_decoder_conditioning
+            )
             self.diffusion_conditioning = SimpleNamespace(prepare_single=prepare_single)
             self.diffusion_transformer = token_transformer
 
@@ -346,6 +354,8 @@ def test_openfold3_sampler_composes_shared_edm_runtime(use_conditioning: bool, u
             assert _kwargs.get("prepared_atom_plm") is (prepared_plm if cache_atoms else None)
             assert _kwargs.get("prepared_atom_encoder_pair_biases") is (encoder_biases if cache_atoms else None)
             assert _kwargs.get("prepared_atom_decoder_pair_biases") is (decoder_biases if cache_atoms else None)
+            assert _kwargs.get("prepared_atom_encoder_conditioning") is (encoder_conditioning if cache_atoms else None)
+            assert _kwargs.get("prepared_atom_decoder_conditioning") is (decoder_conditioning if cache_atoms else None)
             assert _kwargs.get("prepared_token_pair_biases") is (token_biases if cache_atoms else None)
             return 0.7 * xl_noisy
 
@@ -374,12 +384,14 @@ def test_openfold3_sampler_composes_shared_edm_runtime(use_conditioning: bool, u
     first = sampler(**kwargs)
     assert get_atom_reps.call_count == int(cache_atoms)
     assert [prepare.call_count for prepare in prepare_biases] == [int(cache_atoms)] * 2
+    assert [prepare.call_count for prepare in prepare_conditioning] == [int(cache_atoms)] * 2
     assert prepare_token_biases.call_count == int(cache_atoms)
     assert prepare_single.call_count == int(cache_atoms)
     if cache_atoms:
         si_input, si_trunk = prepare_single.call_args.args
         assert si_input is kwargs["si_input"] and si_trunk is kwargs["si_trunk"]
         assert all(prepare.call_args.args[0] is prepared_plm for prepare in prepare_biases)
+        assert all(prepare.call_args.args[0] is prepared_cl for prepare in prepare_conditioning)
         assert prepare_token_biases.call_args.args[0] is prepared_zij
         assert get_atom_reps.call_args.kwargs["zij_trunk"] is prepared_zij
         assert get_atom_reps.call_args.kwargs["si_trunk"] is kwargs["si_trunk"]
@@ -387,6 +399,7 @@ def test_openfold3_sampler_composes_shared_edm_runtime(use_conditioning: bool, u
     second = sampler(**kwargs)
     assert get_atom_reps.call_count == 2 * int(cache_atoms)
     assert [prepare.call_count for prepare in prepare_biases] == [2 * int(cache_atoms)] * 2
+    assert [prepare.call_count for prepare in prepare_conditioning] == [2 * int(cache_atoms)] * 2
     assert prepare_token_biases.call_count == 2 * int(cache_atoms)
     assert first.shape == (1, 2, 4, 3)
     assert denoiser.calls == 2 * (schedule.numel() - 1)
@@ -399,6 +412,7 @@ def test_openfold3_sampler_composes_shared_edm_runtime(use_conditioning: bool, u
     graph_safe_second = sampler(**graph_safe_kwargs)
     assert get_atom_reps.call_count == 4 * int(cache_atoms)
     assert [prepare.call_count for prepare in prepare_biases] == [4 * int(cache_atoms)] * 2
+    assert [prepare.call_count for prepare in prepare_conditioning] == [4 * int(cache_atoms)] * 2
     assert prepare_token_biases.call_count == 4 * int(cache_atoms)
     assert denoiser.calls == 4 * (schedule.numel() - 1)
     torch.testing.assert_close(graph_safe_first, graph_safe_second)

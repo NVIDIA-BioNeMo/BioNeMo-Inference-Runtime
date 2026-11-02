@@ -37,32 +37,78 @@ from bionemo_ir.dsl_kernels.triton.sparse_pair_projection import project_pair_wi
 TensorDict = dict[str, torch.Tensor]
 
 
+def _uses_prepared_conditioning(
+    prepared_pair_biases: list[torch.Tensor] | None,
+    prepared_conditioning: list[tuple[torch.Tensor, ...]] | None,
+) -> bool:
+    """Whether the atom transformer conditions through ``prepared_conditioning`` instead of ``cl``.
+
+    Under CUDA autocast the layers' own projections choose their dtype, so it does not.
+    """
+    return (
+        prepared_pair_biases is not None and prepared_conditioning is not None and not torch.is_autocast_enabled("cuda")
+    )
+
+
+def _atom_transformer_blocks(
+    n_query: int,
+    cl: torch.Tensor,
+    atom_mask: torch.Tensor,
+    prepared_pair_biases: list[torch.Tensor] | None,
+    prepared_conditioning: list[tuple[torch.Tensor, ...]] | None,
+) -> tuple[torch.Tensor | None, torch.Tensor | None]:
+    """``cl`` and ``atom_mask`` blocked into query windows, each ``None`` when the atom transformer won't read it."""
+    cl_blocks = mask_blocks = None
+    if not _uses_prepared_conditioning(prepared_pair_biases, prepared_conditioning):
+        cl_blocks, _ = pad_to_multiple_and_divide(cl, multiple=n_query, dim=cl.ndim - 2)
+    if prepared_pair_biases is None:
+        mask_blocks, _ = pad_to_multiple_and_divide(atom_mask, multiple=n_query, dim=atom_mask.ndim - 1)
+    return cl_blocks, mask_blocks
+
+
 def _run_atom_transformer(
     transformer: DiffusionTransformer,
     out_dtype: torch.dtype,
     ql: torch.Tensor,
-    cl: torch.Tensor,
+    cl: torch.Tensor | None,
     plm: torch.Tensor,
-    atom_mask: torch.Tensor,
+    atom_mask: torch.Tensor | None,
     attn_metadata: AttentionMetadata,
     prepared_pair_biases: list[torch.Tensor] | None = None,
+    prepared_conditioning: list[tuple[torch.Tensor, ...]] | None = None,
 ) -> torch.Tensor:
     """Run the atom transformer in its own dtype and return ``ql`` in ``out_dtype``.
 
     The transformer may run in bf16 inside an fp32 encoder or decoder. Prepared
-    biases replace ``plm`` and carry the key mask, so both then stay unused.
+    biases replace ``plm`` and carry the key mask, so both then stay unused and
+    ``atom_mask`` may be ``None``; with them, prepared conditioning of ``cl``
+    replaces its projections where :func:`_uses_prepared_conditioning`, and ``cl``
+    may be ``None``.
     """
     dtype = transformer.dtype
     prepared = prepared_pair_biases is not None
+    conditioned = _uses_prepared_conditioning(prepared_pair_biases, prepared_conditioning)
     ql = transformer(
         a=ql.to(dtype),
-        s=cl.to(dtype),
+        s=None if conditioned else cl.to(dtype),
         z=plm if prepared else plm.to(dtype),
         mask=None if prepared else atom_mask.to(dtype),
         attn_metadata=attn_metadata,
         prepared_pair_biases=prepared_pair_biases,
+        prepared_conditioning=prepared_conditioning if conditioned else None,
     )
     return ql.to(out_dtype)
+
+
+def _prepare_atom_conditioning(
+    transformer: DiffusionTransformer, n_query: int, cl: torch.Tensor, attn_metadata: AttentionMetadata
+) -> list[tuple[torch.Tensor, ...]] | None:
+    """Prepare ``transformer``'s conditioning of a rollout-invariant ``cl`` ``[*, N_atom, c_atom]``, blocked as
+    ``forward`` blocks it, or ``None`` under CUDA autocast, where :func:`_uses_prepared_conditioning` ignores it."""
+    if torch.is_autocast_enabled("cuda"):
+        return None
+    cl, _ = pad_to_multiple_and_divide(cl, multiple=n_query, dim=cl.ndim - 2)
+    return transformer.prepare_local_conditioning(cl, attn_metadata)
 
 
 def _prepare_atom_pair_biases(
@@ -711,6 +757,24 @@ class AtomAttentionEncoder(nn.Module):
         """
         return _prepare_atom_pair_biases(self.atom_transformer, self.n_query, plm, atom_mask, attn_metadata)
 
+    def prepare_conditioning(
+        self, cl: torch.Tensor, attn_metadata: AttentionMetadata
+    ) -> list[tuple[torch.Tensor, ...]] | None:
+        """Project a rollout-invariant ``cl`` into every atom-transformer layer's conditioning once.
+
+        Args:
+            cl: ``[B, S, N_atom, c_atom]`` conditioning from ``get_atom_reps``, shared by every step. A
+                ``[B, N_atom, c_atom]`` ``cl`` gains the single sample axis :meth:`forward` gives it.
+            attn_metadata: Metadata whose ``query_to_keys`` gathers the key windows.
+
+        Returns:
+            Per layer, the conditioning for :meth:`forward`'s ``prepared_conditioning``, or ``None`` when
+            the layers cannot take it or CUDA autocast is enabled.
+        """
+        if cl.ndim == 3:
+            cl = cl.unsqueeze(1)
+        return _prepare_atom_conditioning(self.atom_transformer, self.n_query, cl, attn_metadata)
+
     def forward(
         self,
         batch: TensorDict,
@@ -722,6 +786,7 @@ class AtomAttentionEncoder(nn.Module):
         prepared_cl: torch.Tensor | None = None,
         prepared_plm: torch.Tensor | None = None,
         prepared_pair_biases: list[torch.Tensor] | None = None,
+        prepared_conditioning: list[tuple[torch.Tensor, ...]] | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         Args:
@@ -752,6 +817,8 @@ class AtomAttentionEncoder(nn.Module):
                 Static conditioning returned by ``get_atom_reps``.
             prepared_pair_biases:
                 Projected biases for ``prepared_plm``; ignored without conditioning.
+            prepared_conditioning:
+                :meth:`prepare_conditioning` of ``prepared_cl``; used only with ``prepared_pair_biases``.
         Returns:
             ai:
                 [*, N_token, c_token] Token representation
@@ -770,6 +837,7 @@ class AtomAttentionEncoder(nn.Module):
             ql = cl + self.noisy_position_embedder.linear_r(rl)
         else:
             prepared_pair_biases = None
+            prepared_conditioning = None
             ql, cl, plm = self.get_atom_reps(
                 batch=batch,
                 rl=rl,
@@ -789,23 +857,27 @@ class AtomAttentionEncoder(nn.Module):
         if not is_contained_diffusion_channel:
             ql = ql.unsqueeze(1)
 
-        cl, _ = pad_to_multiple_and_divide(cl, multiple=self.n_query, dim=cl.ndim - 2)
-        if not is_contained_diffusion_channel:
-            cl = cl.unsqueeze(1)
+        cl_blocks, mask_blocks = _atom_transformer_blocks(
+            self.n_query, cl, atom_mask, prepared_pair_biases, prepared_conditioning
+        )
+        if cl_blocks is not None and not is_contained_diffusion_channel:
+            cl_blocks = cl_blocks.unsqueeze(1)
 
-        atom_mask, _ = pad_to_multiple_and_divide(atom_mask, multiple=self.n_query, dim=atom_mask.ndim - 1)
         ql = _run_atom_transformer(
-            self.atom_transformer, self.dtype, ql, cl, plm, atom_mask, attn_metadata, prepared_pair_biases
+            self.atom_transformer,
+            self.dtype,
+            ql,
+            cl_blocks,
+            plm,
+            mask_blocks,
+            attn_metadata,
+            prepared_pair_biases,
+            prepared_conditioning,
         )
         if not is_contained_diffusion_channel:
             ql = ql.flatten(1, 3)[:, :current_size, :]
-            cl = cl.flatten(1, 3)[:, :current_size, :]
-            atom_mask = atom_mask.flatten(1, 2)[:, :current_size]
-
         else:
             ql = ql.flatten(2, 3)[:, :, :current_size, :]
-            cl = cl.flatten(2, 3)[:, :, :current_size, :]
-            atom_mask = atom_mask.flatten(2, 3)[:, :, :current_size]
 
         ql = ql * atom_mask.unsqueeze(-1)
 
@@ -901,6 +973,21 @@ class AtomAttentionDecoder(nn.Module):
         """
         return _prepare_atom_pair_biases(self.atom_transformer, self.n_query, plm, atom_mask, attn_metadata)
 
+    def prepare_conditioning(
+        self, cl: torch.Tensor, attn_metadata: AttentionMetadata
+    ) -> list[tuple[torch.Tensor, ...]] | None:
+        """Project a rollout-invariant ``cl`` into every atom-transformer layer's conditioning once.
+
+        Args:
+            cl: ``[*, N_atom, c_atom]`` encoder conditioning, shared by every step.
+            attn_metadata: Metadata whose ``query_to_keys`` gathers the key windows.
+
+        Returns:
+            Per layer, the conditioning for :meth:`forward`'s ``prepared_conditioning``, or ``None`` when
+            the layers cannot take it or CUDA autocast is enabled.
+        """
+        return _prepare_atom_conditioning(self.atom_transformer, self.n_query, cl, attn_metadata)
+
     def forward(
         self,
         batch: TensorDict,
@@ -911,6 +998,7 @@ class AtomAttentionDecoder(nn.Module):
         plm: torch.Tensor,
         attn_metadata: AttentionMetadata,
         prepared_pair_biases: list[torch.Tensor] | None = None,
+        prepared_conditioning: list[tuple[torch.Tensor, ...]] | None = None,
     ) -> torch.Tensor:
         """
         Args:
@@ -931,6 +1019,8 @@ class AtomAttentionDecoder(nn.Module):
                 Note: Converted to block format in AtomAttentionEncoder
             prepared_pair_biases:
                 Projected biases for a step-invariant ``plm``; skips its projection.
+            prepared_conditioning:
+                :meth:`prepare_conditioning` of a step-invariant ``cl``; used only with ``prepared_pair_biases``.
         Returns:
             rl_update:
                 [*, N_atom, 3] Atom position updates
@@ -949,12 +1039,20 @@ class AtomAttentionDecoder(nn.Module):
         # [*, N_atom, c_atom]
 
         ql, current_size = pad_to_multiple_and_divide(ql, multiple=self.n_query, dim=ql.ndim - 2)
-
-        cl, _ = pad_to_multiple_and_divide(cl, multiple=self.n_query, dim=cl.ndim - 2)
-        atom_mask, _ = pad_to_multiple_and_divide(atom_mask, multiple=self.n_query, dim=atom_mask.ndim - 1)
+        cl_blocks, mask_blocks = _atom_transformer_blocks(
+            self.n_query, cl, atom_mask, prepared_pair_biases, prepared_conditioning
+        )
 
         ql = _run_atom_transformer(
-            self.atom_transformer, self.dtype, ql, cl, plm, atom_mask, attn_metadata, prepared_pair_biases
+            self.atom_transformer,
+            self.dtype,
+            ql,
+            cl_blocks,
+            plm,
+            mask_blocks,
+            attn_metadata,
+            prepared_pair_biases,
+            prepared_conditioning,
         )
         ql = ql.flatten(2, 3)[:, :, :current_size, :]
 

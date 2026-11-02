@@ -746,7 +746,11 @@ class AttentionPairBias(nn.Module):
                 else:
                     kv_in = key_rows(s)
                     if self.use_separate_layer_norm:
-                        if self.use_ada_layer_norm:
+                        if self.use_ada_layer_norm and adaln_conditioning is not None:
+                            q_scale, q_shift, k_scale, k_shift = adaln_conditioning
+                            s = self.layer_norm_a_q.normalize(s, q_scale, q_shift)
+                            kv_in = self.layer_norm_a_k.normalize(kv_in, k_scale, k_shift)
+                        elif self.use_ada_layer_norm:
                             assert single_embedding is not None, "single_embedding is required for AdaLN"
                             single_embedding_kv = key_rows(single_embedding)
                             s = self.layer_norm_a_q(s, single_embedding)
@@ -1009,7 +1013,7 @@ class AttentionPairBias(nn.Module):
                 the output projection, the output gate and this add.
             output_gate_logits: ``output_projection(single_embedding)``, when the
                 caller already projected it; it then replaces that projection.
-            adaln_conditioning: For chained local AdaLNs, the projected query and
+            adaln_conditioning: For separate local AdaLNs, the projected query and
                 key conditions ``(q_scale, q_shift, k_scale, k_shift)`` from
                 ``single_embedding``; they replace its two AdaLN projections.
                 The key conditions are gathered, or in the query rows when this

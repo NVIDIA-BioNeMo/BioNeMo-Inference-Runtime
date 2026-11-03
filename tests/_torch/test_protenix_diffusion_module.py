@@ -569,10 +569,11 @@ def test_sample_diffusion_smoke(use_cache: bool, monkeypatch: pytest.MonkeyPatch
         assert prepared == [use_cache] * len(prepared)
 
 
-def test_token_conditioning_matches_layers_bitwise() -> None:
-    """With fused LayerNorms (as the model installs them), the batched token conditioning
-    reproduces every layer's own AdaLN projections and output-gate logits bit for bit, the stack
-    with it equals the per-layer stack, and the stacks follow an in-place weight update."""
+def test_token_conditioning_matches_layers() -> None:
+    """With fused LayerNorms (as the model installs them), the batched token conditioning matches
+    every layer's own AdaLN projections and output-gate logits to bf16 rounding, the stack with it
+    matches the per-layer stack, and the stacks follow an in-place weight update. The folded
+    LayerNorm scale rounds with the weight instead of the activations, so the match is not exact."""
     from bionemo_ir._torch.layers.normalization import replace_with_fused_layernorm
     from bionemo_ir._torch.layers.transformers import diffusion_transformer as dt
 
@@ -599,8 +600,8 @@ def test_token_conditioning_matches_layers_bitwise() -> None:
                 (layer.transition.adaln, c.transition_scale, c.transition_shift),
             ):
                 expected = adaln.fused_s_scale_s_bias(adaln.s_norm(s))
-                assert torch.equal(torch.cat([scale, shift], -1), expected)
-            assert torch.equal(c.attn_gate, layer.pair_bias_attn.output_projection(s))
+                assert _rmse_ratio(torch.cat([scale, shift], -1), expected) < 1e-2
+            assert _rmse_ratio(c.attn_gate, layer.pair_bias_attn.output_projection(s)) < 1e-2
 
     with torch.inference_mode():
         check_layers()
@@ -608,7 +609,7 @@ def test_token_conditioning_matches_layers_bitwise() -> None:
         with pytest.MonkeyPatch.context() as patch:
             patch.setattr(dt.ProtenixDiffusionTransformer, "prepare_token_conditioning", lambda self, *args: None)
             per_layer = stack(a, s, z, mask)
-        assert torch.equal(batched, per_layer)
+        assert _rmse_ratio(batched, per_layer) < 1e-2
         # A .data update bumps no version counter; the stacks are read from the parameters per call.
         stack.layers[1].adaln.fused_s_scale_s_bias.weight.data.mul_(2.0)
         stack.layers[0].pair_bias_attn.output_projection.bias.data.add_(0.5)

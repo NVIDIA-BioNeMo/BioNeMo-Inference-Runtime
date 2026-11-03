@@ -131,7 +131,8 @@ def precompute_pair_biases(
         layout="nd->nd",  # codespell:ignore nd
         rms_norm=rms_norm,
     ).view_as(z)
-    z_flat_t = z_hat.reshape(-1, D).t().contiguous()
+    # cuBLAS takes the transpose as an operand flag; copying this tall, skinny matrix costs far more than the GEMM.
+    z_flat_t = z_hat.reshape(-1, D).t()
     if bias_offset is None:
         out = torch.mm(w_mega, z_flat_t)
     else:
@@ -891,39 +892,45 @@ class ProtenixDiffusionTransformer(_WindowAttentionLayers, nn.Module):
         return True
 
     def conditioning_weights(self) -> tuple[torch.Tensor, ...] | None:
-        """The layers' AdaLN and output-gate parameters stacked for the batched projections, or ``None``.
+        """The layers' AdaLN and output-gate weights, concatenated for one GEMM per kind, or ``None``.
 
-        Returns ``(gamma [2L, c], w_adaln [2L, c, 2d], b_adaln [2L, 1, 2d], w_gate [L, c, d], b_gate [L, 1, d])``;
-        AdaLN entry ``2i`` is layer ``i``'s attention, ``2i + 1`` its transition. Read from the live parameters:
-        the rollout cache takes them once per rollout.
+        Returns ``(w_adaln [c, 2L * 2d], b_adaln [2L * 2d], w_gate [c, L * d], b_gate [L * d])``. AdaLN block ``2i``
+        is layer ``i``'s attention, ``2i + 1`` its transition, and each block's rows carry that AdaLN's LayerNorm
+        scale, ``gamma[:, None] * W.T`` rounded once from fp32. Read from the live parameters: the rollout cache
+        takes them once per rollout.
         """
         if not self.layers or not self._conditioning_supported():
             return None
         with torch.no_grad():
             adalns = [adaln for layer in self.layers for adaln in (layer.adaln, layer.transition.adaln)]
             gates = [layer.pair_bias_attn.output_projection for layer in self.layers]
+            weight = torch.stack([adaln.fused_s_scale_s_bias.weight for adaln in adalns])  # [2L, 2d, c]
+            gamma = torch.stack([adaln.s_norm.weight for adaln in adalns])  # [2L, c]
+            folded = (weight.float() * gamma.float()[:, None, :]).to(weight.dtype)
             return (
-                torch.stack([adaln.s_norm.weight.float() for adaln in adalns]),
-                torch.stack([adaln.fused_s_scale_s_bias.weight.t() for adaln in adalns]).contiguous(),
-                torch.stack([adaln.fused_s_scale_s_bias.bias.float() for adaln in adalns]).unsqueeze(1).contiguous(),
-                torch.stack([gate.weight.t() for gate in gates]).contiguous(),
-                torch.stack([gate.bias.float() for gate in gates]).unsqueeze(1).contiguous(),
+                folded.permute(2, 0, 1).reshape(folded.shape[-1], -1),
+                torch.cat([adaln.fused_s_scale_s_bias.bias for adaln in adalns]),
+                torch.cat([gate.weight.t() for gate in gates], dim=1),
+                torch.cat([gate.bias for gate in gates]),
             )
 
     def prepare_token_conditioning(
         self, s: torch.Tensor, weights: tuple[torch.Tensor, ...] | None = None
     ) -> list[TokenLayerConditioning] | None:
-        """Project every layer's AdaLN and output-gate conditioning of ``s`` in two batched GEMMs.
+        """Project every layer's AdaLN and output-gate conditioning of ``s`` in two GEMMs.
 
-        One unscaled fused LayerNorm of ``s`` serves every AdaLN; the rounding points stay the layers' own, only the
-        GEMM summation order may differ.
+        One unscaled fused LayerNorm of ``s`` serves every AdaLN, whose LayerNorm scales are folded into the
+        concatenated weights. Each output is one rounding of its fp32 accumulation and bias, as in the layers' own
+        Linears; the folded weight rounds where the layers round their scaled activations, a bf16-rounding
+        difference.
 
         Args:
             s: ``[*, N, c_s]`` token conditioning.
             weights: :meth:`conditioning_weights` of this rollout; read from the parameters when ``None``.
 
         Returns:
-            One :class:`TokenLayerConditioning` per layer, or ``None`` when the batched path does not apply.
+            One :class:`TokenLayerConditioning` per layer, as column views of two shared outputs, or ``None`` when the
+            batched path does not apply.
         """
         if torch.is_autocast_enabled("cuda"):  # the layers' own Linears choose the dtype under autocast
             return None
@@ -931,7 +938,7 @@ class ProtenixDiffusionTransformer(_WindowAttentionLayers, nn.Module):
             weights = self.conditioning_weights()
             if weights is None:
                 return None
-        gamma, w_adaln, b_adaln, w_gate, b_gate = weights
+        w_adaln, b_adaln, w_gate, b_gate = weights
         if s.dtype != w_adaln.dtype or not s.is_cuda:
             return None
         lead, width = s.shape[:-1], s.shape[-1]
@@ -943,22 +950,21 @@ class ProtenixDiffusionTransformer(_WindowAttentionLayers, nn.Module):
             eps=self.layers[0].adaln.s_norm.eps,
             elementwise_affine=False,
             layout="nd->nd",  # codespell:ignore nd
-            out_dtype=torch.float32,
         )
-        normed = (x_hat.unsqueeze(0) * gamma.unsqueeze(1)).to(s.dtype)
-        # fp32 accumulation and bias, one rounding per output, as each layer's Linear rounds it.
-        adaln = torch.baddbmm(b_adaln, normed, w_adaln, out_dtype=torch.float32).to(s.dtype)
-        gates = torch.baddbmm(
-            b_gate, rows.unsqueeze(0).expand(w_gate.shape[0], -1, -1), w_gate, out_dtype=torch.float32
-        ).to(s.dtype)
-        dim = w_gate.shape[-1]
+        # The bias epilogue adds each bias to the fp32 accumulation before the output's single rounding. One plain
+        # GEMM per kind keeps the outputs in bf16: a batched GEMM per layer would stage them in fp32.
+        adaln = torch.addmm(b_adaln, x_hat, w_adaln).view(*lead, -1)
+        gates = torch.addmm(b_gate, rows, w_gate).view(*lead, -1)
+        dim = w_gate.shape[-1] // len(self.layers)
         conditioning = []
         for i in range(len(self.layers)):
-            attn_scale, attn_shift = adaln[2 * i].view(*lead, 2 * dim).split([dim, dim], dim=-1)
-            transition_scale, transition_shift = adaln[2 * i + 1].view(*lead, 2 * dim).split([dim, dim], dim=-1)
+            # Layer i's attention AdaLN, then its transition AdaLN, each a scale half and a shift half.
+            attn_scale, attn_shift, transition_scale, transition_shift = adaln[
+                ..., 4 * i * dim : 4 * (i + 1) * dim
+            ].split(dim, dim=-1)
             conditioning.append(
                 TokenLayerConditioning(
-                    attn_scale, attn_shift, gates[i].view(*lead, dim), transition_scale, transition_shift
+                    attn_scale, attn_shift, gates[..., i * dim : (i + 1) * dim], transition_scale, transition_shift
                 )
             )
         return conditioning

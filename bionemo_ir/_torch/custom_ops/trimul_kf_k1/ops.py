@@ -12,7 +12,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Variant selection, input weight fold and PyTorch reference for the SM90 TriMul KF K1."""
+"""Variant selection, input weight fold and PyTorch reference for the TriMul KF K1 on SM90 and SM100/SM103."""
 
 from __future__ import annotations
 
@@ -37,8 +37,9 @@ class TrimulKFInputFold:
     """The input LayerNorm folded into K1's projection weights; see :func:`fold_input_weights`.
 
     Attributes:
-        proj: bf16 ``[2D, C]`` projection rows scaled by the LayerNorm weight, read by ``K1_0``.
-        gate: bf16 ``[2D, C]`` gate rows scaled the same way, read by ``K1_0``.
+        proj: bf16 ``[2D, C]`` projection rows scaled by the LayerNorm weight, read by ``K1_0`` and the
+            SM100 variants.
+        gate: bf16 ``[2D, C]`` gate rows scaled the same way, read by ``K1_0`` and the SM100 variants.
         interleaved: bf16 ``[4D, C]``: ``proj`` and ``gate`` in alternating 8-row blocks, read by
             the ping-pong variants.
         vec: fp32 ``[8D]``: for every output row, the sum of its folded projection row, then
@@ -185,12 +186,15 @@ class TrimulKFK1Op:
         if x.dim() != 4 or x.dtype != _SUPPORTED_DTYPE or not x.is_cuda or not x.is_contiguous():
             return False
         B, N, N_j, C = x.shape
+        P = ab_pitch(N, "padded")
         return (
             B > 0
             and 0 < N == N_j
             and C == self.C
             and N % TOKEN_ALIGN == 0
-            and N * ab_pitch(N, "padded") <= MAX_LAUNCH_ROWS
+            and N * P <= MAX_LAUNCH_ROWS
+            # SM100 launches once for every batch
+            and (self.backend.chunks_batches or B * N * P <= MAX_LAUNCH_ROWS)
             and actual_seqlen.dtype == torch.int32
             and actual_seqlen.is_cuda
             and actual_seqlen.is_contiguous()
@@ -230,8 +234,9 @@ class TrimulKFK1Op:
 def get_trimul_kf_k1_op(dtype: torch.dtype | None, dim: int, hidden_dim: int) -> TrimulKFK1Op | None:
     """Return K1 when this build ships it for ``(dim, hidden_dim)`` on the current GPU, else ``None``.
 
-    The kernels run on SM90 in bf16, from source in a private checkout and from packaged CUBINs
-    otherwise.
+    The kernels run in bf16 on SM90, from source in a private checkout and from packaged CUBINs
+    otherwise, and on SM100 and SM103 from source only: a source-free build or
+    ``CUTEDSL_FORCE_CUBIN=1`` gets ``None`` there and keeps the caller's regular path.
     """
     if dtype != _SUPPORTED_DTYPE or not torch.cuda.is_available():
         return None

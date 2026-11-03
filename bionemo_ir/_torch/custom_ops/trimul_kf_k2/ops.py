@@ -12,7 +12,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Tile selection and PyTorch reference for the SM90 TriMul KF K2."""
+"""Tile selection and PyTorch reference for the TriMul KF K2 on SM90 and SM100/SM103."""
 
 from __future__ import annotations
 
@@ -21,7 +21,7 @@ from dataclasses import dataclass, field
 import torch
 from cuda.bindings import driver
 
-from ._config import COUNTER_WORDS, TrimulKFK2Tile
+from ._config import COUNTER_WORDS, K2Tile
 from .cutedsl import TrimulKFK2CuTe, ab_layout_ok
 
 _SUPPORTED_DTYPE = torch.bfloat16
@@ -77,9 +77,9 @@ class TrimulKFK2Op:
     backend: TrimulKFK2CuTe
     D: int
     outgoing: bool
-    _tiles: dict[int, TrimulKFK2Tile] = field(default_factory=dict, init=False, repr=False, compare=False)
+    _tiles: dict[int, K2Tile] = field(default_factory=dict, init=False, repr=False, compare=False)
 
-    def select(self, n: int) -> TrimulKFK2Tile:
+    def select(self, n: int) -> K2Tile:
         """The tile a call over ``n`` tokens runs."""
         tile = self._tiles.get(n)
         if tile is None:
@@ -132,7 +132,11 @@ class TrimulKFK2Op:
 
 
 def get_trimul_kf_k2_op(dtype: torch.dtype | None, hidden_dim: int, outgoing: bool) -> TrimulKFK2Op | None:
-    """Return K2 when this build ships it for ``hidden_dim`` and the direction on the current GPU, else ``None``."""
+    """Return K2 when this build ships it for ``hidden_dim`` and the direction on the current GPU, else ``None``.
+
+    SM90 runs it from source or packaged CUBINs; SM100 and SM103 only from source, so ``CUTEDSL_FORCE_CUBIN=1``
+    leaves them without K2.
+    """
     if dtype != _SUPPORTED_DTYPE or not torch.cuda.is_available():
         return None
     major, minor = torch.cuda.get_device_capability()

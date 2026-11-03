@@ -1,0 +1,56 @@
+{
+  "kernel_abi": "sm100",
+  "configs": {
+    "S=128": {"kernel_variant": "K2_B0", "tile_m": 128, "tile_n": 64},
+    "S=136": {"kernel_variant": "K2_B0", "tile_m": 256, "tile_n": 256},
+    "S=256": {"kernel_variant": "K2_B0", "tile_m": 256, "tile_n": 256},
+    "S=264": {
+      "out": {"kernel_variant": "K2_B0", "tile_m": 128, "tile_n": 160, "cluster_n": 2},
+      "in": {"kernel_variant": "K2_B0", "tile_m": 128, "tile_n": 128}
+    },
+    "S=320": {
+      "out": {"kernel_variant": "K2_B0", "tile_m": 128, "tile_n": 160, "cluster_n": 2},
+      "in": {"kernel_variant": "K2_B0", "tile_m": 128, "tile_n": 128}
+    },
+    "S=328": {"kernel_variant": "K2_B0", "tile_m": 128, "tile_n": 128},
+    "S=384": {"kernel_variant": "K2_B0", "tile_m": 128, "tile_n": 128},
+    "S=392": {"kernel_variant": "K2_B0", "tile_m": 256, "tile_n": 256},
+    "S=504": {"kernel_variant": "K2_B0", "tile_m": 256, "tile_n": 256},
+    "S=512": {"kernel_variant": "K2_B1", "tile_n": 256, "cluster_n": 1, "clc": false},
+    "S=520": {"kernel_variant": "K2_B1", "tile_n": 192, "cluster_n": 1, "clc": false},
+    "S=576": {
+      "out": {"kernel_variant": "K2_B1", "tile_n": 192, "cluster_n": 1, "clc": false},
+      "in": {"kernel_variant": "K2_B1", "tile_n": 256, "cluster_n": 1, "clc": false}
+    },
+    "S=584": {
+      "out": {"kernel_variant": "K2_B1", "tile_n": 224, "cluster_n": 1, "clc": false},
+      "in": {"kernel_variant": "K2_B1", "tile_n": 256, "cluster_n": 1, "clc": false}
+    },
+    "S=768": {"kernel_variant": "K2_B1", "tile_n": 256, "cluster_n": 1, "clc": false},
+    "S=1024": {"kernel_variant": "K2_B1", "tile_n": 256, "cluster_n": 1, "clc": false},
+    "S=1032": {
+      "out": [
+        {"kernel_variant": "K2_B1", "tile_n": 256, "cluster_n": 1, "clc": true},
+        {"kernel_variant": "K2_B1", "tile_n": 224, "cluster_n": 2, "clc": true}
+      ],
+      "in": {"kernel_variant": "K2_B1", "tile_n": 256, "cluster_n": 1, "clc": true}
+    },
+    "S=2592": {
+      "out": [
+        {"kernel_variant": "K2_B1", "tile_n": 256, "cluster_n": 1, "clc": true},
+        {"kernel_variant": "K2_B1", "tile_n": 224, "cluster_n": 2, "clc": true}
+      ],
+      "in": {"kernel_variant": "K2_B1", "tile_n": 256, "cluster_n": 1, "clc": true}
+    },
+    "S=2600": {
+      "out": [
+        {"kernel_variant": "K2_B1", "tile_n": 256, "cluster_n": 1, "clc": true},
+        {"kernel_variant": "K2_B1", "tile_n": 224, "cluster_n": 2, "clc": true}
+      ],
+      "in": [
+        {"kernel_variant": "K2_B1", "tile_n": 256, "cluster_n": 1, "clc": true},
+        {"kernel_variant": "K2_B2", "tail_w": 32}
+      ]
+    }
+  }
+}

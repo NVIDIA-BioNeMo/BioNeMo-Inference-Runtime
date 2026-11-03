@@ -314,10 +314,10 @@ class TriangleMultiplicationNode(nn.Module):
     ):
         """Triangle multiplication node.
 
-        Supported SM90 BF16 shapes may dispatch to the SM90 TriMul KF chain
-        when the model pads tokens. A node on the chain folds its weights for
-        it once they exist: here, on :meth:`set_token_padding`, and on
-        :meth:`post_load_weights`, which ``load_state_dict`` also runs.
+        Supported BF16 shapes may dispatch to the TriMul KF chain on SM90,
+        SM100 and SM103 when the model pads tokens. A node on the chain folds
+        its weights for it once they exist: here, on :meth:`set_token_padding`,
+        and on :meth:`post_load_weights`, which ``load_state_dict`` also runs.
 
         Args:
             pair_mask_left_aligned: Whether each mask row is ``1...1 0...0``,
@@ -327,7 +327,7 @@ class TriangleMultiplicationNode(nn.Module):
                 fast SM90 GEMMs. Requires CuTe and ``actual_seqlen``.
             pad_tokens: Whether the owning model pads token axes to multiples
                 of 8 before this node runs (its ``enable_token_pad``). Enables
-                the SM90 TriMul KF chain for the ``(dim, hidden_dim)`` pairs it
+                the TriMul KF chain for the ``(dim, hidden_dim)`` pairs it
                 ships; see :meth:`set_token_padding`.
             norm_bias: Whether the input and output LayerNorms learn a bias.
                 False for checkpoints trained without one, which would
@@ -425,13 +425,17 @@ class TriangleMultiplicationNode(nn.Module):
 
     @property
     def kf_available(self) -> bool:
-        """Whether this node runs the fused SM90 TriMul KF chain."""
+        """Whether the fused TriMul KF chain is configured for this node (``_kf_ops`` is set).
+
+        :meth:`forward` tries the chain on every call of a configured node. Calls the chain does
+        not accept, such as ones whose token axes are not 8-aligned, take the regular path.
+        """
         return self._kf_ops is not None
 
     def set_token_padding(self, enabled: bool) -> None:
         """Set whether the owning model pads token axes to multiples of 8.
 
-        Padding enables the SM90 TriMul KF chain ``trimul_kf_k1`` ->
+        Padding enables the TriMul KF chain ``trimul_kf_k1`` ->
         ``trimul_kf_k2`` -> ``trimul_kf_k3`` when :meth:`_get_kf_ops` finds all
         three for this node, which then folds its weights for them.
         """
@@ -720,7 +724,7 @@ def set_trimul_token_padding(module: nn.Module, enabled: bool) -> None:
 
     The owning model pads token axes to multiples of 8 before running
     ``module``, which lets each :class:`TriangleMultiplicationNode` take the
-    SM90 TriMul KF chain. A node still falls back on any call that arrives
+    TriMul KF chain. A node still falls back on any call that arrives
     unaligned.
     """
     for submodule in module.modules():

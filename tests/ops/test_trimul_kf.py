@@ -12,7 +12,10 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""SM90 TriMul KF custom ops: the K1 -> K2 -> K3 chain against the fp32 reference, from source and CUBINs."""
+"""TriMul KF custom ops: the K1 -> K2 -> K3 chain against the fp32 reference.
+
+SM90 runs it from source and from CUBINs; SM100 and SM103 run it from source only.
+"""
 
 from __future__ import annotations
 
@@ -35,7 +38,7 @@ from bionemo_ir._torch.custom_ops.trimul_kf_k3 import _config as k3_config
 from bionemo_ir._torch.custom_ops.trimul_kf_k3 import _cubin as k3_cubin
 from bionemo_ir._torch.custom_ops.trimul_kf_k3 import cutedsl as k3_cutedsl
 from bionemo_ir._torch.utils.kernel import CuTeDSLKernelLibraryExecutable, CuTeDSLKernelVariantUnavailable
-from tests._torch import cutedsl_test_modes, require_cubin_library, skip_if_not_sm90
+from tests._torch import SM_VERSION, cutedsl_test_modes, require_cubin_library, skip_if_not_sm90
 
 _CUTEDSL_MODES = cutedsl_test_modes("bionemo_ir._torch.custom_ops.trimul_kf_k1._source")
 _BACKENDS = (
@@ -131,6 +134,20 @@ def _use_mode(mode: str, monkeypatch: pytest.MonkeyPatch) -> list[dict]:
         require_cubin_library()
         monkeypatch.setenv("CUTEDSL_FORCE_CUBIN", "1")
     return caches
+
+
+def _skip_unless_chain_runs(mode: str) -> None:
+    """Skip unless this GPU runs the chain in ``mode``: SM100 and SM103 ship no CUBINs."""
+    if SM_VERSION in (100, 103):
+        if mode != "source":
+            pytest.skip(f"SM{SM_VERSION} runs the TriMul KF chain from source only")
+        return
+    skip_if_not_sm90()
+
+
+def _skip_unless_ops_run() -> None:
+    """Skip unless this GPU runs the ops in the mode the environment selects."""
+    _skip_unless_chain_runs("cubin" if k1_cutedsl.TrimulKFK1CuTe.force_cubin() else "source")
 
 
 def _assert_dispatched(caches: list[dict], mode: str) -> None:
@@ -322,7 +339,7 @@ def _skip_without_room(B: int, N: int, C: int, D: int) -> None:
 @pytest.mark.parametrize("mode", _CUTEDSL_MODES)
 @pytest.mark.parametrize("case", _CASES, ids=_case_id)
 def test_chain_matches_reference(mode, case, monkeypatch):
-    skip_if_not_sm90()
+    _skip_unless_chain_runs(mode)
     B, N, C, D, outgoing, has_bias, residual, lengths = case
     _skip_without_room(B, N, C, D)
     caches = _use_mode(mode, monkeypatch)
@@ -523,7 +540,7 @@ def test_graph_replay_feeds_each_k1_the_x_its_k3_wrote(mode, monkeypatch):
     The node folds its weights once, so in the trunk K1 follows the previous K3 directly. At N = 64
     K3 leaves SMs free, and a K1 overlapping it would read the previous replay's x.
     """
-    skip_if_not_sm90()
+    _skip_unless_chain_runs(mode)
     caches = _use_mode(mode, monkeypatch)
     problem = _problem(1, 64, 256, True, "full")
     C = problem["x"].shape[-1]
@@ -622,7 +639,7 @@ _LARGE_CASES = [(1, 2904, 256), (2, 3008, 128), (2, 2912, 256)]
 @pytest.mark.parametrize(("B", "N", "C"), _LARGE_CASES, ids=lambda v: str(v))
 def test_chain_past_int32_offsets_matches_reference_rows(mode, B, N, C, outgoing, monkeypatch):
     """Every stage's rows of the last batch, the last planes included, match fp32 once offsets pass 2^31."""
-    skip_if_not_sm90()
+    _skip_unless_chain_runs(mode)
     torch.cuda.empty_cache()
     P = k1.ab_pitch(N, "padded")
     footprint = 2 * B * (2 * N * N * C + 2 * C * P * P + C * N * N)  # bf16 x and out, a and b, product
@@ -898,7 +915,7 @@ def test_k2_anchors_name_one_tile_or_one_per_direction():
 
 
 def test_ops_reject_misuse():
-    skip_if_not_sm90()
+    _skip_unless_ops_run()
     C = 64
     problem = _problem(1, 128, C, False, "full")
     op1 = k1.get_trimul_kf_k1_op(torch.bfloat16, C, C)
@@ -947,7 +964,7 @@ def test_ops_reject_misuse():
 @pytest.mark.parametrize(("B", "N"), [(1, 0), (0, 128)], ids=["no-tokens", "no-batch"])
 def test_ops_reject_empty_problems(B, N):
     """An empty problem has nothing to launch; each op turns it away before its batch chunking."""
-    skip_if_not_sm90()
+    _skip_unless_ops_run()
     C = 64
     op1 = k1.get_trimul_kf_k1_op(torch.bfloat16, C, C)
     op2 = k2.get_trimul_kf_k2_op(torch.bfloat16, C, True)
@@ -980,9 +997,16 @@ def test_source_kernels_never_request_programmatic_dependent_launch():
     """
     sources = Path(dsl_kernels.__file__).parent / "cute"
     checked = 0
-    for name in ("sm90_trimul_kf_k1", "sm90_trimul_kf_k2", "sm90_trimul_kf_k3"):
+    for name in (
+        "sm90_trimul_kf_k1",
+        "sm90_trimul_kf_k2",
+        "sm90_trimul_kf_k3",
+        "sm100_trimul_kf_k1",
+        "sm100_trimul_kf_k2",
+        "sm100_trimul_kf_k3",
+    ):
         text = (sources / f"{name}.py").read_text()
         assert "use_pdl=False," in text, f"{name} should launch without PDL"
         assert "use_pdl=True" not in text, f"{name} requests PDL, which breaks CUDA graph replay"
         checked += text.count("use_pdl=")
-    assert checked == 9, f"expected the chain's 9 launch sites, found {checked}"
+    assert checked == 17, f"expected the chains' 17 launch sites (9 on SM90, 8 on SM100), found {checked}"

@@ -12,7 +12,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Source-or-CUBIN interface for the SM90 TriMul KF K1."""
+"""Source-or-CUBIN interface for the TriMul KF K1: SM90 from source or packaged CUBINs, SM100/SM103 from source."""
 
 from __future__ import annotations
 
@@ -32,7 +32,7 @@ from bionemo_ir._torch.utils.kernel import (
 from bionemo_ir.dsl_kernels.cute_cache import FORCE_CUBIN_ENV, CuteKernelCache
 from bionemo_ir.logger import logger
 
-from ._config import CENTRED_VARIANTS, KERNEL_ABIS, TrimulKFK1Selection, anchors, select
+from ._config import CENTRED_VARIANTS, KERNEL_ABIS, TrimulKFK1Selection, TrimulKFK1Tile, anchors, select
 from ._cubin import TrimulKFK1CubinExecutable
 
 __all__ = ["TrimulKFK1CuTe", "TrimulKFK1Output"]
@@ -41,6 +41,10 @@ __all__ = ["TrimulKFK1CuTe", "TrimulKFK1Output"]
 TILE_ROWS = 128
 #: Most rows, and positions per a/b plane, one launch addresses: TMA coordinates are int32.
 MAX_LAUNCH_ROWS = 2**31 - 1 - TILE_ROWS
+#: Kernel ABIs the packaged CUBIN library carries; the others run from source only.
+CUBIN_ABIS = frozenset({"sm90"})
+#: Bumped when the compile contract of a source kernel changes outside the hashed kernel sources.
+_DISK_CACHE_VERSION = "trimul_kf_k1_cute_v1"
 
 
 class TrimulKFK1Output(NamedTuple):
@@ -86,6 +90,7 @@ class TrimulKFK1CuTe(CuteKernelCache):
     """Cached backend for K1: ``a``/``b`` from the folded input projections of ``x``.
 
     Each call runs the variant its ``(C, D)`` configs tune for the anchor nearest the token count.
+    SM90 compiles from source or loads packaged CUBINs; SM100 and SM103 compile from source only.
 
     Args:
         sm_version: The SM whose configs and kernels to use; defaults to this GPU's.
@@ -100,6 +105,16 @@ class TrimulKFK1CuTe(CuteKernelCache):
         self._sm_version = sm_version
         self._num_sms: int | None = None
 
+    @property
+    def kernel_abi(self) -> str | None:
+        """The kernel ABI this SM runs, or ``None`` when K1 ships none for it."""
+        return KERNEL_ABIS.get(self._sm_version)
+
+    @property
+    def chunks_batches(self) -> bool:
+        """Whether :meth:`run` spreads a call's batches over launches (SM90); SM100 launches once for every batch."""
+        return self.kernel_abi == "sm90"
+
     def select(self, C: int, D: int, n: int) -> TrimulKFK1Selection | None:
         """The anchor and K1 variant a call over ``n`` tokens runs, or ``None`` when ``(C, D)`` does not ship."""
         return select(self._sm_version, C, D, n)
@@ -108,11 +123,15 @@ class TrimulKFK1CuTe(CuteKernelCache):
         """Whether a variant ``(C, D)``'s configs select drops the LayerNorm mean term and reads a centred fold."""
         return any(variant in CENTRED_VARIANTS for variant in (anchors(self._sm_version, C, D) or {}).values())
 
+    def _has_cubins(self) -> bool:
+        """Whether the packaged library can carry this SM's kernels at all."""
+        return self.kernel_abi in CUBIN_ABIS
+
     def ships(self, C: int, D: int) -> bool:
         """Whether this build can run ``(C, D)``, from source or from a packaged CUBIN.
 
         A source-free build, or ``CUTEDSL_FORCE_CUBIN``, needs every packaged image the shape's
-        configs name. Without them the caller keeps its own path.
+        configs name, so it never ships SM100 or SM103. Without them the caller keeps its own path.
         """
         entries = anchors(self._sm_version, C, D)
         if not entries:
@@ -124,6 +143,8 @@ class TrimulKFK1CuTe(CuteKernelCache):
                 pass
             else:
                 return True
+        if not self._has_cubins():
+            return False
         try:
             for kernel_variant in sorted(set(entries.values())):
                 self._load_cubin_executable(self._key(C, D, kernel_variant), C, D, kernel_variant)
@@ -131,9 +152,13 @@ class TrimulKFK1CuTe(CuteKernelCache):
             return False
         return True
 
-    def _key(self, C: int, D: int, kernel_variant: str, ab_layout: str = "dense") -> tuple:
+    def _key(
+        self, C: int, D: int, kernel_variant: str, ab_layout: str = "dense", tile: TrimulKFK1Tile | None = None
+    ) -> tuple:
         key = (self._sm_version, C, D, kernel_variant)
-        return key if ab_layout == "dense" else (*key, ab_layout)
+        if ab_layout != "dense":
+            key = (*key, ab_layout)
+        return key if tile is None else (*key, *tile)
 
     def supports(self, C: int, D: int, kernel_variant: str, ab_layout: str) -> bool:
         """Whether this build writes ``ab_layout`` with ``kernel_variant``."""
@@ -146,6 +171,8 @@ class TrimulKFK1CuTe(CuteKernelCache):
                 pass
             else:
                 return True
+        if not self._has_cubins():
+            return False
         key = self._key(C, D, kernel_variant, ab_layout)
         try:
             self._load_cubin_executable(key, C, D, kernel_variant, ab_layout=ab_layout)
@@ -184,8 +211,10 @@ class TrimulKFK1CuTe(CuteKernelCache):
         )
         return executable
 
-    def _get_or_compile(self, C: int, D: int, kernel_variant: str, ab_layout: str = "dense") -> Any:
-        key = self._key(C, D, kernel_variant, ab_layout)
+    def _get_or_compile(
+        self, C: int, D: int, kernel_variant: str, ab_layout: str = "dense", tile: TrimulKFK1Tile | None = None
+    ) -> Any:
+        key = self._key(C, D, kernel_variant, ab_layout, tile)
         executable = TrimulKFK1CuTe._compiled_cache.get(key)
         force_cubin = self.force_cubin()
         if executable is not None and (not force_cubin or isinstance(executable, CuTeDSLKernelLibraryExecutable)):
@@ -200,15 +229,17 @@ class TrimulKFK1CuTe(CuteKernelCache):
 
         if self._num_sms is None:
             self._num_sms = torch.cuda.get_device_properties(torch.cuda.current_device()).multi_processor_count
-        disk_key = ("trimul_kf_k1_cute_v1", *key, KERNEL_ABIS[self._sm_version])
+        # The key carries the ABI and every compile-time axis (an SM100 tile included); the kernel
+        # sources are hashed into the cache directory, the host-side compile contract is the version.
+        disk_key = (_DISK_CACHE_VERSION, *key, self.kernel_abi)
         executable = self.load_from_cache(disk_key)
         if executable is None:
             logger.info(
                 f"CuTeDSL trimul KF K1: compiling {kernel_variant} ({ab_layout} a/b) for SM{self._sm_version}, "
-                f"C={C}, D={D}"
+                f"C={C}, D={D}{'' if tile is None else f', {tile}'}"
             )
             executable = source.compile_trimul_kf_k1_source(
-                self.compile, kernel_variant, C, D, self._num_sms, ab_layout
+                self.compile, kernel_variant, C, D, self._num_sms, ab_layout, tile
             )
             self.save_to_cache(disk_key, executable)
         TrimulKFK1CuTe._compiled_cache[key] = executable
@@ -227,7 +258,7 @@ class TrimulKFK1CuTe(CuteKernelCache):
         """Run ``selection``'s variant on ``x`` ``[B, N, N, C]``; the caller has validated the operands."""
         B, N, _, C = x.shape
         D = vec_in.shape[0] // 8
-        executable = self._get_or_compile(C, D, selection.kernel_variant, selection.ab_layout)
+        executable = self._get_or_compile(C, D, selection.kernel_variant, selection.ab_layout, selection.tile)
         P = selection.ab_pitch(N)
         planes = torch.empty((2, B, D, P, P), dtype=x.dtype, device=x.device)
         a, b = planes[..., :N, :N].unbind(0)
@@ -241,6 +272,16 @@ class TrimulKFK1CuTe(CuteKernelCache):
         flat_tiles = isinstance(executable, TrimulKFK1CubinExecutable) and executable.flat_tiles
         # A source-backed launch takes its stream from the current device, not the operands'.
         on_device = x.get_device() == torch.cuda.current_device()
+        if not self.chunks_batches:
+            # One launch for every batch: the tcgen05 kernels tile each batch on its own, and the
+            # op accepts no more than MAX_LAUNCH_ROWS positions in all, so int32 tile counts hold.
+            # K1_B0 addresses both plane sets from one buffer, K1_B1 takes a and b apart.
+            plane_args = (
+                (planes.view(-1),) if selection.kernel_variant == "K1_B0" else (planes[0].view(-1), planes[1].view(-1))
+            )
+            with contextlib.nullcontext() if on_device else torch.cuda.device(x.device):
+                launch_compiled_kernel(executable, x.view(-1), seqlen, w_in, w_gate_in, vec_in, *plane_args, N, B, eps)
+            return TrimulKFK1Output(a, b, stats)
         with contextlib.nullcontext() if on_device else torch.cuda.device(x.device):
             for b0, b1 in (batch_chunks if flat_tiles else launch_chunks)(B, N, P):
                 nb = b1 - b0

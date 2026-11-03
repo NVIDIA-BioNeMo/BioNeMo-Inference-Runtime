@@ -12,14 +12,14 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""SM90 TriMul KF K2: the batched triangle contraction of K1's channel-major ``a`` and ``b``.
+"""TriMul KF K2 on SM90 and SM100/SM103: the batched triangle contraction of K1's channel-major ``a`` and ``b``.
 
 ``prod[b, d, i, j] = sum_k a[b, d, i, k] b[b, d, j, k]`` outgoing, ``a[b, d, k, i] b[b, d, k, j]``
 incoming. A source-free build carries no private kernel adapter; everything re-exported here must
-keep working with it absent.
+keep working with it absent, and on SM100/SM103, which ship no CUBIN, it then offers no K2.
 """
 
-from ._config import TrimulKFK2Tile, shipped_widths
+from ._config import TrimulKFK2Sm100Tile, TrimulKFK2Tile, shipped_widths
 from .ops import TrimulKFK2Op, get_trimul_kf_k2_op
 
-__all__ = ["TrimulKFK2Op", "TrimulKFK2Tile", "get_trimul_kf_k2_op", "shipped_widths"]
+__all__ = ["TrimulKFK2Op", "TrimulKFK2Sm100Tile", "TrimulKFK2Tile", "get_trimul_kf_k2_op", "shipped_widths"]

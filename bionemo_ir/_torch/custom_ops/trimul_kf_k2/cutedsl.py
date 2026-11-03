@@ -12,7 +12,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Source-or-CUBIN interface for the SM90 TriMul KF K2."""
+"""Source-or-CUBIN interface for the TriMul KF K2: SM90 from source or packaged CUBINs, SM100/SM103 from source."""
 
 from __future__ import annotations
 
@@ -31,16 +31,24 @@ from bionemo_ir._torch.utils.kernel import (
 from bionemo_ir.dsl_kernels.cute_cache import FORCE_CUBIN_ENV, CuteKernelCache
 from bionemo_ir.logger import logger
 
-from ._config import KERNEL_ABIS, TrimulKFK2Tile, anchors, select, shipped_tiles
+from ._config import KERNEL_ABIS, K2Tile, TrimulKFK2Sm100Tile, TrimulKFK2Tile, anchors, select, shipped_tiles
 from ._cubin import TrimulKFK2CubinExecutable
 
 __all__ = ["TrimulKFK2CuTe"]
+
+#: Kernel ABIs that ship packaged CUBINs; the others compile from source only.
+_CUBIN_ABIS = frozenset({"sm90"})
+#: Disk-cache key tags per kernel ABI. The cache fingerprint covers the kernel sources but not this host code, so
+#: bump a tag when the arguments a tile compiles with change.
+_DISK_KEY_TAGS = {"sm90": "trimul_kf_k2_cute_v2", "sm100": "trimul_kf_k2_cute_sm100_v2"}
 
 
 class TrimulKFK2CuTe(CuteKernelCache):
     """Cached backend for K2, the triangle contraction of K1's channel-major ``a`` and ``b``.
 
-    Each call runs the tile its width's configs tune for the anchor nearest the token count.
+    Each call runs the tile its width's configs tune for the anchor nearest the token count. SM90 compiles its
+    tiles from source or loads packaged CUBINs; SM100 and SM103 compile theirs from source, and no CUBIN ships
+    for them.
 
     Args:
         sm_version: The SM whose configs and kernels to use; defaults to this GPU's.
@@ -53,15 +61,19 @@ class TrimulKFK2CuTe(CuteKernelCache):
             major, minor = torch.cuda.get_device_capability()
             sm_version = major * 10 + minor
         self._sm_version = sm_version
+        self._kernel_abi = KERNEL_ABIS.get(sm_version)
         self._num_sms: int | None = None
 
-    def select(self, D: int, n: int, outgoing: bool = True) -> tuple[int, TrimulKFK2Tile] | None:
+    def select(self, D: int, n: int, outgoing: bool = True) -> tuple[int, K2Tile] | None:
         """The anchor a call over ``n`` tokens selects and the tile that runs it in that direction, or ``None`` if
         ``D`` does not ship."""
         return select(self._sm_version, D, n, outgoing)
 
     def ships(self, D: int, outgoing: bool) -> bool:
-        """Whether this build can run width ``D`` in one direction, from source or from packaged CUBINs."""
+        """Whether this build can run width ``D`` in one direction, from source or from packaged CUBINs.
+
+        An SM100/SM103 build ships it only from source, so never under ``CUTEDSL_FORCE_CUBIN=1``.
+        """
         entries = anchors(self._sm_version, D, outgoing)
         if not entries:
             return False
@@ -72,6 +84,8 @@ class TrimulKFK2CuTe(CuteKernelCache):
                 pass
             else:
                 return True
+        if self._kernel_abi not in _CUBIN_ABIS:
+            return False
         try:
             for tile in shipped_tiles(list(entries.values())):
                 self._load_cubin_executable(self._key(outgoing, tile), outgoing, tile)
@@ -79,12 +93,17 @@ class TrimulKFK2CuTe(CuteKernelCache):
             return False
         return True
 
-    def _key(self, outgoing: bool, tile: TrimulKFK2Tile) -> tuple:
+    def _key(self, outgoing: bool, tile: K2Tile) -> tuple:
         return (self._sm_version, outgoing, *tile)
 
     def _load_cubin_executable(
         self, key: tuple, outgoing: bool, tile: TrimulKFK2Tile, source_error: Exception | None = None
     ) -> Any:
+        if self._kernel_abi not in _CUBIN_ABIS:
+            raise RuntimeError(
+                f"No trimul KF K2 CUBIN ships for SM{self._sm_version}; its kernels compile from source, which "
+                f"{FORCE_CUBIN_ENV}=1 forbids or this build lacks"
+            ) from source_error
         try:
             executable = populate_compiled_cache_from_library(
                 TrimulKFK2CuTe._compiled_cache,
@@ -104,7 +123,7 @@ class TrimulKFK2CuTe(CuteKernelCache):
         logger.info(f"CuTeDSL trimul KF K2: using CUBIN kernel for SM{self._sm_version}, outgoing={outgoing}, {tile}")
         return executable
 
-    def _get_or_compile(self, outgoing: bool, tile: TrimulKFK2Tile) -> Any:
+    def _get_or_compile(self, outgoing: bool, tile: K2Tile) -> Any:
         key = self._key(outgoing, tile)
         executable = TrimulKFK2CuTe._compiled_cache.get(key)
         force_cubin = self.force_cubin()
@@ -120,21 +139,24 @@ class TrimulKFK2CuTe(CuteKernelCache):
 
         if self._num_sms is None:
             self._num_sms = torch.cuda.get_device_properties(torch.cuda.current_device()).multi_processor_count
-        disk_key = ("trimul_kf_k2_cute_v2", *key, KERNEL_ABIS[self._sm_version])
+        disk_key = (_DISK_KEY_TAGS[self._kernel_abi], *key, self._kernel_abi)
         executable = self.load_from_cache(disk_key)
         if executable is None:
             logger.info(f"CuTeDSL trimul KF K2: compiling {tile} outgoing={outgoing} for SM{self._sm_version}")
-            executable = source.compile_trimul_kf_k2_source(
-                self.compile,
-                tile.kernel_variant,
-                outgoing,
-                tile.tile_n,
-                tile.cluster_m,
-                tile.defer_kmin,
-                tile.split_epi,
-                self._num_sms,
-                tile.dynamic,
-            )
+            if isinstance(tile, TrimulKFK2Sm100Tile):
+                executable = source.compile_trimul_kf_k2_sm100_source(self.compile, outgoing, tile, self._num_sms)
+            else:
+                executable = source.compile_trimul_kf_k2_source(
+                    self.compile,
+                    tile.kernel_variant,
+                    outgoing,
+                    tile.tile_n,
+                    tile.cluster_m,
+                    tile.defer_kmin,
+                    tile.split_epi,
+                    self._num_sms,
+                    tile.dynamic,
+                )
             self.save_to_cache(disk_key, executable)
         TrimulKFK2CuTe._compiled_cache[key] = executable
         return executable
@@ -144,7 +166,7 @@ class TrimulKFK2CuTe(CuteKernelCache):
         a: torch.Tensor,
         b: torch.Tensor,
         outgoing: bool,
-        tile: TrimulKFK2Tile,
+        tile: K2Tile,
         prod_pitch: int | None = None,
         counter: torch.Tensor | None = None,
     ) -> torch.Tensor:
@@ -156,6 +178,8 @@ class TrimulKFK2CuTe(CuteKernelCache):
         takes ``counter``, int32 ``[COUNTER_WORDS]`` on ``a``'s device, zero before the call and zero again after
         it; launches that share one must be stream-ordered. A CUBIN library built before the tile's dynamic image
         runs its static image, which ignores the counter.
+
+        An SM100/SM103 tile writes a dense product only, so it takes neither ``prod_pitch`` nor a counter.
         """
         B, D, N, _ = a.shape
         prod_pitch = N if prod_pitch is None else prod_pitch
@@ -165,7 +189,11 @@ class TrimulKFK2CuTe(CuteKernelCache):
         l = B * D  # noqa: E741
         span = (l - 1) * plane + (N - 1) * pitch + N
         args = [a.as_strided((span,), (1,)), b.as_strided((span,), (1,)), buffer.view(-1), N, l, pitch, plane]
-        args += [prod_pitch, N * prod_pitch]
+        if isinstance(tile, TrimulKFK2Sm100Tile):
+            if prod_pitch != N:
+                raise ValueError(f"trimul KF K2 tile {tile} writes a dense product; got pitch {prod_pitch} for N={N}")
+        else:
+            args += [prod_pitch, N * prod_pitch]
         if tile.dynamic:
             if counter is None:
                 raise ValueError(f"trimul KF K2 tile {tile} claims its work from a counter; pass one")

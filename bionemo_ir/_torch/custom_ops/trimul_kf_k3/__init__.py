@@ -12,7 +12,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""SM90 TriMul KF K3: output LayerNorm, output projection and gate, with the optional fused residual.
+"""SM90 and SM100/SM103 TriMul KF K3: output LayerNorm, projection and gate, with the optional fused residual.
 
 ``update = (LN_out(P) @ W_out.T + b_out) * sigmoid(LN_in(x) @ W_g.T + b_g)`` over ``trimul_kf_k2``'s
 product ``P``, or ``(x + update) * mask`` with the residual. A source-free build carries no private

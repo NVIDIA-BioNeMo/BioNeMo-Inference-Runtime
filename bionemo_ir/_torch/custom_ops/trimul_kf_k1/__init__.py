@@ -12,14 +12,15 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""SM90 TriMul KF K1: input LayerNorm, gated input projections and the row mask.
+"""TriMul KF K1 on SM90 and SM100/SM103: input LayerNorm, gated input projections and the row mask.
 
 ``a, b = mask * (LayerNorm(x) @ W_p.T + b_p) * sigmoid(LayerNorm(x) @ W_g.T + b_g)``, written
-channel-major for ``trimul_kf_k2``. A source-free build carries no private kernel adapter;
-everything re-exported here must keep working with it absent.
+channel-major for ``trimul_kf_k2``. SM90 runs from source or from packaged CUBINs, SM100 and SM103
+from source only. A source-free build carries no private kernel adapter; everything re-exported
+here must keep working with it absent.
 """
 
-from ._config import AB_LAYOUTS, TrimulKFK1Selection, ab_pitch, shipped_shapes
+from ._config import AB_LAYOUTS, TrimulKFK1Selection, TrimulKFK1Tile, ab_pitch, shipped_shapes
 from .cutedsl import TrimulKFK1Output
 from .ops import TrimulKFInputFold, TrimulKFK1Op, fold_input_weights, get_trimul_kf_k1_op
 
@@ -29,6 +30,7 @@ __all__ = [
     "TrimulKFK1Op",
     "TrimulKFK1Output",
     "TrimulKFK1Selection",
+    "TrimulKFK1Tile",
     "ab_pitch",
     "fold_input_weights",
     "get_trimul_kf_k1_op",

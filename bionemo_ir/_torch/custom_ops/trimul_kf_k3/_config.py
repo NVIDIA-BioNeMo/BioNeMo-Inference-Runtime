@@ -12,20 +12,23 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Shipped SM90 TriMul KF K3 variants and their sequence anchors.
+"""Shipped TriMul KF K3 variants and their sequence anchors on SM90 and SM100/SM103.
 
-One ``configs/C{C}_D{D}_sm90.json`` bundle per output width ``C`` and hidden width ``D`` declares
-the ``kernel_abi`` and maps ``S=<anchor>`` keys to the K3 variant tuned for that token count::
+One ``configs/C{C}_D{D}_sm{SM}.json`` bundle per output width ``C``, hidden width ``D`` and SM
+declares the ``kernel_abi`` and maps ``S=<anchor>`` keys to the K3 variant tuned for that token
+count::
 
     {"kernel_abi": "sm90", "configs": {"S=128": {"kernel_variant": "K3_0"}}}
 
-A call over ``N`` tokens takes the anchor nearest ``N``, ties going to the smaller. The variant must
-match the K1 that ran before it: :data:`STATS_VARIANTS` read the input-LayerNorm row statistics
-``trimul_kf_k1``'s statistics-writing variant leaves, the others re-reduce them from ``x``. Each
-variant ships with and without the fused residual. ``K3_0`` / ``K3_1`` are the cooperative kernels,
-``K3_2`` / ``K3_3`` their ping-pong counterparts. ``K3_4`` keeps a column tile's weights resident in
-shared memory, reads them centred (:data:`CENTRED_VARIANTS`), takes every batch item in one launch and
-ships for C=384, D=256 at every sequence length.
+A call over ``N`` tokens takes the anchor nearest ``N``, ties going to the smaller. Each variant
+ships with and without the fused residual.
+
+SM90 (``kernel_abi`` ``sm90``): the variant must match the K1 that ran before it.
+:data:`STATS_VARIANTS` read the input-LayerNorm row statistics ``trimul_kf_k1``'s statistics-writing
+variant leaves, the others re-reduce them from ``x``. ``K3_0`` / ``K3_1`` are the cooperative
+kernels, ``K3_2`` / ``K3_3`` their ping-pong counterparts. ``K3_4`` keeps a column tile's weights
+resident in shared memory, reads them centred (:data:`CENTRED_VARIANTS`), takes every batch item in
+one launch and ships for C=384, D=256 at every sequence length.
 
 The :data:`PITCHED_VARIANTS` also read a product whose rows sit further apart than ``N``, as
 ``trimul_kf_k2`` writes it at K1's padded a/b pitch, from a second image of the variant that tiles
@@ -35,6 +38,11 @@ product pitched exactly where K1 pads its planes and this rule reads a pitch::
 
     {"kernel_abi": "sm90", "configs": {"S=128": {"kernel_variant": "K3_4",
                                                  "prod_layout": "pitched_n_mod_64_ge_56"}}}
+
+SM100 and SM103 share the ``sm100`` ABI, run from source only, never read K1's statistics and read
+a dense product only: ``K3_B0`` covers ``C <= 128``, ``K3_B1`` ``C = 256`` and ``K3_B2``
+``C = 384`` (:data:`SM100_VARIANT_SHAPES`). ``K3_B3`` is ``K3_B0`` with its x ring two tiles deep
+instead of three, for the token counts that give a CTA about one tile at ``C = 128``.
 """
 
 from __future__ import annotations
@@ -46,8 +54,12 @@ from typing import Any, NamedTuple
 from bionemo_ir._torch.utils.kernel import get_config_file_name, load_kernel_configs
 
 CONFIGS_DIR = Path(__file__).with_name("configs")
-KERNEL_ABIS = {90: "sm90"}
-KERNEL_VARIANTS = ("K3_0", "K3_1", "K3_2", "K3_3", "K3_4")
+KERNEL_ABIS = {90: "sm90", 100: "sm100", 103: "sm100"}
+#: The K3 variants of each kernel ABI.
+KERNEL_VARIANTS = {
+    "sm90": ("K3_0", "K3_1", "K3_2", "K3_3", "K3_4"),
+    "sm100": ("K3_B0", "K3_B1", "K3_B2", "K3_B3"),
+}
 #: Variants reading the input-LayerNorm row statistics K1 handed off.
 STATS_VARIANTS = frozenset({"K3_1", "K3_3", "K3_4"})
 #: Variants reading the fold's centred, row-permuted weights (:attr:`TrimulKFOutputFold.centred`).
@@ -58,6 +70,13 @@ ONE_LAUNCH_VARIANTS = frozenset({"K3_4"})
 PITCHED_VARIANTS = frozenset({"K3_0", "K3_2", "K3_3", "K3_4"})
 PROD_LAYOUTS = ("dense", "pitched")
 PROD_LAYOUT_RULES = ("dense", "pitched", "pitched_n_mod_64_ge_56")
+#: The ``(C, D)`` pairs each SM100 variant is built and validated for.
+SM100_VARIANT_SHAPES = {
+    "K3_B0": frozenset({(32, 32), (64, 64), (128, 128)}),
+    "K3_B1": frozenset({(256, 256)}),
+    "K3_B2": frozenset({(384, 256)}),
+    "K3_B3": frozenset({(128, 128)}),
+}
 _FILE_RE = re.compile(r"^C(?P<C>\d+)_D(?P<D>\d+)_sm(?P<sm>\d+)\.json$")
 _KEY_RE = re.compile(r"^S=(?P<bucket>[1-9]\d*)$")
 
@@ -109,15 +128,27 @@ def supports(kernel_variant: str, C: int, D: int) -> bool:
 
     The :data:`ONE_LAUNCH_VARIANTS` keep a 128-column tile's rows of both weights in shared memory
     (``128 (C + D)`` bf16) and need the first four of their ``C / 64`` x chunks and their ``D / 64`` P chunks to
-    carry the previous slab's epilogue and the gate; the other variants take every shipped shape.
+    carry the previous slab's epilogue and the gate. The SM100 variants take the shapes of
+    :data:`SM100_VARIANT_SHAPES`, the other SM90 variants every shipped shape.
     """
     if kernel_variant in ONE_LAUNCH_VARIANTS:
         return C % 128 == 0 and D % 64 == 0 and C >= 384 and D >= 256 and C + D <= 640
-    return kernel_variant in KERNEL_VARIANTS
+    if kernel_variant in SM100_VARIANT_SHAPES:
+        return (C, D) in SM100_VARIANT_SHAPES[kernel_variant]
+    return kernel_variant in KERNEL_VARIANTS["sm90"]
 
 
-def parse_configs(configs: dict[str, Any], source: str = "configs") -> dict[int, str]:
+def variant_abi(kernel_variant: str) -> str:
+    """The kernel ABI a variant belongs to."""
+    for kernel_abi, variants in KERNEL_VARIANTS.items():
+        if kernel_variant in variants:
+            return kernel_abi
+    raise ValueError(f"Unsupported trimul KF K3 variant {kernel_variant!r}")
+
+
+def parse_configs(configs: dict[str, Any], source: str = "configs", kernel_abi: str = "sm90") -> dict[int, str]:
     """``anchor -> kernel_variant`` for one bundle's ``configs``, in ascending anchor order."""
+    variants = KERNEL_VARIANTS[kernel_abi]
     entries: dict[int, str] = {}
     for key, entry in configs.items():
         match = _KEY_RE.fullmatch(key)
@@ -130,8 +161,10 @@ def parse_configs(configs: dict[str, Any], source: str = "configs") -> dict[int,
         ):
             raise ValueError(f"{source}: {key} must hold one 'kernel_variant' and optionally its 'prod_layout' rule")
         variant = entry["kernel_variant"]
-        if variant not in KERNEL_VARIANTS:
-            raise ValueError(f"{source}: {key} names unknown K3 variant {variant!r}; expected one of {KERNEL_VARIANTS}")
+        if variant not in variants:
+            raise ValueError(
+                f"{source}: {key} names unknown {kernel_abi} K3 variant {variant!r}; expected one of {variants}"
+            )
         rule = entry.get("prod_layout", "dense")
         if rule not in PROD_LAYOUT_RULES or (rule != "dense" and variant not in PITCHED_VARIANTS):
             raise ValueError(f"{source}: {key} names product layout rule {rule!r} {variant} cannot follow")
@@ -141,34 +174,39 @@ def parse_configs(configs: dict[str, Any], source: str = "configs") -> dict[int,
     return dict(sorted(entries.items()))
 
 
-def parse_layout_rules(configs: dict[str, Any], source: str = "configs") -> dict[int, str]:
+def parse_layout_rules(configs: dict[str, Any], source: str = "configs", kernel_abi: str = "sm90") -> dict[int, str]:
     """``anchor -> product layout rule`` for one bundle's ``configs`` (validated by :func:`parse_configs`)."""
-    parse_configs(configs, source)
+    parse_configs(configs, source, kernel_abi)
     rules = {int(_KEY_RE.fullmatch(key)["bucket"]): entry.get("prod_layout", "dense") for key, entry in configs.items()}
     return dict(sorted(rules.items()))
 
 
-def _bundle_entries(sm: int, file_name: str, parse: Any = parse_configs) -> dict[int, str] | None:
-    """A bundle's anchors (``parse`` of its configs) if it runs ``sm``'s kernel ABI, else ``None``."""
+def _bundle_entries(sm: int, C: int, D: int, parse: Any = parse_configs) -> dict[int, str] | None:
+    """The ``(C, D)`` bundle's anchors (``parse`` of its configs) if it runs ``sm``'s kernel ABI, else ``None``."""
     kernel_abi = KERNEL_ABIS.get(sm)
     if kernel_abi is None:
         return None
-    bundle = load_kernel_configs(str(CONFIGS_DIR), file_name)
+    bundle = load_kernel_configs(str(CONFIGS_DIR), get_config_file_name(sm, C=C, D=D))
     if bundle is None or bundle.kernel_abi != kernel_abi:
         return None
     if bundle.kernel_variant is not None:
         raise ValueError(f"{bundle.source_path}: name the K3 variant per anchor, not per bundle")
-    return parse(bundle.configs, bundle.source_path)
+    entries = parse_configs(bundle.configs, bundle.source_path, kernel_abi)
+    if kernel_abi == "sm100":
+        for variant in set(entries.values()):
+            if (C, D) not in SM100_VARIANT_SHAPES[variant]:
+                raise ValueError(f"{bundle.source_path}: {variant} does not run C={C}, D={D}")
+    return entries if parse is parse_configs else parse(bundle.configs, bundle.source_path, kernel_abi)
 
 
 def anchors(sm: int, C: int, D: int) -> dict[int, str] | None:
     """``anchor -> kernel_variant`` shipped for ``(C, D)`` on ``sm``, or ``None``."""
-    return _bundle_entries(sm, get_config_file_name(sm, C=C, D=D))
+    return _bundle_entries(sm, C, D)
 
 
 def layout_rules(sm: int, C: int, D: int) -> dict[int, str] | None:
     """``anchor -> product layout rule`` shipped for ``(C, D)`` on ``sm``, or ``None``."""
-    return _bundle_entries(sm, get_config_file_name(sm, C=C, D=D), parse_layout_rules)
+    return _bundle_entries(sm, C, D, parse_layout_rules)
 
 
 def nearest_bucket(buckets: tuple[int, ...] | list[int], seqlen: int) -> int:
@@ -193,6 +231,6 @@ def shipped_shapes(sm: int) -> frozenset[tuple[int, int]]:
     shapes = set()
     for path in sorted(CONFIGS_DIR.glob(f"C*_D*_sm{sm}.json")):
         match = _FILE_RE.fullmatch(path.name)
-        if match is not None and _bundle_entries(sm, path.name):
+        if match is not None and _bundle_entries(sm, int(match["C"]), int(match["D"])):
             shapes.add((int(match["C"]), int(match["D"])))
     return frozenset(shapes)

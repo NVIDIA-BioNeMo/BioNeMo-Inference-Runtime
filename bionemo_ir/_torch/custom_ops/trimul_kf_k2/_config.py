@@ -12,9 +12,9 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Shipped SM90 TriMul KF K2 tiles and their sequence anchors.
+"""Shipped TriMul KF K2 tiles and their sequence anchors, for SM90 and SM100/SM103.
 
-One ``configs/D{D}_sm90.json`` bundle per hidden width ``D`` declares the ``kernel_abi`` and maps
+One ``configs/D{D}_sm{sm}.json`` bundle per hidden width ``D`` declares the ``kernel_abi`` and maps
 ``S=<anchor>`` keys to the contraction tile tuned for that token count::
 
     {"kernel_abi": "sm90", "configs": {"S=512": {"kernel_variant": "K2_0", "tile_n": 256, "cluster_m": 2,
@@ -33,6 +33,24 @@ different widths share their machine code.
 
 A ``K2_1`` tile of 192 needs an even number of column tiles to fill its clusters; a call with an
 odd number runs :func:`fallback` instead, which every shipped bundle therefore also ships.
+
+SM100 and SM103 run the ``sm100`` ABI from identical ``D{D}_sm100.json`` and ``D{D}_sm103.json`` bundles,
+whose tiles (:class:`TrimulKFK2Sm100Tile`) name the Blackwell kernels instead::
+
+    {"kernel_abi": "sm100", "configs": {"S=128": {"kernel_variant": "K2_B0", "tile_m": 128, "tile_n": 64},
+                                        "S=512": {"kernel_variant": "K2_B1", "tile_n": 256, "cluster_n": 1,
+                                                  "clc": false}}}
+
+``K2_B0`` takes ``tile_m`` (128, or 256 on a CTA pair), ``tile_n`` and optionally ``cluster_n`` (2: two 1-SM
+CTAs on adjacent column tiles share A; 1 by default); ``K2_B1`` runs 256-row tiles on CTA pairs and takes
+``tile_n``, ``cluster_n`` (two pairs along N share A) and ``clc`` (cluster launch control hands out the work
+instead of a static split); ``K2_B2`` runs 256 x 256 pair tiles with narrow tail tiles ``tail_w`` wide, on
+incoming planes only. Anchors and tile lists work as on SM90, except that a list may also hold tiles of one
+width that pad ``N`` differently: :meth:`TrimulKFK2Sm100Tile.padded` counts the column tiles a cluster runs
+past ``N`` and the columns tail tiles save, and ties go to the wider tile, then to the one without tails. A
+``K2_B0`` tile on paired CTAs runs them unpaired where ``N`` takes an odd number of its column tiles, as anchors
+sit at multiples of 8 and a pair would otherwise compute a whole column tile past ``N``: its :func:`fallback`,
+which shipped bundles therefore also compile.
 """
 
 from __future__ import annotations
@@ -45,8 +63,10 @@ from typing import Any, NamedTuple
 from bionemo_ir._torch.utils.kernel import get_config_file_name, load_kernel_configs
 
 CONFIGS_DIR = Path(__file__).with_name("configs")
-KERNEL_ABIS = {90: "sm90"}
+KERNEL_ABIS = {90: "sm90", 100: "sm100", 103: "sm100"}
 KERNEL_VARIANTS = ("K2_0", "K2_1", "K2_2")
+#: The ``sm100`` ABI's kernels: ``K2_B0`` sized to small planes, ``K2_B1`` on CTA pairs, ``K2_B2`` with tail tiles.
+SM100_KERNEL_VARIANTS = ("K2_B0", "K2_B1", "K2_B2")
 #: Contraction k-block, fixed by every variant.
 TILE_K = 64
 #: Words of a dynamic tile's work counter (one used; the rest keep it on its own 16-byte line).
@@ -58,6 +78,17 @@ _K2_0_OPTIONAL = frozenset({"dynamic"})
 #: K2_0 / K2_2 column tiles; MN-major (incoming) operands take widths off 64 columns on a 32 B swizzle.
 _K2_0_TILE_N = range(128, 257, 16)
 _K2_1_KEYS = frozenset({"kernel_variant", "tile_n"})
+_SM100_KEYS = {
+    "K2_B0": frozenset({"kernel_variant", "tile_m", "tile_n"}),
+    "K2_B1": frozenset({"kernel_variant", "tile_n", "cluster_n", "clc"}),
+    "K2_B2": frozenset({"kernel_variant", "tail_w"}),
+}
+#: Keys an SM100 variant may add to its required ones.
+_SM100_OPTIONAL = {"K2_B0": frozenset({"cluster_n"})}
+#: SM100 column tiles: whole 32-wide epilogue subtiles, which also split evenly across a CTA pair's halves of B.
+_SM100_TILE_N = range(32, 257, 32)
+#: Rows of a CTA-pair tile, and the column block whose remainder ``K2_B2``'s tail tiles cover.
+_PAIR_TILE = 256
 
 
 class TrimulKFK2Tile(NamedTuple):
@@ -76,11 +107,82 @@ class TrimulKFK2Tile(NamedTuple):
         """CTAs per cluster along N: ``K2_1`` multicasts A across a pair at ``tile_n`` 192."""
         return 2 if self.kernel_variant == "K2_1" and self.tile_n == 192 else 1
 
+    def padded(self, n: int) -> int:
+        """Columns a call over ``n`` tokens computes, padding included; a cluster that cannot fill falls back."""
+        return -(-n // self.tile_n) * self.tile_n
 
-def parse_tile(entry: Any, source: str) -> TrimulKFK2Tile:
-    """Validate one config entry."""
+
+class TrimulKFK2Sm100Tile(NamedTuple):
+    """Every axis that changes an SM100/SM103 K2 image's machine code, besides the direction."""
+
+    kernel_variant: str
+    tile_m: int = _PAIR_TILE
+    tile_n: int = _PAIR_TILE
+    cluster_n: int = 1
+    clc: bool = False
+    tail_w: int = 0
+
+    @property
+    def dynamic(self) -> bool:
+        """SM100/SM103 tiles run a static schedule (or CLC), never the SM90 work counter."""
+        return False
+
+    def padded(self, n: int) -> int:
+        """Columns a call over ``n`` tokens computes, padding included.
+
+        The ``cluster_n`` CTAs or pairs of a cluster take adjacent column tiles, so one past ``N`` still runs; tail
+        tiles cover the last ``N % 256`` columns ``tail_w`` wide when the remainder fits in them.
+        """
+        rem = n % _PAIR_TILE
+        if self.tail_w and n > _PAIR_TILE and 0 < rem <= self.tail_w:
+            return n - rem + self.tail_w
+        span = self.tile_n * self.cluster_n
+        return -(-n // span) * span
+
+
+K2Tile = TrimulKFK2Tile | TrimulKFK2Sm100Tile
+
+
+def _parse_sm100_tile(entry: dict[str, Any], source: str) -> TrimulKFK2Sm100Tile:
+    """Validate one ``sm100`` config entry."""
+    variant = entry.get("kernel_variant")
+    keys = _SM100_KEYS.get(variant)
+    if keys is None:
+        raise ValueError(f"{source}: unknown SM100 K2 variant {variant!r}; expected one of {SM100_KERNEL_VARIANTS}")
+    optional = _SM100_OPTIONAL.get(variant, frozenset())
+    if not keys <= set(entry) <= keys | optional:
+        also = f", optionally {sorted(optional)}" if optional else ""
+        raise ValueError(f"{source}: {variant} takes exactly {sorted(keys)}{also}")
+    if variant == "K2_B0":
+        tile = TrimulKFK2Sm100Tile(
+            variant, tile_m=int(entry["tile_m"]), tile_n=int(entry["tile_n"]), cluster_n=int(entry.get("cluster_n", 1))
+        )
+        supported = (
+            tile.tile_m in (128, _PAIR_TILE)
+            and tile.tile_n in _SM100_TILE_N
+            and (tile.cluster_n == 1 or (tile.cluster_n == 2 and tile.tile_m == 128))
+        )
+    elif variant == "K2_B1":
+        if not isinstance(entry["clc"], bool):
+            raise ValueError(f"{source}: K2_B1 takes clc as true or false")
+        tile = TrimulKFK2Sm100Tile(
+            variant, tile_n=int(entry["tile_n"]), cluster_n=int(entry["cluster_n"]), clc=entry["clc"]
+        )
+        supported = tile.tile_n in _SM100_TILE_N and tile.cluster_n in (1, 2)
+    else:
+        tile = TrimulKFK2Sm100Tile(variant, tail_w=int(entry["tail_w"]))
+        supported = tile.tail_w in (32, 64)
+    if not supported:
+        raise ValueError(f"{source}: unsupported {variant} tile {tile}")
+    return tile
+
+
+def parse_tile(entry: Any, source: str, kernel_abi: str = "sm90") -> K2Tile:
+    """Validate one config entry of a ``kernel_abi`` bundle."""
     if not isinstance(entry, dict):
         raise ValueError(f"{source}: expected an object")
+    if kernel_abi == "sm100":
+        return _parse_sm100_tile(entry, source)
     variant = entry.get("kernel_variant")
     if variant in ("K2_0", "K2_2"):
         if not _K2_0_KEYS <= set(entry) <= _K2_0_KEYS | _K2_0_OPTIONAL:
@@ -111,64 +213,89 @@ def parse_tile(entry: Any, source: str) -> TrimulKFK2Tile:
     raise ValueError(f"{source}: unknown K2 variant {variant!r}; expected one of {KERNEL_VARIANTS}")
 
 
-def parse_tiles(entry: Any, source: str) -> tuple[TrimulKFK2Tile, ...]:
-    """One direction's tile, or the tiles a list names (distinct widths), widest first."""
+def parse_tiles(entry: Any, source: str, kernel_abi: str = "sm90") -> tuple[K2Tile, ...]:
+    """One direction's tile, or the tiles a list names (each padding N its own way), widest first."""
     if not isinstance(entry, list):
-        return (parse_tile(entry, source),)
-    tiles = tuple(sorted((parse_tile(item, f"{source}[{i}]") for i, item in enumerate(entry)), key=lambda t: -t.tile_n))
+        return (parse_tile(entry, source, kernel_abi),)
+    tiles = tuple(
+        sorted(
+            (parse_tile(item, f"{source}[{i}]", kernel_abi) for i, item in enumerate(entry)),
+            key=lambda t: (-t.tile_n, t.kernel_variant),
+        )
+    )
+    if kernel_abi == "sm100":
+        if len(tiles) < 2 or len({(tile.tile_n * tile.cluster_n, tile.tail_w) for tile in tiles}) != len(tiles):
+            raise ValueError(f"{source}: a tile list names two or more tiles that pad N differently")
+        return tiles
     if len(tiles) < 2 or len({tile.tile_n for tile in tiles}) != len(tiles):
         raise ValueError(f"{source}: a tile list names two or more tiles of distinct widths")
     return tiles
 
 
-def parse_entry(entry: Any, source: str) -> tuple[tuple[TrimulKFK2Tile, ...], tuple[TrimulKFK2Tile, ...]]:
+def parse_entry(entry: Any, source: str, kernel_abi: str = "sm90") -> tuple[tuple[K2Tile, ...], tuple[K2Tile, ...]]:
     """``(outgoing tiles, incoming tiles)`` of one anchor: tiles for both directions, or ``{"out": .., "in": ..}``."""
     if isinstance(entry, dict) and set(entry) == {"out", "in"}:
-        return parse_tiles(entry["out"], f"{source}: out"), parse_tiles(entry["in"], f"{source}: in")
-    tiles = parse_tiles(entry, source)
-    return tiles, tiles
+        out = parse_tiles(entry["out"], f"{source}: out", kernel_abi)
+        incoming = parse_tiles(entry["in"], f"{source}: in", kernel_abi)
+    else:
+        out = incoming = parse_tiles(entry, source, kernel_abi)
+    if any(tile.kernel_variant == "K2_B2" for tile in out):
+        raise ValueError(f"{source}: K2_B2 runs incoming planes only")
+    return out, incoming
 
 
 def parse_configs(
-    configs: dict[str, Any], source: str = "configs", outgoing: bool = True
-) -> dict[int, tuple[TrimulKFK2Tile, ...]]:
-    """``anchor -> tiles`` (widest first) of one direction for one bundle's ``configs``, in ascending anchor order."""
-    entries: dict[int, tuple[TrimulKFK2Tile, ...]] = {}
+    configs: dict[str, Any], source: str = "configs", outgoing: bool = True, kernel_abi: str = "sm90"
+) -> dict[int, tuple[K2Tile, ...]]:
+    """``anchor -> tiles`` (widest first) of one direction for one ``kernel_abi`` bundle's ``configs``, in ascending
+    anchor order."""
+    entries: dict[int, tuple[K2Tile, ...]] = {}
     for key, entry in configs.items():
         match = _KEY_RE.fullmatch(key)
         if match is None:
             raise ValueError(f"{source}: invalid trimul KF K2 config key {key!r}; expected 'S=<anchor>'")
-        entries[int(match["bucket"])] = parse_entry(entry, f"{source}: {key}")[0 if outgoing else 1]
+        entries[int(match["bucket"])] = parse_entry(entry, f"{source}: {key}", kernel_abi)[0 if outgoing else 1]
     if not entries:
         raise ValueError(f"{source}: declares no K2 tile")
     return dict(sorted(entries.items()))
 
 
-def fallback(tile: TrimulKFK2Tile) -> TrimulKFK2Tile | None:
+def fallback(tile: K2Tile) -> K2Tile | None:
     """The tile run instead of ``tile`` when its clusters cannot be filled, or ``None``."""
+    if isinstance(tile, TrimulKFK2Sm100Tile):
+        # K2_B1's pairs of pairs run past N by design (padded() counts them); K2_B0's paired CTAs run alone.
+        return tile._replace(cluster_n=1) if tile.kernel_variant == "K2_B0" and tile.cluster_n > 1 else None
     if tile.cluster_n > 1:
         return TrimulKFK2Tile("K2_1", 128)
     return None
 
 
-def shipped_tiles(tiles: Iterable[TrimulKFK2Tile | tuple[TrimulKFK2Tile, ...]]) -> tuple[TrimulKFK2Tile, ...]:
+def shipped_tiles(tiles: Iterable[K2Tile | tuple[K2Tile, ...]]) -> tuple[K2Tile, ...]:
     """Configured tiles (every width an anchor lists) plus the fallbacks a call may need, in a stable order."""
-    shipped = {tile for entry in tiles for tile in ((entry,) if isinstance(entry, TrimulKFK2Tile) else entry)}
+    shipped = {
+        tile
+        for entry in tiles
+        for tile in ((entry,) if isinstance(entry, (TrimulKFK2Tile, TrimulKFK2Sm100Tile)) else entry)
+    }
     shipped.update([alternate for tile in shipped if (alternate := fallback(tile)) is not None])
     return tuple(sorted(shipped))
 
 
-def least_padding(tiles: tuple[TrimulKFK2Tile, ...], n: int) -> TrimulKFK2Tile:
-    """The width among an anchor's ``tiles`` that pads ``n`` columns least, ties going to the wider."""
-    return min(tiles, key=lambda tile: (-(-n // tile.tile_n) * tile.tile_n, -tile.tile_n))
+def least_padding(tiles: tuple[K2Tile, ...], n: int) -> K2Tile:
+    """The tile among an anchor's ``tiles`` that pads ``n`` columns least, ties going to the wider, then to the one
+    without tail tiles."""
+    return min(tiles, key=lambda tile: (tile.padded(n), -tile.tile_n, tile.kernel_variant == "K2_B2"))
 
 
-def runtime_tile(tile: TrimulKFK2Tile, n: int) -> TrimulKFK2Tile:
+def runtime_tile(tile: K2Tile, n: int) -> K2Tile:
     """The tile that actually runs ``tile``'s anchor at ``n`` tokens.
 
     Raises:
         ValueError: The tile defers its stores past more k-blocks than ``n`` has.
     """
+    if isinstance(tile, TrimulKFK2Sm100Tile):
+        alternate = fallback(tile)
+        return alternate if alternate is not None and -(-n // tile.tile_n) % tile.cluster_n else tile
     if tile.cluster_n > 1 and -(-n // tile.tile_n) % tile.cluster_n:
         tile = fallback(tile)
     if tile.defer_kmin > -(-n // TILE_K):
@@ -176,7 +303,7 @@ def runtime_tile(tile: TrimulKFK2Tile, n: int) -> TrimulKFK2Tile:
     return tile
 
 
-def _bundle_tiles(sm: int, file_name: str, outgoing: bool = True) -> dict[int, tuple[TrimulKFK2Tile, ...]] | None:
+def _bundle_tiles(sm: int, file_name: str, outgoing: bool = True) -> dict[int, tuple[K2Tile, ...]] | None:
     """A bundle's anchors for one direction if it runs ``sm``'s kernel ABI, else ``None``."""
     kernel_abi = KERNEL_ABIS.get(sm)
     if kernel_abi is None:
@@ -186,10 +313,10 @@ def _bundle_tiles(sm: int, file_name: str, outgoing: bool = True) -> dict[int, t
         return None
     if bundle.kernel_variant is not None:
         raise ValueError(f"{bundle.source_path}: name the K2 variant per anchor, not per bundle")
-    return parse_configs(bundle.configs, bundle.source_path, outgoing)
+    return parse_configs(bundle.configs, bundle.source_path, outgoing, kernel_abi)
 
 
-def anchors(sm: int, D: int, outgoing: bool = True) -> dict[int, tuple[TrimulKFK2Tile, ...]] | None:
+def anchors(sm: int, D: int, outgoing: bool = True) -> dict[int, tuple[K2Tile, ...]] | None:
     """``anchor -> tiles`` shipped for hidden width ``D`` and one direction on ``sm``, or ``None``."""
     return _bundle_tiles(sm, get_config_file_name(sm, D=D), outgoing)
 
@@ -199,7 +326,7 @@ def nearest_bucket(buckets: tuple[int, ...] | list[int], seqlen: int) -> int:
     return min(buckets, key=lambda anchor: (abs(anchor - seqlen), anchor))
 
 
-def select(sm: int, D: int, n: int, outgoing: bool = True) -> tuple[int, TrimulKFK2Tile] | None:
+def select(sm: int, D: int, n: int, outgoing: bool = True) -> tuple[int, K2Tile] | None:
     """The anchor a call over ``n`` tokens selects and the tile that runs it in that direction, or ``None`` if ``D``
     does not ship."""
     entries = anchors(sm, D, outgoing)

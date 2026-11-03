@@ -12,7 +12,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Source-or-CUBIN interface for the SM90 TriMul KF K3."""
+"""Source-or-CUBIN interface for the TriMul KF K3: SM90 from source or CUBINs, SM100/SM103 from source."""
 
 from __future__ import annotations
 
@@ -37,6 +37,12 @@ from ._cubin import TrimulKFK3CubinExecutable
 
 __all__ = ["TrimulKFK3CuTe"]
 
+#: Kernel ABIs the packaged CUBIN library carries; the others run from source only.
+CUBIN_ABIS = frozenset({"sm90"})
+#: Disk-cache tag per kernel ABI. The compiled kernel's instantiation lives in ``_source``, outside the
+#: cache's source fingerprint, so a change there bumps the tag.
+_DISK_CACHE_TAGS = {"sm90": "trimul_kf_k3_cute_v3", "sm100": "trimul_kf_k3_cute_sm100_v1"}
+
 
 def one_launch_chunks(B: int, N: int) -> tuple[tuple[int, int], ...]:
     """Batch ranges of a variant whose row tiles may straddle batch items: only int32 row coordinates split."""
@@ -50,7 +56,9 @@ def one_launch_chunks(B: int, N: int) -> tuple[tuple[int, int], ...]:
 class TrimulKFK3CuTe(CuteKernelCache):
     """Cached backend for K3: output LayerNorm, projection and gate, with the optional fused residual.
 
-    Each call runs the variant its ``(C, D)`` configs tune for the anchor nearest the token count.
+    Each call runs the variant its ``(C, D)`` configs tune for the anchor nearest the token count. SM90
+    runs from source or the packaged CUBINs; SM100 and SM103 run from source alone, so under
+    ``CUTEDSL_FORCE_CUBIN=1`` they ship nothing.
 
     Args:
         sm_version: The SM whose configs and kernels to use; defaults to this GPU's.
@@ -81,6 +89,8 @@ class TrimulKFK3CuTe(CuteKernelCache):
                 pass
             else:
                 return True
+        if KERNEL_ABIS[self._sm_version] not in CUBIN_ABIS:
+            return False
         try:
             for kernel_variant in sorted(set(entries.values())):
                 self._load_cubin_executable(self._key(C, D, kernel_variant, residual), C, D, kernel_variant, residual)
@@ -102,6 +112,15 @@ class TrimulKFK3CuTe(CuteKernelCache):
         source_error: Exception | None = None,
         pitched: bool = False,
     ) -> Any:
+        if KERNEL_ABIS[self._sm_version] not in CUBIN_ABIS:
+            if self.force_cubin():
+                raise RuntimeError(
+                    f"{FORCE_CUBIN_ENV}=1 forces the trimul KF K3 CUBIN path, but SM{self._sm_version} runs it from "
+                    "source only"
+                ) from source_error
+            raise RuntimeError(
+                f"trimul KF K3 runs from source only on SM{self._sm_version}, and this build has no kernel sources"
+            ) from source_error
         product = "pitched" if pitched else "dense"
         try:
             executable = populate_compiled_cache_from_library(
@@ -159,7 +178,8 @@ class TrimulKFK3CuTe(CuteKernelCache):
 
         if self._num_sms is None:
             self._num_sms = torch.cuda.get_device_properties(torch.cuda.current_device()).multi_processor_count
-        disk_key = ("trimul_kf_k3_cute_v3", *key, KERNEL_ABIS[self._sm_version])
+        kernel_abi = KERNEL_ABIS[self._sm_version]
+        disk_key = (_DISK_CACHE_TAGS[kernel_abi], *key, kernel_abi)
         executable = self.load_from_cache(disk_key)
         if executable is None:
             logger.info(
@@ -196,6 +216,9 @@ class TrimulKFK3CuTe(CuteKernelCache):
         residual = actual_seqlen is not None
         pitch, plane = prod.stride(2), prod.stride(1)
         pitched = pitch != N
+        sm100 = KERNEL_ABIS[self._sm_version] == "sm100"
+        if sm100 and pitched:
+            raise ValueError(f"trimul KF K3 {selection.kernel_variant} reads a dense product; got row pitch {pitch}")
         executable = self._get_or_compile(C, D, selection.kernel_variant, residual, pitched)
         seqlen = None if actual_seqlen is None else actual_seqlen.view(B * N)
         w_out = w_out.view(-1)
@@ -203,6 +226,23 @@ class TrimulKFK3CuTe(CuteKernelCache):
         # A source-backed launch takes its stream from the current device, not the operands'.
         on_device = x.get_device() == torch.cuda.current_device()
         with contextlib.nullcontext() if on_device else torch.cuda.device(x.device):
+            if sm100:
+                # Tiles never straddle batches and every offset past a batch is 64-bit: one launch
+                # covers the whole batch. The kernel reduces its own row statistics.
+                launch_compiled_kernel(
+                    executable,
+                    prod.view(-1),
+                    x.view(-1),
+                    w_out,
+                    w_gate_out,
+                    vec_out,
+                    seqlen,
+                    out.view(-1),
+                    N,
+                    B,
+                    eps,
+                )
+                return out
             for b0, b1 in (one_launch_chunks if selection.one_launch else batch_chunks)(B, N):
                 nb = b1 - b0
                 if pitched:

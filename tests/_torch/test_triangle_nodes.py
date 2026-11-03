@@ -345,15 +345,20 @@ _KF_NODE = {
     "pad_tokens": True,
 }
 _DIRECTIONS = [TriangleMultiplicationNodeType.OUTGOING, TriangleMultiplicationNodeType.INCOMING]
+_KF_SMS = (90, 100, 103)
+
+
+def _skip_without_kf_gpu() -> None:
+    if SM_VERSION not in _KF_SMS:
+        pytest.skip(f"the TriMul KF chain requires SM90, SM100 or SM103 (current SM{SM_VERSION})")
 
 
 def _kf_trimul_node(**overrides: object) -> TriangleMultiplicationNode:
-    """A CUDA node on the SM90 TriMul KF chain with realistic weights, or skip without the chain.
+    """A CUDA node on the TriMul KF chain with realistic weights, or skip without the chain.
 
     The weights are filled in place, as ``load_weights`` does, so the node refolds them in ``post_load_weights``.
     """
-    if SM_VERSION != 90:
-        pytest.skip(f"the TriMul KF chain requires SM90 (current SM{SM_VERSION})")
+    _skip_without_kf_gpu()
     node = TriangleMultiplicationNode(**(_KF_NODE | overrides)).cuda()
     if node._kf_ops is None:
         pytest.skip("this build ships no TriMul KF kernels for the node")
@@ -385,8 +390,7 @@ def _relative_l2(actual: torch.Tensor, expected: torch.Tensor) -> float:
 
 
 def test_trimul_kf_chain_needs_token_padding_and_a_supported_node() -> None:
-    if SM_VERSION != 90:
-        pytest.skip(f"the TriMul KF chain requires SM90 (current SM{SM_VERSION})")
+    _skip_without_kf_gpu()
     supported = _KF_NODE | {"skip_create_weights": True}
     nodes = torch.nn.ModuleList(
         TriangleMultiplicationNode(**(supported | {"multiplication_type": direction, "pad_tokens": False}))

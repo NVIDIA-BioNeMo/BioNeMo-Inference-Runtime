@@ -150,6 +150,10 @@ def test_k1_layout_rules():
     ]
     assert all(k1_config.ab_layout("dense", n) == "dense" for n in range(8, 1281, 8))
     assert k1_config.ab_layout("pad_n_mod_16_8", 2904) == "padded"
+    # pad_n_mod_64_56 keeps the mid-sector counts that padding lengthens by 8 columns
+    assert [n for n in range(8, 1281, 8) if k1_config.ab_layout("pad_n_mod_64_56", n) == "padded"] == [
+        n for n in range(8, 1281, 8) if n % 64 == 56
+    ]
     rules = k1_config.parse_layout_rules(
         {"S=128": {"kernel_variant": "K1_0"}, "S=256": {"kernel_variant": "K1_1", "ab_layout": "pad_n_mod_16_8"}}
     )
@@ -629,7 +633,7 @@ def test_k3_variants_stay_in_the_error_class(N, C, D):
     reference = _reference(problem, True, True)
     writes_stats = k1_config.select(90, C, D, N).writes_stats
     errors = {}
-    for variant in k3_config.KERNEL_VARIANTS:
+    for variant in k3_config.KERNEL_VARIANTS["sm90"]:
         if (variant in k3_config.STATS_VARIANTS) != writes_stats or not k3_config.supports(variant, C, D):
             continue
         out = _chain(problem, True, k3_variant=variant).float()

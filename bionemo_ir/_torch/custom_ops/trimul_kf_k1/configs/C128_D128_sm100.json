@@ -1,0 +1,9 @@
+{
+  "kernel_abi": "sm100",
+  "configs": {
+    "S=32": {"kernel_variant": "K1_B0", "bnc": 64, "epi_n": 16, "ctas": 2, "w_slots": 0, "s_stages": 2, "split": 2, "store_warps": 1, "epi_groups": 2},
+    "S=96": {"kernel_variant": "K1_B0", "bnc": 64, "epi_n": 16, "ctas": 2, "w_slots": 0, "s_stages": 2, "split": 1, "store_warps": 1, "epi_groups": 4},
+    "S=544": {"kernel_variant": "K1_B0", "bnc": 128, "epi_n": 16, "ctas": 2, "w_slots": 0, "s_stages": 2, "split": 1, "store_warps": 1, "epi_groups": 4, "ab_layout": "pad_n_mod_16_8"},
+    "S=1520": {"kernel_variant": "K1_B0", "bnc": 128, "epi_n": 16, "ctas": 2, "w_slots": 0, "s_stages": 2, "split": 1, "store_warps": 1, "epi_groups": 2, "ab_layout": "pad_n_mod_16_8"}
+  }
+}

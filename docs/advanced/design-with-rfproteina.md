@@ -272,6 +272,15 @@ python examples/design/rfproteina.py \
 `--steps` overrides the sampling-step count; omit it to use the model's
 released schedule. `--seed` fixes the draw.
 
+The velocity trunk captures exact-shape CUDA graphs by default in evaluation
+under `torch.inference_mode()`. One cached graph serves every recycle depth;
+the sampler, representation builder, and decoder stay eager. Token counts
+above 511 after the trunk's 8-token alignment run eagerly. The first design
+includes warmup and capture; later designs with the same shape replay it.
+Set `config.trunk.graph_optimization_config = None` before constructing the
+model, or call `model.reset_graphs()`, to run eagerly. Use
+`model.configure_graphs(capacity=...)` to retain more than one shape.
+
 Two flags map directly onto the axes. `--hotspot-residues` is Axis A: it marks
 target residues without pinning anything, so raising it biases the interface
 rather than enforcing it. `--partial-t` is Axis B: it is the similarity dial,

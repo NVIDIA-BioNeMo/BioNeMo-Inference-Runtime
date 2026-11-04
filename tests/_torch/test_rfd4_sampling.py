@@ -61,7 +61,9 @@ from bionemo_ir._torch.sampling.random import normal_draws
 from bionemo_ir._torch.sampling.runner import GenerativeRunner, SamplingCancelled
 from bionemo_ir.configs import BaseConfig
 from bionemo_ir.data.schemas import residue_vocabulary
+from bionemo_ir.hubs import resolve_rfproteina_autoencoder_checkpoint, resolve_rfproteina_checkpoint
 from bionemo_ir.models.optimize_module_setter import AcceleratedConfig, BackendType
+from examples.design.rfproteina import load_model
 
 # isort: off
 from bionemo_ir._torch.modules.rfproteina.atomized import ATOMIZED_TOKEN_TYPE
@@ -81,6 +83,7 @@ from bionemo_ir.models.rfproteina import (
     RECYCLE_SCHEDULES,
     recycle_schedule,
     RFProteinaTrunkConfig,
+    load_rfproteina_checkpoint_state,
 )
 
 # isort: on
@@ -1843,6 +1846,7 @@ def test_rfproteina_velocity_trunk_cudagraph_matches_eager() -> None:
         return model
 
     eager = build_model()
+    eager.reset_graphs()
     graphed = build_model()
     graphed.optimize(
         {
@@ -1874,6 +1878,77 @@ def test_rfproteina_velocity_trunk_cudagraph_matches_eager() -> None:
 
     for modality in ("bb_ca", "local_latents"):
         torch.testing.assert_close(captured.state[modality], reference.state[modality], atol=1e-5, rtol=1e-4)
+
+
+@pytest.mark.parametrize("loader", ["state_dicts", "example"])
+def test_rfproteina_default_graphs_match_eager_with_released_weights(loader: str) -> None:
+    """The default loader captures a real trunk and preserves seeded designs bit for bit."""
+    flow = resolve_rfproteina_checkpoint()
+    autoencoder = resolve_rfproteina_autoencoder_checkpoint()
+    if flow is None or not flow.is_file() or autoencoder is None or not autoencoder.is_file():
+        pytest.skip("RFPROTEINA_LDM_CKPT and RFPROTEINA_AE_CKPT are not set to the released checkpoints")
+    if loader == "example":
+        model = load_model(flow, autoencoder, steps=4)
+    else:
+        model = RFProteina.from_reference_state_dicts(
+            load_rfproteina_checkpoint_state(flow),
+            load_rfproteina_checkpoint_state(autoencoder),
+            sampling_config=RFProteinaSamplingConfig(num_steps=4, n_recycle_schedule=[(4, 2)]),
+            device="cuda",
+        )
+    assert model.graph_status()["enabled"]
+    features = _native_static_features(torch.ones(1, 16, dtype=torch.bool, device="cuda"))
+    for token in representation_builder_module.SEQUENCE_PROBABILITY_TOKENS:
+        features[f"condition_sequence-probability-{token}_1_residue"] = torch.full((1, 16), torch.nan, device="cuda")
+    with torch.inference_mode():
+        first = model(features, seed=42)
+        replay = model(features, seed=42)
+        status = model.graph_status()
+        assert status["captured"] == 1, status
+        assert status["fallback"] == 0, status
+        model.reset_graphs()
+        eager = model(features, seed=42)
+    for output in (first, replay):
+        for modality in ("bb_ca", "local_latents"):
+            assert torch.equal(output.sampling.state[modality], eager.sampling.state[modality]), modality
+        for name in ("coordinates", "sequence_logits", "residue_types", "atom_mask"):
+            assert torch.equal(getattr(output, name), getattr(eager, name)), name
+
+
+def test_rfproteina_trunk_graph_default_and_opt_out() -> None:
+    """Each config owns one bounded cache and callers can choose eager execution."""
+    config = _small_trunk_config()
+    policy = config.graph_optimization_config
+    assert policy is not None
+    assert policy.num_graphs_max_for_this_module == 1
+    assert policy.input_routing_config.input_acceptance_dims[0].dim_len_max == 511
+    assert _small_trunk_config().graph_optimization_config is not policy
+    model = RFProteina(
+        RFProteinaConfig(
+            dtype="float32",
+            trunk=config.model_copy(update={"graph_optimization_config": None}),
+            decoder=_small_decoder_config(),
+        )
+    )
+    assert model.graph_status()["enabled"] is False
+
+
+@pytest.mark.parametrize(("tokens", "captures"), [(504, 1), (505, 0)])
+def test_rfproteina_default_graph_cap_applies_after_token_padding(tokens: int, captures: int) -> None:
+    """Alignment to 512 tokens must take the eager path under the default cap."""
+    trunk = _small_trunk_config()
+    model = RFProteina(RFProteinaConfig(dtype="float32", trunk=trunk, decoder=_small_decoder_config())).cuda().eval()
+    init_module_weights(model)
+    with torch.inference_mode():
+        model.velocity_model(
+            single=torch.randn(1, tokens, trunk.token_dim, device="cuda"),
+            pair=torch.randn(1, tokens, tokens, trunk.pair_dim, device="cuda"),
+            condition=torch.randn(1, tokens, trunk.condition_dim, device="cuda"),
+            padding_mask=torch.ones(1, tokens, dtype=torch.bool, device="cuda"),
+        )
+    status = model.graph_status()
+    assert status["captured"] == captures, status
+    assert status["fallback"] == 0, status
 
 
 def test_rfproteina_kf_trunk_cudagraph_replays_are_stable() -> None:
@@ -1916,6 +1991,7 @@ def test_rfproteina_kf_trunk_cudagraph_replays_are_stable() -> None:
         return model
 
     eager = build_model()
+    eager.reset_graphs()
     if not any(isinstance(module, TriangleMultiplicationNode) and module.kf_available for module in eager.modules()):
         pytest.skip("the fused TriMul KF chain does not ship for this GPU or these widths")
 

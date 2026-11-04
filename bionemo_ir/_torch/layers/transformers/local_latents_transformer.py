@@ -270,8 +270,8 @@ class LocalLatentsTransformer(nn.Module):
         # forward() pads the tokens before any layer runs.
         set_trimul_token_padding(self, self.enable_token_pad)
         # One capture serves every recycle depth, because the repeated computation is the step
-        # rather than the whole forward. ``configure_graphs`` supplies the policy.
-        self.trunk_graph = GraphRegion(self, "trunk_step", None)
+        # rather than the whole forward. The config enables capture by default.
+        self.trunk_graph = GraphRegion(self, "trunk_step", config.graph_optimization_config)
 
     def _padded_tokens(self, tokens: int) -> int:
         """The token count the layers run at: ``tokens`` rounded up to the TriMul alignment when padding is on."""

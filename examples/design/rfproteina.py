@@ -69,9 +69,12 @@ def load_model(flow_checkpoint: Path, autoencoder_checkpoint: Path, steps: int |
     """Build an RFProteína model from its flow and autoencoder checkpoints."""
     flow = flow_checkpoint.resolve()
     autoencoder = autoencoder_checkpoint.resolve()
-    weights = {flow: _read_state(flow), autoencoder: _read_state(autoencoder)}
-    rfproteina_convert.load_rfproteina_checkpoint_state = lambda path: weights[Path(path).resolve()]
-
+    weights = {
+        flow: rfproteina_convert.merge_rfproteina_lora(
+            _read_state(flow), lora_alpha=rfproteina_convert.RELEASED_LORA_ALPHA
+        ),
+        autoencoder: _read_state(autoencoder),
+    }
     pretrained = RFProteina.get_pretrained_config()
     trunk = rfproteina_trunk_config_from_weights(
         weights[flow],

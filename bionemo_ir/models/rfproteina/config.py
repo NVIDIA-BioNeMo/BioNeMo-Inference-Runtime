@@ -26,7 +26,7 @@ from bionemo_ir.configs import BaseConfig, TrunkPadSpec
 from bionemo_ir.hubs.support_matrix import GenerativeSupportMatrix as SupMat
 
 #: Tokens the captured trunk step accepts; a longer request runs the trunk eagerly.
-TRUNK_GRAPH_MAX_TOKENS = 1024
+TRUNK_GRAPH_MAX_TOKENS = 511
 
 
 def trunk_graph_config(max_tokens: int = TRUNK_GRAPH_MAX_TOKENS) -> CUDAGraphOptimizationConfig:
@@ -36,7 +36,7 @@ def trunk_graph_config(max_tokens: int = TRUNK_GRAPH_MAX_TOKENS) -> CUDAGraphOpt
     and recycle depth never reaches the cache key. Exact keying with no padded dims: padding the
     token axes here would undo the trunk's own 8-alignment and its fused TriMul residual.
     """
-    return exact_graph_config(
+    config = exact_graph_config(
         named_dims=(
             NamedDimTies(
                 name="num_tokens",
@@ -72,6 +72,8 @@ def trunk_graph_config(max_tokens: int = TRUNK_GRAPH_MAX_TOKENS) -> CUDAGraphOpt
         # passed for them is copied, which is why they are not stable.
         borrowed_kwargs=("pair", "pair_init"),
     )
+    config.num_graphs_max_for_this_module = 1
+    return config
 
 
 class RFProteinaScheduleConfig(BaseModel):
@@ -499,6 +501,10 @@ class RFProteinaTrunkConfig(BaseConfig):
     load raises and names the field.
     """
 
+    graph_optimization_config: CUDAGraphOptimizationConfig | None = Field(
+        default_factory=trunk_graph_config,
+        description="Exact-shape CUDA graphs for trunk recycle steps. Set None to run eagerly.",
+    )
     token_dim: int = 768
     pair_dim: int = 384
     condition_dim: int = 256

@@ -171,6 +171,9 @@ def _rfproteina_attention(
 
 def _small_config(**updates) -> RFProteinaTrunkConfig:
     values = {
+        # These module tests inspect Python hooks and mutate layer internals.
+        # Default graph capture is covered by the model-level sampling tests.
+        "graph_optimization_config": None,
         "token_dim": 32,
         "pair_dim": 16,
         "condition_dim": 8,

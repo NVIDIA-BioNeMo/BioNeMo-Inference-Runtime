@@ -47,16 +47,14 @@ void bind(nb::module_& parent)
         std::uint32_t ctas,
         std::uint32_t w_slots,
         std::uint32_t s_stages,
-        std::uint32_t split,
         std::uint32_t store_warps,
         std::uint32_t epi_groups)
-      { new (tile) KernelTile{bnc, epi_n, ctas, w_slots, s_stages, split, store_warps, epi_groups}; },
+      { new (tile) KernelTile{bnc, epi_n, ctas, w_slots, s_stages, store_warps, epi_groups}; },
       "bnc"_a,
       "epi_n"_a,
       "ctas"_a,
       "w_slots"_a,
       "s_stages"_a,
-      "split"_a,
       "store_warps"_a,
       "epi_groups"_a)
     .def_ro("bnc", &KernelTile::bnc)
@@ -64,7 +62,6 @@ void bind(nb::module_& parent)
     .def_ro("ctas", &KernelTile::ctas)
     .def_ro("w_slots", &KernelTile::w_slots)
     .def_ro("s_stages", &KernelTile::s_stages)
-    .def_ro("split", &KernelTile::split)
     .def_ro("store_warps", &KernelTile::store_warps)
     .def_ro("epi_groups", &KernelTile::epi_groups);
 

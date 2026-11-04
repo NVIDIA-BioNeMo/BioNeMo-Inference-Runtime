@@ -52,6 +52,7 @@ _CASES = [
     (1, 128, 256, 256, "full", True),
     (1, 264, 256, 256, "tail", False),
     (2, 392, 256, 256, "random", True),
+    (1, 104, 384, 256, "random", False),
     (1, 136, 384, 256, "tail", True),
     (2, 200, 384, 256, "random", False),
     (1, 520, 384, 256, "random", True),

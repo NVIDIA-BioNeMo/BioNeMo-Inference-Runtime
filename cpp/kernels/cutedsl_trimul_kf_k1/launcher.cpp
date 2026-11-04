@@ -338,7 +338,6 @@ KernelTile image_tile(embedded::CubinImage const& image)
     image.ctas,
     image.w_slots,
     image.s_stages,
-    image.split,
     image.store_warps,
     image.epi_groups,
   };
@@ -468,14 +467,27 @@ void launch_k1_sm100(
   std::uint64_t grid_x = 0;
   if (tiled)
   {
-    /* A work item is one CTA tile, or a pair of a batch's consecutive tiles for a CTA pair, split SPLIT ways;
-     * the persistent clusters stride over the items.
+    /* A work tile is one CTA tile, or a pair of a batch's consecutive tiles for a CTA pair, of 2D / bnc
+     * units. Each persistent cluster owns a contiguous share of the units; with fewer tiles than
+     * clusters, the shares are whole tiles or the most equal parts of each tile that fit. This matches
+     * the source kernel's host launch.
      */
     std::uint64_t const work_per_batch = ceil_div(tiles_per_batch, ctas);
-    std::uint64_t const num_work = work_per_batch * static_cast<std::uint64_t>(nb) * spec.tile.split;
+    std::uint64_t const num_tiles = work_per_batch * static_cast<std::uint64_t>(nb);
+    std::uint64_t const units_per_tile = 2 * static_cast<std::uint64_t>(spec.D) / spec.tile.bnc;
+    std::uint64_t const num_units = num_tiles * units_per_tile;
+    std::uint64_t const max_workers = static_cast<std::uint64_t>(multiprocessor_count) / ctas;
+    std::uint64_t workers = std::min(num_units, max_workers);
+    if (num_tiles < max_workers)
+    {
+      workers = num_tiles;
+      for (std::uint64_t parts = 2; parts <= units_per_tile; ++parts)
+        if (units_per_tile % parts == 0 && parts * num_tiles <= max_workers)
+          workers = parts * num_tiles;
+    }
     device_params.per_batch = checked_i32(work_per_batch, "trimul KF K1 work per batch");
-    device_params.total = checked_i32(num_work, "trimul KF K1 work items");
-    grid_x = std::min<std::uint64_t>(num_work, static_cast<std::uint64_t>(multiprocessor_count) / ctas) * ctas;
+    device_params.total = checked_i32(num_units, "trimul KF K1 units");
+    grid_x = workers * ctas;
   }
   else
   {
@@ -542,7 +554,10 @@ embedded::CubinImage const& find_embedded_cubin(
     embedded::CubinImage const& image = registry.images[index];
     if (
       cubin_supports_sm(image.cubin, target_sm) && image.is_bfloat16 == is_bfloat16 && image.C == C && image.D == D
-      && image.kernel_variant == kernel_variant && image.padded == padded && image_tile(image) == tile)
+      && image.kernel_variant == kernel_variant && image.padded == padded
+      && image_tile(image) == tile
+      // an image with a split predates the unit shares and reads total as work items, not units
+      && image.split == 0)
       return image;
   }
   throw std::invalid_argument(

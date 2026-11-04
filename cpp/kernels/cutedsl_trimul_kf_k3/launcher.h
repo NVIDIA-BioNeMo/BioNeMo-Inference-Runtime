@@ -343,7 +343,8 @@ enum class DType : std::uint8_t
 
 /* Launch fields generated with the corresponding CUBIN, which runs the configs' K3_<kernel_variant> on SM90
  * (kernel_sm 90), or K3_B<kernel_variant> on SM100 and SM103 (kernel_sm 100, a dense product only);
- * kernel_variant names the image and never selects behaviour. reads_stats: the image reads K1's row
+ * kernel_variant names the image, and on SM100 also picks the parameter layout and K3_B2's unit-share
+ * grid. reads_stats: the image reads K1's row
  * statistics; residual fuses (x + update) * mask into the output; pitched: it reads the product at the
  * row pitch its launch passes, tiled per row. Each tile_m-row tile spans tile_ctas CTAs, one per
  * output-column group. An image with the resident launch ABI (trimul_kf_k3_sm90_resident_v1) reads the

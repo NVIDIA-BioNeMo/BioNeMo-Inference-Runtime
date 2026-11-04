@@ -51,6 +51,7 @@ _CASES = [
     (1, 72, 64, 64, True, "random"),
     (1, 72, 128, 128, False, "tail"),
     (1, 72, 384, 256, True, "random"),
+    (1, 104, 384, 256, False, "tail"),
     (1, 128, 32, 32, True, "tail"),
     (2, 136, 32, 32, False, "random"),
     (3, 168, 64, 64, True, "random"),
@@ -236,7 +237,6 @@ def test_sm100_selection_follows_the_measured_dispatch(sm, shape):
             continue
         tile = selection.tile
         assert selection.kernel_variant == "K1_B0" and tile is not None, n
-        assert tile.split == (2 if n <= 64 else 1), n
         if C == 64:
             assert (tile.ctas, tile.w_slots, tile.s_stages) == (1, 0, 4), n
             expected = (64, 16, 1) if n <= 64 else (128, 16, 1) if n <= 1024 else (64, 32, 2)
@@ -247,7 +247,7 @@ def test_sm100_selection_follows_the_measured_dispatch(sm, shape):
             assert tile.bnc == (128 if n > 320 else 64), n
             assert tile.epi_groups == (4 if 64 < n <= 1032 else 2), n
         else:
-            assert tile == _Tile(128, 16, 2, 4, 2, tile.split, 1, 2), n
+            assert tile == _Tile(128, 16, 2, 4, 2, 1, 2), n
 
 
 @_requires_source
@@ -265,7 +265,18 @@ def test_sm100_anchors_build_kernels_that_fit(sm):
                 kernel = _source.make_kernel(variant, C, D, 148, layout, tiles[bucket])
                 assert kernel.padded == (layout == "padded") and kernel.x_slots >= 2, (C, D, bucket, layout)
         with pytest.raises(ValueError):
-            _source.make_kernel("K1_B1", C, D, 148, "dense", _Tile(64, 16, 1, 0, 4, 1, 1, 2))
+            _source.make_kernel("K1_B1", C, D, 148, "dense", _Tile(64, 16, 1, 0, 4, 1, 2))
+
+
+@_requires_source
+@pytest.mark.parametrize("tile", [_Tile(128, 16, 1, 4, 2, 1, 2), _Tile(128, 16, 2, 8, 2, 1, 2)], ids=["ctas1", "w8"])
+def test_sm100_tiles_whose_x_ring_misses_a_tile_are_rejected(tile):
+    """At C = 384 these tiles leave fewer x slots than one tile's six K-blocks; the kernel would deadlock."""
+    from bionemo_ir._torch.custom_ops.trimul_kf_k1 import _source
+
+    # a CTA's unit range can hold several units of one tile
+    with pytest.raises(ValueError, match="x slots"):
+        _source.make_kernel("K1_B0", 384, 256, 148, "dense", tile)
 
 
 @pytest.mark.parametrize("sm", _BLACKWELL)
@@ -311,7 +322,6 @@ _K1_B0 = {
     "ctas": 2,
     "w_slots": 0,
     "s_stages": 2,
-    "split": 1,
     "epi_groups": 2,
 }
 
@@ -325,7 +335,7 @@ _K1_B0 = {
         ({**_K1_B0, "store_warps": 1, "tile_n": 128}, "sm100"),  # an unknown field
         ({**_K1_B0, "store_warps": 3}, "sm100"),
         ({**_K1_B0, "store_warps": 1, "ctas": 4}, "sm100"),
-        ({**_K1_B0, "store_warps": 1, "split": 0}, "sm100"),
+        ({**_K1_B0, "store_warps": 1, "split": 1}, "sm100"),  # split is no longer a tile field
         ({**_K1_B0, "store_warps": 1, "epi_n": 24}, "sm100"),
         ({**_K1_B0, "store_warps": True}, "sm100"),
         ({**_K1_B0, "store_warps": 1, "epi_groups": 3}, "sm100"),
@@ -348,7 +358,7 @@ def test_sm100_entries_parse_into_tiles():
     assert k1_config.parse_configs(configs, "test", "sm100") == {32: "K1_B0", 96: "K1_B0"}
     assert k1_config.parse_layout_rules(configs, "test", "sm100") == {32: "dense", 96: "pad_n_mod_16_8"}
     assert k1_config.parse_tiles(configs, "test", "sm100") == {
-        32: _Tile(64, 16, 2, 0, 2, 1, 1, 2),
-        96: _Tile(128, 16, 2, 0, 2, 1, 2, 4),
+        32: _Tile(64, 16, 2, 0, 2, 1, 2),
+        96: _Tile(128, 16, 2, 0, 2, 2, 4),
     }
     assert k1_config.parse_tiles({"S=128": {"kernel_variant": "K1_B1"}}, "test", "sm100") == {128: None}

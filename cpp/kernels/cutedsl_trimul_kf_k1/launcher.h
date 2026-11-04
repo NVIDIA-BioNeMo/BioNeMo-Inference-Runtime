@@ -288,7 +288,6 @@ struct KernelTile
   std::uint32_t ctas{};
   std::uint32_t w_slots{};
   std::uint32_t s_stages{};
-  std::uint32_t split{};
   std::uint32_t store_warps{};
   std::uint32_t epi_groups{};
 };
@@ -296,8 +295,7 @@ struct KernelTile
 inline bool operator==(KernelTile const& left, KernelTile const& right)
 {
   return left.bnc == right.bnc && left.epi_n == right.epi_n && left.ctas == right.ctas && left.w_slots == right.w_slots
-    && left.s_stages == right.s_stages && left.split == right.split && left.store_warps == right.store_warps
-    && left.epi_groups == right.epi_groups;
+    && left.s_stages == right.s_stages && left.store_warps == right.store_warps && left.epi_groups == right.epi_groups;
 }
 
 /* Launch fields generated with the corresponding CUBIN. On SM90 (kernel_sm 90) it runs the configs'

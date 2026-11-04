@@ -476,6 +476,8 @@ _FAMILY_SPECS: dict[str, _FamilySpec] = {
             _Field("ctas", _COUNT, "std::uint32_t ctas;", suffix="U", default=0),
             _Field("w_slots", _COUNT, "std::uint32_t w_slots;", suffix="U", default=0),
             _Field("s_stages", _COUNT, "std::uint32_t s_stages;", suffix="U", default=0),
+            # Work items per tile in images published before the kernel split tiles into unit shares; 0 in
+            # every later image. Kept in the runtime key so those images stay distinct until they are rebuilt.
             _Field("split", _COUNT, "std::uint32_t split;", suffix="U", default=0),
             _Field("store_warps", _COUNT, "std::uint32_t store_warps;", suffix="U", default=0),
             _Field("epi_groups", _COUNT, "std::uint32_t epi_groups;", suffix="U", default=0),

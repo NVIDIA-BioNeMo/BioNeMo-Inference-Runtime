@@ -1,10 +1,10 @@
 {
   "kernel_abi": "sm100",
   "configs": {
-    "S=32": {"kernel_variant": "K1_B0", "bnc": 64, "epi_n": 16, "ctas": 1, "w_slots": 0, "s_stages": 4, "split": 2, "store_warps": 1, "epi_groups": 2},
-    "S=96": {"kernel_variant": "K1_B0", "bnc": 128, "epi_n": 16, "ctas": 1, "w_slots": 0, "s_stages": 4, "split": 1, "store_warps": 1, "epi_groups": 2},
-    "S=304": {"kernel_variant": "K1_B0", "bnc": 128, "epi_n": 16, "ctas": 1, "w_slots": 0, "s_stages": 4, "split": 1, "store_warps": 1, "epi_groups": 4},
-    "S=720": {"kernel_variant": "K1_B0", "bnc": 128, "epi_n": 16, "ctas": 1, "w_slots": 0, "s_stages": 4, "split": 1, "store_warps": 1, "epi_groups": 2, "ab_layout": "pad_n_mod_16_8"},
-    "S=1328": {"kernel_variant": "K1_B0", "bnc": 64, "epi_n": 32, "ctas": 1, "w_slots": 0, "s_stages": 4, "split": 1, "store_warps": 2, "epi_groups": 2, "ab_layout": "pad_n_mod_16_8"}
+    "S=32": {"kernel_variant": "K1_B0", "bnc": 64, "epi_n": 16, "ctas": 1, "w_slots": 0, "s_stages": 4, "store_warps": 1, "epi_groups": 2},
+    "S=96": {"kernel_variant": "K1_B0", "bnc": 128, "epi_n": 16, "ctas": 1, "w_slots": 0, "s_stages": 4, "store_warps": 1, "epi_groups": 2},
+    "S=304": {"kernel_variant": "K1_B0", "bnc": 128, "epi_n": 16, "ctas": 1, "w_slots": 0, "s_stages": 4, "store_warps": 1, "epi_groups": 4},
+    "S=720": {"kernel_variant": "K1_B0", "bnc": 128, "epi_n": 16, "ctas": 1, "w_slots": 0, "s_stages": 4, "store_warps": 1, "epi_groups": 2, "ab_layout": "pad_n_mod_16_8"},
+    "S=1328": {"kernel_variant": "K1_B0", "bnc": 64, "epi_n": 32, "ctas": 1, "w_slots": 0, "s_stages": 4, "store_warps": 2, "epi_groups": 2, "ab_layout": "pad_n_mod_16_8"}
   }
 }

@@ -35,8 +35,7 @@ Each kernel ABI runs its own variants (:data:`ABI_VARIANTS`): SM90 the WGMMA ker
 :class:`TrimulKFK1Tile` field::
 
     {"kernel_abi": "sm100", "configs": {"S=96": {"kernel_variant": "K1_B0", "bnc": 128, "epi_n": 16, "ctas": 2,
-                                                 "w_slots": 4, "s_stages": 2, "split": 1, "store_warps": 1,
-                                                 "epi_groups": 2}}}
+                                                 "w_slots": 4, "s_stages": 2, "store_warps": 1, "epi_groups": 2}}}
 
 The SM100 bundles place their anchors so the nearest-anchor rule switches tiles exactly where the
 measurements did: ``S=32`` serves N <= 64, ``S=96`` up to the next switch, and so on.
@@ -99,8 +98,6 @@ class TrimulKFK1Tile(NamedTuple):
     w_slots: int
     #: Row-statistics slots.
     s_stages: int
-    #: Work items per 128-position tile; more items fill the SMs at small N.
-    split: int
     #: Warps per TMA store: 1 stores 32 positions, 2 stores 64 (whole 128-byte rows).
     store_warps: int
     #: Epilogue warp groups: 2 drain one unit each, 4 split every unit's subtiles between two groups.
@@ -189,7 +186,6 @@ def parse_tile(entry: dict[str, Any], source: str) -> TrimulKFK1Tile:
         or tile.ctas not in (1, 2)
         or tile.w_slots < 0
         or tile.s_stages <= 0
-        or tile.split <= 0
         or tile.store_warps not in (1, 2)
         or tile.epi_groups not in (2, 4)
         or (tile.bnc // tile.epi_n) % (tile.epi_groups // 2)

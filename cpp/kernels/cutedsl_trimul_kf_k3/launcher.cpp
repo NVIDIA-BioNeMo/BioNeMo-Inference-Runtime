@@ -504,10 +504,25 @@ void launch_sm100(
   std::int32_t const multiprocessor_count = cuda_multiprocessor_count_for_context(context);
   if (multiprocessor_count <= 0)
     throw std::invalid_argument("current CUDA device has no active multiprocessors");
-  /* Persistent CTAs, or CTA pairs, stride over the row tiles. */
+  /* Persistent CTAs, or CTA pairs, stride over the row tiles. K3_B2's pairs instead own contiguous shares
+   * of the (tile, 128-column group) units; with fewer tiles than pairs, the shares are whole tiles or the
+   * most equal parts of each tile that fit. This matches the source kernel's host launch.
+   */
   std::uint64_t const ctas = spec.tile_ctas;
-  std::uint64_t const clusters
-    = std::min<std::uint64_t>(num_tiles, static_cast<std::uint64_t>(multiprocessor_count) / ctas);
+  std::uint64_t const max_clusters = static_cast<std::uint64_t>(multiprocessor_count) / ctas;
+  std::uint64_t clusters = std::min<std::uint64_t>(num_tiles, max_clusters);
+  if (spec.kernel_variant == 2)
+  {
+    std::uint64_t const groups = static_cast<std::uint64_t>(spec.C) / 128;
+    clusters = std::min(num_tiles * groups, max_clusters);
+    if (num_tiles < max_clusters)
+    {
+      clusters = num_tiles;
+      for (std::uint64_t parts = 2; parts <= groups; ++parts)
+        if (groups % parts == 0 && parts * num_tiles <= max_clusters)
+          clusters = parts * num_tiles;
+    }
+  }
   cubin_launch_config_t launch_config{};
   launch_config.grid_x = checked_u32(clusters * ctas, "trimul KF K3 grid.x");
   launch_config.grid_y = 1;

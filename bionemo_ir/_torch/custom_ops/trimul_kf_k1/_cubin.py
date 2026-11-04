@@ -12,7 +12,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""CUBIN-backed executable adapter for the SM90 TriMul KF K1."""
+"""CUBIN-backed executable adapters for the SM90 and SM100/SM103 TriMul KF K1."""
 
 from __future__ import annotations
 
@@ -31,6 +31,8 @@ from bionemo_ir._torch.utils.kernel import (
 
 #: Launch ABI of the images that tile a launch's rows flat, so a tile may straddle two batches.
 FLAT_TILE_LAUNCH_ABI = "trimul_kf_k1_sm90_v3"
+#: The SM100/SM103 variants in the launcher's numbering.
+SM100_VARIANTS = ("K1_B0", "K1_B1")
 
 
 class TrimulKFK1CubinExecutable(CuTeDSLKernelLibraryExecutable):
@@ -102,6 +104,78 @@ class TrimulKFK1CubinExecutable(CuTeDSLKernelLibraryExecutable):
         if stats is not None:
             params.stats = tensor_flat(library, stats)
         params.rows = rows
+        params.n = n
+        params.nb = nb
+        params.eps = eps
+        params.stream = current_stream_handle(x)
+        self._launcher.launch(self._config, params)
+
+
+class TrimulKFK1Sm100CubinExecutable(CuTeDSLKernelLibraryExecutable):
+    """Match the SM100/SM103 CuTeDSL compiled-function call ABI using the C++ launcher.
+
+    ``K1_B0`` images are tile-specific; the tile picks the image like the source compile's key does.
+    """
+
+    def __init__(
+        self,
+        kernel_library: ModuleType,
+        launcher: Any,
+        target_sm: int,
+        C: int,
+        D: int,
+        kernel_variant: str,
+        ab_layout: str = "dense",
+        tile: Any = None,
+    ) -> None:
+        try:
+            kernel_tile = launcher.KernelTile() if tile is None else launcher.KernelTile(**tile._asdict())
+            config = launcher.make_kernel_config(
+                target_sm,
+                launcher.DType.BFLOAT16,
+                C,
+                D,
+                SM100_VARIANTS.index(kernel_variant),
+                padded=ab_layout == "padded",
+                tile=kernel_tile,
+            )
+        except (RuntimeError, TypeError, ValueError) as error:
+            raise CuTeDSLKernelVariantUnavailable(
+                f"No trimul KF K1 CUBIN for SM{target_sm}, C={C}, D={D}, {kernel_variant}, {ab_layout} a/b"
+                f"{'' if tile is None else f', {tile}'}"
+            ) from error
+        self._kernel_library = kernel_library
+        self._launcher = launcher
+        self._config = config
+        self._kernel_variant = kernel_variant
+
+    def __call__(
+        self,
+        x: torch.Tensor,
+        seqlen: torch.Tensor,
+        proj: torch.Tensor,
+        gate: torch.Tensor,
+        vec: torch.Tensor,
+        *planes_and_scalars: Any,
+    ) -> None:
+        """``(x, seqlen, proj, gate, vec, planes, n, nb, eps)`` for ``K1_B0``, ``(..., a, b, n, nb, eps)`` for
+        ``K1_B1``."""
+        *planes, n, nb, eps = planes_and_scalars
+        if len(planes) != (1 if self._kernel_variant == "K1_B0" else 2):
+            raise CuTeDSLKernelVariantUnavailable(f"trimul KF K1 CUBIN operands do not match {self._kernel_variant}")
+        library = self._kernel_library
+        params = self._launcher.LaunchParams()
+        params.x = tensor_flat(library, x)
+        params.seqlen = tensor_s1_d0(library, seqlen)
+        params.w_in = tensor_s1_d0(library, proj)
+        params.w_gate_in = tensor_s1_d0(library, gate)
+        params.vec_in = tensor_s1_d0(library, vec)
+        if len(planes) == 1:
+            params.planes = tensor_flat(library, planes[0])
+        else:
+            params.a = tensor_flat(library, planes[0])
+            params.b = tensor_flat(library, planes[1])
+        params.rows = nb * n * n
         params.n = n
         params.nb = nb
         params.eps = eps

@@ -14,13 +14,13 @@
 # limitations under the License.
 """TriMul KF custom ops: the K1 -> K2 -> K3 chain against the fp32 reference.
 
-SM90 runs it from source and from CUBINs; SM100 and SM103 run it from source only.
+SM90, SM100 and SM103 run it from source and from CUBINs.
 """
 
 from __future__ import annotations
 
 from pathlib import Path
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 
 import pytest
 import torch
@@ -38,6 +38,7 @@ from bionemo_ir._torch.custom_ops.trimul_kf_k3 import _config as k3_config
 from bionemo_ir._torch.custom_ops.trimul_kf_k3 import _cubin as k3_cubin
 from bionemo_ir._torch.custom_ops.trimul_kf_k3 import cutedsl as k3_cutedsl
 from bionemo_ir._torch.utils.kernel import CuTeDSLKernelLibraryExecutable, CuTeDSLKernelVariantUnavailable
+from bionemo_ir._torch.utils.kernel import _cutedsl_kernel_library as library_runtime
 from tests._torch import SM_VERSION, cutedsl_test_modes, require_cubin_library, skip_if_not_sm90
 
 _CUTEDSL_MODES = cutedsl_test_modes("bionemo_ir._torch.custom_ops.trimul_kf_k1._source")
@@ -136,11 +137,21 @@ def _use_mode(mode: str, monkeypatch: pytest.MonkeyPatch) -> list[dict]:
     return caches
 
 
+def library_carries(family: str, sm: int) -> bool:
+    """Whether the CUBIN library this build embeds carries any ``family`` image for ``sm``: a corpus generated before
+    the SM100 images, or a build without the library, carries none."""
+    try:
+        library = library_runtime._load_kernel_library()
+    except library_runtime.CuTeDSLKernelLibraryUnavailable:
+        return False
+    return any(spec.target_sm == sm for spec in getattr(library, family).kernel_specs())
+
+
 def _skip_unless_chain_runs(mode: str) -> None:
-    """Skip unless this GPU runs the chain in ``mode``: SM100 and SM103 ship no CUBINs."""
+    """Skip unless this GPU runs the chain in ``mode``: SM100 and SM103 run CUBINs once the corpus carries them."""
     if SM_VERSION in (100, 103):
-        if mode != "source":
-            pytest.skip(f"SM{SM_VERSION} runs the TriMul KF chain from source only")
+        if mode == "cubin" and not all(library_carries(f"trimul_kf_k{k}", SM_VERSION) for k in (1, 2, 3)):
+            pytest.skip(f"this build's CUBIN library carries no SM{SM_VERSION} TriMul KF images")
         return
     skip_if_not_sm90()
 
@@ -157,7 +168,7 @@ def _assert_dispatched(caches: list[dict], mode: str) -> None:
     if mode == "cubin":
         # a dynamic K2 tile's CUBIN runs the dynamic schedule, not its static fallback (K2's key ends with the tile's
         # dynamic flag)
-        assert all(executable.dynamic is key[-1] for key, executable in caches[1].items())
+        assert all(executable.dynamic is key[-1] for key, executable in caches[1].items() if isinstance(key[-1], bool))
 
 
 def _problem(
@@ -845,6 +856,61 @@ def test_k2_cubin_without_any_image_of_the_tile_is_unavailable():
 
     with pytest.raises(CuTeDSLKernelVariantUnavailable):
         k2_cubin.TrimulKFK2CubinExecutable(None, Empty(True, True), 90, True, _K2Tile("K2_0", 256, 2, 4, False, True))
+
+
+class _SourceBuild:
+    """Stands in for a source executable a call cached before ``CUTEDSL_FORCE_CUBIN`` was set."""
+
+
+class _LibraryImage(CuTeDSLKernelLibraryExecutable):
+    """Stands in for an executable the CUBIN library built."""
+
+
+@pytest.mark.parametrize("sm", [90, 100, 103])
+@pytest.mark.parametrize(
+    ("backend", "module", "shape"),
+    [
+        (k1_cutedsl.TrimulKFK1CuTe, k1_cutedsl, (384, 256)),
+        (k2_cutedsl.TrimulKFK2CuTe, k2_cutedsl, (256, True)),
+        (k3_cutedsl.TrimulKFK3CuTe, k3_cutedsl, (384, 256, True)),
+    ],
+    ids=["k1", "k2", "k3"],
+)
+def test_forced_cubin_ships_only_what_the_library_carries(
+    monkeypatch: pytest.MonkeyPatch, backend: type, module: ModuleType, shape: tuple, sm: int
+) -> None:
+    """A process can set ``CUTEDSL_FORCE_CUBIN`` after a source build landed under the key a CUBIN loads into.
+    ``ships`` must then ask the library: the source build does not pass for an image the library lacks, and an
+    image the library carries replaces it."""
+    carries = True
+
+    def image(library: object, launcher: object) -> _LibraryImage:
+        if not carries:
+            raise CuTeDSLKernelVariantUnavailable("the library lacks this image")
+        return _LibraryImage()
+
+    def populate(cache: dict, key: tuple, family: str, factory: object) -> object:
+        return library_runtime.populate_compiled_cache_from_library(cache, key, family, image)
+
+    families = SimpleNamespace(trimul_kf_k1=object(), trimul_kf_k2=object(), trimul_kf_k3=object())
+    monkeypatch.setattr(library_runtime, "_load_kernel_library", lambda: families)
+    monkeypatch.setattr(module, "populate_compiled_cache_from_library", populate)
+    cache: dict = {}
+    monkeypatch.setattr(backend, "_compiled_cache", cache)
+    monkeypatch.setenv("CUTEDSL_FORCE_CUBIN", "1")
+    op = backend(sm)
+    assert op.ships(*shape)
+    keys = list(cache)
+    assert keys
+
+    carries = False
+    cache.update(dict.fromkeys(keys, _SourceBuild()))
+    assert not op.ships(*shape)
+
+    carries = True
+    cache.update(dict.fromkeys(keys, _SourceBuild()))
+    assert op.ships(*shape)
+    assert all(isinstance(cache[key], _LibraryImage) for key in keys)
 
 
 class _DenseLaunchParams:

@@ -134,8 +134,8 @@ class TrimulKFK2Op:
 def get_trimul_kf_k2_op(dtype: torch.dtype | None, hidden_dim: int, outgoing: bool) -> TrimulKFK2Op | None:
     """Return K2 when this build ships it for ``hidden_dim`` and the direction on the current GPU, else ``None``.
 
-    SM90 runs it from source or packaged CUBINs; SM100 and SM103 only from source, so ``CUTEDSL_FORCE_CUBIN=1``
-    leaves them without K2.
+    SM90, SM100 and SM103 run it from source or packaged CUBINs; ``CUTEDSL_FORCE_CUBIN=1`` without an image for
+    every tile the width's configs name leaves them without K2.
     """
     if dtype != _SUPPORTED_DTYPE or not torch.cuda.is_available():
         return None

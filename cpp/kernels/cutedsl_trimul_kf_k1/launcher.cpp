@@ -35,6 +35,9 @@ namespace
 {
 
 constexpr char kSM90LaunchAbi[] = "trimul_kf_k1_sm90_v4";
+constexpr char kSM100LaunchAbi[] = "trimul_kf_k1_sm100_v1";
+/* The SM100 K1_B0 variant, whose image carries a tile; K1_B1 is variant 1. */
+constexpr std::int32_t kSM100TiledVariant = 0;
 /* Rows per K1 tile, which the persistent CTAs stride over; a tile never straddles two batches. */
 constexpr std::uint64_t kTileRows = 128;
 /* Rows, and positions per a/b plane, one launch addresses: TMA coordinates are int32. */
@@ -44,6 +47,14 @@ constexpr std::int32_t kStatsVariant = 2;
 /* The kernel's AB_PAD_ALIGN and AB_CHUNK, which the CUBIN build checks against these values. */
 constexpr std::int64_t kAbPadAlign = 64;
 constexpr std::int64_t kAbChunk = 64;
+
+/* A positive device-side int32 count. */
+std::int32_t checked_i32(std::uint64_t value, char const* name)
+{
+  if (value == 0 || value > static_cast<std::uint64_t>(std::numeric_limits<std::int32_t>::max()))
+    throw std::invalid_argument(std::string(name) + " does not fit a positive int32");
+  return static_cast<std::int32_t>(value);
+}
 
 std::int64_t ab_pitch(std::int64_t n, bool padded)
 {
@@ -99,22 +110,44 @@ void validate_image(KernelConfig const& config)
     throw std::invalid_argument("embedded CUBIN variant_id must not be empty");
   if (config.cubin.kernel_symbol == nullptr || config.cubin.kernel_symbol[0] == '\0')
     throw std::invalid_argument("kernel_symbol must not be empty");
-  if (
-    config.cubin.kernel_sm != 90 || config.cubin.launch_abi == nullptr
-    || std::strcmp(config.cubin.launch_abi, kSM90LaunchAbi) != 0)
-  {
-    throw std::invalid_argument("trimul KF K1 CUBIN has an incompatible launch ABI");
-  }
-  if (config.embedded_image == nullptr || !config.embedded_image->sm90.enabled)
-    throw std::invalid_argument("trimul KF K1 CUBIN is missing its Hopper launch metadata");
+  if (config.embedded_image == nullptr)
+    throw std::invalid_argument("trimul KF K1 CUBIN is missing its registry record");
   if (!cubin_supports_sm(config.cubin, config.spec.target_sm))
     throw std::invalid_argument(
       "embedded CUBIN does not support configured device SM" + std::to_string(config.spec.target_sm));
   KernelSpec const& spec = config.spec;
-  if (spec.C <= 0 || spec.D <= 0 || spec.num_threads == 0 || spec.kernel_variant < 0 || spec.kernel_variant > 2)
+  if (spec.C <= 0 || spec.D <= 0 || spec.num_threads == 0)
     throw std::invalid_argument("trimul KF K1 CUBIN has invalid launch geometry");
-  if (spec.padded && config.embedded_image->sm90.x_chunk.rank == 0)
-    throw std::invalid_argument("padded trimul KF K1 CUBIN is missing its x row-chunk TMA metadata");
+  char const* const abi = config.cubin.launch_abi;
+  if (config.cubin.kernel_sm == 90 && abi != nullptr && std::strcmp(abi, kSM90LaunchAbi) == 0)
+  {
+    if (!config.embedded_image->sm90.enabled)
+      throw std::invalid_argument("trimul KF K1 CUBIN is missing its Hopper launch metadata");
+    if (spec.kernel_variant < 0 || spec.kernel_variant > 2)
+      throw std::invalid_argument("trimul KF K1 CUBIN has an invalid Hopper variant");
+    if (spec.padded && config.embedded_image->sm90.x_chunk.rank == 0)
+      throw std::invalid_argument("padded trimul KF K1 CUBIN is missing its x row-chunk TMA metadata");
+    return;
+  }
+  if (config.cubin.kernel_sm == 100 && abi != nullptr && std::strcmp(abi, kSM100LaunchAbi) == 0)
+  {
+    embedded::SM100LaunchInfo const& sm100 = config.embedded_image->sm100;
+    if (!sm100.enabled)
+      throw std::invalid_argument("trimul KF K1 CUBIN is missing its Blackwell launch metadata");
+    if (spec.kernel_variant < 0 || spec.kernel_variant > 1)
+      throw std::invalid_argument("trimul KF K1 CUBIN has an invalid Blackwell variant");
+    bool const tiled = spec.kernel_variant == kSM100TiledVariant;
+    if (tiled != (spec.tile.ctas != 0) || (tiled && spec.tile.ctas > 2))
+      throw std::invalid_argument("trimul KF K1 CUBIN has an invalid Blackwell tile");
+    if (
+      sm100.cluster_dims[0] != (tiled ? spec.tile.ctas : 1U) || sm100.cluster_dims[1] != 1
+      || sm100.cluster_dims[2] != 1)
+      throw std::invalid_argument("trimul KF K1 CUBIN records a cluster its tile does not launch");
+    if ((tiled ? sm100.planes.rank : sm100.a.rank) == 0)
+      throw std::invalid_argument("trimul KF K1 CUBIN is missing its a/b store TMA metadata");
+    return;
+  }
+  throw std::invalid_argument("trimul KF K1 CUBIN has an incompatible launch ABI");
 }
 
 /* A flat row-major [rows, cols] operand as a rank-2 TMA source. */
@@ -297,6 +330,188 @@ void launch_k1(
     launch_cubin_kernel(loaded, &launch_config, kernel_params, nullptr), "launch_cubin_kernel(trimul_kf_k1_sm90)");
 }
 
+KernelTile image_tile(embedded::CubinImage const& image)
+{
+  return KernelTile{
+    image.bnc,
+    image.epi_n,
+    image.ctas,
+    image.w_slots,
+    image.s_stages,
+    image.split,
+    image.store_warps,
+    image.epi_groups,
+  };
+}
+
+/* The SM100/SM103 K1: x as dense (n * n, C, nb) rows, or padded row chunks, (n, C, n, nb) for K1_B0 and
+ * (n, C, nb * n) for K1_B1; the weights as [2D, C] matrices; and the planes as K1_B0's (n * P, D, a|b, nb)
+ * view of one buffer, or K1_B1's separate (n * n, D, nb) or, padded, (n, D, n, nb) views. One launch
+ * covers every batch.
+ */
+void launch_k1_sm100(
+  cubin_kernel_t loaded,
+  KernelConfig const& config,
+  LaunchParams const& params,
+  CUcontext context,
+  std::uint32_t smem_bytes)
+{
+  std::int32_t const device = cuda_device_for_context(context);
+  KernelSpec const& spec = config.spec;
+  bool const tiled = spec.kernel_variant == kSM100TiledVariant;
+  std::int64_t const C = spec.C;
+  std::int64_t const D = spec.D;
+  std::int64_t const n = params.n;
+  std::int64_t const nb = params.nb;
+  if (n <= 0 || nb <= 0)
+    throw std::invalid_argument("trimul KF K1 needs positive n and nb");
+  std::int64_t const nn = checked_mul(n, n, "trimul KF K1 rows");
+  std::int64_t const rows = checked_mul(nb, nn, "trimul KF K1 rows");
+  std::int64_t const pitch = ab_pitch(n, spec.padded);
+  std::int64_t const ab_positions = checked_mul(n, pitch, "trimul KF K1 a/b");
+  std::int64_t const plane = checked_mul(pitch, pitch, "trimul KF K1 a/b");
+  std::int64_t const ab_elements = checked_mul(nb, checked_mul(D, plane, "trimul KF K1 a/b"), "trimul KF K1 a/b");
+  /* Tiles never straddle two batches: a dense image tiles each batch's n * n positions, a padded one its n
+   * plane rows in pairs of 64-position chunks, which is the same ceil(n * P / 128).
+   */
+  static_assert(2 * kAbChunk == static_cast<std::int64_t>(kTileRows));
+  std::uint64_t const tiles_per_batch = ceil_div(static_cast<std::uint64_t>(ab_positions), kTileRows);
+  if (rows > kMaxLaunchRows || checked_mul(nb, ab_positions, "trimul KF K1 a/b") > kMaxLaunchRows)
+  {
+    throw std::invalid_argument(
+      "trimul KF K1 addresses at most " + std::to_string(kMaxLaunchRows) + " rows and plane positions a launch");
+  }
+
+  validate_flat(params.x, checked_mul(rows, C, "trimul KF K1 x"), 16, device, "x");
+  validate_tensor(params.seqlen, "seqlen", 4);
+  check_device(params.seqlen.device, device, "seqlen");
+  if (params.seqlen.shape[0] < nb * n)
+    throw std::invalid_argument("seqlen needs one length per (b, i) row");
+  validate_flat(params.w_in, 2 * D * C, 16, device, "w_in");
+  validate_flat(params.w_gate_in, 2 * D * C, 16, device, "w_gate_in");
+  validate_flat(params.vec_in, 8 * D, 16, device, "vec_in");
+  if (tiled)
+  {
+    validate_flat(params.planes, 2 * ab_elements, 16, device, "planes");
+  }
+  else
+  {
+    validate_flat(params.a, ab_elements, 16, device, "a");
+    validate_flat(params.b, ab_elements, 16, device, "b");
+  }
+
+  embedded::SM100LaunchInfo const& metadata = config.embedded_image->sm100;
+  CUtensorMapDataType const expected_dtype = tma_data_type(true);
+  abi::SM100Params device_params{};
+  auto const encode
+    = [&](CUtensorMap& descriptor, TmaDescriptorInfo const& info, TmaTensorSource const& source, char const* name)
+  {
+    encode_tma_descriptor(descriptor, info, expected_dtype, source, name);
+    finalize_sm100_tma_atom(descriptor);
+  };
+  auto const u64 = [](std::int64_t value) { return static_cast<std::uint64_t>(value); };
+  auto const i32 = [](std::int64_t value) { return static_cast<std::int32_t>(value); };
+
+  TmaTensorSource x_source{};
+  if (!spec.padded)
+    x_source = TmaTensorSource{params.x.data, {u64(nn), u64(C), u64(nb), 0}, {u64(C), 1, u64(nn * C), 0}};
+  else if (tiled)
+    x_source = TmaTensorSource{params.x.data, {u64(n), u64(C), u64(n), u64(nb)}, {u64(C), 1, u64(n * C), u64(nn * C)}};
+  else
+    x_source = TmaTensorSource{params.x.data, {u64(n), u64(C), u64(nb * n), 0}, {u64(C), 1, u64(n * C), 0}};
+  encode(device_params.x_tma, metadata.x, x_source, "x");
+  encode(device_params.w_proj_tma, metadata.w_proj, matrix_source(params.w_in.data, 2 * D, C), "w_in");
+  encode(device_params.w_gate_tma, metadata.w_gate, matrix_source(params.w_gate_in.data, 2 * D, C), "w_gate_in");
+  if (spec.padded && tiled)
+    device_params.x_coord3 = CoordTensorS3{{i32(n), i32(n), i32(nb)}};
+  else if (spec.padded)
+    device_params.x_coord2 = CoordTensorS2{{i32(n), i32(nb * n)}};
+  else
+    device_params.x_coord2 = CoordTensorS2{{i32(nn), i32(nb)}};
+
+  if (tiled)
+  {
+    TmaTensorSource const planes_source{
+      params.planes.data,
+      {u64(ab_positions), u64(D), 2, u64(nb)},
+      {1, u64(plane), u64(nb * D * plane), u64(D * plane)},
+    };
+    encode(device_params.planes_tma, metadata.planes, planes_source, "planes");
+    device_params.planes_coord = CoordTensorS2{{i32(ab_positions), i32(nb)}};
+  }
+  else
+  {
+    auto const ab_source = [&](FlatTensorView const& view)
+    {
+      return spec.padded
+        ? TmaTensorSource{view.data, {u64(n), u64(D), u64(n), u64(nb)}, {1, u64(plane), u64(pitch), u64(D * plane)}}
+        : TmaTensorSource{view.data, {u64(nn), u64(D), u64(nb), 0}, {1, u64(nn), u64(D * nn), 0}};
+    };
+    encode(device_params.a_tma, metadata.a, ab_source(params.a), "a");
+    encode(device_params.b_tma, metadata.b, ab_source(params.b), "b");
+    if (spec.padded)
+      device_params.ab_coord3 = CoordTensorS3{{i32(n), i32(n), i32(nb)}};
+    else
+      device_params.ab_coord2 = CoordTensorS2{{i32(nn), i32(nb)}};
+  }
+  device_params.seqlen = make_tensor1_descriptor(params.seqlen);
+  device_params.vec.data = static_cast<CUdeviceptr>(params.vec_in.data);
+  device_params.n = i32(n);
+  device_params.P = i32(pitch);
+  device_params.nb = i32(nb);
+  device_params.eps = params.eps;
+
+  std::int32_t const multiprocessor_count = cuda_multiprocessor_count_for_context(context);
+  if (multiprocessor_count <= 0)
+    throw std::invalid_argument("current CUDA device has no active multiprocessors");
+  std::uint64_t const ctas = tiled ? spec.tile.ctas : 1U;
+  std::uint64_t grid_x = 0;
+  if (tiled)
+  {
+    /* A work item is one CTA tile, or a pair of a batch's consecutive tiles for a CTA pair, split SPLIT ways;
+     * the persistent clusters stride over the items.
+     */
+    std::uint64_t const work_per_batch = ceil_div(tiles_per_batch, ctas);
+    std::uint64_t const num_work = work_per_batch * static_cast<std::uint64_t>(nb) * spec.tile.split;
+    device_params.per_batch = checked_i32(work_per_batch, "trimul KF K1 work per batch");
+    device_params.total = checked_i32(num_work, "trimul KF K1 work items");
+    grid_x = std::min<std::uint64_t>(num_work, static_cast<std::uint64_t>(multiprocessor_count) / ctas) * ctas;
+  }
+  else
+  {
+    std::uint64_t const num_tiles = tiles_per_batch * static_cast<std::uint64_t>(nb);
+    device_params.per_batch = checked_i32(tiles_per_batch, "trimul KF K1 tiles per batch");
+    device_params.total = checked_i32(num_tiles, "trimul KF K1 tiles");
+    grid_x = std::min<std::uint64_t>(num_tiles, static_cast<std::uint64_t>(multiprocessor_count));
+  }
+
+  void* kernel_params[abi::kSM100MaxParameterCount]{};
+  std::size_t const parameter_count
+    = abi::pack_sm100_kernel_params(&device_params, spec.kernel_variant, spec.padded, kernel_params);
+  if (parameter_count != abi::sm100_parameter_count(spec.kernel_variant))
+    throw std::logic_error("trimul KF K1 SM100 parameter packer produced the wrong ABI count");
+
+  cubin_launch_config_t launch_config{};
+  launch_config.grid_x = checked_u32(grid_x, "trimul KF K1 grid.x");
+  launch_config.grid_y = 1;
+  launch_config.grid_z = 1;
+  launch_config.block_x = metadata.block_dims[0];
+  launch_config.block_y = metadata.block_dims[1];
+  launch_config.block_z = metadata.block_dims[2];
+  launch_config.cluster_x = metadata.cluster_dims[0];
+  launch_config.cluster_y = metadata.cluster_dims[1];
+  launch_config.cluster_z = metadata.cluster_dims[2];
+  launch_config.cluster_scheduling_policy = metadata.cluster_scheduling_policy;
+  launch_config.dynamic_smem_bytes = smem_bytes;
+  launch_config.stream = reinterpret_cast<CUstream>(static_cast<std::uintptr_t>(params.stream));
+  /* The source kernels request no programmatic dependent launch: under CUDA-graph replay a kernel could read
+   * its predecessor's output mid-write.
+   */
+  launch_config.programmatic_stream_serialization = 0;
+  check_cuda_driver(
+    launch_cubin_kernel(loaded, &launch_config, kernel_params, nullptr), "launch_cubin_kernel(trimul_kf_k1_sm100)");
+}
+
 KernelSpec make_kernel_spec(embedded::CubinImage const& image)
 {
   return KernelSpec{
@@ -307,11 +522,18 @@ KernelSpec make_kernel_spec(embedded::CubinImage const& image)
     image.kernel_variant,
     image.padded,
     image.num_threads,
+    image_tile(image),
   };
 }
 
 embedded::CubinImage const& find_embedded_cubin(
-  std::int32_t target_sm, DType dtype, std::int32_t C, std::int32_t D, std::int32_t kernel_variant, bool padded)
+  std::int32_t target_sm,
+  DType dtype,
+  std::int32_t C,
+  std::int32_t D,
+  std::int32_t kernel_variant,
+  bool padded,
+  KernelTile const& tile)
 {
   bool const is_bfloat16 = dtype == DType::kBFloat16;
   embedded::RegistryView const registry = embedded::registry();
@@ -320,12 +542,13 @@ embedded::CubinImage const& find_embedded_cubin(
     embedded::CubinImage const& image = registry.images[index];
     if (
       cubin_supports_sm(image.cubin, target_sm) && image.is_bfloat16 == is_bfloat16 && image.C == C && image.D == D
-      && image.kernel_variant == kernel_variant && image.padded == padded)
+      && image.kernel_variant == kernel_variant && image.padded == padded && image_tile(image) == tile)
       return image;
   }
   throw std::invalid_argument(
     "No embedded trimul KF K1 CUBIN for SM" + std::to_string(target_sm) + ", C=" + std::to_string(C)
-    + ", D=" + std::to_string(D) + ", K1_" + std::to_string(kernel_variant) + (padded ? ", padded a/b" : ""));
+    + ", D=" + std::to_string(D) + ", variant " + std::to_string(kernel_variant) + (padded ? ", padded a/b" : "")
+    + (tile.ctas != 0 ? ", bnc=" + std::to_string(tile.bnc) + ", ctas=" + std::to_string(tile.ctas) : ""));
 }
 
 std::size_t preload_kernels(CUcontext context, std::int32_t device_sm)
@@ -358,9 +581,15 @@ std::vector<KernelSpec> kernel_specs()
 }
 
 KernelConfig make_kernel_config(
-  std::int32_t target_sm, DType dtype, std::int32_t C, std::int32_t D, std::int32_t kernel_variant, bool padded)
+  std::int32_t target_sm,
+  DType dtype,
+  std::int32_t C,
+  std::int32_t D,
+  std::int32_t kernel_variant,
+  bool padded,
+  KernelTile const& tile)
 {
-  embedded::CubinImage const& image = find_embedded_cubin(target_sm, dtype, C, D, kernel_variant, padded);
+  embedded::CubinImage const& image = find_embedded_cubin(target_sm, dtype, C, D, kernel_variant, padded, tile);
   KernelConfig config{make_kernel_spec(image), dtype, image.cubin, &image};
   /* Reject an image of an older launch ABI here rather than at launch, so callers fall back. */
   validate_image(config);
@@ -372,7 +601,10 @@ void launch(KernelConfig const& config, LaunchParams const& params)
   validate_image(config);
   CUcontext const context = current_cuda_context();
   cubin_kernel_t const loaded = load_for_current_device(config, context);
-  launch_k1(loaded, config, params, context, dynamic_smem_bytes(config));
+  if (config.cubin.kernel_sm == 100)
+    launch_k1_sm100(loaded, config, params, context, dynamic_smem_bytes(config));
+  else
+    launch_k1(loaded, config, params, context, dynamic_smem_bytes(config));
 }
 
 } // namespace bioir::cutedsl::trimul_kf_k1

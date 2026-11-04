@@ -15,8 +15,8 @@
 """TriMul KF K1 on SM90 and SM100/SM103: input LayerNorm, gated input projections and the row mask.
 
 ``a, b = mask * (LayerNorm(x) @ W_p.T + b_p) * sigmoid(LayerNorm(x) @ W_g.T + b_g)``, written
-channel-major for ``trimul_kf_k2``. SM90 runs from source or from packaged CUBINs, SM100 and SM103
-from source only. A source-free build carries no private kernel adapter; everything re-exported
+channel-major for ``trimul_kf_k2``. Every SM runs from source or from packaged CUBINs. A
+source-free build carries no private kernel adapter; everything re-exported
 here must keep working with it absent.
 """
 

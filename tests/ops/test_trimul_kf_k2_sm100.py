@@ -12,9 +12,11 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""SM100/SM103 TriMul KF K2 from source: shipped tiles against the fp32 reference, graph replay, and selection.
+"""SM100/SM103 TriMul KF K2: shipped tiles against the fp32 reference, graph replay, their CUBINs against the
+source, and selection.
 
-No SM100 CUBIN ships, so under ``CUTEDSL_FORCE_CUBIN=1`` or without kernel sources these GPUs get no K2.
+Under ``CUTEDSL_FORCE_CUBIN=1``, or without kernel sources, these GPUs get K2 exactly when the CUBIN library carries
+their images.
 """
 
 from __future__ import annotations
@@ -29,14 +31,14 @@ from bionemo_ir._torch.custom_ops.trimul_kf_k2 import _config as k2_config
 from bionemo_ir._torch.custom_ops.trimul_kf_k2 import cutedsl as k2_cutedsl
 from tests._torch import skip_if_not_sm100_family, source_module_available
 
-from .test_trimul_kf import _ATOL, _k1_reference, _k2_reference, _problem
+from .test_trimul_kf import _ATOL, _k1_reference, _k2_reference, _problem, library_carries
 
 _T = k2_config.TrimulKFK2Sm100Tile
 _SM100_FAMILY = (100, 103)
 _WIDTHS = (32, 64, 128, 256)
 _requires_source = pytest.mark.skipif(
     not source_module_available("bionemo_ir._torch.custom_ops.trimul_kf_k2._source"),
-    reason="the SM100 K2 compiles only from source",
+    reason="needs the K2 kernel sources",
 )
 #: K1 pads plane rows to whole 128-byte lines.
 _PAD = 64
@@ -214,21 +216,24 @@ def test_sm100_anchors_keep_tails_incoming_and_lists_distinct():
 
 
 @pytest.mark.parametrize("sm", _SM100_FAMILY)
-def test_force_cubin_or_a_source_free_build_ships_no_sm100_k2(sm, monkeypatch):
-    """No SM100 CUBIN ships: ``CUTEDSL_FORCE_CUBIN=1`` or missing sources leave the layer on its regular path."""
+def test_force_cubin_or_a_source_free_build_ships_sm100_k2_from_the_library(sm, monkeypatch):
+    """``CUTEDSL_FORCE_CUBIN=1``, or missing sources, ship a width and direction exactly when the CUBIN library
+    carries this SM's image for every tile it names or falls back to; otherwise the layer keeps its regular path."""
     monkeypatch.setattr(k2_cutedsl.TrimulKFK2CuTe, "_compiled_cache", {})
     backend = k2_cutedsl.TrimulKFK2CuTe(sm)
+    carried = library_carries("trimul_kf_k2", sm)
     monkeypatch.setenv("CUTEDSL_FORCE_CUBIN", "1")
-    assert not any(backend.ships(D, outgoing) for D in _WIDTHS for outgoing in (True, False))
-    with pytest.raises(RuntimeError, match="No trimul KF K2 CUBIN ships"):
-        backend._get_or_compile(True, _T("K2_B0", 128, 64))
+    assert all(backend.ships(D, outgoing) == carried for D in _WIDTHS for outgoing in (True, False))
+    # a tile no config names has no image
+    with pytest.raises(RuntimeError, match="no CUBIN is available"):
+        backend._get_or_compile(True, _T("K2_B0", 128, 96))
     monkeypatch.delenv("CUTEDSL_FORCE_CUBIN")
 
     def missing(package: str):
         raise ImportError(package)
 
     monkeypatch.setattr(k2_cutedsl, "load_source_module", missing)
-    assert not backend.ships(128, True)
+    assert backend.ships(128, True) == carried
     assert not k2_cutedsl.TrimulKFK2CuTe(sm).ships(96, True)
 
 
@@ -238,7 +243,11 @@ def test_source_builds_ship_sm100_k2_and_name_the_sm100_kernels(monkeypatch):
 
     monkeypatch.delenv("CUTEDSL_FORCE_CUBIN", raising=False)
     assert all(k2_cutedsl.TrimulKFK2CuTe(100).ships(D, o) for D in _WIDTHS for o in (True, False))
-    assert _source.source_implementation("sm100", None, "K2_B2").endswith("sm100_trimul_kf_k2.Sm100TrimulKF_K2_2")
+    # Each SM100 variant names its own class of the SM100 kernel module. The test names neither: they ship as
+    # CUBINs, so the public subset keeps their names private.
+    implementations = [_source.source_implementation("sm100", None, v) for v in k2_config.SM100_KERNEL_VARIANTS]
+    assert len(set(implementations)) == len(implementations)
+    assert all(path.rpartition(".")[0] == _source._SM100_MODULE for path in implementations)
     with pytest.raises(ValueError):
         _source.source_implementation("sm100", None, "K2_0")
 
@@ -246,10 +255,63 @@ def test_source_builds_ship_sm100_k2_and_name_the_sm100_kernels(monkeypatch):
 # --- on the GPU ----------------------------------------------------------------------------------------------------
 
 
-def test_force_cubin_turns_the_op_off_on_this_gpu(monkeypatch):
+def test_force_cubin_ships_the_op_from_the_library_on_this_gpu(monkeypatch):
     skip_if_not_sm100_family()
+    from tests._torch import SM_VERSION
+
+    monkeypatch.setattr(k2_cutedsl.TrimulKFK2CuTe, "_compiled_cache", {})
+    carried = library_carries("trimul_kf_k2", SM_VERSION)
     monkeypatch.setenv("CUTEDSL_FORCE_CUBIN", "1")
-    assert all(k2.get_trimul_kf_k2_op(torch.bfloat16, D, o) is None for D in _WIDTHS for o in (True, False))
+    assert all(
+        (k2.get_trimul_kf_k2_op(torch.bfloat16, D, o) is not None) == carried for D in _WIDTHS for o in (True, False)
+    )
+
+
+# (N, D, outgoing): 1-SM and 2-SM K2_B0 tiles, paired CTAs on A multicast and their odd-cluster fallback, K2_B1's
+# narrow and 256-wide pair tiles on the static and cluster-launch-control schedules, and K2_B2's incoming tails.
+_CUBIN_CASES = [
+    (40, 32, True),
+    (136, 32, False),
+    (264, 256, True),
+    (264, 256, False),
+    (392, 64, True),
+    (520, 128, True),
+    (552, 32, False),
+    (584, 256, True),
+    (640, 256, True),
+    (1032, 32, True),
+    (1048, 256, False),
+    (2824, 32, False),
+]
+
+
+@pytest.mark.parametrize(("N", "D", "outgoing"), _CUBIN_CASES, ids=lambda v: str(v))
+@_requires_source
+def test_cubin_matches_source_on_this_gpu(N, D, outgoing, monkeypatch):
+    """The packaged CUBIN writes the source tile's product bit for bit, on dense and padded planes."""
+    skip_if_not_sm100_family()
+    from tests._torch import SM_VERSION
+
+    if not library_carries("trimul_kf_k2", SM_VERSION):
+        pytest.skip(f"this build's CUBIN library carries no SM{SM_VERSION} K2 images")
+    monkeypatch.delenv("CUTEDSL_FORCE_CUBIN", raising=False)
+    op = _op(D, outgoing)
+    a, b = _masked_planes(1, N, D, "random", seed=N)
+    for aa, bb in _layouts(a, b):
+        products = []
+        for force in (False, True):
+            if force:
+                monkeypatch.setenv("CUTEDSL_FORCE_CUBIN", "1")
+            else:
+                monkeypatch.delenv("CUTEDSL_FORCE_CUBIN", raising=False)
+            cache: dict = {}
+            monkeypatch.setattr(k2_cutedsl.TrimulKFK2CuTe, "_compiled_cache", cache)
+            products.append(op(aa, bb).clone())
+            assert all(
+                isinstance(executable, k2_cutedsl.TrimulKFK2Sm100CubinExecutable) == force
+                for executable in cache.values()
+            )
+        assert torch.equal(products[0], products[1])
 
 
 @pytest.mark.parametrize("outgoing", [True, False], ids=["out", "in"])

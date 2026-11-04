@@ -170,7 +170,7 @@ class TrimulKFK1Op:
             selection = self.backend.select(self.C, self.D, n)
             if selection is None:
                 raise ValueError(f"trimul KF K1 ships no config for C={self.C}, D={self.D}")
-            if not self.backend.supports(self.C, self.D, selection.kernel_variant, selection.ab_layout):
+            if not self.backend.supports(self.C, self.D, selection.kernel_variant, selection.ab_layout, selection.tile):
                 selection = selection._replace(ab_layout="dense")
             self._selections[n] = selection
         return selection
@@ -234,9 +234,9 @@ class TrimulKFK1Op:
 def get_trimul_kf_k1_op(dtype: torch.dtype | None, dim: int, hidden_dim: int) -> TrimulKFK1Op | None:
     """Return K1 when this build ships it for ``(dim, hidden_dim)`` on the current GPU, else ``None``.
 
-    The kernels run in bf16 on SM90, from source in a private checkout and from packaged CUBINs
-    otherwise, and on SM100 and SM103 from source only: a source-free build or
-    ``CUTEDSL_FORCE_CUBIN=1`` gets ``None`` there and keeps the caller's regular path.
+    The kernels run in bf16 on SM90, SM100 and SM103, from source in a private checkout and from
+    packaged CUBINs otherwise: a source-free build or ``CUTEDSL_FORCE_CUBIN=1`` without every image the
+    shape's configs name gets ``None`` and keeps the caller's regular path.
     """
     if dtype != _SUPPORTED_DTYPE or not torch.cuda.is_available():
         return None

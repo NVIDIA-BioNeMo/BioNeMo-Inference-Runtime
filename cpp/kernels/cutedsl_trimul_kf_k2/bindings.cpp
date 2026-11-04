@@ -30,8 +30,8 @@ namespace bioir::cutedsl::trimul_kf_k2
 
 void bind(nb::module_& parent)
 {
-  nb::module_ module
-    = parent.def_submodule("trimul_kf_k2", "Direct CUDA Driver launcher for precompiled SM90 TriMul KF K2 CUBINs");
+  nb::module_ module = parent.def_submodule(
+    "trimul_kf_k2", "Direct CUDA Driver launcher for precompiled SM90 and SM100/SM103 TriMul KF K2 CUBINs");
 
   nb::enum_<DType>(module, "DType").value("BFLOAT16", DType::kBFloat16);
 
@@ -46,7 +46,10 @@ void bind(nb::module_& parent)
     .def_ro("defer_kmin", &KernelSpec::defer_kmin)
     .def_ro("split_epi", &KernelSpec::split_epi)
     .def_ro("num_threads", &KernelSpec::num_threads)
-    .def_ro("dynamic", &KernelSpec::dynamic);
+    .def_ro("dynamic", &KernelSpec::dynamic)
+    .def_ro("cluster_n", &KernelSpec::cluster_n)
+    .def_ro("clc", &KernelSpec::clc)
+    .def_ro("tail_w", &KernelSpec::tail_w);
 
   nb::class_<KernelConfig>(module, "KernelConfig")
     .def_ro("spec", &KernelConfig::spec)
@@ -82,7 +85,10 @@ void bind(nb::module_& parent)
     "cluster_m"_a,
     "defer_kmin"_a,
     "split_epi"_a,
-    "dynamic"_a = false);
+    "dynamic"_a = false,
+    "cluster_n"_a = 0U,
+    "clc"_a = false,
+    "tail_w"_a = 0U);
   module.def(
     "launch",
     [](KernelConfig const& config, LaunchParams const& params)

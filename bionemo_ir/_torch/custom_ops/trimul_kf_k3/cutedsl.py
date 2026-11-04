@@ -12,7 +12,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Source-or-CUBIN interface for the TriMul KF K3: SM90 from source or CUBINs, SM100/SM103 from source."""
+"""Source-or-CUBIN interface for the TriMul KF K3: SM90, SM100 and SM103 from source or packaged CUBINs."""
 
 from __future__ import annotations
 
@@ -33,12 +33,12 @@ from bionemo_ir.logger import logger
 
 from ..trimul_kf_k1.cutedsl import MAX_LAUNCH_ROWS, batch_chunks
 from ._config import KERNEL_ABIS, PITCHED_VARIANTS, TrimulKFK3Selection, anchors, select
-from ._cubin import TrimulKFK3CubinExecutable
+from ._cubin import TrimulKFK3CubinExecutable, TrimulKFK3Sm100CubinExecutable
 
 __all__ = ["TrimulKFK3CuTe"]
 
 #: Kernel ABIs the packaged CUBIN library carries; the others run from source only.
-CUBIN_ABIS = frozenset({"sm90"})
+CUBIN_ABIS = frozenset({"sm90", "sm100"})
 #: Disk-cache tag per kernel ABI. The compiled kernel's instantiation lives in ``_source``, outside the
 #: cache's source fingerprint, so a change there bumps the tag.
 _DISK_CACHE_TAGS = {"sm90": "trimul_kf_k3_cute_v3", "sm100": "trimul_kf_k3_cute_sm100_v1"}
@@ -56,9 +56,8 @@ def one_launch_chunks(B: int, N: int) -> tuple[tuple[int, int], ...]:
 class TrimulKFK3CuTe(CuteKernelCache):
     """Cached backend for K3: output LayerNorm, projection and gate, with the optional fused residual.
 
-    Each call runs the variant its ``(C, D)`` configs tune for the anchor nearest the token count. SM90
-    runs from source or the packaged CUBINs; SM100 and SM103 run from source alone, so under
-    ``CUTEDSL_FORCE_CUBIN=1`` they ship nothing.
+    Each call runs the variant its ``(C, D)`` configs tune for the anchor nearest the token count, from
+    source or the packaged CUBINs.
 
     Args:
         sm_version: The SM whose configs and kernels to use; defaults to this GPU's.
@@ -122,13 +121,20 @@ class TrimulKFK3CuTe(CuteKernelCache):
                 f"trimul KF K3 runs from source only on SM{self._sm_version}, and this build has no kernel sources"
             ) from source_error
         product = "pitched" if pitched else "dense"
+        if not isinstance(TrimulKFK3CuTe._compiled_cache.get(key), CuTeDSLKernelLibraryExecutable):
+            # A source build cached under the key would pass for the CUBIN; only the library proves that one ships.
+            TrimulKFK3CuTe._compiled_cache.pop(key, None)
         try:
             executable = populate_compiled_cache_from_library(
                 TrimulKFK3CuTe._compiled_cache,
                 key,
                 "trimul_kf_k3",
-                lambda library, launcher: TrimulKFK3CubinExecutable(
-                    library, launcher, self._sm_version, C, D, kernel_variant, residual, pitched
+                lambda library, launcher: (
+                    TrimulKFK3Sm100CubinExecutable(library, launcher, self._sm_version, C, D, kernel_variant, residual)
+                    if KERNEL_ABIS[self._sm_version] == "sm100"
+                    else TrimulKFK3CubinExecutable(
+                        library, launcher, self._sm_version, C, D, kernel_variant, residual, pitched
+                    )
                 ),
             )
         except CuTeDSLKernelLibraryError as library_error:

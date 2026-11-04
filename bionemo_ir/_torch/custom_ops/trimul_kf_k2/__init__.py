@@ -16,7 +16,7 @@
 
 ``prod[b, d, i, j] = sum_k a[b, d, i, k] b[b, d, j, k]`` outgoing, ``a[b, d, k, i] b[b, d, k, j]``
 incoming. A source-free build carries no private kernel adapter; everything re-exported here must
-keep working with it absent, and on SM100/SM103, which ship no CUBIN, it then offers no K2.
+keep working with it absent.
 """
 
 from ._config import TrimulKFK2Sm100Tile, TrimulKFK2Tile, shipped_widths

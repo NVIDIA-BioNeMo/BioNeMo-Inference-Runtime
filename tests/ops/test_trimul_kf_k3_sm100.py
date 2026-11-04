@@ -12,7 +12,8 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""SM100/SM103 TriMul KF K3: every shipped ``(C, D)`` against the fp32 reference, graph replay and configs."""
+"""SM100/SM103 TriMul KF K3: every shipped ``(C, D)`` against the fp32 reference, graph replay, the CUBINs against
+the source, and configs."""
 
 from __future__ import annotations
 
@@ -26,14 +27,14 @@ from bionemo_ir._torch.custom_ops.trimul_kf_k3 import _config as k3_config
 from bionemo_ir._torch.custom_ops.trimul_kf_k3.cutedsl import TrimulKFK3CuTe
 from tests._torch import skip_if_not_sm100_family, source_module_available
 
-from .test_trimul_kf import _ATOL, _EPS, _float, _k1_reference, _k2_reference, _k3_reference, _problem
+from .test_trimul_kf import _ATOL, _EPS, _float, _k1_reference, _k2_reference, _k3_reference, _problem, library_carries
 
 _VARIANTS = {(32, 32): "K3_B0", (64, 64): "K3_B0", (128, 128): "K3_B0", (256, 256): "K3_B1", (384, 256): "K3_B2"}
 # (variant, largest token count) a width runs below its _VARIANTS entry: K3_B0 with the two-tile x ring
 _SMALL_N_VARIANTS = {(128, 128): ("K3_B3", 192)}
 _requires_source = pytest.mark.skipif(
     not source_module_available("bionemo_ir._torch.custom_ops.trimul_kf_k3._source"),
-    reason="SM100/SM103 K3 runs from source only",
+    reason="needs the K3 kernel sources",
 )
 
 # (B, N, C, D, lengths, has_bias): every shipped pair with masked rows, B > 1, N % 16 == 8 (N * N not
@@ -99,7 +100,7 @@ def _run(op, prod, problem, fold, residual: bool, out: torch.Tensor | None = Non
 def _skip_unless_sm100_source() -> None:
     skip_if_not_sm100_family()
     if not source_module_available("bionemo_ir._torch.custom_ops.trimul_kf_k3._source"):
-        pytest.skip("SM100/SM103 K3 runs from source only")
+        pytest.skip("needs the K3 kernel sources")
 
 
 @pytest.mark.parametrize("residual", [True, False], ids=["res", "nores"])
@@ -239,13 +240,89 @@ def test_k3_writes_the_given_out_and_takes_no_row_statistics():
         _run(op, prod, problem, fold, False, out=problem["x"])
 
 
-def test_k3_ships_nothing_on_sm100_under_force_cubin(monkeypatch):
-    """No SM100 CUBIN exists: the op turns itself off and the layer keeps its regular path."""
+def test_k3_ships_from_the_library_on_sm100_under_force_cubin(monkeypatch):
+    """Under CUTEDSL_FORCE_CUBIN=1 the op exists exactly when the CUBIN library carries this SM's images; otherwise
+    the layer keeps its regular path."""
     skip_if_not_sm100_family()
+    from tests._torch import SM_VERSION
+
+    monkeypatch.setattr(TrimulKFK3CuTe, "_compiled_cache", {})
+    carried = library_carries("trimul_kf_k3", SM_VERSION)
     monkeypatch.setenv("CUTEDSL_FORCE_CUBIN", "1")
     for C, D in _VARIANTS:
         for residual in (True, False):
-            assert k3.get_trimul_kf_k3_op(torch.bfloat16, C, D, residual) is None
+            assert (k3.get_trimul_kf_k3_op(torch.bfloat16, C, D, residual) is not None) == carried
+
+
+# (B, N, C, D): every variant, K3_B3 at small N, partial tiles and partial 2-CTA tiles, several batches.
+_CUBIN_CASES = [
+    (2, 136, 32, 32),
+    (1, 392, 64, 64),
+    (2, 136, 128, 128),
+    (1, 520, 128, 128),
+    (1, 264, 256, 256),
+    (2, 200, 384, 256),
+    (1, 520, 384, 256),
+]
+
+
+@pytest.mark.parametrize("residual", [True, False], ids=["res", "nores"])
+@pytest.mark.parametrize(("B", "N", "C", "D"), _CUBIN_CASES, ids=lambda v: str(v))
+def test_cubin_matches_source_on_this_gpu(B, N, C, D, residual, monkeypatch):
+    """The packaged CUBIN writes the source kernel's output bit for bit."""
+    _skip_unless_sm100_source()
+    from tests._torch import SM_VERSION
+
+    if not library_carries("trimul_kf_k3", SM_VERSION):
+        pytest.skip(f"this build's CUBIN library carries no SM{SM_VERSION} K3 images")
+    monkeypatch.delenv("CUTEDSL_FORCE_CUBIN", raising=False)
+    problem, prod, fold = _k3_problem(B, N, C, D, "random", True, seed=N)
+    op = k3.get_trimul_kf_k3_op(torch.bfloat16, C, D, residual)
+    outputs = []
+    for force in (False, True):
+        if force:
+            monkeypatch.setenv("CUTEDSL_FORCE_CUBIN", "1")
+        cache: dict = {}
+        monkeypatch.setattr(TrimulKFK3CuTe, "_compiled_cache", cache)
+        outputs.append(_run(op, prod, problem, fold, residual).clone())
+        assert (
+            all(type(executable).__name__ == "TrimulKFK3Sm100CubinExecutable" for executable in cache.values()) == force
+        )
+    assert torch.equal(outputs[0], outputs[1])
+
+
+def test_cubin_launcher_rejects_an_output_overlapping_x(monkeypatch):
+    """The CUBIN launcher, which callers can reach without the op's checks, refuses an output sharing any bytes with
+    x, and writes the neighbouring range of the same buffer as the op does."""
+    skip_if_not_sm100_family()
+    from tests._torch import SM_VERSION
+
+    if not library_carries("trimul_kf_k3", SM_VERSION):
+        pytest.skip(f"this build's CUBIN library carries no SM{SM_VERSION} K3 images")
+    C, D, N = 64, 64, 128
+    problem, prod, fold = _k3_problem(1, N, C, D, "random", True)
+    monkeypatch.setenv("CUTEDSL_FORCE_CUBIN", "1")
+    monkeypatch.setattr(TrimulKFK3CuTe, "_compiled_cache", {})
+    backend = TrimulKFK3CuTe(SM_VERSION)
+    selection = backend.select(C, D, N)
+    executable = backend._get_or_compile(C, D, selection.kernel_variant, False)
+    w_out, w_gate, vec = fold.weights(selection)
+    x = problem["x"]
+    elements = x.numel()
+    buffer = torch.empty(2 * elements, device="cuda", dtype=x.dtype)
+    x_in_buffer = buffer[:elements].copy_(x.view(-1))
+
+    def launch(output: torch.Tensor) -> None:
+        executable(prod.view(-1), x_in_buffer, w_out.view(-1), w_gate.view(-1), vec, None, output, N, 1, _EPS)
+
+    with pytest.raises(ValueError, match="must not alias x"):
+        launch(buffer[elements // 2 : elements // 2 + elements])
+    launch(buffer[elements:])
+    torch.cuda.synchronize()
+    assert torch.equal(
+        buffer[elements:].view_as(x),
+        _run(k3.get_trimul_kf_k3_op(torch.bfloat16, C, D, False), prod, problem, fold, False),
+    )
 
 
 # ---------------------------------------------------------------------------------------------- CPU
@@ -299,15 +376,17 @@ def test_sm100_variant_for_another_width_is_rejected(tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize("sm", [100, 103])
-def test_force_cubin_ships_nothing_on_sm100(sm, monkeypatch):
+def test_force_cubin_ships_sm100_from_the_library(sm, monkeypatch):
     backend = TrimulKFK3CuTe(sm)
     monkeypatch.setattr(TrimulKFK3CuTe, "_compiled_cache", {})
+    carried = library_carries("trimul_kf_k3", sm)
     monkeypatch.setenv("CUTEDSL_FORCE_CUBIN", "1")
     for C, D in _VARIANTS:
         for residual in (True, False):
-            assert not backend.ships(C, D, residual)
-    with pytest.raises(RuntimeError, match="from source only"):
-        backend._get_or_compile(256, 256, "K3_B1", True)
+            assert backend.ships(C, D, residual) == carried
+    # an image of a variant the shape's configs never name does not ship
+    with pytest.raises(RuntimeError, match="no CUBIN is available"):
+        backend._get_or_compile(256, 256, "K3_B0", True)
 
 
 @_requires_source

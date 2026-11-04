@@ -238,6 +238,99 @@ static_assert(sizeof(SM90ResidentParams::output) == 0x10, "unexpected trimul KF 
 static_assert(sizeof(SM90ResidentParams::num_slabs) == 0x04, "unexpected trimul KF K3 resident slab-count width");
 static_assert(sm90_resident_parameter_count(false) == 15U && sm90_resident_parameter_count(true) == 16U);
 
+/* Blackwell device ABI trimul_kf_k3_sm100_v1, read from EIATTR_KPARAM_INFO for K3_B0 with the fused
+ * residual:
+ *
+ *   ord  0  0x000  0x03  mma_p         SM100TiledMma
+ *   ord  1  0x003  0x03  mma_x         SM100TiledMma
+ *   ord  2  0x040  0x80  prod_tma      CUtensorMap
+ *   ord  3  0x0c0  0x08  prod_coord    CoordTensorS2   (N * N, B)
+ *   ord  4  0x100  0x80  x_tma         CUtensorMap
+ *   ord  5  0x180  0x08  x_coord       CoordTensorS2   (N * N, B)
+ *   ord  6  0x1c0  0x80  w_out_tma     CUtensorMap
+ *   ord  7  0x240  0x80  w_gate_tma    CUtensorMap
+ *   ord  8  0x2c0  0x80  output_tma    CUtensorMap
+ *   ord  9  0x340  0x08  output_coord  CoordTensorS2   (N * N, B)
+ *   ord 10  0x348  0x08  vec           cute_tensor_s0_d0_t
+ *   ord 11  0x350  0x10  seqlen        cute_tensor_s1_d0_t
+ *   ord 12  0x360  0x04  n             std::int32_t
+ *   ord 13  0x364  0x04  tiles_per_batch std::int32_t
+ *   ord 14  0x368  0x04  num_tiles     std::int32_t
+ *   ord 15  0x36c  0x04  eps           float
+ *
+ * Without the fused residual seqlen is absent. K3_B2 and K3_B3 lower the same bank. K3_B1 swaps the pairs of
+ * MMA tokens, x and the product, and the gate and output folds (mma_x, mma_p, x, product, w_gate, w_out), and
+ * passes N * N before n. K3_B1 and K3_B2 count 256-row tiles of CTA pairs. The weights have static shapes, so
+ * their coordinate tensors lower to no parameter. Every TMA slot carries CuTe DSL 4.5.2's tagged Blackwell
+ * atom (finalize_sm100_tma_atom); the MMA tokens are runtime state the kernel initializes itself, passed as
+ * zeros.
+ */
+struct SM100TiledMma
+{
+  std::uint8_t fields[3]{};
+};
+
+struct SM100Params
+{
+  SM100TiledMma mma_p;
+  SM100TiledMma mma_x;
+  CUtensorMap prod_tma;
+  CUtensorMap x_tma;
+  CUtensorMap w_out_tma;
+  CUtensorMap w_gate_tma;
+  CUtensorMap output_tma;
+  CoordTensorS2 coord;
+  cute_tensor_s0_d0_t vec;
+  cute_tensor_s1_d0_t seqlen;
+  std::int32_t nn;
+  std::int32_t n;
+  std::int32_t tiles_per_batch;
+  std::int32_t num_tiles;
+  float eps;
+};
+
+constexpr std::size_t sm100_parameter_count(std::int32_t kernel_variant, bool residual)
+{
+  return 15U + (kernel_variant == 1 ? 1U : 0U) + (residual ? 1U : 0U);
+}
+
+inline constexpr std::size_t kSM100MaxParameterCount = sm100_parameter_count(1, true);
+
+/* params and kernel_params must stay alive until the launch call returns. The product, x and the output share
+ * one coordinate extent.
+ */
+inline std::size_t pack_sm100_kernel_params(
+  SM100Params* params, std::int32_t kernel_variant, bool residual, void* kernel_params[kSM100MaxParameterCount])
+{
+  bool const swapped = kernel_variant == 1;
+  std::size_t count = 0;
+  kernel_params[count++] = swapped ? &params->mma_x : &params->mma_p;
+  kernel_params[count++] = swapped ? &params->mma_p : &params->mma_x;
+  kernel_params[count++] = swapped ? &params->x_tma : &params->prod_tma;
+  kernel_params[count++] = &params->coord;
+  kernel_params[count++] = swapped ? &params->prod_tma : &params->x_tma;
+  kernel_params[count++] = &params->coord;
+  kernel_params[count++] = swapped ? &params->w_gate_tma : &params->w_out_tma;
+  kernel_params[count++] = swapped ? &params->w_out_tma : &params->w_gate_tma;
+  kernel_params[count++] = &params->output_tma;
+  kernel_params[count++] = &params->coord;
+  kernel_params[count++] = &params->vec;
+  if (residual)
+    kernel_params[count++] = &params->seqlen;
+  if (swapped)
+    kernel_params[count++] = &params->nn;
+  kernel_params[count++] = &params->n;
+  kernel_params[count++] = &params->tiles_per_batch;
+  kernel_params[count++] = &params->num_tiles;
+  kernel_params[count++] = &params->eps;
+  return count;
+}
+
+static_assert(std::is_standard_layout_v<SM100Params>);
+static_assert(sizeof(SM100TiledMma) == 0x03 && alignof(SM100TiledMma) == 1);
+static_assert(sizeof(SM100Params::coord) == 0x08 && sizeof(SM100Params::seqlen) == 0x10);
+static_assert(sm100_parameter_count(0, true) == 16U && sm100_parameter_count(1, true) == 17U);
+
 } // namespace bioir::cutedsl::trimul_kf_k3::abi
 
 namespace bioir::cutedsl::trimul_kf_k3
@@ -248,7 +341,8 @@ enum class DType : std::uint8_t
   kBFloat16,
 };
 
-/* Launch fields generated with the corresponding CUBIN, which runs the configs' K3_<kernel_variant>;
+/* Launch fields generated with the corresponding CUBIN, which runs the configs' K3_<kernel_variant> on SM90
+ * (kernel_sm 90), or K3_B<kernel_variant> on SM100 and SM103 (kernel_sm 100, a dense product only);
  * kernel_variant names the image and never selects behaviour. reads_stats: the image reads K1's row
  * statistics; residual fuses (x + update) * mask into the output; pitched: it reads the product at the
  * row pitch its launch passes, tiled per row. Each tile_m-row tile spans tile_ctas CTAs, one per

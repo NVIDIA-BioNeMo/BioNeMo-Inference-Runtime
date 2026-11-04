@@ -31,13 +31,13 @@ from bionemo_ir._torch.utils.kernel import (
 from bionemo_ir.dsl_kernels.cute_cache import FORCE_CUBIN_ENV, CuteKernelCache
 from bionemo_ir.logger import logger
 
-from ._config import KERNEL_ABIS, K2Tile, TrimulKFK2Sm100Tile, TrimulKFK2Tile, anchors, select, shipped_tiles
-from ._cubin import TrimulKFK2CubinExecutable
+from ._config import KERNEL_ABIS, K2Tile, TrimulKFK2Sm100Tile, anchors, select, shipped_tiles
+from ._cubin import TrimulKFK2CubinExecutable, TrimulKFK2Sm100CubinExecutable
 
 __all__ = ["TrimulKFK2CuTe"]
 
 #: Kernel ABIs that ship packaged CUBINs; the others compile from source only.
-_CUBIN_ABIS = frozenset({"sm90"})
+_CUBIN_ABIS = frozenset({"sm90", "sm100"})
 #: Disk-cache key tags per kernel ABI. The cache fingerprint covers the kernel sources but not this host code, so
 #: bump a tag when the arguments a tile compiles with change.
 _DISK_KEY_TAGS = {"sm90": "trimul_kf_k2_cute_v2", "sm100": "trimul_kf_k2_cute_sm100_v2"}
@@ -46,9 +46,8 @@ _DISK_KEY_TAGS = {"sm90": "trimul_kf_k2_cute_v2", "sm100": "trimul_kf_k2_cute_sm
 class TrimulKFK2CuTe(CuteKernelCache):
     """Cached backend for K2, the triangle contraction of K1's channel-major ``a`` and ``b``.
 
-    Each call runs the tile its width's configs tune for the anchor nearest the token count. SM90 compiles its
-    tiles from source or loads packaged CUBINs; SM100 and SM103 compile theirs from source, and no CUBIN ships
-    for them.
+    Each call runs the tile its width's configs tune for the anchor nearest the token count, compiled from source
+    or loaded from the packaged CUBINs.
 
     Args:
         sm_version: The SM whose configs and kernels to use; defaults to this GPU's.
@@ -70,10 +69,9 @@ class TrimulKFK2CuTe(CuteKernelCache):
         return select(self._sm_version, D, n, outgoing)
 
     def ships(self, D: int, outgoing: bool) -> bool:
-        """Whether this build can run width ``D`` in one direction, from source or from packaged CUBINs.
-
-        An SM100/SM103 build ships it only from source, so never under ``CUTEDSL_FORCE_CUBIN=1``.
-        """
+        """Whether this build can run width ``D`` in one direction, from source or from packaged CUBINs: a
+        source-free build, or ``CUTEDSL_FORCE_CUBIN=1``, needs an image for every tile the configs name or fall
+        back to."""
         entries = anchors(self._sm_version, D, outgoing)
         if not entries:
             return False
@@ -97,21 +95,26 @@ class TrimulKFK2CuTe(CuteKernelCache):
         return (self._sm_version, outgoing, *tile)
 
     def _load_cubin_executable(
-        self, key: tuple, outgoing: bool, tile: TrimulKFK2Tile, source_error: Exception | None = None
+        self, key: tuple, outgoing: bool, tile: K2Tile, source_error: Exception | None = None
     ) -> Any:
         if self._kernel_abi not in _CUBIN_ABIS:
             raise RuntimeError(
                 f"No trimul KF K2 CUBIN ships for SM{self._sm_version}; its kernels compile from source, which "
                 f"{FORCE_CUBIN_ENV}=1 forbids or this build lacks"
             ) from source_error
+        if not isinstance(TrimulKFK2CuTe._compiled_cache.get(key), CuTeDSLKernelLibraryExecutable):
+            # A source build cached under the key would pass for the CUBIN; only the library proves that one ships.
+            TrimulKFK2CuTe._compiled_cache.pop(key, None)
         try:
             executable = populate_compiled_cache_from_library(
                 TrimulKFK2CuTe._compiled_cache,
                 key,
                 "trimul_kf_k2",
-                lambda library, launcher: TrimulKFK2CubinExecutable(
-                    library, launcher, self._sm_version, outgoing, tile
-                ),
+                lambda library, launcher: (
+                    TrimulKFK2Sm100CubinExecutable
+                    if isinstance(tile, TrimulKFK2Sm100Tile)
+                    else TrimulKFK2CubinExecutable
+                )(library, launcher, self._sm_version, outgoing, tile),
             )
         except CuTeDSLKernelLibraryError as library_error:
             if self.force_cubin():

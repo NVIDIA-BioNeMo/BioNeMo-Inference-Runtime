@@ -12,7 +12,8 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""SM100/SM103 TriMul KF K1: the tcgen05 kernels against the fp32 reference, and their configs and selection."""
+"""SM100/SM103 TriMul KF K1: the tcgen05 kernels against the fp32 reference, their CUBINs against the source, and
+their configs and selection."""
 
 from __future__ import annotations
 
@@ -27,12 +28,10 @@ from bionemo_ir._torch.custom_ops.trimul_kf_k1 import cutedsl as k1_cutedsl
 from bionemo_ir._torch.custom_ops.trimul_kf_k1 import ops as k1_ops
 from tests._torch import skip_if_not_sm100_family, source_module_available
 
-from .test_trimul_kf import _ATOL, _EPS, _k1_reference, _problem
+from .test_trimul_kf import _ATOL, _EPS, _k1_reference, _problem, library_carries
 
 _SOURCE = "bionemo_ir._torch.custom_ops.trimul_kf_k1._source"
-_requires_source = pytest.mark.skipif(
-    not source_module_available(_SOURCE), reason="the SM100 K1 kernels compile from source only"
-)
+_requires_source = pytest.mark.skipif(not source_module_available(_SOURCE), reason="needs the K1 kernel sources")
 _SHAPES = [(32, 32), (64, 64), (128, 128), (256, 256), (384, 256)]
 _BLACKWELL = (100, 103)
 _Tile = k1_config.TrimulKFK1Tile
@@ -93,7 +92,7 @@ def _op(C: int, D: int, monkeypatch: pytest.MonkeyPatch) -> k1.TrimulKFK1Op:
     """K1 from source on this SM100/SM103 GPU."""
     skip_if_not_sm100_family()
     if not source_module_available(_SOURCE):
-        pytest.skip("the SM100 K1 kernels compile from source only")
+        pytest.skip("needs the K1 kernel sources")
     monkeypatch.delenv("CUTEDSL_FORCE_CUBIN", raising=False)
     op = k1.get_trimul_kf_k1_op(torch.bfloat16, C, D)
     assert op is not None
@@ -160,16 +159,47 @@ def test_k1_rejects_unaligned_tokens(monkeypatch):
         op(x, seqlen, _fold(problem), _EPS)
 
 
-def test_force_cubin_ships_no_k1_on_this_gpu(monkeypatch):
-    """No SM100 CUBIN ships, so CUTEDSL_FORCE_CUBIN=1 leaves every shape on the caller's path."""
-    _op(32, 32, monkeypatch)
-    monkeypatch.setattr(k1_ops, "_trimul_kf_k1_instances", {})
-    monkeypatch.setenv("CUTEDSL_FORCE_CUBIN", "1")
-    for C, D in _SHAPES:
-        assert k1.get_trimul_kf_k1_op(torch.bfloat16, C, D) is None, (C, D)
-    monkeypatch.delenv("CUTEDSL_FORCE_CUBIN")
-    for C, D in _SHAPES:
-        assert k1.get_trimul_kf_k1_op(torch.bfloat16, C, D) is not None, (C, D)
+# (B, N, C, D): every shape's tiles, CTA pairs and padded planes (N % 16 == 8 past each shape's pad switch).
+_CUBIN_CASES = [
+    (2, 40, 32, 32),
+    (1, 552, 32, 32),
+    (1, 136, 64, 64),
+    (2, 216, 64, 64),
+    (1, 520, 64, 64),
+    (1, 1032, 64, 64),
+    (2, 64, 128, 128),
+    (1, 328, 128, 128),
+    (1, 1040, 128, 128),
+    (2, 40, 256, 256),
+    (1, 312, 256, 256),
+    (2, 200, 384, 256),
+    (1, 520, 384, 256),
+    (1, 744, 384, 256),
+]
+
+
+@pytest.mark.parametrize(("B", "N", "C", "D"), _CUBIN_CASES, ids=lambda v: str(v))
+def test_cubin_matches_source_on_this_gpu(B, N, C, D, monkeypatch):
+    """The packaged CUBIN writes the source kernel's a and b bit for bit, and the op takes it under
+    CUTEDSL_FORCE_CUBIN=1."""
+    op = _op(C, D, monkeypatch)
+    sm = op.backend._sm_version
+    if not library_carries("trimul_kf_k1", sm):
+        pytest.skip(f"this build's CUBIN library carries no SM{sm} K1 images")
+    problem = _problem(B, N, C, True, "random", seed=N, D=D)
+    fold = _fold(problem)
+    outputs = []
+    for force in (False, True):
+        if force:
+            monkeypatch.setenv("CUTEDSL_FORCE_CUBIN", "1")
+        cache: dict = {}
+        monkeypatch.setattr(k1_cutedsl.TrimulKFK1CuTe, "_compiled_cache", cache)
+        a, b, _ = op(problem["x"], problem["seqlen"], fold, _EPS)
+        outputs.append((a.clone(), b.clone()))
+        assert all(
+            isinstance(executable, k1_cutedsl.TrimulKFK1Sm100CubinExecutable) == force for executable in cache.values()
+        )
+    assert torch.equal(outputs[0][0], outputs[1][0]) and torch.equal(outputs[0][1], outputs[1][1])
 
 
 # --- configs and selection (no GPU work) ---------------------------------------------------------------------------
@@ -239,28 +269,38 @@ def test_sm100_anchors_build_kernels_that_fit(sm):
 
 
 @pytest.mark.parametrize("sm", _BLACKWELL)
-def test_force_cubin_never_ships_sm100(sm, monkeypatch):
-    """SM100 and SM103 run from source only: forcing CUBINs, or a source-free build, ships no shape."""
+def test_force_cubin_ships_sm100_from_the_library(sm, monkeypatch):
+    """Under CUTEDSL_FORCE_CUBIN=1 (or in a source-free build) a shape ships exactly when the CUBIN library carries
+    this SM's images, every anchor's tile in each layout its rule writes; from source, every shape ships."""
+    monkeypatch.setattr(k1_cutedsl.TrimulKFK1CuTe, "_compiled_cache", {})
     backend = k1_cutedsl.TrimulKFK1CuTe(sm)
+    carried = library_carries("trimul_kf_k1", sm)
     monkeypatch.setenv("CUTEDSL_FORCE_CUBIN", "1")
     for C, D in _SHAPES:
-        assert not backend.ships(C, D), (C, D)
-        assert not backend.supports(C, D, "K1_B0", "padded") and backend.supports(C, D, "K1_B0", "dense")
+        assert backend.ships(C, D) == carried, (C, D)
+        # an anchor whose rule pads ships its padded image beside the dense one
+        selection = next(s for n in range(8, 4097, 8) if (s := backend.select(C, D, n)).ab_layout == "padded")
+        assert backend.supports(C, D, selection.kernel_variant, "padded", selection.tile) == carried, (C, D)
+        assert backend.supports(C, D, selection.kernel_variant, "dense", selection.tile)
+    assert not backend.ships(96, 96)
     monkeypatch.delenv("CUTEDSL_FORCE_CUBIN")
-    assert all(backend.ships(C, D) for C, D in _SHAPES) == source_module_available(_SOURCE)
+    assert all(backend.ships(C, D) for C, D in _SHAPES) == (carried or source_module_available(_SOURCE))
 
 
 @pytest.mark.parametrize("sm", _BLACKWELL)
 def test_get_op_follows_ships_on_blackwell(sm, monkeypatch):
-    """The op exists on SM100/SM103 exactly when its kernels compile from source."""
+    """The op exists on SM100/SM103 exactly when its kernels compile from source or ship as CUBINs."""
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
     monkeypatch.setattr(torch.cuda, "get_device_capability", lambda device=None: divmod(sm, 10))
     monkeypatch.setattr(k1_ops, "_trimul_kf_k1_instances", {})
+    monkeypatch.setattr(k1_cutedsl.TrimulKFK1CuTe, "_compiled_cache", {})
+    carried = library_carries("trimul_kf_k1", sm)
     monkeypatch.setenv("CUTEDSL_FORCE_CUBIN", "1")
-    assert k1.get_trimul_kf_k1_op(torch.bfloat16, 128, 128) is None
+    assert (k1.get_trimul_kf_k1_op(torch.bfloat16, 128, 128) is not None) == carried
     monkeypatch.delenv("CUTEDSL_FORCE_CUBIN")
+    monkeypatch.setattr(k1_ops, "_trimul_kf_k1_instances", {})
     op = k1.get_trimul_kf_k1_op(torch.bfloat16, 128, 128)
-    assert (op is not None) == source_module_available(_SOURCE)
+    assert (op is not None) == (carried or source_module_available(_SOURCE))
     assert k1.get_trimul_kf_k1_op(torch.bfloat16, 96, 96) is None
 
 

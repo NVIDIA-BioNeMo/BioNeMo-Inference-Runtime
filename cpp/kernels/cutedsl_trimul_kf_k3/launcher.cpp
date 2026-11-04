@@ -36,6 +36,7 @@ namespace
 
 constexpr char kSM90LaunchAbi[] = "trimul_kf_k3_sm90_v2";
 constexpr char kSM90ResidentLaunchAbi[] = "trimul_kf_k3_sm90_resident_v1";
+constexpr char kSM100LaunchAbi[] = "trimul_kf_k3_sm100_v1";
 /* Rows one launch addresses: TMA coordinates are int32. */
 constexpr std::int64_t kMaxLaunchRows = std::numeric_limits<std::int32_t>::max() - 128;
 /* x and output are bf16. */
@@ -106,6 +107,24 @@ void validate_image(KernelConfig const& config)
     throw std::invalid_argument("embedded CUBIN variant_id must not be empty");
   if (config.cubin.kernel_symbol == nullptr || config.cubin.kernel_symbol[0] == '\0')
     throw std::invalid_argument("kernel_symbol must not be empty");
+  if (config.cubin.kernel_sm == 100)
+  {
+    if (config.cubin.launch_abi == nullptr || std::strcmp(config.cubin.launch_abi, kSM100LaunchAbi) != 0)
+      throw std::invalid_argument("trimul KF K3 CUBIN has an incompatible launch ABI");
+    if (config.embedded_image == nullptr || !config.embedded_image->sm100.enabled)
+      throw std::invalid_argument("trimul KF K3 CUBIN is missing its Blackwell launch metadata");
+    if (!cubin_supports_sm(config.cubin, config.spec.target_sm))
+      throw std::invalid_argument(
+        "embedded CUBIN does not support configured device SM" + std::to_string(config.spec.target_sm));
+    KernelSpec const& spec = config.spec;
+    std::uint32_t const* const cluster = config.embedded_image->sm100.cluster_dims;
+    if (
+      spec.C <= 0 || spec.D <= 0 || spec.num_threads == 0 || spec.kernel_variant < 0 || spec.kernel_variant > 3
+      || spec.reads_stats || spec.pitched || (spec.tile_ctas != 1 && spec.tile_ctas != 2)
+      || spec.tile_m != 128 * spec.tile_ctas || cluster[0] != spec.tile_ctas || cluster[1] != 1 || cluster[2] != 1)
+      throw std::invalid_argument("trimul KF K3 CUBIN has invalid Blackwell launch geometry");
+    return;
+  }
   if (config.cubin.kernel_sm != 90)
     throw std::invalid_argument("trimul KF K3 CUBIN has an incompatible launch ABI");
   /* The resident parameter bank always carries K1's row statistics. */
@@ -121,6 +140,14 @@ void validate_image(KernelConfig const& config)
     spec.C <= 0 || spec.D <= 0 || spec.num_threads == 0 || spec.tile_m == 0 || spec.tile_ctas == 0
     || spec.kernel_variant < 0)
     throw std::invalid_argument("trimul KF K3 CUBIN has invalid launch geometry");
+}
+
+/* K3 reads x while it writes output, so the two operands, of elements values each, must not share any bytes. */
+void reject_output_aliasing_x(LaunchParams const& params, std::int64_t elements)
+{
+  std::uint64_t const bytes = static_cast<std::uint64_t>(elements) * kElementBytes;
+  if (params.output.data < params.x.data + bytes && params.x.data < params.output.data + bytes)
+    throw std::invalid_argument("trimul KF K3 output must not alias x");
 }
 
 /* A flat row-major [rows, cols] operand as a rank-2 TMA source. */
@@ -257,10 +284,7 @@ void launch_sm90(
   validate_flat(params.w_gate_out, C * C, 16, device, "w_gate_out");
   validate_flat(params.vec_out, 4 * C, 16, device, "vec_out");
   validate_flat(params.output, operand_elements, 16, device, "output");
-  /* K3 reads x while it writes output, so the two must not share any bytes. */
-  std::uint64_t const operand_bytes = static_cast<std::uint64_t>(operand_elements) * kElementBytes;
-  if (params.output.data < params.x.data + operand_bytes && params.x.data < params.output.data + operand_bytes)
-    throw std::invalid_argument("trimul KF K3 output must not alias x");
+  reject_output_aliasing_x(params, operand_elements);
   if (stats_variant)
   {
     validate_flat_tensor(params.stats, "stats", 16);
@@ -392,6 +416,119 @@ void launch_sm90(
     launch_cubin_kernel(loaded, &launch_config, kernel_params, nullptr), "launch_cubin_kernel(trimul_kf_k3_sm90)");
 }
 
+/* The SM100/SM103 K3 over one dense product: 128-row tiles (K3_B0, K3_B3) or 256-row tiles of CTA pairs
+ * (K3_B1, K3_B2), each batch tiled on its own. One launch covers every batch; the kernel reduces its own row
+ * statistics.
+ */
+void launch_sm100(
+  cubin_kernel_t loaded,
+  KernelConfig const& config,
+  LaunchParams const& params,
+  CUcontext context,
+  std::uint32_t smem_bytes)
+{
+  std::int32_t const device = cuda_device_for_context(context);
+  KernelSpec const& spec = config.spec;
+  std::int64_t const C = spec.C;
+  std::int64_t const D = spec.D;
+  std::int64_t const n = params.n;
+  std::int64_t const nb = params.nb;
+  if (n <= 0 || nb <= 0)
+    throw std::invalid_argument("trimul KF K3 needs positive n and nb");
+  std::int64_t const nn = checked_mul(n, n, "trimul KF K3 rows");
+  std::int64_t const rows = checked_mul(nb, nn, "trimul KF K3 rows");
+  if (rows > kMaxLaunchRows)
+    throw std::invalid_argument("trimul KF K3 addresses at most " + std::to_string(kMaxLaunchRows) + " rows a launch");
+  if (params.prod_pitch != 0 && params.prod_pitch != n)
+    throw std::invalid_argument("SM100 trimul KF K3 reads a dense product: its row pitch must be n");
+  validate_flat(params.prod, checked_mul(rows, D, "trimul KF K3 prod"), 16, device, "prod");
+  validate_flat(params.x, checked_mul(rows, C, "trimul KF K3 x"), 16, device, "x");
+  validate_flat(params.output, checked_mul(rows, C, "trimul KF K3 output"), 16, device, "output");
+  validate_flat(params.w_out, C * D, 16, device, "w_out");
+  validate_flat(params.w_gate_out, C * C, 16, device, "w_gate_out");
+  validate_flat(params.vec_out, 4 * C, 16, device, "vec_out");
+  if (spec.residual)
+  {
+    validate_tensor(params.seqlen, "seqlen", 4);
+    check_device(params.seqlen.device, device, "seqlen");
+    if (params.seqlen.shape[0] < nb * n)
+      throw std::invalid_argument("seqlen needs one length per (b, i) row");
+  }
+  reject_output_aliasing_x(params, checked_mul(rows, C, "trimul KF K3 x"));
+
+  embedded::SM100LaunchInfo const& metadata = config.embedded_image->sm100;
+  CUtensorMapDataType const expected_dtype = tma_data_type(true);
+  abi::SM100Params device_params{};
+  auto const encode
+    = [&](CUtensorMap& descriptor, TmaDescriptorInfo const& info, TmaTensorSource const& source, char const* name)
+  {
+    encode_tma_descriptor(descriptor, info, expected_dtype, source, name);
+    finalize_sm100_tma_atom(descriptor);
+  };
+  /* x and the output are (n * n, C, nb) row-major blocks; the product (n * n, D, nb) channel-major. */
+  auto const rows_source = [&](std::uint64_t data)
+  {
+    return TmaTensorSource{
+      data,
+      {static_cast<std::uint64_t>(nn), static_cast<std::uint64_t>(C), static_cast<std::uint64_t>(nb), 0},
+      {static_cast<std::uint64_t>(C), 1, static_cast<std::uint64_t>(nn * C), 0},
+    };
+  };
+  encode(device_params.prod_tma, metadata.prod, channel_major_source(params.prod, nn, D, nb), "prod");
+  encode(device_params.x_tma, metadata.x, rows_source(params.x.data), "x");
+  encode(device_params.w_out_tma, metadata.w_out, matrix_source(params.w_out.data, C, D), "w_out");
+  encode(device_params.w_gate_tma, metadata.w_gate, matrix_source(params.w_gate_out.data, C, C), "w_gate_out");
+  encode(device_params.output_tma, metadata.output, rows_source(params.output.data), "output");
+  device_params.coord = CoordTensorS2{{static_cast<std::int32_t>(nn), static_cast<std::int32_t>(nb)}};
+  device_params.vec.data = static_cast<CUdeviceptr>(params.vec_out.data);
+  if (spec.residual)
+    device_params.seqlen = make_tensor1_descriptor(params.seqlen);
+  device_params.nn = static_cast<std::int32_t>(nn);
+  device_params.n = static_cast<std::int32_t>(n);
+  device_params.eps = params.eps;
+
+  std::uint64_t const tile_rows = spec.tile_m;
+  std::uint64_t const tiles_per_batch = ceil_div(static_cast<std::uint64_t>(nn), tile_rows);
+  std::uint64_t const num_tiles = tiles_per_batch * static_cast<std::uint64_t>(nb);
+  if (num_tiles > static_cast<std::uint64_t>(std::numeric_limits<std::int32_t>::max()))
+    throw std::invalid_argument("trimul KF K3 row tiles exceed int32");
+  device_params.tiles_per_batch = static_cast<std::int32_t>(tiles_per_batch);
+  device_params.num_tiles = static_cast<std::int32_t>(num_tiles);
+
+  void* kernel_params[abi::kSM100MaxParameterCount]{};
+  std::size_t const parameter_count
+    = abi::pack_sm100_kernel_params(&device_params, spec.kernel_variant, spec.residual, kernel_params);
+  if (parameter_count != abi::sm100_parameter_count(spec.kernel_variant, spec.residual))
+    throw std::logic_error("trimul KF K3 SM100 parameter packer produced the wrong ABI count");
+
+  std::int32_t const multiprocessor_count = cuda_multiprocessor_count_for_context(context);
+  if (multiprocessor_count <= 0)
+    throw std::invalid_argument("current CUDA device has no active multiprocessors");
+  /* Persistent CTAs, or CTA pairs, stride over the row tiles. */
+  std::uint64_t const ctas = spec.tile_ctas;
+  std::uint64_t const clusters
+    = std::min<std::uint64_t>(num_tiles, static_cast<std::uint64_t>(multiprocessor_count) / ctas);
+  cubin_launch_config_t launch_config{};
+  launch_config.grid_x = checked_u32(clusters * ctas, "trimul KF K3 grid.x");
+  launch_config.grid_y = 1;
+  launch_config.grid_z = 1;
+  launch_config.block_x = metadata.block_dims[0];
+  launch_config.block_y = metadata.block_dims[1];
+  launch_config.block_z = metadata.block_dims[2];
+  launch_config.cluster_x = metadata.cluster_dims[0];
+  launch_config.cluster_y = metadata.cluster_dims[1];
+  launch_config.cluster_z = metadata.cluster_dims[2];
+  launch_config.cluster_scheduling_policy = metadata.cluster_scheduling_policy;
+  launch_config.dynamic_smem_bytes = smem_bytes;
+  launch_config.stream = reinterpret_cast<CUstream>(static_cast<std::uintptr_t>(params.stream));
+  /* The source kernels request no programmatic dependent launch: under CUDA-graph replay a kernel could read
+   * its predecessor's output mid-write.
+   */
+  launch_config.programmatic_stream_serialization = 0;
+  check_cuda_driver(
+    launch_cubin_kernel(loaded, &launch_config, kernel_params, nullptr), "launch_cubin_kernel(trimul_kf_k3_sm100)");
+}
+
 KernelSpec make_kernel_spec(embedded::CubinImage const& image)
 {
   return KernelSpec{
@@ -430,7 +567,7 @@ embedded::CubinImage const& find_embedded_cubin(
   }
   throw std::invalid_argument(
     "No embedded trimul KF K3 CUBIN for SM" + std::to_string(target_sm) + ", C=" + std::to_string(C)
-    + ", D=" + std::to_string(D) + ", K3_" + std::to_string(kernel_variant)
+    + ", D=" + std::to_string(D) + ", variant " + std::to_string(kernel_variant)
     + ", residual=" + (residual ? "true" : "false") + ", pitched=" + (pitched ? "true" : "false"));
 }
 
@@ -476,7 +613,10 @@ void launch(KernelConfig const& config, LaunchParams const& params)
       + std::to_string(device_sm));
   }
   cubin_kernel_t const loaded = load_embedded_kernel(context, config.cubin);
-  launch_sm90(loaded, config, params, context, dynamic_smem_bytes(config));
+  if (config.cubin.kernel_sm == 100)
+    launch_sm100(loaded, config, params, context, dynamic_smem_bytes(config));
+  else
+    launch_sm90(loaded, config, params, context, dynamic_smem_bytes(config));
 }
 
 } // namespace bioir::cutedsl::trimul_kf_k3

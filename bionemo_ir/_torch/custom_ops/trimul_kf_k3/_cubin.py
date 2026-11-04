@@ -12,7 +12,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""CUBIN-backed executable adapter for the SM90 TriMul KF K3."""
+"""CUBIN-backed executable adapters for the SM90 and SM100/SM103 TriMul KF K3."""
 
 from __future__ import annotations
 
@@ -30,6 +30,9 @@ from bionemo_ir._torch.utils.kernel import (
 )
 
 from ._config import STATS_VARIANTS
+
+#: The SM100/SM103 variants in the launcher's numbering.
+SM100_VARIANTS = ("K3_B0", "K3_B1", "K3_B2", "K3_B3")
 
 
 class TrimulKFK3CubinExecutable(CuTeDSLKernelLibraryExecutable):
@@ -103,5 +106,67 @@ class TrimulKFK3CubinExecutable(CuTeDSLKernelLibraryExecutable):
         params.eps = eps
         params.prod_pitch = n if prod_pitch is None else prod_pitch
         params.prod_plane = n * n if prod_plane is None else prod_plane
+        params.stream = current_stream_handle(x)
+        self._launcher.launch(self._config, params)
+
+
+class TrimulKFK3Sm100CubinExecutable(CuTeDSLKernelLibraryExecutable):
+    """Match the SM100/SM103 CuTeDSL compiled-function call ABI, ``(prod, x, w_out, w_gate, vec, seqlen, out, n, nb,
+    eps)``, using the C++ launcher. The image reads a dense product and reduces its own row statistics."""
+
+    def __init__(
+        self,
+        kernel_library: ModuleType,
+        launcher: Any,
+        target_sm: int,
+        C: int,
+        D: int,
+        kernel_variant: str,
+        residual: bool,
+    ) -> None:
+        try:
+            config = launcher.make_kernel_config(
+                target_sm, launcher.DType.BFLOAT16, C, D, SM100_VARIANTS.index(kernel_variant), residual, False
+            )
+        except (RuntimeError, TypeError, ValueError) as error:
+            raise CuTeDSLKernelVariantUnavailable(
+                f"No trimul KF K3 CUBIN for SM{target_sm}, C={C}, D={D}, {kernel_variant}, residual={residual}"
+            ) from error
+        self._kernel_library = kernel_library
+        self._launcher = launcher
+        self._config = config
+        self._residual = residual
+
+    def __call__(
+        self,
+        prod: torch.Tensor,
+        x: torch.Tensor,
+        w_out: torch.Tensor,
+        w_gate: torch.Tensor,
+        vec: torch.Tensor,
+        seqlen: torch.Tensor | None,
+        output: torch.Tensor,
+        n: int,
+        nb: int,
+        eps: float,
+    ) -> None:
+        if (seqlen is not None) != self._residual:
+            raise CuTeDSLKernelVariantUnavailable("trimul KF K3 CUBIN operands do not match its residual setting")
+        library = self._kernel_library
+        params = self._launcher.LaunchParams()
+        params.prod = tensor_flat(library, prod)
+        params.x = tensor_flat(library, x)
+        params.w_out = tensor_s1_d0(library, w_out)
+        params.w_gate_out = tensor_s1_d0(library, w_gate)
+        params.vec_out = tensor_s1_d0(library, vec)
+        if seqlen is not None:
+            params.seqlen = tensor_s1_d0(library, seqlen)
+        params.output = tensor_flat(library, output)
+        params.rows = nb * n * n
+        params.n = n
+        params.nb = nb
+        params.eps = eps
+        params.prod_pitch = n
+        params.prod_plane = n * n
         params.stream = current_stream_handle(x)
         self._launcher.launch(self._config, params)

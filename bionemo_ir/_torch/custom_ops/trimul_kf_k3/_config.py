@@ -39,7 +39,7 @@ product pitched exactly where K1 pads its planes and this rule reads a pitch::
     {"kernel_abi": "sm90", "configs": {"S=128": {"kernel_variant": "K3_4",
                                                  "prod_layout": "pitched_n_mod_64_ge_56"}}}
 
-SM100 and SM103 share the ``sm100`` ABI, run from source only, never read K1's statistics and read
+SM100 and SM103 share the ``sm100`` ABI, never read K1's statistics and read
 a dense product only: ``K3_B0`` covers ``C <= 128``, ``K3_B1`` ``C = 256`` and ``K3_B2``
 ``C = 384`` (:data:`SM100_VARIANT_SHAPES`). ``K3_B3`` is ``K3_B0`` with its x ring two tiles deep
 instead of three, for the token counts that give a CTA about one tile at ``C = 128``.

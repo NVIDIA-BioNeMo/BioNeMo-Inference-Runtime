@@ -25,6 +25,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <limits>
 #include <map>
 #include <mutex>
 #include <stdexcept>
@@ -37,6 +38,9 @@ namespace
 {
 
 constexpr char kSM90LaunchAbi[] = "trimul_kf_k2_sm90_v1";
+constexpr char kSM100LaunchAbi[] = "trimul_kf_k2_sm100_v1";
+/* Rows of a CTA pair's tile, and the column block K2_B2's tails complete. */
+constexpr std::uint64_t kPairTile = 256;
 /* Contraction k-block of every variant. */
 constexpr std::uint64_t kTileK = 64;
 
@@ -99,18 +103,38 @@ void validate_image(KernelConfig const& config)
     throw std::invalid_argument("embedded CUBIN variant_id must not be empty");
   if (config.cubin.kernel_symbol == nullptr || config.cubin.kernel_symbol[0] == '\0')
     throw std::invalid_argument("kernel_symbol must not be empty");
-  if (
-    config.cubin.kernel_sm != 90 || config.cubin.launch_abi == nullptr
-    || std::strcmp(config.cubin.launch_abi, kSM90LaunchAbi) != 0)
-  {
-    throw std::invalid_argument("trimul KF K2 CUBIN has an incompatible launch ABI");
-  }
-  if (config.embedded_image == nullptr || !config.embedded_image->sm90.enabled)
-    throw std::invalid_argument("trimul KF K2 CUBIN is missing its Hopper launch metadata");
+  if (config.embedded_image == nullptr)
+    throw std::invalid_argument("trimul KF K2 CUBIN is missing its registry record");
   if (!cubin_supports_sm(config.cubin, config.spec.target_sm))
     throw std::invalid_argument(
       "embedded CUBIN does not support configured device SM" + std::to_string(config.spec.target_sm));
   KernelSpec const& spec = config.spec;
+  char const* const abi = config.cubin.launch_abi;
+  if (config.cubin.kernel_sm == 100 && abi != nullptr && std::strcmp(abi, kSM100LaunchAbi) == 0)
+  {
+    embedded::SM100LaunchInfo const& sm100 = config.embedded_image->sm100;
+    if (!sm100.enabled)
+      throw std::invalid_argument("trimul KF K2 CUBIN is missing its Blackwell launch metadata");
+    if (
+      spec.kernel_variant < 0 || spec.kernel_variant > 2 || spec.tile_n == 0 || spec.num_threads == 0
+      || (spec.cluster_m != 1 && spec.cluster_m != 2) || (spec.cluster_n != 1 && spec.cluster_n != 2)
+      || spec.tile_m != 128 * spec.cluster_m || (spec.kernel_variant != 0 && spec.cluster_m != 2)
+      || (spec.kernel_variant == 0 && spec.cluster_m == 2 && spec.cluster_n != 1)
+      || (spec.kernel_variant == 2) != (spec.tail_w != 0) || (spec.clc && spec.kernel_variant != 1))
+    {
+      throw std::invalid_argument("trimul KF K2 CUBIN has an invalid Blackwell tile");
+    }
+    if (
+      sm100.cluster_dims[0] != spec.cluster_m || sm100.cluster_dims[1] != spec.cluster_n || sm100.cluster_dims[2] != 1)
+      throw std::invalid_argument("trimul KF K2 CUBIN records a cluster its tile does not launch");
+    if (spec.kernel_variant == 2 && (sm100.b_tail.rank == 0 || sm100.prod_t.rank == 0))
+      throw std::invalid_argument("trimul KF K2_B2 CUBIN is missing its tail TMA metadata");
+    return;
+  }
+  if (config.cubin.kernel_sm != 90 || abi == nullptr || std::strcmp(abi, kSM90LaunchAbi) != 0)
+    throw std::invalid_argument("trimul KF K2 CUBIN has an incompatible launch ABI");
+  if (!config.embedded_image->sm90.enabled)
+    throw std::invalid_argument("trimul KF K2 CUBIN is missing its Hopper launch metadata");
   if (
     spec.kernel_variant < 0 || spec.kernel_variant > 2 || spec.tile_m == 0 || spec.tile_n == 0 || spec.cluster_m == 0
     || spec.num_threads == 0)
@@ -335,6 +359,185 @@ void launch_sm90(
     launch_cubin_kernel(loaded, &launch_config, kernel_params, nullptr), "launch_cubin_kernel(trimul_kf_k2_sm90)");
 }
 
+abi::SM100FastDivmod make_sm100_fast_divmod(std::uint64_t divisor_u64)
+{
+  if (divisor_u64 == 0 || divisor_u64 > static_cast<std::uint64_t>(std::numeric_limits<std::int32_t>::max()))
+    throw std::invalid_argument("trimul KF K2 tile-count divisor must be a positive int32");
+  std::uint32_t const value = static_cast<std::uint32_t>(divisor_u64);
+  std::uint32_t log2 = 0;
+  std::uint64_t power_of_two = 1;
+  while (power_of_two < value)
+  {
+    power_of_two <<= 1;
+    ++log2;
+  }
+  std::uint64_t const multiplier = ((power_of_two - value) << 32) / value + 1;
+  if (multiplier > std::numeric_limits<std::uint32_t>::max())
+    throw std::overflow_error("trimul KF K2 fast-divmod multiplier overflow");
+  std::uint8_t const shift_right_1 = static_cast<std::uint8_t>(std::min(log2, 1U));
+  return abi::SM100FastDivmod{
+    static_cast<std::int32_t>(value),
+    static_cast<std::uint32_t>(multiplier),
+    shift_right_1,
+    static_cast<std::uint8_t>(log2 - shift_right_1),
+  };
+}
+
+std::int32_t checked_i32(std::uint64_t value, char const* name)
+{
+  if (value > static_cast<std::uint64_t>(std::numeric_limits<std::int32_t>::max()))
+    throw std::invalid_argument(std::string(name) + " does not fit int32");
+  return static_cast<std::int32_t>(value);
+}
+
+/* The SM100/SM103 K2 on CTA tiles (K2_B0) or CTA-pair tiles (K2_B1, K2_B2), writing a dense product. Each
+ * variant's schedule repeats its source __call__: K2_B0 and K2_B2 launch the smallest persistent grid with the
+ * trip count of the largest co-resident one; K2_B1 does too, or under cluster launch control one cluster per
+ * work unit.
+ */
+void launch_sm100(
+  cubin_kernel_t loaded,
+  KernelConfig const& config,
+  LaunchParams const& params,
+  CUcontext context,
+  std::uint32_t smem_bytes)
+{
+  std::int32_t const device = cuda_device_for_context(context);
+  KernelSpec const& spec = config.spec;
+  std::int64_t const n = params.n;
+  std::int64_t const l = params.l;
+  std::int64_t const pitch = params.ab_pitch;
+  std::int64_t const plane = params.ab_plane;
+  if (n <= 0 || l <= 0)
+    throw std::invalid_argument("trimul KF K2 needs positive n and l");
+  if (n % 8 != 0)
+    throw std::invalid_argument("SM100 trimul KF K2 needs n a multiple of 8");
+  validate_strides(n, pitch, plane, "a/b");
+  std::int64_t const nn = checked_mul(n, n, "trimul KF K2 product plane");
+  if (params.prod_pitch != 0 && params.prod_pitch != n)
+    throw std::invalid_argument("SM100 trimul KF K2 writes a dense product: its row pitch must be n");
+  if (params.prod_plane != 0 && params.prod_plane != nn)
+    throw std::invalid_argument("SM100 trimul KF K2 writes a dense product: its plane stride must be n * n");
+  std::int64_t const ab_span = matrices_span(n, n, l, pitch, plane, "trimul KF K2 a/b span");
+  validate_span(params.a, ab_span, device, "a");
+  validate_span(params.b, ab_span, device, "b");
+  validate_span(params.prod, checked_mul(l, nn, "trimul KF K2 prod span"), device, "prod");
+
+  embedded::SM100LaunchInfo const& metadata = config.embedded_image->sm100;
+  CUtensorMapDataType const expected_dtype = tma_data_type(true);
+  abi::SM100Params device_params{};
+  auto const encode
+    = [&](CUtensorMap& descriptor, TmaDescriptorInfo const& info, TmaTensorSource const& source, char const* name)
+  {
+    encode_tma_descriptor(descriptor, info, expected_dtype, source, name);
+    finalize_sm100_tma_atom(descriptor);
+  };
+  /* Outgoing reads a and b K-major (mode 1 contiguous), incoming M-major (mode 0); the product is row-major, its
+   * transpose column-major.
+   */
+  TmaTensorSource const a_source = matrices_source(params.a, n, l, pitch, plane, !spec.outgoing);
+  TmaTensorSource const b_source = matrices_source(params.b, n, l, pitch, plane, !spec.outgoing);
+  encode(device_params.a_tma, metadata.a, a_source, "a");
+  encode(device_params.b_tma, metadata.b, b_source, "b");
+  encode(device_params.prod_tma, metadata.prod, matrices_source(params.prod, n, l, n, nn, false), "prod");
+  std::int32_t const n32 = static_cast<std::int32_t>(n);
+  device_params.coord = CoordTensorS3{{n32, n32, static_cast<std::int32_t>(l)}};
+  device_params.n = n32;
+  device_params.l = static_cast<std::int32_t>(l);
+
+  std::int32_t const multiprocessor_count = cuda_multiprocessor_count_for_context(context);
+  if (multiprocessor_count <= 0)
+    throw std::invalid_argument("current CUDA device has no active multiprocessors");
+  std::uint64_t const sms = static_cast<std::uint64_t>(multiprocessor_count);
+  std::uint64_t const un = static_cast<std::uint64_t>(n);
+  std::uint64_t const ul = static_cast<std::uint64_t>(l);
+  std::uint64_t const cluster_size = static_cast<std::uint64_t>(spec.cluster_m) * spec.cluster_n;
+  auto const static_clusters = [&](std::uint64_t work_units)
+  {
+    std::uint64_t const max_active = sms / cluster_size;
+    if (max_active == 0)
+      throw std::invalid_argument("current CUDA device cannot hold one trimul KF K2 cluster");
+    return ceil_div(work_units, ceil_div(work_units, max_active));
+  };
+  std::uint64_t clusters = 0;
+  if (spec.kernel_variant == 0)
+  {
+    std::uint64_t const tiles_m = ceil_div(un, spec.tile_m);
+    std::uint64_t const tiles_n = ceil_div(un, static_cast<std::uint64_t>(spec.tile_n) * spec.cluster_n);
+    std::uint64_t const work_units = tiles_m * tiles_n * ul;
+    device_params.tiles_m = make_sm100_fast_divmod(tiles_m);
+    device_params.tiles_n = make_sm100_fast_divmod(tiles_n);
+    device_params.work_units = checked_i32(work_units, "trimul KF K2 work units");
+    clusters = static_clusters(work_units);
+  }
+  else if (spec.kernel_variant == 1)
+  {
+    std::uint64_t const m_clusters = ceil_div(un, kPairTile);
+    std::uint64_t const n_clusters = ceil_div(ceil_div(un, spec.tile_n), spec.cluster_n);
+    std::uint64_t const work_units = m_clusters * n_clusters * ul;
+    device_params.m_clusters = checked_i32(m_clusters, "trimul KF K2 row clusters");
+    device_params.n_clusters = checked_i32(n_clusters, "trimul KF K2 column clusters");
+    device_params.work_units = checked_i32(work_units, "trimul KF K2 work units");
+    clusters = spec.clc ? work_units : static_clusters(work_units);
+  }
+  else
+  {
+    /* n = 256 km + rem: narrow tails when km >= 1 and 0 < rem <= tail_w, else the plain 256 x 256 tiling. */
+    std::uint64_t const km = un / kPairTile;
+    std::uint64_t const rem = un - km * kPairTile;
+    std::uint64_t const use = km >= 1 && rem > 0 && rem <= spec.tail_w ? 1 : 0;
+    std::uint64_t const jm = ceil_div(un, kPairTile);
+    std::uint64_t const main_m = use != 0 ? km : jm;
+    std::uint64_t const work_units = (main_m * main_m + use * (km + jm)) * ul;
+    encode(device_params.b_tail_tma, metadata.b_tail, b_source, "b tail");
+    encode(device_params.a_tail_tma, metadata.a_tail, a_source, "a tail");
+    encode(device_params.b_as_a_tma, metadata.b_as_a, b_source, "b as A");
+    encode(device_params.prod_t_tma, metadata.prod_t, matrices_source(params.prod, n, l, n, nn, true), "prod^T");
+    device_params.main_m = checked_i32(main_m, "trimul KF K2 main tiles");
+    device_params.work_units = checked_i32(work_units, "trimul KF K2 work units");
+    device_params.use = static_cast<std::int32_t>(use);
+    device_params.km = checked_i32(km, "trimul KF K2 row blocks");
+    device_params.jm = checked_i32(jm, "trimul KF K2 column blocks");
+    clusters = static_clusters(work_units);
+  }
+
+  void* kernel_params[abi::kSM100MaxParameterCount]{};
+  std::size_t const parameter_count = abi::pack_sm100_kernel_params(&device_params, spec.kernel_variant, kernel_params);
+  if (parameter_count != abi::sm100_parameter_count(spec.kernel_variant))
+    throw std::logic_error("trimul KF K2 SM100 parameter packer produced the wrong ABI count");
+
+  cubin_launch_config_t launch_config{};
+  launch_config.block_x = metadata.block_dims[0];
+  launch_config.block_y = metadata.block_dims[1];
+  launch_config.block_z = metadata.block_dims[2];
+  launch_config.cluster_x = metadata.cluster_dims[0];
+  launch_config.cluster_y = metadata.cluster_dims[1];
+  launch_config.cluster_z = metadata.cluster_dims[2];
+  launch_config.cluster_scheduling_policy = metadata.cluster_scheduling_policy;
+  launch_config.dynamic_smem_bytes = smem_bytes;
+  /* K2_B0 and K2_B2 stack their clusters along z; K2_B1 spreads its CTA pairs along x. */
+  if (spec.kernel_variant == 1)
+  {
+    launch_config.grid_x = checked_u32(clusters * spec.cluster_m, "trimul KF K2 grid.x");
+    launch_config.grid_y = spec.cluster_n;
+    launch_config.grid_z = 1;
+    device_params.grid_x = checked_i32(launch_config.grid_x, "trimul KF K2 grid.x");
+  }
+  else
+  {
+    launch_config.grid_x = spec.cluster_m;
+    launch_config.grid_y = spec.cluster_n;
+    launch_config.grid_z = checked_u32(clusters, "trimul KF K2 grid.z");
+  }
+  launch_config.stream = reinterpret_cast<CUstream>(static_cast<std::uintptr_t>(params.stream));
+  /* The source kernels request no programmatic dependent launch: under CUDA-graph replay a kernel could read
+   * its predecessor's output mid-write.
+   */
+  launch_config.programmatic_stream_serialization = 0;
+  check_cuda_driver(
+    launch_cubin_kernel(loaded, &launch_config, kernel_params, nullptr), "launch_cubin_kernel(trimul_kf_k2_sm100)");
+}
+
 KernelSpec make_kernel_spec(embedded::CubinImage const& image)
 {
   return KernelSpec{
@@ -349,6 +552,9 @@ KernelSpec make_kernel_spec(embedded::CubinImage const& image)
     image.split_epi,
     image.num_threads,
     image.dynamic,
+    image.cluster_n,
+    image.clc,
+    image.tail_w,
   };
 }
 
@@ -361,7 +567,10 @@ embedded::CubinImage const& find_embedded_cubin(
   std::uint32_t cluster_m,
   std::uint32_t defer_kmin,
   bool split_epi,
-  bool dynamic)
+  bool dynamic,
+  std::uint32_t cluster_n,
+  bool clc,
+  std::uint32_t tail_w)
 {
   bool const is_bfloat16 = dtype == DType::kBFloat16;
   embedded::RegistryView const registry = embedded::registry();
@@ -371,14 +580,16 @@ embedded::CubinImage const& find_embedded_cubin(
     if (
       cubin_supports_sm(image.cubin, target_sm) && image.is_bfloat16 == is_bfloat16 && image.outgoing == outgoing
       && image.kernel_variant == kernel_variant && image.tile_n == tile_n && image.cluster_m == cluster_m
-      && image.defer_kmin == defer_kmin && image.split_epi == split_epi && image.dynamic == dynamic)
+      && image.defer_kmin == defer_kmin && image.split_epi == split_epi && image.dynamic == dynamic
+      && image.cluster_n == cluster_n && image.clc == clc && image.tail_w == tail_w)
       return image;
   }
   throw std::invalid_argument(
     "No embedded trimul KF K2 CUBIN for SM" + std::to_string(target_sm) + ", K2_" + std::to_string(kernel_variant)
     + ", outgoing=" + (outgoing ? "true" : "false") + ", tile_n=" + std::to_string(tile_n)
     + ", cluster_m=" + std::to_string(cluster_m) + ", defer_kmin=" + std::to_string(defer_kmin)
-    + ", split_epi=" + (split_epi ? "true" : "false") + ", dynamic=" + (dynamic ? "true" : "false"));
+    + ", split_epi=" + (split_epi ? "true" : "false") + ", dynamic=" + (dynamic ? "true" : "false") + ", cluster_n="
+    + std::to_string(cluster_n) + ", clc=" + (clc ? "true" : "false") + ", tail_w=" + std::to_string(tail_w));
 }
 
 std::size_t preload_kernels(CUcontext context, std::int32_t device_sm)
@@ -407,10 +618,24 @@ KernelConfig make_kernel_config(
   std::uint32_t cluster_m,
   std::uint32_t defer_kmin,
   bool split_epi,
-  bool dynamic)
+  bool dynamic,
+  std::uint32_t cluster_n,
+  bool clc,
+  std::uint32_t tail_w)
 {
   embedded::CubinImage const& image = find_embedded_cubin(
-    target_sm, dtype, outgoing, kernel_variant, tile_n, cluster_m, defer_kmin, split_epi, dynamic);
+    target_sm,
+    dtype,
+    outgoing,
+    kernel_variant,
+    tile_n,
+    cluster_m,
+    defer_kmin,
+    split_epi,
+    dynamic,
+    cluster_n,
+    clc,
+    tail_w);
   return KernelConfig{make_kernel_spec(image), dtype, image.cubin, &image};
 }
 
@@ -426,7 +651,10 @@ void launch(KernelConfig const& config, LaunchParams const& params)
       + std::to_string(device_sm));
   }
   cubin_kernel_t const loaded = load_embedded_kernel(context, config.cubin);
-  launch_sm90(loaded, config, params, context, dynamic_smem_bytes(config));
+  if (config.cubin.kernel_sm == 100)
+    launch_sm100(loaded, config, params, context, dynamic_smem_bytes(config));
+  else
+    launch_sm90(loaded, config, params, context, dynamic_smem_bytes(config));
 }
 
 } // namespace bioir::cutedsl::trimul_kf_k2

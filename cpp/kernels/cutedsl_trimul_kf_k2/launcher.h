@@ -122,6 +122,132 @@ static_assert(sizeof(SM90Params::counter) == 0x08, "unexpected trimul KF K2 coun
 static_assert(sm90_parameter_count(0) == 11U && sm90_parameter_count(1) == 9U && sm90_parameter_count(2) == 11U);
 static_assert(sm90_parameter_count(0, true) == 12U && sm90_parameter_count(2, true) == 12U);
 
+/* Blackwell device ABI trimul_kf_k2_sm100_v1, read from EIATTR_KPARAM_INFO. Every variant opens with
+ *
+ *   ord  0  0x000  0x03  tiled_mma      SM100TiledMma
+ *   ord  1  0x040  0x80  a_tma          CUtensorMap
+ *   ord  2  0x0c0  0x0c  a_coord        CoordTensorS3   (n, n, l)
+ *   ord  3  0x100  0x80  b_tma          CUtensorMap
+ *   ord  4  0x180  0x0c  b_coord        CoordTensorS3   (n, n, l)
+ *   ord  5  0x1c0  0x80  prod_tma       CUtensorMap
+ *   ord  6  0x240  0x0c  prod_coord     CoordTensorS3   (n, n, l)
+ *
+ * then K2_B0 (11 parameters): n, tiles_m and tiles_n as CuTe FastDivmodDivisors (12 bytes each),
+ * work_units. K2_B1 (12): m_clusters, n_clusters, work_units, l, and its tile scheduler's problem shape,
+ * whose one dynamic extent is the launch's grid.x (static and cluster-launch-control schedules alike). K2_B2 (22): n,
+ * main_m, work_units, the atoms and coordinates of b's narrow tail (b_tail), a's narrow tail (a_tail), b loaded as an A
+ * operand (b_as_a) and the transposed product store (prod_t), then use, km, jm and the narrow tiled MMA's token. Every
+ * TMA slot carries CuTe DSL 4.5.2's tagged Blackwell atom (finalize_sm100_tma_atom); the MMA tokens are runtime state
+ * the kernel initializes itself, passed as zeros.
+ */
+struct SM100TiledMma
+{
+  std::uint8_t fields[3]{};
+};
+
+/* CuTe's FastDivmodDivisor: the quotient is
+ * (umulhi(n, multiplier) + ((n - umulhi(n, multiplier)) >> shift_right_1)) >> shift_right_2.
+ */
+struct SM100FastDivmod
+{
+  std::int32_t divisor;
+  std::uint32_t multiplier;
+  std::uint8_t shift_right_1;
+  std::uint8_t shift_right_2;
+  std::uint8_t reserved[2]{};
+};
+
+struct SM100Params
+{
+  SM100TiledMma tiled_mma;
+  CUtensorMap a_tma;
+  CUtensorMap b_tma;
+  CUtensorMap prod_tma;
+  CoordTensorS3 coord;
+  std::int32_t n;
+  SM100FastDivmod tiles_m;
+  SM100FastDivmod tiles_n;
+  std::int32_t m_clusters;
+  std::int32_t n_clusters;
+  std::int32_t main_m;
+  std::int32_t work_units;
+  std::int32_t l;
+  std::int32_t grid_x;
+  CUtensorMap b_tail_tma;
+  CUtensorMap a_tail_tma;
+  CUtensorMap b_as_a_tma;
+  CUtensorMap prod_t_tma;
+  std::int32_t use;
+  std::int32_t km;
+  std::int32_t jm;
+  SM100TiledMma tiled_mma_n;
+};
+
+constexpr std::size_t sm100_parameter_count(std::int32_t kernel_variant)
+{
+  return kernel_variant == 0 ? 11U : kernel_variant == 1 ? 12U : 22U;
+}
+
+inline constexpr std::size_t kSM100MaxParameterCount = 22;
+
+/* params and kernel_params must stay alive until the launch call returns. Every (n, n, l) operand and
+ * the transposed product share one coordinate extent.
+ */
+inline std::size_t
+pack_sm100_kernel_params(SM100Params* params, std::int32_t kernel_variant, void* kernel_params[kSM100MaxParameterCount])
+{
+  std::size_t count = 0;
+  kernel_params[count++] = &params->tiled_mma;
+  kernel_params[count++] = &params->a_tma;
+  kernel_params[count++] = &params->coord;
+  kernel_params[count++] = &params->b_tma;
+  kernel_params[count++] = &params->coord;
+  kernel_params[count++] = &params->prod_tma;
+  kernel_params[count++] = &params->coord;
+  if (kernel_variant == 0)
+  {
+    kernel_params[count++] = &params->n;
+    kernel_params[count++] = &params->tiles_m;
+    kernel_params[count++] = &params->tiles_n;
+    kernel_params[count++] = &params->work_units;
+  }
+  else if (kernel_variant == 1)
+  {
+    kernel_params[count++] = &params->m_clusters;
+    kernel_params[count++] = &params->n_clusters;
+    kernel_params[count++] = &params->work_units;
+    kernel_params[count++] = &params->l;
+    kernel_params[count++] = &params->grid_x;
+  }
+  else
+  {
+    kernel_params[count++] = &params->n;
+    kernel_params[count++] = &params->main_m;
+    kernel_params[count++] = &params->work_units;
+    kernel_params[count++] = &params->b_tail_tma;
+    kernel_params[count++] = &params->coord;
+    kernel_params[count++] = &params->a_tail_tma;
+    kernel_params[count++] = &params->coord;
+    kernel_params[count++] = &params->b_as_a_tma;
+    kernel_params[count++] = &params->coord;
+    kernel_params[count++] = &params->prod_t_tma;
+    kernel_params[count++] = &params->coord;
+    kernel_params[count++] = &params->use;
+    kernel_params[count++] = &params->km;
+    kernel_params[count++] = &params->jm;
+    kernel_params[count++] = &params->tiled_mma_n;
+  }
+  return count;
+}
+
+static_assert(std::is_standard_layout_v<SM100Params>);
+static_assert(sizeof(SM100TiledMma) == 0x03 && alignof(SM100TiledMma) == 1);
+static_assert(sizeof(SM100FastDivmod) == 0x0c && alignof(SM100FastDivmod) == 4);
+static_assert(sizeof(CoordTensorS3) == 0x0c);
+static_assert(
+  sm100_parameter_count(0) == 11U && sm100_parameter_count(1) == 12U
+  && sm100_parameter_count(2) == kSM100MaxParameterCount);
+
 } // namespace bioir::cutedsl::trimul_kf_k2::abi
 
 namespace bioir::cutedsl::trimul_kf_k2
@@ -132,11 +258,15 @@ enum class DType : std::uint8_t
   kBFloat16,
 };
 
-/* Launch fields generated with the corresponding CUBIN, which runs the configs' K2_<kernel_variant>
- * on 128 x tile_n output tiles. K2_0 clusters cluster_m CTAs along M and K2_2 along N; both overlap
- * each tile's stores with the next tile's first defer_kmin k-blocks, split their epilogue per
- * warpgroup under split_epi, and under dynamic claim their work units from a counter instead of a
- * static round-robin. K2_1 clusters along N at tile_n 192.
+/* Launch fields generated with the corresponding CUBIN. On SM90 (kernel_sm 90) it runs the configs'
+ * K2_<kernel_variant> on 128 x tile_n output tiles. K2_0 clusters cluster_m CTAs along M and K2_2 along
+ * N; both overlap each tile's stores with the next tile's first defer_kmin k-blocks, split their
+ * epilogue per warpgroup under split_epi, and under dynamic claim their work units from a counter
+ * instead of a static round-robin. K2_1 clusters along N at tile_n 192.
+ *
+ * On SM100 and SM103 (kernel_sm 100) kernel_variant 0, 1 and 2 are K2_B0, K2_B1 and K2_B2, writing a
+ * dense product. tile_m is 256 on a CTA pair (cluster_m 2), cluster_n the CTAs or pairs per cluster
+ * along N, clc whether K2_B1 schedules by cluster launch control, and tail_w K2_B2's tail width.
  */
 struct KernelSpec
 {
@@ -151,6 +281,9 @@ struct KernelSpec
   bool split_epi;
   std::uint32_t num_threads;
   bool dynamic;
+  std::uint32_t cluster_n;
+  bool clc;
+  std::uint32_t tail_w;
 };
 
 struct KernelConfig
@@ -202,7 +335,10 @@ KernelConfig make_kernel_config(
   std::uint32_t cluster_m,
   std::uint32_t defer_kmin,
   bool split_epi,
-  bool dynamic = false);
+  bool dynamic = false,
+  std::uint32_t cluster_n = 0,
+  bool clc = false,
+  std::uint32_t tail_w = 0);
 
 void launch(KernelConfig const& config, LaunchParams const& params);
 

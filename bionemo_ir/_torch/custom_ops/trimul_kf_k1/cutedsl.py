@@ -12,7 +12,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Source-or-CUBIN interface for the TriMul KF K1: SM90 from source or packaged CUBINs, SM100/SM103 from source."""
+"""Source-or-CUBIN interface for the TriMul KF K1: SM90, SM100 and SM103 from source or packaged CUBINs."""
 
 from __future__ import annotations
 
@@ -32,8 +32,17 @@ from bionemo_ir._torch.utils.kernel import (
 from bionemo_ir.dsl_kernels.cute_cache import FORCE_CUBIN_ENV, CuteKernelCache
 from bionemo_ir.logger import logger
 
-from ._config import CENTRED_VARIANTS, KERNEL_ABIS, TrimulKFK1Selection, TrimulKFK1Tile, anchors, select
-from ._cubin import TrimulKFK1CubinExecutable
+from ._config import (
+    CENTRED_VARIANTS,
+    KERNEL_ABIS,
+    TrimulKFK1Selection,
+    TrimulKFK1Tile,
+    anchors,
+    layout_rules,
+    select,
+    tiles,
+)
+from ._cubin import TrimulKFK1CubinExecutable, TrimulKFK1Sm100CubinExecutable
 
 __all__ = ["TrimulKFK1CuTe", "TrimulKFK1Output"]
 
@@ -42,7 +51,7 @@ TILE_ROWS = 128
 #: Most rows, and positions per a/b plane, one launch addresses: TMA coordinates are int32.
 MAX_LAUNCH_ROWS = 2**31 - 1 - TILE_ROWS
 #: Kernel ABIs the packaged CUBIN library carries; the others run from source only.
-CUBIN_ABIS = frozenset({"sm90"})
+CUBIN_ABIS = frozenset({"sm90", "sm100"})
 #: Bumped when the compile contract of a source kernel changes outside the hashed kernel sources.
 _DISK_CACHE_VERSION = "trimul_kf_k1_cute_v1"
 
@@ -89,8 +98,8 @@ def launch_chunks(B: int, N: int, pitch: int | None = None) -> tuple[tuple[int, 
 class TrimulKFK1CuTe(CuteKernelCache):
     """Cached backend for K1: ``a``/``b`` from the folded input projections of ``x``.
 
-    Each call runs the variant its ``(C, D)`` configs tune for the anchor nearest the token count.
-    SM90 compiles from source or loads packaged CUBINs; SM100 and SM103 compile from source only.
+    Each call runs the variant its ``(C, D)`` configs tune for the anchor nearest the token count,
+    compiled from source or loaded from the packaged CUBINs.
 
     Args:
         sm_version: The SM whose configs and kernels to use; defaults to this GPU's.
@@ -131,7 +140,8 @@ class TrimulKFK1CuTe(CuteKernelCache):
         """Whether this build can run ``(C, D)``, from source or from a packaged CUBIN.
 
         A source-free build, or ``CUTEDSL_FORCE_CUBIN``, needs every packaged image the shape's
-        configs name, so it never ships SM100 or SM103. Without them the caller keeps its own path.
+        configs name: each anchor's variant and, on SM100 and SM103, its tile in every a/b layout its
+        rule writes. Without them the caller keeps its own path.
         """
         entries = anchors(self._sm_version, C, D)
         if not entries:
@@ -146,8 +156,16 @@ class TrimulKFK1CuTe(CuteKernelCache):
         if not self._has_cubins():
             return False
         try:
-            for kernel_variant in sorted(set(entries.values())):
-                self._load_cubin_executable(self._key(C, D, kernel_variant), C, D, kernel_variant)
+            if self.kernel_abi == "sm90":
+                for kernel_variant in sorted(set(entries.values())):
+                    self._load_cubin_executable(self._key(C, D, kernel_variant), C, D, kernel_variant)
+                return True
+            rules, anchor_tiles = layout_rules(self._sm_version, C, D), tiles(self._sm_version, C, D)
+            for bucket, kernel_variant in entries.items():
+                tile = anchor_tiles[bucket]
+                for ab_layout in ("dense",) if rules[bucket] == "dense" else ("dense", "padded"):
+                    key = self._key(C, D, kernel_variant, ab_layout, tile)
+                    self._load_cubin_executable(key, C, D, kernel_variant, ab_layout=ab_layout, tile=tile)
         except (CuTeDSLKernelLibraryError, RuntimeError):
             return False
         return True
@@ -160,8 +178,8 @@ class TrimulKFK1CuTe(CuteKernelCache):
             key = (*key, ab_layout)
         return key if tile is None else (*key, *tile)
 
-    def supports(self, C: int, D: int, kernel_variant: str, ab_layout: str) -> bool:
-        """Whether this build writes ``ab_layout`` with ``kernel_variant``."""
+    def supports(self, C: int, D: int, kernel_variant: str, ab_layout: str, tile: TrimulKFK1Tile | None = None) -> bool:
+        """Whether this build writes ``ab_layout`` with ``kernel_variant`` (and, for ``K1_B0``, ``tile``)."""
         if ab_layout == "dense":
             return True
         if not self.force_cubin():
@@ -173,9 +191,9 @@ class TrimulKFK1CuTe(CuteKernelCache):
                 return True
         if not self._has_cubins():
             return False
-        key = self._key(C, D, kernel_variant, ab_layout)
+        key = self._key(C, D, kernel_variant, ab_layout, tile)
         try:
-            self._load_cubin_executable(key, C, D, kernel_variant, ab_layout=ab_layout)
+            self._load_cubin_executable(key, C, D, kernel_variant, ab_layout=ab_layout, tile=tile)
         except (CuTeDSLKernelLibraryError, RuntimeError):
             return False
         return True
@@ -188,26 +206,35 @@ class TrimulKFK1CuTe(CuteKernelCache):
         kernel_variant: str,
         source_error: Exception | None = None,
         ab_layout: str = "dense",
+        tile: TrimulKFK1Tile | None = None,
     ) -> Any:
+        if self.kernel_abi == "sm90":
+
+            def make(library: Any, launcher: Any) -> Any:
+                return TrimulKFK1CubinExecutable(library, launcher, self._sm_version, C, D, kernel_variant, ab_layout)
+        else:
+
+            def make(library: Any, launcher: Any) -> Any:
+                return TrimulKFK1Sm100CubinExecutable(
+                    library, launcher, self._sm_version, C, D, kernel_variant, ab_layout, tile
+                )
+
+        if not isinstance(TrimulKFK1CuTe._compiled_cache.get(key), CuTeDSLKernelLibraryExecutable):
+            # A source build cached under the key would pass for the CUBIN; only the library proves that one ships.
+            TrimulKFK1CuTe._compiled_cache.pop(key, None)
+        tile_text = "" if tile is None else f", {tile}"
         try:
-            executable = populate_compiled_cache_from_library(
-                TrimulKFK1CuTe._compiled_cache,
-                key,
-                "trimul_kf_k1",
-                lambda library, launcher: TrimulKFK1CubinExecutable(
-                    library, launcher, self._sm_version, C, D, kernel_variant, ab_layout
-                ),
-            )
+            executable = populate_compiled_cache_from_library(TrimulKFK1CuTe._compiled_cache, key, "trimul_kf_k1", make)
         except CuTeDSLKernelLibraryError as library_error:
             if self.force_cubin():
                 raise RuntimeError(
                     f"{FORCE_CUBIN_ENV}=1 forces the trimul KF K1 CUBIN path, but no CUBIN is available for "
-                    f"SM{self._sm_version}, C={C}, D={D}, {kernel_variant}, {ab_layout} a/b"
+                    f"SM{self._sm_version}, C={C}, D={D}, {kernel_variant}, {ab_layout} a/b{tile_text}"
                 ) from library_error
             raise library_error from source_error
         logger.info(
             f"CuTeDSL trimul KF K1: using CUBIN kernel for SM{self._sm_version}, C={C}, D={D}, {kernel_variant}, "
-            f"{ab_layout} a/b"
+            f"{ab_layout} a/b{tile_text}"
         )
         return executable
 
@@ -221,11 +248,11 @@ class TrimulKFK1CuTe(CuteKernelCache):
             return executable
         if force_cubin:
             TrimulKFK1CuTe._compiled_cache.pop(key, None)
-            return self._load_cubin_executable(key, C, D, kernel_variant, ab_layout=ab_layout)
+            return self._load_cubin_executable(key, C, D, kernel_variant, ab_layout=ab_layout, tile=tile)
         try:
             source = load_source_module(__package__)
         except ImportError as source_error:
-            return self._load_cubin_executable(key, C, D, kernel_variant, source_error, ab_layout)
+            return self._load_cubin_executable(key, C, D, kernel_variant, source_error, ab_layout, tile)
 
         if self._num_sms is None:
             self._num_sms = torch.cuda.get_device_properties(torch.cuda.current_device()).multi_processor_count

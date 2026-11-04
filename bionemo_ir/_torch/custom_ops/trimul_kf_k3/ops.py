@@ -318,8 +318,8 @@ def get_trimul_kf_k3_op(
 ) -> TrimulKFK3Op | None:
     """Return K3 when this build ships it for ``(dim, hidden_dim)`` and the residual setting, else ``None``.
 
-    SM90 runs it from source or the packaged CUBINs, SM100 and SM103 from source alone: there it
-    returns ``None`` under ``CUTEDSL_FORCE_CUBIN=1`` or in a build without kernel sources.
+    SM90, SM100 and SM103 run it from source or the packaged CUBINs: under ``CUTEDSL_FORCE_CUBIN=1``,
+    or in a build without kernel sources, it returns ``None`` unless every image the configs name ships.
     """
     if dtype != _SUPPORTED_DTYPE or not torch.cuda.is_available():
         return None

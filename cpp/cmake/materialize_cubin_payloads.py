@@ -194,12 +194,20 @@ class _Sm100Spec:
 
     ``clusters`` adds the cluster shape and scheduling policy a clustered launch
     (for example 2-SM ``tcgen05`` UMMA) needs; ``rank`` is the TMA rank.
+    ``ranks`` and ``optional`` work as in :class:`_Sm90Spec`.
     """
 
     enabled_field: str
     operands: tuple[str, ...]
     rank: int = 4
     clusters: bool = False
+    ranks: tuple[int | tuple[int, ...], ...] = ()
+    optional: tuple[tuple[str, int | tuple[int, ...]], ...] = ()
+
+    @property
+    def declared_operands(self) -> tuple[str, ...]:
+        """Every operand the C++ launch record declares, the optional ones last."""
+        return (*self.operands, *(name for name, _ in self.optional))
 
 
 @dataclass(frozen=True)
@@ -462,11 +470,43 @@ _FAMILY_SPECS: dict[str, _FamilySpec] = {
             _Field("num_threads", _POSITIVE, "std::uint32_t num_threads;", suffix="U"),
             # Every image published before the padded flavour wrote dense a/b planes.
             _Field("padded", _BOOL, "bool padded;", default=False),
+            # The SM100 K1_B0 tile (TrimulKFK1Tile); 0 in every other image, including all published before it.
+            _Field("bnc", _COUNT, "std::uint32_t bnc;", suffix="U", default=0),
+            _Field("epi_n", _COUNT, "std::uint32_t epi_n;", suffix="U", default=0),
+            _Field("ctas", _COUNT, "std::uint32_t ctas;", suffix="U", default=0),
+            _Field("w_slots", _COUNT, "std::uint32_t w_slots;", suffix="U", default=0),
+            _Field("s_stages", _COUNT, "std::uint32_t s_stages;", suffix="U", default=0),
+            _Field("split", _COUNT, "std::uint32_t split;", suffix="U", default=0),
+            _Field("store_warps", _COUNT, "std::uint32_t store_warps;", suffix="U", default=0),
+            _Field("epi_groups", _COUNT, "std::uint32_t epi_groups;", suffix="U", default=0),
         ),
-        runtime_key=("is_bfloat16", "C", "D", "kernel_variant", "padded"),
+        runtime_key=(
+            "is_bfloat16",
+            "C",
+            "D",
+            "kernel_variant",
+            "padded",
+            "bnc",
+            "epi_n",
+            "ctas",
+            "w_slots",
+            "s_stages",
+            "split",
+            "store_warps",
+            "epi_groups",
+        ),
         # A padded image also loads x one row chunk at a time through its x_chunk map.
         sm90=_Sm90Spec(
             "enabled", ("x", "w_proj", "w_gate", "a", "b"), ranks=(2, 2, 2, 3, 3), optional=(("x_chunk", 3),)
+        ),
+        # x loads dense rows (rank 3) or, padded, row chunks (rank 4). K1_B0 stores both plane sets through one
+        # planes map; K1_B1 stores a and b apart, rank 3 dense and rank 4 padded.
+        sm100=_Sm100Spec(
+            "enabled",
+            ("x", "w_proj", "w_gate"),
+            clusters=True,
+            ranks=((3, 4), 2, 2),
+            optional=(("planes", 4), ("a", (3, 4)), ("b", (3, 4))),
         ),
     ),
     "trimul_kf_k2": _FamilySpec(
@@ -483,6 +523,12 @@ _FAMILY_SPECS: dict[str, _FamilySpec] = {
             _Field("num_threads", _POSITIVE, "std::uint32_t num_threads;", suffix="U"),
             # Every image published before the dynamic schedule ran its tile's static round-robin.
             _Field("dynamic", _BOOL, "bool dynamic;", default=False),
+            # The SM100 tile's CTAs (K2_B0) or CTA pairs (K2_B1) per cluster along N, whether K2_B1 schedules by
+            # cluster launch control, and K2_B2's tail width; 0 and false in every other image, including all
+            # published before them.
+            _Field("cluster_n", _COUNT, "std::uint32_t cluster_n;", suffix="U", default=0),
+            _Field("clc", _BOOL, "bool clc;", default=False),
+            _Field("tail_w", _COUNT, "std::uint32_t tail_w;", suffix="U", default=0),
         ),
         runtime_key=(
             "is_bfloat16",
@@ -493,8 +539,20 @@ _FAMILY_SPECS: dict[str, _FamilySpec] = {
             "defer_kmin",
             "split_epi",
             "dynamic",
+            "cluster_n",
+            "clc",
+            "tail_w",
         ),
         sm90=_Sm90Spec("enabled", ("a", "b", "prod"), rank=3),
+        # K2_B2 also loads its narrow tails of b (b_tail) and of a (a_tail), b in a's place (b_as_a), and stores
+        # the transposed product (prod_t).
+        sm100=_Sm100Spec(
+            "enabled",
+            ("a", "b", "prod"),
+            rank=3,
+            clusters=True,
+            optional=(("b_tail", 3), ("a_tail", 3), ("b_as_a", 3), ("prod_t", 3)),
+        ),
     ),
     "trimul_kf_k3": _FamilySpec(
         fields=(
@@ -526,6 +584,8 @@ _FAMILY_SPECS: dict[str, _FamilySpec] = {
         sm90=_Sm90Spec(
             "enabled", ("prod", "x", "w_out", "w_gate"), ranks=((3, 4), (2, 3), 2, 2), optional=(("output", (2, 3)),)
         ),
+        # The SM100 images read a dense (N * N, D, B) product and (N * N, C, B) x, and store the output the same way.
+        sm100=_Sm100Spec("enabled", ("prod", "x", "w_out", "w_gate", "output"), clusters=True, ranks=(3, 3, 2, 2, 3)),
     ),
     # The SM90 image loads with cp.async, not TMA, so neither ABI records tensor maps.
     "window_attention": _FamilySpec(
@@ -869,9 +929,12 @@ def _validate_sm100_launch(spec: _Sm100Spec, value: object, where: str, dtype: s
         if _string(launch["cluster_scheduling_policy"], f"{where}.cluster_scheduling_policy") not in _CLUSTER_POLICY:
             _fail(f"{where}.cluster_scheduling_policy is unsupported")
     descriptors = _as_object(launch["tma_descriptors"], f"{where}.tma_descriptors")
-    _exact_keys(descriptors, set(spec.operands), f"{where}.tma_descriptors")
-    for name in spec.operands:
-        _validate_tma_descriptor(descriptors[name], f"{where}.tma_descriptors.{name}", dtype, spec.rank)
+    recorded_optional = set(descriptors) & {name for name, _ in spec.optional}
+    _exact_keys(descriptors, set(spec.operands) | recorded_optional, f"{where}.tma_descriptors")
+    ranks = spec.ranks or (spec.rank,) * len(spec.operands)
+    for name, rank in (*zip(spec.operands, ranks, strict=True), *spec.optional):
+        if name in descriptors:
+            _validate_tma_descriptor(descriptors[name], f"{where}.tma_descriptors.{name}", dtype, rank)
 
 
 def _validate_runtime_aliases(value: object, where: str, keys: tuple[str, str]) -> tuple[dict[str, object], ...]:
@@ -1939,8 +2002,11 @@ def _render_sm100(value: object, spec: _Sm100Spec, indent: str) -> list[str]:
     if spec.clusters:
         lines.append(f"{indent}  {_cpp_uint_array(metadata['cluster_dims'], 3)},")
         lines.append(f"{indent}  {_CLUSTER_POLICY[cast(str, metadata['cluster_scheduling_policy'])]},")
-    for operand in spec.operands:
-        lines.extend(_render_tma_descriptor(descriptors[operand], indent + "  "))
+    for operand in spec.declared_operands:
+        if operand in descriptors:
+            lines.extend(_render_tma_descriptor(descriptors[operand], indent + "  "))
+        else:
+            lines.append(f"{indent}  {{}},")
     lines.append(f"{indent}}},")
     return lines
 
@@ -1973,7 +2039,7 @@ def _sm100_declarations(spec: _FamilySpec) -> list[str]:
         f"  bool {spec.sm100.enabled_field};",
         "  std::uint32_t block_dims[3];",
         *cluster_members,
-        *(f"  TmaDescriptorInfo {operand};" for operand in spec.sm100.operands),
+        *(f"  TmaDescriptorInfo {operand};" for operand in spec.sm100.declared_operands),
         "};",
         "",
     ]

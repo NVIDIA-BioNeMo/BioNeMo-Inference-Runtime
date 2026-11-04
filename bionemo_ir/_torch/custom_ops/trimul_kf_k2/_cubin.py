@@ -12,7 +12,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""CUBIN-backed executable adapter for the SM90 TriMul KF K2."""
+"""CUBIN-backed executable adapters for the SM90 and SM100/SM103 TriMul KF K2."""
 
 from __future__ import annotations
 
@@ -29,7 +29,10 @@ from bionemo_ir._torch.utils.kernel import (
 )
 
 if TYPE_CHECKING:
-    from ._config import TrimulKFK2Tile
+    from ._config import TrimulKFK2Sm100Tile, TrimulKFK2Tile
+
+#: The SM100/SM103 variants in the launcher's numbering.
+SM100_VARIANTS = ("K2_B0", "K2_B1", "K2_B2")
 
 
 class TrimulKFK2CubinExecutable(CuTeDSLKernelLibraryExecutable):
@@ -105,5 +108,62 @@ class TrimulKFK2CubinExecutable(CuTeDSLKernelLibraryExecutable):
             if counter is None:
                 raise ValueError("a dynamic trimul KF K2 CUBIN claims its work from a counter; pass one")
             params.counter = tensor_flat(library, counter)
+        params.stream = current_stream_handle(a)
+        self._launcher.launch(self._config, params)
+
+
+class TrimulKFK2Sm100CubinExecutable(CuTeDSLKernelLibraryExecutable):
+    """Match the SM100/SM103 CuTeDSL compiled-function call ABI, ``(a, b, prod, n, l, ab_pitch, ab_plane)``, using
+    the C++ launcher. The image writes a dense product."""
+
+    def __init__(
+        self, kernel_library: ModuleType, launcher: Any, target_sm: int, outgoing: bool, tile: TrimulKFK2Sm100Tile
+    ) -> None:
+        pair = tile.kernel_variant != "K2_B0" or tile.tile_m == 256
+        try:
+            config = launcher.make_kernel_config(
+                target_sm,
+                launcher.DType.BFLOAT16,
+                outgoing,
+                SM100_VARIANTS.index(tile.kernel_variant),
+                256 if tile.kernel_variant == "K2_B2" else tile.tile_n,
+                2 if pair else 1,
+                0,
+                False,
+                dynamic=False,
+                cluster_n=1 if tile.kernel_variant == "K2_B2" else tile.cluster_n,
+                clc=bool(tile.clc),
+                tail_w=tile.tail_w,
+            )
+        except (RuntimeError, TypeError, ValueError) as error:
+            raise CuTeDSLKernelVariantUnavailable(
+                f"No trimul KF K2 CUBIN for SM{target_sm}, outgoing={outgoing}, {tile}"
+            ) from error
+        self._kernel_library = kernel_library
+        self._launcher = launcher
+        self._config = config
+        self.dynamic = False
+
+    def __call__(
+        self,
+        a: torch.Tensor,
+        b: torch.Tensor,
+        prod: torch.Tensor,
+        n: int,
+        l: int,  # noqa: E741
+        ab_pitch: int,
+        ab_plane: int,
+    ) -> None:
+        library = self._kernel_library
+        params = self._launcher.LaunchParams()
+        params.a = tensor_flat(library, a)
+        params.b = tensor_flat(library, b)
+        params.prod = tensor_flat(library, prod)
+        params.n = n
+        params.l = l
+        params.ab_pitch = ab_pitch
+        params.ab_plane = ab_plane
+        params.prod_pitch = n
+        params.prod_plane = n * n
         params.stream = current_stream_handle(a)
         self._launcher.launch(self._config, params)

@@ -135,7 +135,10 @@ def test_k1_writes_padded_planes_only_where_this_build_can(monkeypatch):
         specs = _load_kernel_library().trimul_kf_k1.kernel_specs()
     except (CuTeDSLKernelLibraryError, AttributeError):
         specs = []
-    padded_images = {(spec.C, spec.D, f"K1_{spec.kernel_variant}") for spec in specs if spec.padded}
+    # SM100 images index their own variants (K1_B0 is 0), so only the SM90 ones name an SM90 variant.
+    padded_images = {
+        (spec.C, spec.D, f"K1_{spec.kernel_variant}") for spec in specs if spec.padded and spec.target_sm == 90
+    }
     monkeypatch.setenv("CUTEDSL_FORCE_CUBIN", "1")
     for C, D in sorted(k1_config.shipped_shapes(90)):
         for variant in k1_config.KERNEL_VARIANTS:

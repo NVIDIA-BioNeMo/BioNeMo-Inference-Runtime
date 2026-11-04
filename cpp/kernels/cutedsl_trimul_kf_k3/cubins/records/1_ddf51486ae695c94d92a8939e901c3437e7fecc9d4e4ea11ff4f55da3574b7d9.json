@@ -24,18 +24,6 @@
       "target_arch": "sm_90a",
       "target_sm": 90
     },
-    "19ec9967fc39f0744393c039a31d3005b2c646bbf4c3d27befa0a4738f7e2a93": {
-      "dtype": "bf16",
-      "dynamic_smem_bytes": 232448,
-      "image_sha256": "0fa3ad5279c2c764561108bd97d53e32b185698fea03947328875b7403dccf28",
-      "image_size": 212360,
-      "kernel_sm": 100,
-      "kernel_symbol": "3cb2efa27e27903eed78862b04771598462311ef02f74a73e2d0db15ecf0b6b0",
-      "launch_abi": "trimul_kf_k3_sm100_v1",
-      "non_portable_cluster_size_allowed": true,
-      "target_arch": "sm_100a",
-      "target_sm": 100
-    },
     "19f79d443de454ac49d5feaa306f3402866b808b437f9e0f6017f1b1d13f66ef": {
       "dtype": "bf16",
       "dynamic_smem_bytes": 228352,
@@ -59,6 +47,18 @@
       "sm90_launch": "e342001e9ecc7b74319a92013b743779563669d9e9d195056fa65fb64358c29f",
       "target_arch": "sm_90a",
       "target_sm": 90
+    },
+    "1c86b70cb6dd4581b60c25299597a1a7bfe7192020aef8a7b5ab2bbef1d6811c": {
+      "dtype": "bf16",
+      "dynamic_smem_bytes": 232448,
+      "image_sha256": "2c6093bb2c1978d78f1dc533fc1a756286b674db1569ebdfc982851609b9f9ab",
+      "image_size": 180440,
+      "kernel_sm": 100,
+      "kernel_symbol": "3cb2efa27e27903eed78862b04771598462311ef02f74a73e2d0db15ecf0b6b0",
+      "launch_abi": "trimul_kf_k3_sm100_v1",
+      "non_portable_cluster_size_allowed": true,
+      "target_arch": "sm_103a",
+      "target_sm": 103
     },
     "1dd3b8ac80cd82622ae8dae8c52d278f202c1f63d3129f7c7f680c6b3220f44b": {
       "dtype": "bf16",

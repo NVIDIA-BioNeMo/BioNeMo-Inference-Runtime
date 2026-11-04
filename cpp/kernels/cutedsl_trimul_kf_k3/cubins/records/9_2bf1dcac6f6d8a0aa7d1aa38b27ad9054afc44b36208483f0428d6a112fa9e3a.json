@@ -1,18 +1,5 @@
 {
-  "executables": {
-    "99f9bcc58760d81cd3c72f16851103eb852197ea2056db221960156e3e9358c1": {
-      "dtype": "bf16",
-      "dynamic_smem_bytes": 232448,
-      "image_sha256": "f13965870f27dc6e425ee21b6d2fd10a83505c363c12311ccc6170765c1446fc",
-      "image_size": 216080,
-      "kernel_sm": 100,
-      "kernel_symbol": "3cb2efa27e27903eed78862b04771598462311ef02f74a73e2d0db15ecf0b6b0",
-      "launch_abi": "trimul_kf_k3_sm100_v1",
-      "non_portable_cluster_size_allowed": true,
-      "target_arch": "sm_100a",
-      "target_sm": 100
-    }
-  },
+  "executables": {},
   "kernel_symbols": {},
   "sm90_launches": {
     "9670eea3f29fc92af6c900074ece4f40a1d29474a97b052e09d3685b76e879c5": {

@@ -24,6 +24,18 @@
       "target_arch": "sm_90a",
       "target_sm": 90
     },
+    "f5ae44dd97993566f2277cf5e2332ff16cb133ec99a7b20cf1682a2571286262": {
+      "dtype": "bf16",
+      "dynamic_smem_bytes": 232448,
+      "image_sha256": "6ae1026183b122732fa700719ac4e9c1f694c522074f661c481006622089a7af",
+      "image_size": 178600,
+      "kernel_sm": 100,
+      "kernel_symbol": "3cb2efa27e27903eed78862b04771598462311ef02f74a73e2d0db15ecf0b6b0",
+      "launch_abi": "trimul_kf_k3_sm100_v1",
+      "non_portable_cluster_size_allowed": true,
+      "target_arch": "sm_100a",
+      "target_sm": 100
+    },
     "f61c0572b9be3d8994139d6ecec6ed3458e7764905f2e85563f4fef0339fcc9b": {
       "dtype": "bf16",
       "dynamic_smem_bytes": 160768,
@@ -211,7 +223,7 @@
       "variant_id": "f874ffddc8acbf23f93c"
     },
     {
-      "executable": "d6ee001b39493e386e46846707e40d2e6926e63d90e58780c9d4b33fa86b1620",
+      "executable": "1c86b70cb6dd4581b60c25299597a1a7bfe7192020aef8a7b5ab2bbef1d6811c",
       "runtime_metadata": {
         "C": 384,
         "D": 256,

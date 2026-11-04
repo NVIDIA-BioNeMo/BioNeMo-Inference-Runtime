@@ -36,18 +36,6 @@
       "target_arch": "sm_100a",
       "target_sm": 100
     },
-    "c9c28054f5ba7b03f9e4a28096c4aecaae4ab6c6235e79151b0f95ab52f1767a": {
-      "dtype": "bf16",
-      "dynamic_smem_bytes": 232448,
-      "image_sha256": "16de9477c7407629138df4fa10118ce444cc4fd404c55dda8d20867f139a9587",
-      "image_size": 212360,
-      "kernel_sm": 100,
-      "kernel_symbol": "3cb2efa27e27903eed78862b04771598462311ef02f74a73e2d0db15ecf0b6b0",
-      "launch_abi": "trimul_kf_k3_sm100_v1",
-      "non_portable_cluster_size_allowed": true,
-      "target_arch": "sm_103a",
-      "target_sm": 103
-    },
     "cb2239ed360124ee8fda69be32869b1ede78f96c4ef7ce7359571e7542053ab2": {
       "dtype": "bf16",
       "dynamic_smem_bytes": 232448,

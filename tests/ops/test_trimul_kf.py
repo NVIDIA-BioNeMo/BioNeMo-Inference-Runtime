@@ -266,40 +266,39 @@ def _run_chain_stages(
     return a, b, stats, prod, out
 
 
-def _k1_reference(problem: dict) -> tuple[torch.Tensor, torch.Tensor]:
-    """fp32 channel-major ``a``, ``b`` ``[B, D, N, N]``: ``mask * (n @ W_p.T + b_p) * sigmoid(n @ W_g.T + b_g)``.
+# Output rows the fp32 reference computes at once: its temporaries stay under 1 GiB at N = 992, C = 384.
+_REFERENCE_ROWS = 64
 
-    ``n = LayerNorm(x)``, and ``mask[b, i, j] = j < seqlen[b, i]``.
+
+def _k1_reference_rows(problem: dict, item: int, rows: slice) -> torch.Tensor:
+    """fp32 channel-major ``a`` and ``b`` rows ``[2D, R, N]`` of batch item ``item``.
+
+    Each is ``mask * (n @ W_p.T + b_p) * sigmoid(n @ W_g.T + b_g)``, with ``n = LayerNorm(x)`` and
+    ``mask[i, j] = j < seqlen[item, i]``.
     """
-    x = problem["x"].float()
-    B, N, _, C = x.shape
+    x = problem["x"][item, rows].float()
+    N, C = x.shape[1:]
     normed = torch.nn.functional.layer_norm(
         x, (C,), problem["norm_in_weight"].float(), problem["norm_in_bias"].float(), _EPS
     )
     proj = torch.nn.functional.linear(normed, problem["p_in_weight"].float(), _float(problem["p_in_bias"]))
     gate = torch.nn.functional.linear(normed, problem["g_in_weight"].float(), _float(problem["g_in_bias"]))
-    mask = torch.arange(N, device=x.device) < problem["seqlen"].reshape(B, N, 1)
-    out = (proj * torch.sigmoid(gate) * mask[..., None]).permute(0, 3, 1, 2)
-    D = out.shape[1] // 2
-    return out[:, :D], out[:, D:]
+    mask = torch.arange(N, device=x.device) < problem["seqlen"][item, rows, None]
+    return (proj * torch.sigmoid(gate) * mask[..., None]).permute(2, 0, 1)
 
 
-def _k2_reference(a: torch.Tensor, b: torch.Tensor, outgoing: bool) -> torch.Tensor:
-    """fp32 ``prod`` ``[B, D, N, N]``: ``a[i, k] b[j, k]`` summed over ``k`` outgoing, ``a[k, i] b[k, j]`` incoming."""
-    return torch.einsum("bdik,bdjk->bdij" if outgoing else "bdki,bdkj->bdij", a.float(), b.float())
+def _k3_reference_rows(prod: torch.Tensor, problem: dict, item: int, rows: slice, residual: bool) -> torch.Tensor:
+    """fp32 output rows ``[R, N, C]`` of batch item ``item``: ``(LN_out(P) @ W_out.T + b_out) * sigmoid(LN_in(x) @
+    W_g.T + b_g)``.
 
-
-def _k3_reference(prod: torch.Tensor, problem: dict, residual: bool) -> torch.Tensor:
-    """fp32 ``[B, N, N, C]``: ``(LN_out(P) @ W_out.T + b_out) * sigmoid(LN_in(x) @ W_g.T + b_g)``.
-
-    ``P`` is ``prod`` channel-last. The fused residual gives ``(x + update) * mask``,
-    ``mask[b, i, j] = j < out_seqlen[b, i]``.
+    ``P`` is the fp32 product rows ``prod`` ``[D, R, N]`` channel-last. The fused residual gives
+    ``(x + update) * mask``, ``mask[i, j] = j < out_seqlen[item, i]``.
     """
-    x = problem["x"].float()
-    B, N, _, C = x.shape
+    x = problem["x"][item, rows].float()
+    N, C = x.shape[1:]
     products = torch.nn.functional.layer_norm(
-        prod.float().permute(0, 2, 3, 1),
-        (prod.shape[1],),
+        prod.permute(1, 2, 0),
+        (prod.shape[0],),
         problem["norm_out_weight"].float(),
         problem["norm_out_bias"].float(),
         _EPS,
@@ -314,7 +313,7 @@ def _k3_reference(prod: torch.Tensor, problem: dict, residual: bool) -> torch.Te
     )
     if not residual:
         return update
-    mask = torch.arange(N, device=x.device) < problem["out_seqlen"].reshape(B, N, 1)
+    mask = torch.arange(N, device=x.device) < problem["out_seqlen"][item, rows, None]
     return (x + update) * mask[..., None]
 
 
@@ -322,26 +321,73 @@ def _float(bias: torch.Tensor | None) -> torch.Tensor | None:
     return None if bias is None else bias.float()
 
 
+def _k1_reference(problem: dict) -> tuple[torch.Tensor, torch.Tensor]:
+    """fp32 channel-major ``a``, ``b`` ``[B, D, N, N]`` of every batch item; see ``_k1_reference_rows``."""
+    B = problem["x"].shape[0]
+    ab = torch.stack([_k1_reference_rows(problem, item, slice(None)) for item in range(B)])
+    D = ab.shape[1] // 2
+    return ab[:, :D], ab[:, D:]
+
+
+def _k2_reference(a: torch.Tensor, b: torch.Tensor, outgoing: bool) -> torch.Tensor:
+    """fp32 ``prod`` ``[B, D, N, N]``: ``a[i, k] b[j, k]`` summed over ``k`` outgoing, ``a[k, i] b[k, j]`` incoming."""
+    return torch.einsum("bdik,bdjk->bdij" if outgoing else "bdki,bdkj->bdij", a.float(), b.float())
+
+
+def _k3_reference(prod: torch.Tensor, problem: dict, residual: bool) -> torch.Tensor:
+    """fp32 ``[B, N, N, C]`` of every batch item from ``prod`` ``[B, D, N, N]``; see ``_k3_reference_rows``."""
+    return torch.stack(
+        [_k3_reference_rows(p.float(), problem, item, slice(None), residual) for item, p in enumerate(prod)]
+    )
+
+
 def _reference(problem: dict, outgoing: bool, residual: bool) -> torch.Tensor:
+    """The whole fp32 chain for small cases; ``_assert_matches_reference`` bounds memory on large ones."""
     a, b = _k1_reference(problem)
     return _k3_reference(_k2_reference(a, b, outgoing), problem, residual)
 
 
-def _skip_without_room(B: int, N: int, C: int, D: int) -> None:
+def _assert_matches_reference(out: torch.Tensor, problem: dict, outgoing: bool, residual: bool) -> None:
+    """Compare ``out`` with the fp32 chain, ``_REFERENCE_ROWS`` output rows at a time.
+
+    Only one batch item's fp32 ``a`` and ``b`` (``8 D N^2`` bytes) stay resident. The product sums ``a[i, k] b[j, k]``
+    over ``k`` outgoing and ``a[k, i] b[k, j]`` incoming.
+    """
+    B, N = out.shape[:2]
+    D = problem["p_in_weight"].shape[0] // 2
+    chunks = [slice(start, start + _REFERENCE_ROWS) for start in range(0, N, _REFERENCE_ROWS)]
+    for item in range(B):
+        ab = torch.empty(2 * D, N, N, device=out.device)
+        for rows in chunks:
+            ab[:, rows] = _k1_reference_rows(problem, item, rows)
+        a, b = ab[:D], ab[D:]
+        for rows in chunks:
+            if outgoing:
+                prod = torch.einsum("dik,djk->dij", a[:, rows], b)
+            else:
+                prod = torch.einsum("dki,dkj->dij", a[:, :, rows], b)
+            torch.testing.assert_close(
+                out[item, rows].float(),
+                _k3_reference_rows(prod, problem, item, rows, residual),
+                atol=_ATOL,
+                rtol=0,
+                msg=lambda message, item=item, rows=rows: f"batch item {item}, rows {rows.start}+: {message}",
+            )
+
+
+def _skip_without_room(B: int, N: int, C: int, D: int, outputs: int = 1, reference: bool = True) -> None:
     """Skip a case the free GPU memory cannot hold.
 
-    The fp32 reference is the largest term, and the widest cases need several
-    GiB. Tests sharing one device run out before the kernels are at fault, so
-    size the requirement from the case rather than failing on allocation.
+    The peak is ``x`` and the ``outputs`` the test keeps, plus the larger of the chain's bf16 ``a``, ``b`` and product
+    and, with ``reference``, one batch item's fp32 ``a`` and ``b`` and the reference's row temporaries. Tests sharing
+    one device run out before the kernels are at fault, so size the requirement from the case rather than failing on
+    allocation.
     """
     torch.cuda.empty_cache()
     P = k1_config.ab_pitch(N, k1_config.ab_layout("pad_n_mod_16_8", N))
-    footprint = B * (
-        4 * N * N * C  # bf16 x and out
-        + 4 * D * P * P  # bf16 a and b
-        + 2 * D * N * N  # bf16 product
-        + 8 * N * N * C  # fp32 reference and one intermediate
-    )
+    chain = B * (4 * D * P * P + 2 * D * N * N)
+    fp32 = 8 * D * N * N + 4 * _REFERENCE_ROWS * N * (8 * D + 4 * C) if reference else 0
+    footprint = 2 * B * N * N * C * (1 + outputs) + max(chain, fp32)
     needed = footprint + footprint // 4
     if torch.cuda.mem_get_info()[0] < needed:
         pytest.skip(f"needs {needed / 2**30:.1f} GiB of free GPU memory")
@@ -357,9 +403,8 @@ def test_chain_matches_reference(mode, case, monkeypatch):
     problem = _problem(B, N, C, has_bias, lengths, D=D)
     out = _run_chain(problem, outgoing, residual)
     _assert_dispatched(caches, mode)
-    reference = _reference(problem, outgoing, residual)
     assert out.shape == problem["x"].shape and out.dtype == torch.bfloat16
-    torch.testing.assert_close(out.float(), reference, atol=_ATOL, rtol=0)
+    _assert_matches_reference(out, problem, outgoing, residual)
 
 
 # Dense and padded K1 planes at C = 128, 256 and 384 (a pitched product at C = 384), K3 with and without the
@@ -393,6 +438,7 @@ def test_cubin_chain_matches_source_chain_bitwise(case, monkeypatch):
     if set(_CUTEDSL_MODES) != {"source", "cubin"}:
         pytest.skip("needs BIOIR_TEST_CUTEDSL_MODES=source,cubin")
     B, N, C, D, outgoing, has_bias, residual, lengths = case
+    _skip_without_room(B, N, C, D, outputs=2, reference=False)
     problem = _problem(B, N, C, has_bias, lengths, D=D)
     outputs = []
     for mode in ("source", "cubin"):
@@ -410,7 +456,7 @@ def test_d256_tail_tiles_repeat_bit_for_bit(mode, case, monkeypatch):
     or from the CUBIN library, write the same bits."""
     skip_if_not_sm90()
     B, N, C, D, outgoing, has_bias, residual, lengths = case
-    _skip_without_room(B, N, C, D)
+    _skip_without_room(B, N, C, D, outputs=2, reference=False)
     caches = _use_mode(mode, monkeypatch)
     problem = _problem(B, N, C, has_bias, lengths, D=D)
     first = _run_chain(problem, outgoing, residual)
@@ -451,7 +497,7 @@ def test_pitched_product_chain_matches_dense_chain_bitwise(mode, case, monkeypat
     """
     skip_if_not_sm90()
     B, N, C, D, outgoing, lengths = case
-    _skip_without_room(B, N, C, D)
+    _skip_without_room(B, N, C, D, outputs=3, reference=False)
     caches = _use_mode(mode, monkeypatch)
     op3 = k3.get_trimul_kf_k3_op(torch.bfloat16, C, D, True)
     variant = op3.select(N).kernel_variant

@@ -313,6 +313,7 @@ class _FeatureExtractionCacheProbe:
         self.linear_z = lambda value: value
         self.template_embedder = lambda **kwargs: torch.zeros_like(kwargs["z"])
         self.msa_module_embedder = SimpleNamespace(
+            prepare_msa_indices=lambda _batch: None,
             prepare_msa=lambda _batch, **_kwargs: (
                 torch.zeros(1, 1, tokens, channels, device=device),
                 torch.ones(1, 1, tokens, device=device),
@@ -368,9 +369,14 @@ def test_request_msa_stream(device: str) -> None:
     original = probe.msa_module_embedder.prepare_msa
     draws: list[torch.Tensor] = []
 
-    def record_msa(batch: dict[str, torch.Tensor], *, generator: torch.Generator) -> tuple[torch.Tensor, torch.Tensor]:
+    def record_msa(
+        batch: dict[str, torch.Tensor],
+        *,
+        generator: torch.Generator,
+        prepared_indices: tuple[torch.Tensor, torch.Tensor] | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         draws.append(torch.rand(2, device=device, generator=generator))
-        return original(batch)
+        return original(batch, prepared_indices=prepared_indices)
 
     probe.msa_module_embedder.prepare_msa = record_msa
     state = torch.cuda.get_rng_state() if device == "cuda" else torch.get_rng_state()
@@ -382,6 +388,38 @@ def test_request_msa_stream(device: str) -> None:
     assert all(torch.equal(actual, reference) for actual, reference in zip(draws, expected, strict=True))
     after = torch.cuda.get_rng_state() if device == "cuda" else torch.get_rng_state()
     assert torch.equal(state, after)
+
+
+def test_request_msa_indices_are_prepared_once() -> None:
+    probe = _FeatureExtractionCacheProbe(torch.device("cpu"), min_size=8)
+    batch = {"token_mask": torch.ones(1, 4)}
+    indices = (torch.tensor([0]), torch.empty(0, dtype=torch.int64))
+    preparation_calls = []
+    reuse_calls = []
+    original = probe.msa_module_embedder.prepare_msa
+
+    def prepare_indices(request: dict[str, torch.Tensor]) -> tuple[torch.Tensor, torch.Tensor]:
+        preparation_calls.append(request)
+        return indices
+
+    def prepare_msa(
+        request: dict[str, torch.Tensor],
+        *,
+        generator: torch.Generator | None = None,
+        prepared_indices: tuple[torch.Tensor, torch.Tensor] | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        reuse_calls.append(prepared_indices)
+        return original(request)
+
+    probe.msa_module_embedder.prepare_msa_indices = prepare_indices
+    probe.msa_module_embedder.prepare_msa = prepare_msa
+    with torch.inference_mode():
+        probe.feature_extraction(batch=batch, num_cycles=4)
+    assert len(preparation_calls) == 1
+    assert preparation_calls[0] is batch
+    assert len(reuse_calls) == 4
+    assert all(value is indices for value in reuse_calls)
+    assert set(batch) == {"token_mask"}
 
 
 class _PairCacheConditioning:

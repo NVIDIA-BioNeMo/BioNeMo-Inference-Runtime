@@ -159,6 +159,9 @@ class MSAModuleEmbedderConfig(BaseConfig):
     subsample_all_msa: bool = True
     min_subsampled_all_msa: int = 1024
     max_subsampled_all_msa: int = 1024
+    # BioIR and OSS featurizers set ``msa_mask`` to 1 except at padded tokens,
+    # so every row is valid and row selection needs no device-to-host read.
+    assume_valid_msa_rows: bool = True
 
 
 class DiffusionModuleConfig(BaseConfig):

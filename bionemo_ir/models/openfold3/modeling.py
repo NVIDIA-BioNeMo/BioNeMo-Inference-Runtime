@@ -305,8 +305,13 @@ class OpenFold3(nn.Module, OptimizedModuleSetterMixin):
         template_batch = {
             name: value for name, value in batch.items() if name.startswith("template_") or name == "asym_id"
         }
+        # The padded request mask is unchanged across recycles, so its row
+        # indices are prepared once; selected MSA features stay per cycle.
+        msa_indices = self.msa_module_embedder.prepare_msa_indices(batch)
         for cycle_index in range(num_cycles):
-            msa_feat, msa_mask = self.msa_module_embedder.prepare_msa(batch, generator=msa_generator)
+            msa_feat, msa_mask = self.msa_module_embedder.prepare_msa(
+                batch, generator=msa_generator, prepared_indices=msa_indices
+            )
             s, z = self.trunk_graph(
                 s=s,
                 z=z,

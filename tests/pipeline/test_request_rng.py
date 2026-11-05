@@ -181,12 +181,16 @@ def test_msa_rng_isolation(device: str) -> None:
     class _MsaProbe:
         forward = MSAModuleEmbedder.forward
         prepare_msa = MSAModuleEmbedder.prepare_msa
+        prepare_msa_indices = MSAModuleEmbedder.prepare_msa_indices
         embed_prepared_msa = MSAModuleEmbedder.embed_prepared_msa
-        _subsample_all_msa = staticmethod(MSAModuleEmbedder._subsample_all_msa)
+        _draw_all_msa_depth = MSAModuleEmbedder._draw_all_msa_depth
+        _select_all_msa_rows = staticmethod(MSAModuleEmbedder._select_all_msa_rows)
+        _msa_features = staticmethod(MSAModuleEmbedder._msa_features)
         subsample_main_msa = False
         subsample_all_msa = True
         min_subsampled_all_msa = 2
         max_subsampled_all_msa = 5
+        assume_valid_msa_rows = True
 
         def linear_m(self, value: torch.Tensor) -> torch.Tensor:
             return value

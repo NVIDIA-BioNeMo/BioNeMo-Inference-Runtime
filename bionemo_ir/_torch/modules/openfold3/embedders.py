@@ -290,6 +290,8 @@ class MSAModuleEmbedder(nn.Module):
             max_subsampled_all_msa:
                 If subsample_all_msa, this specifies the minimum number of MSA
                 sequences to retain after subsampling.
+            assume_valid_msa_rows:
+                Whether every MSA row of a single request has a nonzero mask.
         """
         super().__init__()
 
@@ -297,6 +299,7 @@ class MSAModuleEmbedder(nn.Module):
         self.subsample_all_msa = config.subsample_all_msa
         self.min_subsampled_all_msa = config.min_subsampled_all_msa
         self.max_subsampled_all_msa = config.max_subsampled_all_msa
+        self.assume_valid_msa_rows = config.assume_valid_msa_rows
         self.dtype = config.torch_dtype
         self.skip_create_weights = config.skip_create_weights
         self.config = config
@@ -445,44 +448,100 @@ class MSAModuleEmbedder(nn.Module):
                 to a shared dimension.
         """
 
-        # Set the sequence dimension for the two tensors, the token dimension is this +1
-        feat_seq_dim = -3
-        mask_seq_dim = -2
+        selected = MSAModuleEmbedder._select_all_msa_rows(
+            *MSAModuleEmbedder._msa_valid_indices(msa_mask), no_subsampled_all_msa, generator
+        )
+        if selected is None:
+            return msa_feat, msa_mask
+        return msa_feat.index_select(-3, selected), msa_mask.index_select(-2, selected)
 
-        if isinstance(no_subsampled_all_msa, torch.Tensor):
-            no_subsampled_all_msa = no_subsampled_all_msa.item()
+    @staticmethod
+    def _select_all_msa_rows(
+        valid_idx: torch.Tensor,
+        invalid_idx: torch.Tensor,
+        no_subsampled_all_msa: int,
+        generator: torch.Generator | None = None,
+    ) -> torch.Tensor | None:
+        """Pick rows, valid ones first; ``None`` keeps every row in order."""
+        device = valid_idx.device
+        # Pick msa from the valid ones at random
+        if valid_idx.numel() >= no_subsampled_all_msa:
+            permuted_idx = valid_idx[torch.randperm(valid_idx.numel(), device=device, generator=generator)]
+            return permuted_idx[:no_subsampled_all_msa]
+        # Take all valid, then fill with random invalid
+        if invalid_idx.numel() > 0:
+            take_invalid = no_subsampled_all_msa - valid_idx.numel()
+            permuted_idx = invalid_idx[torch.randperm(invalid_idx.numel(), device=device, generator=generator)]
+            return torch.cat([valid_idx, permuted_idx[:take_invalid]], dim=0)
+        # With no invalid rows, the valid rows are every row in order.
+        return None
 
-        # Valid msa
-        valid_msa = (msa_mask.sum(dim=mask_seq_dim + 1) > 0).squeeze()  # [N_msa]
+    @staticmethod
+    def _msa_features(batch: dict[str, torch.Tensor], rows: torch.Tensor | None = None) -> torch.Tensor:
+        """Concatenate MSA input channels, gathering ``rows`` before the concat."""
 
+        def pick(name: str, seq_dim: int) -> torch.Tensor:
+            value = batch[name]
+            return value if rows is None else value.index_select(seq_dim, rows)
+
+        # [*, N_msa, N_token, 34]
+        return torch.cat(
+            [
+                pick("msa", -3),
+                pick("has_deletion", -2).unsqueeze(-1),
+                pick("deletion_value", -2).unsqueeze(-1),
+            ],
+            dim=-1,
+        )
+
+    @staticmethod
+    def _msa_valid_indices(msa_mask: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        """Keep the legacy reduction and row order on the mask's own device."""
+        valid_msa = (msa_mask.sum(dim=-1) > 0).squeeze()
         if valid_msa.ndim == 0:
             valid_msa = valid_msa.unsqueeze(0)
-
         valid_idx = valid_msa.nonzero().squeeze()
         invalid_idx = (~valid_msa).nonzero().squeeze()
-
         if valid_idx.ndim == 0:
             valid_idx = valid_idx.unsqueeze(0)
         if invalid_idx.ndim == 0:
             invalid_idx = invalid_idx.unsqueeze(0)
+        return valid_idx, invalid_idx
 
-        device = msa_feat.device
-        # Pick msa from the valid ones at random
-        if valid_idx.numel() >= no_subsampled_all_msa:
-            permuted_idx = valid_idx[torch.randperm(valid_idx.numel(), device=device, generator=generator)]
-            selected = permuted_idx[:no_subsampled_all_msa]
-        else:
-            # Take all valid, then fill with random invalid
-            take_invalid = no_subsampled_all_msa - valid_idx.numel()
-            if invalid_idx.numel() > 0:
-                permuted_idx = invalid_idx[torch.randperm(invalid_idx.numel(), device=device, generator=generator)]
-                selected = torch.cat([valid_idx, permuted_idx[:take_invalid]], dim=0)
-            else:
-                selected = valid_idx
+    def prepare_msa_indices(self, batch: dict[str, torch.Tensor]) -> tuple[torch.Tensor, torch.Tensor] | None:
+        """Prepare single-request row metadata once, after token padding.
 
-        feat_sub = msa_feat.index_select(feat_seq_dim, selected)
-        mask_sub = msa_mask.index_select(mask_seq_dim, selected)
-        return feat_sub, mask_sub
+        Args:
+            batch: MSA features with mask ``[*, N_msa, N_token]``. The mask
+                must remain unchanged while its prepared indices are reused.
+
+        Returns:
+            Ordered valid/invalid indices, or ``None`` for the batched,
+            main-MSA, and disabled-subsampling paths.
+        """
+        if self.subsample_main_msa or not self.subsample_all_msa or math.prod(batch["msa"].shape[:-3]) > 1:
+            return None
+        msa_mask = batch["msa_mask"]
+        if not self.assume_valid_msa_rows:
+            return self._msa_valid_indices(msa_mask)
+        # Featurizers mask only padded tokens, so every row is valid.
+        return (
+            torch.arange(msa_mask.shape[-2], device=msa_mask.device),
+            torch.empty(0, dtype=torch.long, device=msa_mask.device),
+        )
+
+    def _draw_all_msa_depth(self, device: torch.device, generator: torch.Generator | None) -> int:
+        depth = torch.randint(
+            low=self.min_subsampled_all_msa,
+            high=int(self.max_subsampled_all_msa + 1),
+            size=(1,),
+            device=device,
+            generator=generator,
+        )
+        # Fixed limits still advance the RNG but skip the host read.
+        if self.min_subsampled_all_msa == self.max_subsampled_all_msa:
+            return self.min_subsampled_all_msa
+        return depth.item()
 
     def _apply_subsample_fn_batch(self, fn: callable, **kwargs) -> tuple[torch.Tensor, torch.Tensor]:
         """
@@ -577,29 +636,33 @@ class MSAModuleEmbedder(nn.Module):
         return self.embed_prepared_msa(msa_feat, s_input), msa_mask
 
     def prepare_msa(
-        self, batch: dict[str, torch.Tensor], generator: torch.Generator | None = None
+        self,
+        batch: dict[str, torch.Tensor],
+        generator: torch.Generator | None = None,
+        prepared_indices: tuple[torch.Tensor, torch.Tensor] | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        """Select MSA rows outside capture, preserving the original random draws."""
-        batch_dims = batch["msa"].shape[:-3]
+        """Select MSA rows outside capture, preserving the original random draws.
 
-        # [*, N_msa, N_token, 34]
-        msa_feat = torch.cat(
-            [
-                batch["msa"],
-                batch["has_deletion"].unsqueeze(-1),
-                batch["deletion_value"].unsqueeze(-1),
-            ],
-            dim=-1,
-        )
+        Args:
+            batch: MSA input features and mask.
+            generator: Request RNG, or ``None`` for the default RNG stream.
+            prepared_indices: Optional metadata from :meth:`prepare_msa_indices`
+                for this unchanged request mask; built here when omitted.
+        """
+        batch_dims = batch["msa"].shape[:-3]
         msa_mask = batch["msa_mask"]
+        device = msa_mask.device
+        if prepared_indices is None:
+            prepared_indices = self.prepare_msa_indices(batch)
 
         # Keep unseeded calls graph-safe and stateful.
         subsample = self.subsample_main_msa or self.subsample_all_msa
         shared_rng = generator is None
         if subsample and shared_rng:
-            generator = make_graph_safe_generator(msa_feat.device)
+            generator = make_graph_safe_generator(device)
 
         if self.subsample_main_msa:
+            msa_feat = self._msa_features(batch)
             if math.prod(batch_dims) > 1:
                 msa_feat, msa_mask = self._apply_subsample_fn_batch(
                     fn=partial(self._subsample_main_msa, generator=generator),
@@ -616,33 +679,22 @@ class MSAModuleEmbedder(nn.Module):
                     asym_id=batch["asym_id"],
                     generator=generator,
                 )
+        elif prepared_indices is not None:
+            # Gather the kept rows before the concat, not the full-depth features.
+            depth = self._draw_all_msa_depth(device, generator)
+            selected = self._select_all_msa_rows(*prepared_indices, depth, generator)
+            msa_feat = self._msa_features(batch, selected)
+            if selected is not None:
+                msa_mask = msa_mask.index_select(-2, selected)
         elif self.subsample_all_msa:
-            no_subsampled_all_msa = torch.randint(
-                low=self.min_subsampled_all_msa,
-                high=int(self.max_subsampled_all_msa + 1),
-                size=(1,),
-                device=msa_feat.device,
-                generator=generator,
-            ).item()
-
-            if math.prod(batch_dims) > 1:
-                msa_feat, msa_mask = self._apply_subsample_fn_batch(
-                    fn=partial(self._subsample_all_msa, generator=generator),
-                    msa_feat=msa_feat,
-                    msa_mask=msa_mask,
-                    no_subsampled_all_msa=torch.full(
-                        (msa_feat.shape[0],),
-                        no_subsampled_all_msa,
-                        device=msa_feat.device,
-                    ),
-                )
-            else:
-                msa_feat, msa_mask = self._subsample_all_msa(
-                    msa_feat=msa_feat,
-                    msa_mask=msa_mask,
-                    no_subsampled_all_msa=no_subsampled_all_msa,
-                    generator=generator,
-                )
+            depth = self._draw_all_msa_depth(device, generator)
+            msa_feat, msa_mask = self._apply_subsample_fn_batch(
+                fn=partial(self._subsample_all_msa, no_subsampled_all_msa=depth, generator=generator),
+                msa_feat=self._msa_features(batch),
+                msa_mask=msa_mask,
+            )
+        else:
+            msa_feat = self._msa_features(batch)
 
         if subsample and shared_rng:
             # Match legacy default-generator progression.

@@ -163,6 +163,22 @@ def test_generator_pads_short_rows_and_broadcasts_shared_msa() -> None:
     assert msa_idx[2, 2] == GAP_IDX and msa_idx[2, 3] == GAP_IDX
 
 
+@pytest.mark.parametrize(
+    "chains,msa",
+    [
+        ([("A", MOL_TYPE_PROTEIN, 3)], [None]),
+        (
+            [("A", MOL_TYPE_PROTEIN, 4), ("B", MOL_TYPE_PROTEIN, 3)],
+            [{"sequences": ["ACDE", "KLMN", "PQRS"], "raw": ["ACDE", "KLMN", "PQRS"]}, None],
+        ),
+    ],
+)
+def test_generator_masks_no_whole_msa_row(chains: list[tuple[str, int, int]], msa: list) -> None:
+    # MSAModuleEmbedderConfig.assume_valid_msa_rows relies on this contract.
+    feats = MsaFeatureGenerator()({}, _context(chains, msa, []))
+    assert bool((feats["msa_mask"].sum(dim=-1) > 0).all())
+
+
 def test_generator_without_msa_emits_gap_row_and_zero_profile() -> None:
     feats = MsaFeatureGenerator()({}, _context([("A", MOL_TYPE_PROTEIN, 3)], [None], []))
     assert feats["msa"].shape == (1, 3, NUM_MSA_CLASSES)

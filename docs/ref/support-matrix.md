@@ -104,8 +104,8 @@ measured results for each in [Benchmarks](benchmark.md). The
 rest of the table works and is not part of that set.
 
 Optimized CuTeDSL kernels cover Ampere through Hopper, plus SM100 / SM103 for
-pair-weighted averaging and both dual GEMMs, plus SM100 / SM103 / SM120 /
-SM121 for AdaLN; the kernel table below
+pair-weighted averaging, the attention epilogue and both dual GEMMs, plus
+SM100 / SM103 / SM120 / SM121 for AdaLN; the kernel table below
 lists the exact SMs per kernel. Outer-product mean runs CuTeDSL only where it
 has a native kernel and Triton on every other SM80+ SKU. On **SM100** and
 **SM103**, triangle attention falls back to cuEquivariance; on **SM120** and
@@ -113,16 +113,16 @@ has a native kernel and Triton on every other SM80+ SKU. On **SM100** and
 still *runs* on any of these SKUs; rows below describe which fused kernels
 apply.
 
-| Architecture       | Compute capability | Datacenter / client GPUs     | Optimized kernels                                                                              |
-| ------------------ | ------------------ | ---------------------------- | ---------------------------------------------------------------------------------------------- |
-| **Ampere**         | SM80               | A100, A30                    | CuTeDSL CUBIN                                                                                  |
-| **Ampere (GA10x)** | SM86               | A10, A16, A40, RTX A6000     | CuTeDSL CUBIN                                                                                  |
-| **Ada Lovelace**   | SM89               | L40, L40S                    | CuTeDSL CUBIN                                                                                  |
-| **Hopper**         | SM90               | H100, H200, GH200            | CuTeDSL CUBIN                                                                                  |
-| **Blackwell**      | SM100              | B100, B200, GB200            | CuTeDSL CUBIN (PWA, AdaLN, both dual GEMMs); Triton (OPM); cuEquivariance (triangle attention) |
-| **Blackwell**      | SM103              | B300, GB300                  | CuTeDSL CUBIN (PWA, AdaLN, both dual GEMMs); Triton (OPM); cuEquivariance (triangle attention) |
-| **Blackwell**      | SM120              | RTX 5090, RTX 6000 Blackwell | CuTeDSL CUBIN (AdaLN); cuEquivariance (triangle attention, dual GEMM); Triton (OPM)            |
-| **Blackwell**      | SM121              | DGX Spark (GB10)             | CuTeDSL CUBIN (AdaLN); cuEquivariance (triangle attention, dual GEMM); Triton (OPM)            |
+| Architecture       | Compute capability | Datacenter / client GPUs     | Optimized kernels                                                                                                  |
+| ------------------ | ------------------ | ---------------------------- | ------------------------------------------------------------------------------------------------------------------ |
+| **Ampere**         | SM80               | A100, A30                    | CuTeDSL CUBIN                                                                                                      |
+| **Ampere (GA10x)** | SM86               | A10, A16, A40, RTX A6000     | CuTeDSL CUBIN                                                                                                      |
+| **Ada Lovelace**   | SM89               | L40, L40S                    | CuTeDSL CUBIN                                                                                                      |
+| **Hopper**         | SM90               | H100, H200, GH200            | CuTeDSL CUBIN                                                                                                      |
+| **Blackwell**      | SM100              | B100, B200, GB200            | CuTeDSL CUBIN (PWA, AdaLN, both dual GEMMs, attention epilogue); Triton (OPM); cuEquivariance (triangle attention) |
+| **Blackwell**      | SM103              | B300, GB300                  | CuTeDSL CUBIN (PWA, AdaLN, both dual GEMMs, attention epilogue); Triton (OPM); cuEquivariance (triangle attention) |
+| **Blackwell**      | SM120              | RTX 5090, RTX 6000 Blackwell | CuTeDSL CUBIN (AdaLN); cuEquivariance (triangle attention, dual GEMM); Triton (OPM)                                |
+| **Blackwell**      | SM121              | DGX Spark (GB10)             | CuTeDSL CUBIN (AdaLN); cuEquivariance (triangle attention, dual GEMM); Triton (OPM)                                |
 
 Check the device:
 
@@ -172,12 +172,24 @@ and `bionemo_ir._torch.custom_ops`). Layers wrap the same ops:
 | Pair-weighted averaging (PWA)       | Pair → single update                          | CuTeDSL → CUBIN                                                 | 80, 90, 100, 103                              | [`get_pair_weighted_averaging_op`](../../bionemo_ir/_torch/custom_ops/pair_weighted_averaging/ops.py)                                                                                       |
 | Outer-product mean (OPM)            | Single → pair update                          | CuTeDSL → CUBIN on native SMs; else Triton / PyTorch            | 80, 86, 89, 90 (bf16); Triton on other 80+    | [`get_outer_product_mean_op`](../../bionemo_ir/_torch/custom_ops/outer_product_mean/ops.py)                                                                                                 |
 | Gated sigmoid                       | Attention output gate                         | CuTeDSL → CUBIN                                                 | 80, 86, 89, 90                                | [`get_gated_sigmoid_op`](../../bionemo_ir/_torch/custom_ops/gated_sigmoid/ops.py)                                                                                                           |
-| Attention epilogue                  | Attention gate + output projection + residual | CuTeDSL → CUBIN (bf16)                                          | 80, 86, 89, 90                                | [`get_attn_epilogue_op`](../../bionemo_ir/_torch/custom_ops/attn_epilogue/ops.py)                                                                                                           |
+| Attention epilogue                  | Attention gate + output projection + residual | CuTeDSL → CUBIN (bf16)                                          | 80, 86, 89, 90, 100, 103                      | [`get_attn_epilogue_op`](../../bionemo_ir/_torch/custom_ops/attn_epilogue/ops.py)                                                                                                           |
 | AdaLN (LayerNorm/RMSNorm + sigmoid) | Diffusion adaptive normalization              | CuTeDSL → CUBIN                                                 | 80, 86, 89, 90, 100, 103, 120, 121            | [`get_adaln_layernorm_sigmoid_op`](../../bionemo_ir/_torch/custom_ops/adaln_layernorm_sigmoid/ops.py)                                                                                       |
 | Fused LN + proj + moveaxis/pad      | Pair-bias LayerNorm + linear + layout         | Triton                                                          | all CUDA                                      | [`LNProjMoveaxisPad`](../../bionemo_ir/_torch/custom_ops/fused_ln_proj_moveaxis_pad.py) / [`fused_ln_proj_moveaxis_pad`](../../bionemo_ir/dsl_kernels/triton/fused_ln_proj_moveaxis_pad.py) |
 | Transition MLP                      | SwiGLU / ReLU transition, hidden kept on chip | CuTeDSL → CUBIN (bf16)                                          | 80, 86, 89, 90                                | [`get_transition_mlp_op`](../../bionemo_ir/_torch/custom_ops/transition_mlp/ops.py)                                                                                                         |
 | Transition with LayerNorm           | ReLU and SwiGLU transitions, C 64 to 384      | CuTeDSL → CUBIN (bf16)                                          | 90                                            | [`get_transition_mlp_w_norm_op`](../../bionemo_ir/_torch/custom_ops/transition_mlp_w_norm/ops.py)                                                                                           |
 | Fused SwiGLU                        | Transition / FFN                              | Triton                                                          | all CUDA                                      | [`FusedSwiGLU`](../../bionemo_ir/dsl_kernels/triton/fused_swiglu.py) / [`fused_swiglu`](../../bionemo_ir/dsl_kernels/triton/fused_swiglu.py)                                                |
+
+On 100 and 103 the attention epilogue runs two kernels of its own, at any head
+split. A 2-SM kernel serves (H·D, C) of 128/128 or 256/256 with a residual and
+an optional output-projection bias, as the triangle and MSA attentions use it;
+at 128/128 it also takes the atom transformers' output gate. Another serves
+the token transformers': 768/768 with a residual, an output gate and an
+optional output-projection bias, as in the diffusion token transformer and
+RFProteína's trunk. Both kernels cost several microseconds per call however
+few rows it has, so small calls take the Ampere kernel instead, tuned on
+B200: up to 19,200 pair rows at 128/128 (N = 138 for a triangle attention),
+9,792 at 256/256 (N = 98) and 752 at 768/768 (150 tokens of 5 samples). Other
+layers on these SMs take PyTorch.
 
 The diffusion atom encoders and decoders of Boltz-1, Boltz-2, OpenFold3, and
 Protenix run windowed atom attention on the pair biases they prepare once per

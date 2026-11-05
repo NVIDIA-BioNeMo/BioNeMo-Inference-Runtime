@@ -22,10 +22,20 @@ from collections.abc import Mapping
 import torch
 
 from bionemo_ir._torch.utils.kernel import CuTeDSLKernelLibraryError, launch_compiled_kernel
+from bionemo_ir.dsl_kernels.cute_cache import CuteKernelCache
 
-from ._config import OUTPUT_GATE_WIDTHS, STREAMED_WIDTHS, nearest_anchor, tuned_configs
-from ._cubin import AttnEpilogueCubinExecutable, KernelOperand
-from .cutedsl import AttnEpilogueCuTe
+from ._config import (
+    BLACKWELL_SMS,
+    OUTPUT_GATE_WIDTHS,
+    SM100_OUTPUT_GATE_WIDTHS,
+    SM100_TOKEN_TUNING,
+    STREAMED_WIDTHS,
+    TOKEN_WIDTH,
+    nearest_anchor,
+    tuned_configs,
+)
+from ._cubin import AttnEpilogueCubinExecutable, AttnEpilogueTokenCubinExecutable, KernelOperand
+from .cutedsl import AttnEpilogueCuTe, AttnEpilogueTokenCuTe, max_token_clusters
 
 HEAD_DIMS = (32, 64, 128)
 WIDTHS = (128, 256, 512)
@@ -36,6 +46,8 @@ STREAMED_CHANNELS = (256, 768)
 # Both kernels read the contiguous heads-inner output in slabs of this many
 # channels, so they see H*D / SLAB heads of SLAB channels whatever the split.
 SLAB = 64
+# Rows of one token-kernel tile.
+_TOKEN_TILE_ROWS = 128
 
 
 def _pair_layout(pair: torch.Tensor) -> KernelOperand | None:
@@ -237,9 +249,25 @@ class AttnEpilogue:
         destination = _untie(destination)
         attention, gate_layout = layouts["o"], layouts["g"]
         source, logits = layouts.get("z"), layouts.get("y")
+        if not self._launch(attention, gate_layout, weight, bias, destination, source, logits):
+            return None
+        return output
+
+    def _launch(
+        self,
+        attention: KernelOperand,
+        gate_layout: KernelOperand,
+        weight: torch.Tensor,
+        bias: torch.Tensor | None,
+        destination: KernelOperand,
+        source: KernelOperand | None,
+        logits: KernelOperand | None,
+    ) -> bool:
+        """Launch on the kernel views :meth:`__call__` laid out and checked; ``False`` declines the call."""
         # The gate has one H*D row per folded pair row, residual or not.
-        backend = self._backends[nearest_anchor(self._anchors, gate.numel() // self._width)]
-        device_index = gate.get_device()
+        columns, _, folded = gate_layout[1]
+        backend = self._backends[nearest_anchor(self._anchors, columns * folded)]
+        device_index = gate_layout[0].get_device()
         executable = backend.executable(device_index)
         if isinstance(executable, AttnEpilogueCubinExecutable):
             executable.launch(attention, gate_layout, weight, bias, destination, source, logits)
@@ -259,7 +287,110 @@ class AttnEpilogue:
                     None if source is None else _as_view(source),
                     None if logits is None else _as_view(logits),
                 )
-        return output
+        return True
+
+
+def _token_variant(rows: int, clusters: int) -> str:
+    """Pick the token kernel variant for ``rows``: triples while one wave of ``clusters`` covers their tiles."""
+    return "triples" if -(-rows // _TOKEN_TILE_ROWS) <= clusters else "pairs"
+
+
+def _evenly_strided(operand: KernelOperand) -> bool:
+    """Whether a ``(J, L, R)`` pair operand's rows follow on at its column stride, so it reads as ``(R * J, L)``."""
+    _, (columns, _, folded), (column_stride, _, row_stride) = operand
+    return folded == 1 or row_stride == columns * column_stride
+
+
+def _flat(operand: KernelOperand) -> torch.Tensor:
+    """An evenly strided ``(J, L, R)`` pair operand as its ``(R * J, L)`` rows."""
+    tensor, (columns, width, folded), (column_stride, _, _) = operand
+    return tensor.as_strided((folded * columns, width), (column_stride, 1), tensor.storage_offset())
+
+
+class AttnEpilogueToken(AttnEpilogue):
+    """The SM100 token transformers' epilogue: residual, output gate, optional bias, ``H*D = C = TOKEN_WIDTH``.
+
+    It takes the operands :class:`AttnEpilogue` takes, under the same checks,
+    and reads the gate, residual, destination and output gate as flat row
+    views. It declines a call whose samples do not step evenly from one to the
+    next, since those operands have no such view. A call nearer an anchor of
+    ``small`` than ``anchor`` takes that anchor's SM80 kernel, which reads the
+    operands as :class:`AttnEpilogue` does.
+
+    Args:
+        backends: One backend per variant of ``SM100_TOKEN_TUNING``.
+        heads: Heads of the layer's attention output.
+        head_dim: Channels per head of the layer's attention output.
+        clusters: Clusters the backends' persistent grids launch at most.
+        has_bias: Whether the backends add the output-projection bias.
+        small: SM80 backends by ``R=<rows>`` anchor, for small calls.
+        anchor: The token kernel's anchor, above every anchor of ``small``.
+    """
+
+    def __init__(
+        self,
+        backends: Mapping[str, AttnEpilogueTokenCuTe],
+        heads: int,
+        head_dim: int,
+        clusters: int,
+        has_bias: bool = False,
+        small: Mapping[int, AttnEpilogueCuTe] | None = None,
+        anchor: int = 0,
+    ) -> None:
+        small = small or {}
+        super().__init__(
+            small,
+            TOKEN_WIDTH // SLAB,
+            SLAB,
+            TOKEN_WIDTH,
+            has_bias=has_bias,
+            has_output_gate=True,
+            layer_heads=heads,
+            layer_head_dim=head_dim,
+        )
+        self._variants = dict(backends)
+        self._clusters = clusters
+        # Rows nearest an SM80 anchor: up to the midpoint below the token kernel's, which a tie leaves to SM80.
+        self._small_rows = (max(small) + anchor) // 2 if small else -1
+
+    def _launch(
+        self,
+        attention: KernelOperand,
+        gate_layout: KernelOperand,
+        weight: torch.Tensor,
+        bias: torch.Tensor | None,
+        destination: KernelOperand,
+        source: KernelOperand | None,
+        logits: KernelOperand | None,
+    ) -> bool:
+        columns, _, folded = gate_layout[1]
+        rows = columns * folded
+        if rows <= self._small_rows:
+            return super()._launch(attention, gate_layout, weight, bias, destination, source, logits)
+        if not all(_evenly_strided(operand) for operand in (gate_layout, destination, source, logits)):
+            return False
+        device_index = weight.get_device()
+        executable = self._variants[_token_variant(rows, self._clusters)].executable(device_index)
+        on_device = device_index == torch.cuda.current_device()
+        with contextlib.nullcontext() if on_device else torch.cuda.device(device_index):
+            if isinstance(executable, AttnEpilogueTokenCubinExecutable):
+                executable.launch(attention, gate_layout, weight, bias, destination, source, logits, self._clusters)
+            else:
+                # The heads-inner attention output is contiguous: one H*D row per pair row. Output-gate row
+                # ``i // gate_repeat`` serves pair row ``i``.
+                launch_compiled_kernel(
+                    executable,
+                    attention[0].view(rows, self._width),
+                    _flat(gate_layout),
+                    weight,
+                    bias,
+                    _flat(destination),
+                    _flat(source),
+                    _flat(logits),
+                    columns,
+                    folded // logits[1][2],
+                )
+        return True
 
 
 def get_attn_epilogue_op(
@@ -282,6 +413,15 @@ def get_attn_epilogue_op(
     and on SM80, SM86 and SM89 the channel-tiled one. Each call takes the
     tuning whose ``R=<rows>`` anchor is nearest its folded rows.
 
+    SM100 and SM103 run their own kernels, at any head split: a 2-SM kernel
+    for the residual epilogues whose ``H*D`` equals ``C`` of 128 or 256, with
+    or without the output-projection bias and, at ``C`` of 128, with or
+    without an output gate, and one for the token transformers', with a
+    residual, an output gate and an optional bias, whose ``H*D`` and ``C``
+    are both 768. Where a config file tunes the SM80 kernel for a width, as
+    on SM100, calls nearer its small anchors take that kernel instead. Other
+    layers there keep the unfused path.
+
     With ``has_residual=False`` the op writes the bare projection and takes no
     output gate; packaged CUBINs cover such layers at ``H*D`` in
     ``NO_RESIDUAL_WIDTHS``, and a source checkout compiles the rest.
@@ -292,7 +432,14 @@ def get_attn_epilogue_op(
     device = torch.cuda.current_device()
     major, minor = torch.cuda.get_device_capability(device)
     sm = major * 10 + minor
-    if channels in STREAMED_CHANNELS:
+    if sm in BLACKWELL_SMS:
+        if width == channels == TOKEN_WIDTH:
+            # The token transformers' gated epilogue is the only one this width runs.
+            return _token_op(sm, device, num_heads, head_dim, has_bias) if has_output_gate else None
+        # The triangle kernel reads whole H*D rows, so any head split serves.
+        heads, dim = width // SLAB, SLAB
+        supported = channels == width and has_residual and (not has_output_gate or width in SM100_OUTPUT_GATE_WIDTHS)
+    elif channels in STREAMED_CHANNELS:
         heads, dim = width // SLAB, SLAB
         supported = sm in SUPPORTED_SMS and width in STREAMED_WIDTHS
     else:
@@ -322,3 +469,40 @@ def get_attn_epilogue_op(
     if not backends:
         return None
     return AttnEpilogue(backends, heads, dim, channels, has_bias, has_output_gate, num_heads, head_dim, has_residual)
+
+
+def _token_op(sm: int, device: int, num_heads: int, head_dim: int, has_bias: bool) -> AttnEpilogueToken | None:
+    """Return the SM100 token transformer's epilogue, or ``None`` when neither its source nor its CUBINs serve."""
+    heads, dim = TOKEN_WIDTH // SLAB, SLAB
+    tunings = tuned_configs(sm, heads, dim, TOKEN_WIDTH)
+    if not tunings:
+        return None
+    *small_tunings, native = tunings
+    if native.kernel_abi != "sm100_token" or any(tuning.kernel_abi != "sm80" for tuning in small_tunings):
+        # The op routes small calls by one threshold below the token kernel's anchor.
+        raise ValueError(f"SM{sm} token-width tunings must name sm80 anchors below one sm100_token anchor")
+    small = {}
+    for tuning in small_tunings:
+        backend = AttnEpilogueCuTe(heads, dim, TOKEN_WIDTH, has_bias, True, anchor=tuning.rows)
+        try:
+            # Resolving here keeps JIT compilation out of the forward pass and
+            # of any CUDA graph capture.
+            backend.executable(device)
+        except CuTeDSLKernelLibraryError:
+            # Its calls go to the nearest anchor that has a kernel.
+            continue
+        small[tuning.rows] = backend
+    try:
+        clusters = max_token_clusters(heads, dim, device, CuteKernelCache.force_cubin())
+        if clusters < 1:
+            # No six-CTA cluster fits, as on a small partition of the GPU.
+            return None
+        backends = {
+            variant: AttnEpilogueTokenCuTe(heads, dim, variant, clusters, has_bias, anchor=native.rows)
+            for variant in SM100_TOKEN_TUNING[sm]
+        }
+        for backend in backends.values():
+            backend.executable(device)
+    except CuTeDSLKernelLibraryError:
+        return None
+    return AttnEpilogueToken(backends, num_heads, head_dim, clusters, has_bias, small=small, anchor=native.rows)

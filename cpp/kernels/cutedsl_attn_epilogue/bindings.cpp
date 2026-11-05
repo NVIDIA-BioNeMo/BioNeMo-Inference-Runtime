@@ -45,7 +45,8 @@ void bind(nb::module_& parent)
     .def_ro("tile_j", &KernelSpec::tile_j)
     .def_ro("tile_n", &KernelSpec::tile_n)
     .def_ro("num_threads", &KernelSpec::num_threads)
-    .def_ro("bucket", &KernelSpec::bucket);
+    .def_ro("bucket", &KernelSpec::bucket)
+    .def_ro("pairs", &KernelSpec::pairs);
 
   nb::class_<KernelConfig>(module, "KernelConfig")
     .def_ro("spec", &KernelConfig::spec)
@@ -65,6 +66,20 @@ void bind(nb::module_& parent)
     .def_rw("y", &LaunchParams::y)
     .def_rw("stream", &LaunchParams::stream);
 
+  nb::class_<TokenLaunchParams>(module, "TokenLaunchParams")
+    .def(nb::init<>())
+    .def_rw("o", &TokenLaunchParams::o)
+    .def_rw("g", &TokenLaunchParams::g)
+    .def_rw("w", &TokenLaunchParams::w)
+    .def_rw("b", &TokenLaunchParams::b)
+    .def_rw("d", &TokenLaunchParams::d)
+    .def_rw("z", &TokenLaunchParams::z)
+    .def_rw("y", &TokenLaunchParams::y)
+    .def_rw("columns", &TokenLaunchParams::columns)
+    .def_rw("gate_repeat", &TokenLaunchParams::gate_repeat)
+    .def_rw("max_clusters", &TokenLaunchParams::max_clusters)
+    .def_rw("stream", &TokenLaunchParams::stream);
+
   module.def("kernel_specs", &kernel_specs, "Return every registered SM and layer-shape launch configuration.");
   module.def(
     "make_kernel_config",
@@ -76,7 +91,8 @@ void bind(nb::module_& parent)
     "has_bias"_a = false,
     "has_output_gate"_a = false,
     "rows"_a = 0,
-    "has_residual"_a = true);
+    "has_residual"_a = true,
+    "pairs"_a = false);
   module.def(
     "launch",
     [](KernelConfig const& config, LaunchParams const& params)
@@ -87,6 +103,21 @@ void bind(nb::module_& parent)
     "config"_a,
     "params"_a,
     "Launch using prepacked raw pointers, shapes, strides, and stream.");
+  module.def(
+    "launch_token",
+    [](KernelConfig const& config, TokenLaunchParams const& params)
+    {
+      nb::gil_scoped_release release;
+      attn_epilogue::launch_token(config, params);
+    },
+    "config"_a,
+    "params"_a,
+    "Launch a Blackwell token-kernel CUBIN on flat row views.");
+  module.def(
+    "max_active_clusters",
+    &max_active_clusters,
+    "config"_a,
+    "Return the token-kernel CUBIN's clusters co-resident on the current device.");
 }
 
 } // namespace bioir::cutedsl::attn_epilogue

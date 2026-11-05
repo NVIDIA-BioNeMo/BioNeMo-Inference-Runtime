@@ -20,6 +20,7 @@ import math
 import pytest
 import torch
 
+from bionemo_ir._torch.attention_backend.utils import auto_select_pairwise_attention_backend
 from bionemo_ir._torch.custom_ops.attn_epilogue import SLAB, AttnEpilogue
 from bionemo_ir._torch.custom_ops.attn_epilogue._config import tuned_configs
 from bionemo_ir._torch.custom_ops.attn_epilogue.cutedsl import AttnEpilogueCuTe
@@ -42,6 +43,13 @@ N_QUERIES, N_KEYS = 32, 128
 TOKEN_CHANNELS, TOKEN_PAIR_CHANNELS, TOKEN_HEADS, TOKEN_COND = 768, 128, 16, 384
 # RFProteína's conditioned block: 12 heads of 64, a biased output projection and a 256-wide condition.
 BLOCK_HEADS, BLOCK_COND = 12, 256
+# The CuTeDSL pairwise attention core where this GPU has one, else SDPA: the epilogue follows either.
+PAIRWISE_BACKEND = auto_select_pairwise_attention_backend(torch.bfloat16) if torch.cuda.is_available() else "SDPA"
+
+
+def _require_backend(backend: str) -> None:
+    if backend == "CuTeDSL" and PAIRWISE_BACKEND != "CuTeDSL":
+        pytest.skip("this GPU has no CuTeDSL pairwise attention kernel")
 
 
 def _init(module: torch.nn.Module) -> None:
@@ -163,6 +171,7 @@ def test_windowed_atom_attention_projects_keys_apart(monkeypatch: pytest.MonkeyP
 def test_token_width_takes_the_streamed_kernel(
     monkeypatch: pytest.MonkeyPatch, backend: str, tokens: int, samples: int
 ) -> None:
+    _require_backend(backend)
     torch.manual_seed(0)
     attention = AttentionPairBias(
         layer_idx=0,
@@ -206,7 +215,7 @@ def test_token_transformer_layers_take_the_streamed_kernel(monkeypatch: pytest.M
         dim_pairwise=TOKEN_PAIR_CHANNELS,
         bias_proj=True,
         dtype="bfloat16",
-        pairwise_attention_backend="CuTeDSL",
+        pairwise_attention_backend=PAIRWISE_BACKEND,
     )
     model = ProtenixDiffusionTransformer(config).cuda().eval()
     _init(model)
@@ -267,6 +276,7 @@ def test_rfproteina_block_gates_attention_in_the_epilogue(
     monkeypatch: pytest.MonkeyPatch, backend: str, batch: int
 ) -> None:
     """The adaLN-zero gate and the residual add join the epilogue; padded rows still leave the block as zeros."""
+    _require_backend(backend)
     torch.manual_seed(0)
     block, attentions = _rfproteina_block(backend)
     x, pair, condition, mask = _rfproteina_inputs(batch, tokens=136)
@@ -287,7 +297,7 @@ def test_rfproteina_block_gates_attention_in_the_epilogue(
 def test_rfproteina_block_epilogue_clears_nonfinite_padded_rows(monkeypatch: pytest.MonkeyPatch) -> None:
     """The epilogue adds the residual on padded rows too; the transition's masked residual must clear them."""
     torch.manual_seed(1)
-    block, _ = _rfproteina_block("CuTeDSL")
+    block, _ = _rfproteina_block(PAIRWISE_BACKEND)
     x, pair, condition, mask = _rfproteina_inputs(batch=2, tokens=136)
     x[~mask] = float("nan")
     condition[~mask] = float("inf")

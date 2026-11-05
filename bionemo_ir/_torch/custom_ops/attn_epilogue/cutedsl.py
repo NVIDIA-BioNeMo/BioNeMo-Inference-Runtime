@@ -16,6 +16,8 @@
 
 from __future__ import annotations
 
+import contextlib
+import functools
 import json
 from typing import Any
 
@@ -30,10 +32,13 @@ from bionemo_ir._torch.utils.kernel import (
 from bionemo_ir.dsl_kernels.cute_cache import FORCE_CUBIN_ENV, CuteKernelCache
 from bionemo_ir.logger import logger
 
-from ._config import TunedConfig, tuned_configs
-from ._cubin import AttnEpilogueCubinExecutable
+from ._config import SM100_TOKEN_TUNING, TOKEN_WIDTH, TunedConfig, tuned_configs
+from ._cubin import AttnEpilogueCubinExecutable, AttnEpilogueTokenCubinExecutable
 
-__all__ = ["AttnEpilogueCuTe"]
+__all__ = ["AttnEpilogueCuTe", "AttnEpilogueTokenCuTe", "max_token_clusters"]
+
+# CTAs per cluster of the SM100 token kernel.
+_TOKEN_CLUSTER = 6
 
 
 class AttnEpilogueCuTe(CuteKernelCache):
@@ -174,3 +179,130 @@ class AttnEpilogueCuTe(CuteKernelCache):
             return self._load_or_compile_source(key, device_index)
         except ImportError as source_error:
             return self._load_cubin_executable(key, source_error)
+
+
+class AttnEpilogueTokenCuTe(CuteKernelCache):
+    """Compiled or packaged executables for one variant of the SM100 token kernel.
+
+    Args:
+        heads: Heads of the kernel's view of the attention output.
+        head_dim: Channels per head of that view.
+        variant: ``"triples"`` or ``"pairs"``, a key of ``SM100_TOKEN_TUNING``.
+        clusters: Clusters its persistent grid launches at most: a source
+            compile builds them in, a CUBIN launch passes them.
+        has_bias: Add the output-projection bias.
+        anchor: The token kernel's ``R=<rows>`` anchor, where its CUBINs sit
+            above the SM80 kernel's small-call ones.
+    """
+
+    _compiled_cache: dict[tuple, Any] = {}
+
+    def __init__(
+        self, heads: int, head_dim: int, variant: str, clusters: int, has_bias: bool = False, anchor: int = 0
+    ) -> None:
+        major, minor = torch.cuda.get_device_capability()
+        self._sm_version = major * 10 + minor
+        self._shape = (heads, head_dim)
+        self._variant = variant
+        self._has_bias = has_bias
+        self._anchor = anchor
+        self._tile_params = {**SM100_TOKEN_TUNING[self._sm_version][variant], "max_clusters": clusters}
+        # Every call looks its executable up: build the fixed part of the key once.
+        self._key_prefix = (self._sm_version, heads, head_dim, has_bias, variant, *sorted(self._tile_params.items()))
+
+    def _describe(self) -> str:
+        heads, head_dim = self._shape
+        return (
+            f"SM{self._sm_version}, heads={heads}, head_dim={head_dim}, has_bias={self._has_bias}, "
+            f"token {self._variant}"
+        )
+
+    def _key(self, device_index: int) -> tuple:
+        return (*self._key_prefix, device_index)
+
+    def _load_cubin_executable(self, key: tuple, source_error: Exception | None = None) -> Any:
+        try:
+            executable = populate_compiled_cache_from_library(
+                AttnEpilogueTokenCuTe._compiled_cache,
+                key,
+                "attn_epilogue",
+                lambda library, launcher: AttnEpilogueTokenCubinExecutable(
+                    library,
+                    launcher,
+                    self._sm_version,
+                    *self._shape,
+                    self._tile_params["pairs"],
+                    self._has_bias,
+                    rows=self._anchor,
+                ),
+            )
+        except CuTeDSLKernelLibraryError as library_error:
+            if self.force_cubin():
+                raise RuntimeError(
+                    f"{FORCE_CUBIN_ENV}=1 forces the attention epilogue CUBIN path, "
+                    f"but no CUBIN is available for {self._describe()}"
+                ) from library_error
+            raise library_error from source_error
+        logger.info(f"CuTeDSL attention epilogue: using CUBIN kernel for {self._describe()}")
+        return executable
+
+    def _load_or_compile_source(self, key: tuple, device_index: int) -> Any:
+        source = load_source_module(__package__)
+        # Bump the tag when the call ABI changes.
+        disk_key = ("attn_epilogue_cute_sm100_token_v3", *key)
+        executable = self.load_from_cache(disk_key)
+        if executable is None:
+            from cutlass.cute.runtime import make_fake_stream
+
+            logger.info(f"CuTeDSL attention epilogue: compiling kernel for {self._describe()}")
+            with torch.cuda.device(device_index):
+                kernel = source.make_kernel(
+                    "sm100_token",
+                    self._tile_params,
+                    *self._shape,
+                    has_bias=self._has_bias,
+                    has_output_gate=True,
+                    channels=TOKEN_WIDTH,
+                )
+                executable = source.compile_attn_epilogue_token_source(
+                    self.compile, kernel, make_fake_stream(use_tvm_ffi_env_stream=True)
+                )
+            self.save_to_cache(disk_key, executable)
+        AttnEpilogueTokenCuTe._compiled_cache[key] = executable
+        return executable
+
+    def executable(self, device_index: int) -> Any:
+        """Return the executable for ``device_index``, compiling or loading it once."""
+        key = self._key(device_index)
+        executable = AttnEpilogueTokenCuTe._compiled_cache.get(key)
+        force_cubin = self.force_cubin()
+        if executable is not None and (not force_cubin or isinstance(executable, CuTeDSLKernelLibraryExecutable)):
+            return executable
+        if force_cubin:
+            AttnEpilogueTokenCuTe._compiled_cache.pop(key, None)
+            return self._load_cubin_executable(key)
+        try:
+            return self._load_or_compile_source(key, device_index)
+        except ImportError as source_error:
+            return self._load_cubin_executable(key, source_error)
+
+
+@functools.cache
+def max_token_clusters(heads: int, head_dim: int, device_index: int, force_cubin: bool) -> int:
+    """Count the token kernel's clusters co-resident on ``device_index``, once per device and mode.
+
+    The CuTeDSL runtime counts six-CTA clusters of an empty kernel given all
+    of an SM's shared memory. A build without it, or a run forced to CUBINs,
+    asks the token kernel's CUBIN, whose CTAs also run one per SM.
+    """
+    hardware_info = None
+    if not force_cubin:
+        with contextlib.suppress(ImportError):
+            from cutlass.utils import HardwareInfo as hardware_info  # noqa: N813
+    with torch.cuda.device(device_index):
+        # The occupancy query runs in the current context: make sure the device's primary context exists.
+        torch.cuda.synchronize()
+        if hardware_info is not None:
+            return hardware_info(device_index).get_max_active_clusters(_TOKEN_CLUSTER)
+        backend = AttnEpilogueTokenCuTe(heads, head_dim, "pairs", 0)
+        return backend._load_cubin_executable(backend._key(device_index)).max_active_clusters()

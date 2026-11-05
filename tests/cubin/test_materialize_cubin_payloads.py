@@ -80,9 +80,11 @@ _SM90_LAUNCH_SHAPES = {
     "trimul_kf_k2": (("a", "b", "prod"), 3, False, 384),
     "trimul_kf_k3": (("prod", "x", "w_out", "w_gate", "output"), (3, 2, 2, 2, 2), False, 512),
 }
-# Operand names, TMA rank, whether cluster launch fields are recorded, and threads
-# per block, per native-SM100 family. Dual GEMM runs 2-SM UMMA on a CTA-pair cluster.
+# Operand names, TMA rank (per operand where they differ), whether cluster launch fields
+# are recorded, and threads per block, per native-SM100 family. Dual GEMM and the triangle
+# attention epilogue run 2-SM UMMA on a CTA-pair cluster.
 _SM100_LAUNCH_SHAPES = {
+    "attn_epilogue": (("o", "g", "w", "z", "d"), (3, 3, 2, 3, 3), True, 512),
     "dual_gemm_x0_x1": (("x0", "x1", "w0", "w1", "residual", "output"), 2, True, 256),
     "dual_gemm_x_x": (("x", "w0", "w1", "output"), 2, True, 256),
     "pairwise_attention": (("q", "k", "v", "bias", "output"), 4, False, 512),
@@ -154,9 +156,10 @@ def _sm90_launch(family: str, dtype: str) -> dict[str, object]:
 
 def _sm100_launch(family: str, dtype: str) -> dict[str, object]:
     names, rank, clusters, threads = _SM100_LAUNCH_SHAPES[family]
+    ranks = rank if isinstance(rank, tuple) else (rank,) * len(names)
     result: dict[str, object] = {
         "block_dims": [threads, 1, 1],
-        "tma_descriptors": {name: _tma_descriptor(dtype, rank) for name in names},
+        "tma_descriptors": {name: _tma_descriptor(dtype, r) for name, r in zip(names, ranks, strict=True)},
     }
     if clusters:
         result["cluster_dims"] = [2, 1, 1]
@@ -301,6 +304,7 @@ def _metadata(family: str, dtype: str, kernel_sm: int) -> dict[str, object]:
             "tile_j": 64,
             "num_threads": 384,
             "sm90_launch": _sm90_launch(family, dtype) if kernel_sm == 90 else None,
+            **({"sm100_launch": _sm100_launch(family, dtype)} if kernel_sm == 100 else {}),
         }
     elif family == "transition_mlp_w_norm":
         concrete = {
@@ -892,6 +896,107 @@ def test_sm80_registry_rejects_sm100_launch_metadata(tmp_path: Path, family: str
     )
 
     with pytest.raises(materializer.MaterializationError, match="sm100_launch must be null"):
+        materializer.verify_packs([(family, index)])
+
+
+def test_attn_epilogue_sm100_registry_renders_mixed_rank_cluster_launch(tmp_path: Path) -> None:
+    """The triangle kernel's rank-3 pair maps and the token kernel's rank-2 row maps share one registry."""
+    family = "attn_epilogue"
+    index = _write_case(tmp_path / "source", family, kernel_sm=100)
+    result = materializer.materialize([(family, index)], tmp_path / "build")
+    header = (result.output_dir / f"{family}_registry.h").read_text()
+    source = (result.output_dir / f"{family}_registry.cpp").read_text()
+
+    assert "SM100LaunchInfo sm100;" in header
+    assert "bool pairs;" in header
+    assert "std::uint32_t cluster_dims[3];" in header
+    assert "CU_CLUSTER_SCHEDULING_POLICY_DEFAULT" in source
+    for rank in (3, 2):
+        assert f"    {rank}U," in source
+
+
+def test_attn_epilogue_sm100_rejects_a_rank_outside_its_set(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    family = "attn_epilogue"
+    names, _, clusters, threads = _SM100_LAUNCH_SHAPES[family]
+    monkeypatch.setitem(_SM100_LAUNCH_SHAPES, family, (names, (4, 3, 2, 3, 3), clusters, threads))
+    index = _write_case(tmp_path / "source", family, kernel_sm=100)
+
+    with pytest.raises(materializer.MaterializationError, match=r"tma_descriptors\.o\.rank must be one of \[2, 3\]"):
+        materializer.verify_packs([(family, index)])
+
+
+def test_attn_epilogue_sm100_accepts_the_token_kernel_launch(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    family = "attn_epilogue"
+    names, _, clusters, threads = _SM100_LAUNCH_SHAPES[family]
+    monkeypatch.setitem(_SM100_LAUNCH_SHAPES, family, (names, 2, clusters, threads))
+    index = _write_case(tmp_path / "source", family, kernel_sm=100)
+    _mutate_records(
+        index, lambda value: value["variants"][0]["runtime_metadata"]["sm100_launch"].update(cluster_dims=[6, 1, 1])
+    )
+
+    materializer.verify_packs([(family, index)])
+
+
+@pytest.mark.parametrize(
+    ("ranks", "cluster"),
+    [
+        ((3, 3, 3, 3, 3), [2, 1, 1]),
+        ((2, 2, 2, 2, 2), [2, 1, 1]),
+        ((3, 3, 2, 3, 3), [6, 1, 1]),
+        ((2, 3, 2, 3, 3), [2, 1, 1]),
+    ],
+    ids=["rank3_weight", "token_maps_on_a_pair_cluster", "pair_maps_on_a_token_cluster", "mixed_maps"],
+)
+def test_attn_epilogue_sm100_rejects_a_launch_no_kernel_has(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, ranks: tuple[int, ...], cluster: list[int]
+) -> None:
+    """Each image is the triangle kernel (rank-3 pair maps, rank-2 weight, 2x1x1) or the token kernel (rank-2 maps,
+    6x1x1); a mix of the two describes neither."""
+    family = "attn_epilogue"
+    names, _, clusters, threads = _SM100_LAUNCH_SHAPES[family]
+    monkeypatch.setitem(_SM100_LAUNCH_SHAPES, family, (names, ranks, clusters, threads))
+    index = _write_case(tmp_path / "source", family, kernel_sm=100)
+    _mutate_records(
+        index, lambda value: value["variants"][0]["runtime_metadata"]["sm100_launch"].update(cluster_dims=cluster)
+    )
+
+    with pytest.raises(materializer.MaterializationError, match=r"pairs cluster \[\d, 1, 1\] with ranks"):
+        materializer.verify_packs([(family, index)])
+
+
+def _gate_attn_epilogue(index: Path, rank: int) -> None:
+    """Record the triangle kernel's output gate and its ``y`` map of ``rank`` on the case's one image."""
+
+    def gate(value: dict[str, object]) -> None:
+        metadata = value["variants"][0]["runtime_metadata"]
+        metadata["has_output_gate"] = True
+        metadata["sm100_launch"]["tma_descriptors"]["y"] = _tma_descriptor("fp16", rank)
+
+    _mutate_records(index, gate)
+
+
+def test_attn_epilogue_sm100_renders_the_output_gate_map_only_where_recorded(tmp_path: Path) -> None:
+    """A gated triangle image records a rank-3 ``y`` map after its five others; any other image renders it rank 0."""
+    family = "attn_epilogue"
+    plain = _write_case(tmp_path / "plain", family, kernel_sm=100)
+    gated = _write_case(tmp_path / "gated", family, kernel_sm=100)
+    _gate_attn_epilogue(gated, 3)
+    sources = []
+    for name, index in (("plain", plain), ("gated", gated)):
+        result = materializer.materialize([(family, index)], tmp_path / f"{name}_build")
+        header = (result.output_dir / f"{family}_registry.h").read_text()
+        assert "  TmaDescriptorInfo d;\n  TmaDescriptorInfo y;\n};" in header
+        sources.append((result.output_dir / f"{family}_registry.cpp").read_text())
+
+    assert [source.count("CU_TENSOR_MAP_SWIZZLE_128B") for source in sources] == [5, 6]
+
+
+def test_attn_epilogue_sm100_rejects_an_output_gate_map_of_another_rank(tmp_path: Path) -> None:
+    family = "attn_epilogue"
+    index = _write_case(tmp_path / "source", family, kernel_sm=100)
+    _gate_attn_epilogue(index, 2)
+
+    with pytest.raises(materializer.MaterializationError, match=r"tma_descriptors\.y\.rank must be 3"):
         materializer.verify_packs([(family, index)])
 
 

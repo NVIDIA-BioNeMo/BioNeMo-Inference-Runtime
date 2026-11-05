@@ -22,12 +22,14 @@
 #include <cuda.h>
 
 #include <algorithm>
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <limits>
 #include <stdexcept>
 #include <string>
+#include <utility>
 
 namespace bioir::cutedsl::attn_epilogue
 {
@@ -38,6 +40,12 @@ constexpr char kSM80LaunchAbi[] = "attn_epilogue_sm80_v1";
 constexpr char kSM80TiledLaunchAbi[] = "attn_epilogue_sm80_tiled_v1";
 constexpr char kSM90LaunchAbi[] = "attn_epilogue_sm90_v1";
 constexpr char kSM90StreamedLaunchAbi[] = "attn_epilogue_sm90_streamed_v1";
+constexpr char kSM100LaunchAbi[] = "attn_epilogue_sm100_v1";
+constexpr char kSM100TokenLaunchAbi[] = "attn_epilogue_sm100_token_v1";
+/* Rows of one Blackwell CTA's tile, and CTAs per cluster of each kernel. */
+constexpr std::uint64_t kSM100TileRows = 128;
+constexpr std::uint32_t kSM100PairCtas = 2;
+constexpr std::uint32_t kSM100TokenCtas = 6;
 /* Output channels of the resident-weight kernels; wider layers take the
  * streamed SM90 or channel-tiled SM80 kernel. */
 constexpr std::int32_t kResidentChannels = 128;
@@ -123,9 +131,13 @@ void validate_launch(KernelConfig const& config, LaunchParams const& params)
    * Wo on SM90 and tile the channels over grid.z on SM80, even when one tile
    * covers every channel. */
   bool const wide = config.spec.channels > kResidentChannels;
-  char const* const expected_abi = config.cubin.kernel_sm == 90
-    ? (wide ? kSM90StreamedLaunchAbi : kSM90LaunchAbi)
-    : (config.cubin.kernel_sm == 80 ? (wide ? kSM80TiledLaunchAbi : kSM80LaunchAbi) : nullptr);
+  char const* expected_abi = nullptr;
+  if (config.cubin.kernel_sm == 90)
+    expected_abi = wide ? kSM90StreamedLaunchAbi : kSM90LaunchAbi;
+  else if (config.cubin.kernel_sm == 80)
+    expected_abi = wide ? kSM80TiledLaunchAbi : kSM80LaunchAbi;
+  else if (config.cubin.kernel_sm == 100)
+    expected_abi = kSM100LaunchAbi;
   if (
     expected_abi == nullptr || config.cubin.launch_abi == nullptr
     || std::strcmp(config.cubin.launch_abi, expected_abi) != 0 || config.spec.kernel_sm != config.cubin.kernel_sm)
@@ -291,6 +303,239 @@ void launch_sm90(cubin_kernel_t loaded, KernelConfig const& config, LaunchParams
     launch_cubin_kernel(loaded, &launch_config, kernel_params, nullptr), "launch_cubin_kernel(attn_epilogue_sm90)");
 }
 
+void validate_sm100_metadata(embedded::CubinImage const& image, std::uint32_t cluster_ctas)
+{
+  embedded::SM100LaunchInfo const& metadata = image.sm100;
+  if (!metadata.enabled)
+    throw std::invalid_argument("attention epilogue CUBIN is missing its Blackwell launch metadata");
+  if (metadata.block_dims[0] != image.num_threads || metadata.block_dims[1] != 1 || metadata.block_dims[2] != 1)
+    throw std::invalid_argument("attention epilogue Blackwell block metadata disagrees with the launch geometry");
+  if (metadata.cluster_dims[0] != cluster_ctas || metadata.cluster_dims[1] != 1 || metadata.cluster_dims[2] != 1)
+    throw std::invalid_argument("attention epilogue CUBIN has an unsupported Blackwell cluster shape");
+  if (!image.cubin.non_portable_cluster_size_allowed)
+    throw std::invalid_argument("attention epilogue Blackwell CUBIN has inconsistent cluster function metadata");
+}
+
+cubin_launch_config_t make_sm100_launch_config(
+  embedded::SM100LaunchInfo const& metadata, KernelConfig const& config, std::uint64_t grid_x, std::uint64_t stream)
+{
+  cubin_launch_config_t launch_config{};
+  launch_config.grid_x = checked_u32(grid_x, "attention epilogue grid.x");
+  launch_config.grid_y = 1;
+  launch_config.grid_z = 1;
+  launch_config.block_x = metadata.block_dims[0];
+  launch_config.block_y = metadata.block_dims[1];
+  launch_config.block_z = metadata.block_dims[2];
+  launch_config.cluster_x = metadata.cluster_dims[0];
+  launch_config.cluster_y = metadata.cluster_dims[1];
+  launch_config.cluster_z = metadata.cluster_dims[2];
+  launch_config.cluster_scheduling_policy = metadata.cluster_scheduling_policy;
+  launch_config.dynamic_smem_bytes = config.cubin.dynamic_smem_bytes;
+  launch_config.stream = reinterpret_cast<CUstream>(static_cast<std::uintptr_t>(stream));
+  return launch_config;
+}
+
+/* o as the Blackwell triangle kernel reads it, (J, H*D, B*I): each pair's
+ * heads-inner output is one contiguous H*D row, at the spec's static J stride.
+ */
+TmaTensorSource sm100_attention_source(Tensor4View const& view, KernelSpec const& spec)
+{
+  std::uint64_t const width = static_cast<std::uint64_t>(spec.heads * spec.head_dim);
+  return TmaTensorSource{
+    view.data,
+    {static_cast<std::uint64_t>(view.shape[1]), width, static_cast<std::uint64_t>(view.shape[0]), 0},
+    {width, 1, static_cast<std::uint64_t>(view.strides[0]), 0},
+  };
+}
+
+void launch_sm100(cubin_kernel_t loaded, KernelConfig const& config, LaunchParams const& params, CUcontext context)
+{
+  validate_operand_devices(params, config.spec, cuda_device_for_context(context));
+  embedded::CubinImage const& image = *config.embedded_image;
+  validate_sm100_metadata(image, kSM100PairCtas);
+  embedded::SM100LaunchInfo const& metadata = image.sm100;
+  KernelSpec const& spec = config.spec;
+  if (!spec.has_residual)
+    throw std::invalid_argument("the Blackwell triangle epilogue takes a residual");
+  if (spec.has_output_gate && metadata.y.rank == 0)
+    throw std::invalid_argument("output-gated Blackwell attention epilogue CUBIN is missing its y tensor map");
+  CUtensorMapDataType const dtype = tma_data_type(true);
+
+  abi::SM100Params device_params{};
+  auto const encode
+    = [dtype](CUtensorMap& atom, TmaDescriptorInfo const& info, TmaTensorSource const& source, char const* name)
+  {
+    encode_tma_descriptor(atom, info, dtype, source, name);
+    finalize_sm100_tma_atom(atom);
+  };
+  std::int32_t const folded = params.o.shape[0];
+  std::int32_t const columns = params.o.shape[1];
+  CoordTensorS2 const coord{{columns, folded}};
+  encode(device_params.o_tma, metadata.o, sm100_attention_source(params.o, config.spec), "o");
+  encode(device_params.g_tma, metadata.g, pair_source(params.g), "g");
+  encode(device_params.z_tma, metadata.z, pair_source(params.z), "z");
+  encode(device_params.d_tma, metadata.d, pair_source(params.d), "d");
+  encode(device_params.w_tma, metadata.w, make_tma_tensor2_source(params.w, false), "w");
+  device_params.o_coord = coord;
+  device_params.g_coord = coord;
+  device_params.z_coord = coord;
+  device_params.d_coord = coord;
+  if (spec.has_output_gate)
+  {
+    encode(device_params.y_tma, metadata.y, pair_source(params.y), "y");
+    device_params.y_coord = CoordTensorS2{{columns, params.y.shape[0]}};
+  }
+  if (spec.has_bias)
+    device_params.bias.data = static_cast<CUdeviceptr>(params.b.data);
+
+  std::uint64_t const tiles
+    = static_cast<std::uint64_t>(folded) * ceil_div(static_cast<std::uint64_t>(columns), kSM100TileRows);
+  if (tiles > static_cast<std::uint64_t>(std::numeric_limits<std::int32_t>::max()))
+    throw std::overflow_error("attention epilogue tile count does not fit int32");
+  std::int32_t const multiprocessor_count = cuda_multiprocessor_count_for_context(context);
+  if (multiprocessor_count <= 0)
+    throw std::invalid_argument("current CUDA device has no active multiprocessors");
+  /* One persistent pair per two SMs; the kernel strides pair tiles by the grid size. */
+  std::uint64_t const clusters = std::max<std::uint64_t>(
+    1,
+    std::min<std::uint64_t>(
+      ceil_div(tiles, kSM100PairCtas), static_cast<std::uint64_t>(multiprocessor_count) / kSM100PairCtas));
+
+  void* kernel_params[abi::kSM100MaxParameterCount]{};
+  if (
+    abi::pack_sm100_kernel_params(&device_params, spec.has_bias, spec.has_output_gate, kernel_params)
+    != abi::sm100_parameter_count(spec.has_bias, spec.has_output_gate))
+    throw std::logic_error("attention epilogue SM100 parameter packer produced the wrong ABI count");
+  cubin_launch_config_t const launch_config
+    = make_sm100_launch_config(metadata, config, kSM100PairCtas * clusters, params.stream);
+  check_cuda_driver(
+    launch_cubin_kernel(loaded, &launch_config, kernel_params, nullptr), "launch_cubin_kernel(attn_epilogue_sm100)");
+}
+
+std::array<std::pair<Tensor2View const*, char const*>, 6> token_operands(TokenLaunchParams const& params)
+{
+  return {{{&params.o, "o"}, {&params.g, "g"}, {&params.w, "w"}, {&params.d, "d"}, {&params.z, "z"}, {&params.y, "y"}}};
+}
+
+void require_token_image(KernelConfig const& config)
+{
+  if (
+    config.cubin.kernel_sm != 100 || config.spec.kernel_sm != 100 || config.cubin.launch_abi == nullptr
+    || std::strcmp(config.cubin.launch_abi, kSM100TokenLaunchAbi) != 0)
+  {
+    throw std::invalid_argument("attention epilogue CUBIN is not a Blackwell token kernel");
+  }
+}
+
+void validate_token_launch(KernelConfig const& config, TokenLaunchParams const& params)
+{
+  if (config.cubin.data == nullptr || config.cubin.size == 0)
+    throw std::invalid_argument("embedded CUBIN image must not be empty");
+  if (config.cubin.kernel_symbol == nullptr || config.cubin.kernel_symbol[0] == '\0')
+    throw std::invalid_argument("kernel_symbol must not be empty");
+  require_token_image(config);
+  KernelSpec const& spec = config.spec;
+  if (!spec.has_output_gate || !spec.has_residual)
+    throw std::invalid_argument("the Blackwell token epilogue takes a residual and an output gate");
+
+  for (auto const& [view, name] : token_operands(params))
+    validate_tensor(*view, name, 16);
+  std::int32_t const rows = params.g.shape[0];
+  std::int32_t const width = spec.heads * spec.head_dim;
+  std::int32_t const channels = spec.channels;
+  if (rows <= 0 || params.o.shape[0] != rows || params.o.shape[1] != width || params.g.shape[1] != width)
+    throw std::invalid_argument("o and g must be [M, heads*head_dim] row views");
+  if (params.w.shape[0] != channels || params.w.shape[1] != width || params.w.strides[0] != width)
+    throw std::invalid_argument("w must be a row-major [channels, heads*head_dim] weight");
+  if (spec.has_bias)
+  {
+    validate_tensor(params.b, "b", 16);
+    if (params.b.shape[0] != channels)
+      throw std::invalid_argument("b must be the [channels] output-projection bias");
+  }
+  for (Tensor2View const* view : {&params.d, &params.z})
+  {
+    if (view->shape[0] != rows || view->shape[1] != channels)
+      throw std::invalid_argument("d and z must be [M, channels] row views matching g");
+  }
+  std::int32_t const gate_rows = params.y.shape[0];
+  if (
+    params.columns <= 0 || params.gate_repeat <= 0 || gate_rows <= 0 || params.y.shape[1] != channels
+    || gate_rows % params.columns != 0
+    || static_cast<std::int64_t>(gate_rows) * params.gate_repeat != static_cast<std::int64_t>(rows))
+  {
+    throw std::invalid_argument("y must be [M / gate_repeat, channels] in whole samples of columns rows");
+  }
+  if (params.max_clusters <= 0)
+    throw std::invalid_argument("the Blackwell token epilogue needs a positive co-resident cluster count");
+}
+
+void launch_sm100_token(
+  cubin_kernel_t loaded, KernelConfig const& config, TokenLaunchParams const& params, CUcontext context)
+{
+  std::int32_t const device = cuda_device_for_context(context);
+  auto const check_device = [device](std::int32_t operand_device, char const* name)
+  {
+    if (operand_device == kUnknownDevice)
+      throw std::invalid_argument(std::string(name) + " has no CUDA device: it is a host tensor");
+    if (operand_device != device)
+    {
+      throw std::invalid_argument(
+        std::string(name) + " is on CUDA device " + std::to_string(operand_device) + " but the launch targets device "
+        + std::to_string(device));
+    }
+  };
+  for (auto const& [view, name] : token_operands(params))
+    check_device(view->device, name);
+  if (config.spec.has_bias)
+    check_device(params.b.device, "b");
+  embedded::CubinImage const& image = *config.embedded_image;
+  validate_sm100_metadata(image, kSM100TokenCtas);
+  embedded::SM100LaunchInfo const& metadata = image.sm100;
+  CUtensorMapDataType const dtype = tma_data_type(true);
+
+  abi::SM100TokenParams device_params{};
+  auto const encode
+    = [dtype](CUtensorMap& atom, TmaDescriptorInfo const& info, Tensor2View const& view, char const* name)
+  {
+    encode_tma_descriptor(atom, info, dtype, make_tma_tensor2_source(view, false), name);
+    finalize_sm100_tma_atom(atom);
+  };
+  encode(device_params.o_tma, metadata.o, params.o, "o");
+  encode(device_params.g_tma, metadata.g, params.g, "g");
+  encode(device_params.w_tma, metadata.w, params.w, "w");
+  encode(device_params.z_tma, metadata.z, params.z, "z");
+  encode(device_params.d_tma, metadata.d, params.d, "d");
+  std::int32_t const rows = params.g.shape[0];
+  CoordTensorS1 const coord{{rows}};
+  device_params.o_coord = coord;
+  device_params.g_coord = coord;
+  device_params.z_coord = coord;
+  device_params.d_coord = coord;
+  device_params.y = make_tensor2_s1_d1_descriptor(params.y);
+  if (config.spec.has_bias)
+    device_params.bias.data = static_cast<CUdeviceptr>(params.b.data);
+  device_params.columns = params.columns;
+  device_params.gate_repeat = params.gate_repeat;
+
+  /* A step is one row tile for the triples and two for the pairs; the kernel strides steps by its cluster count. */
+  std::uint64_t const steps
+    = ceil_div(ceil_div(static_cast<std::uint64_t>(rows), kSM100TileRows), config.spec.pairs ? kSM100PairCtas : 1U);
+  std::uint64_t const clusters
+    = std::max<std::uint64_t>(1, std::min<std::uint64_t>(steps, static_cast<std::uint64_t>(params.max_clusters)));
+
+  void* kernel_params[abi::kSM100TokenMaxParameterCount]{};
+  if (
+    abi::pack_sm100_token_kernel_params(&device_params, config.spec.has_bias, kernel_params)
+    != abi::sm100_token_parameter_count(config.spec.has_bias))
+    throw std::logic_error("attention epilogue token parameter packer produced the wrong ABI count");
+  cubin_launch_config_t const launch_config
+    = make_sm100_launch_config(metadata, config, kSM100TokenCtas * clusters, params.stream);
+  check_cuda_driver(
+    launch_cubin_kernel(loaded, &launch_config, kernel_params, nullptr),
+    "launch_cubin_kernel(attn_epilogue_sm100_token)");
+}
+
 cute_tensor_s2_d2_t pair_descriptor(Tensor3View const& view)
 {
   cute_tensor_s2_d2_t descriptor{};
@@ -360,6 +605,7 @@ KernelSpec make_kernel_spec(embedded::CubinImage const& image)
     image.tile_n,
     image.num_threads,
     image.bucket,
+    image.pairs,
   };
 }
 
@@ -371,7 +617,8 @@ embedded::CubinImage const& find_embedded_cubin(
   bool has_bias,
   bool has_output_gate,
   bool has_residual,
-  std::int32_t rows)
+  std::int32_t rows,
+  bool pairs)
 {
   if (rows < 0)
     throw std::invalid_argument("attention epilogue rows must be non-negative");
@@ -385,7 +632,7 @@ embedded::CubinImage const& find_embedded_cubin(
     if (
       !cubin_supports_sm(image.cubin, target_sm) || image.heads != heads || image.head_dim != head_dim
       || image.channels != channels || !image.is_bfloat16 || image.has_bias != has_bias
-      || image.has_output_gate != has_output_gate || image.has_residual != has_residual)
+      || image.has_output_gate != has_output_gate || image.has_residual != has_residual || image.pairs != pairs)
       continue;
 
     std::int64_t const delta = static_cast<std::int64_t>(image.bucket) - static_cast<std::int64_t>(rows);
@@ -403,9 +650,9 @@ embedded::CubinImage const& find_embedded_cubin(
 
   throw std::invalid_argument(
     "No embedded attention epilogue CUBIN for SM" + std::to_string(target_sm) + ", heads=" + std::to_string(heads)
-    + ", head_dim=" + std::to_string(head_dim) + ", channels=" + std::to_string(channels)
-    + ", has_bias=" + (has_bias ? "true" : "false") + ", has_output_gate=" + (has_output_gate ? "true" : "false")
-    + ", has_residual=" + (has_residual ? "true" : "false") + ", rows=" + std::to_string(rows));
+    + ", head_dim=" + std::to_string(head_dim) + ", channels=" + std::to_string(channels) + ", has_bias="
+    + (has_bias ? "true" : "false") + ", has_output_gate=" + (has_output_gate ? "true" : "false") + ", has_residual="
+    + (has_residual ? "true" : "false") + ", rows=" + std::to_string(rows) + ", pairs=" + (pairs ? "true" : "false"));
 }
 
 std::size_t preload_kernels(CUcontext context, std::int32_t device_sm)
@@ -433,16 +680,19 @@ KernelConfig make_kernel_config(
   bool has_bias,
   bool has_output_gate,
   std::int32_t rows,
-  bool has_residual)
+  bool has_residual,
+  bool pairs)
 {
   embedded::CubinImage const& image
-    = find_embedded_cubin(target_sm, heads, head_dim, channels, has_bias, has_output_gate, has_residual, rows);
+    = find_embedded_cubin(target_sm, heads, head_dim, channels, has_bias, has_output_gate, has_residual, rows, pairs);
   return KernelConfig{make_kernel_spec(image), image.cubin, &image};
 }
 
-void launch(KernelConfig const& config, LaunchParams const& params)
+namespace
 {
-  validate_launch(config, params);
+
+CUcontext context_for(KernelConfig const& config)
+{
   CUcontext const context = current_cuda_context();
   std::int32_t const device_sm = cuda_sm_for_context(context);
   if (device_sm != config.spec.target_sm || !cubin_supports_sm(config.cubin, device_sm))
@@ -451,11 +701,59 @@ void launch(KernelConfig const& config, LaunchParams const& params)
       "attention epilogue config selects SM" + std::to_string(config.spec.target_sm) + " but current device is SM"
       + std::to_string(device_sm));
   }
+  return context;
+}
+
+} // namespace
+
+void launch(KernelConfig const& config, LaunchParams const& params)
+{
+  validate_launch(config, params);
+  CUcontext const context = context_for(config);
   cubin_kernel_t const loaded = load_embedded_kernel(context, config.cubin);
-  if (config.cubin.kernel_sm == 90)
+  if (config.cubin.kernel_sm == 100)
+    launch_sm100(loaded, config, params, context);
+  else if (config.cubin.kernel_sm == 90)
     launch_sm90(loaded, config, params, context);
   else
     launch_sm80(loaded, config, params, context);
+}
+
+std::int32_t max_active_clusters(KernelConfig const& config)
+{
+  require_token_image(config);
+  CUcontext const context = context_for(config);
+  embedded::CubinImage const& image = *config.embedded_image;
+  validate_sm100_metadata(image, kSM100TokenCtas);
+  cubin_kernel_t const loaded = load_embedded_kernel(context, config.cubin);
+  embedded::SM100LaunchInfo const& metadata = image.sm100;
+  CUlaunchAttribute attribute{};
+  attribute.id = CU_LAUNCH_ATTRIBUTE_CLUSTER_DIMENSION;
+  attribute.value.clusterDim.x = metadata.cluster_dims[0];
+  attribute.value.clusterDim.y = metadata.cluster_dims[1];
+  attribute.value.clusterDim.z = metadata.cluster_dims[2];
+  CUlaunchConfig launch_config{};
+  launch_config.gridDimX = metadata.cluster_dims[0];
+  launch_config.gridDimY = metadata.cluster_dims[1];
+  launch_config.gridDimZ = metadata.cluster_dims[2];
+  launch_config.blockDimX = metadata.block_dims[0];
+  launch_config.blockDimY = metadata.block_dims[1];
+  launch_config.blockDimZ = metadata.block_dims[2];
+  launch_config.sharedMemBytes = config.cubin.dynamic_smem_bytes;
+  launch_config.attrs = &attribute;
+  launch_config.numAttrs = 1;
+  int clusters = 0;
+  check_cuda_driver(
+    cuOccupancyMaxActiveClusters(&clusters, loaded.function, &launch_config),
+    "cuOccupancyMaxActiveClusters(attn_epilogue_sm100_token)");
+  return clusters;
+}
+
+void launch_token(KernelConfig const& config, TokenLaunchParams const& params)
+{
+  validate_token_launch(config, params);
+  CUcontext const context = context_for(config);
+  launch_sm100_token(load_embedded_kernel(context, config.cubin), config, params, context);
 }
 
 } // namespace bioir::cutedsl::attn_epilogue

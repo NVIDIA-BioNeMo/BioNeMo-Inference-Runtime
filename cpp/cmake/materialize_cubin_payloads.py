@@ -194,7 +194,9 @@ class _Sm100Spec:
 
     ``clusters`` adds the cluster shape and scheduling policy a clustered launch
     (for example 2-SM ``tcgen05`` UMMA) needs; ``rank`` is the TMA rank.
-    ``ranks`` and ``optional`` work as in :class:`_Sm90Spec`.
+    ``ranks`` and ``optional`` work as in :class:`_Sm90Spec`. ``kernels``, when
+    set, lists each kernel's cluster shape with its descriptors' ranks in
+    ``operands`` order; an image must match one of them.
     """
 
     enabled_field: str
@@ -203,6 +205,7 @@ class _Sm100Spec:
     clusters: bool = False
     ranks: tuple[int | tuple[int, ...], ...] = ()
     optional: tuple[tuple[str, int | tuple[int, ...]], ...] = ()
+    kernels: tuple[tuple[tuple[int, int, int], tuple[int, ...]], ...] = ()
 
     @property
     def declared_operands(self) -> tuple[str, ...]:
@@ -445,6 +448,8 @@ _FAMILY_SPECS: dict[str, _FamilySpec] = {
             # The folded-rows tuning anchor; every image published before
             # anchors existed served all rows from a single tuning.
             _Field("bucket", _INDEX, "std::int32_t bucket;", default=0),
+            # The Blackwell token kernel's 2-SM pairs rather than its 1-SM triples.
+            _Field("pairs", _BOOL, "bool pairs;", default=False),
         ),
         runtime_key=(
             "heads",
@@ -455,10 +460,21 @@ _FAMILY_SPECS: dict[str, _FamilySpec] = {
             "has_output_gate",
             "has_residual",
             "bucket",
+            "pairs",
         ),
         # Every Hopper image records the residual's z map and the output gate's
         # y map; only an image with the residual encodes z, and only a gated one y.
         sm90=_Sm90Spec("is_native", ("o", "g", "w", "z", "y", "d"), ranks=(4, 3, 2, 3, 3, 3)),
+        # The triangle kernel's pair maps are rank 3 and the token kernel's flat row maps rank 2. Only a gated
+        # triangle image records the output gate's y map; every other image renders it as a rank-0 map.
+        sm100=_Sm100Spec(
+            "enabled",
+            ("o", "g", "w", "z", "d"),
+            ranks=((2, 3),) * 5,
+            clusters=True,
+            optional=(("y", 3),),
+            kernels=(((2, 1, 1), (3, 3, 2, 3, 3)), ((6, 1, 1), (2, 2, 2, 2, 2))),
+        ),
     ),
     "trimul_kf_k1": _FamilySpec(
         fields=(
@@ -926,8 +942,9 @@ def _validate_sm100_launch(spec: _Sm100Spec, value: object, where: str, dtype: s
         _fail(f"{where}.block_dims exceeds 1024 threads")
     if block[1] != 1 or block[2] != 1:
         _fail(f"{where}.block_dims must be [num_threads, 1, 1]")
+    cluster = (1, 1, 1)
     if spec.clusters:
-        _integer_array(launch["cluster_dims"], f"{where}.cluster_dims", length=3, minimum=1)
+        cluster = tuple(_integer_array(launch["cluster_dims"], f"{where}.cluster_dims", length=3, minimum=1))
         if _string(launch["cluster_scheduling_policy"], f"{where}.cluster_scheduling_policy") not in _CLUSTER_POLICY:
             _fail(f"{where}.cluster_scheduling_policy is unsupported")
     descriptors = _as_object(launch["tma_descriptors"], f"{where}.tma_descriptors")
@@ -937,6 +954,10 @@ def _validate_sm100_launch(spec: _Sm100Spec, value: object, where: str, dtype: s
     for name, rank in (*zip(spec.operands, ranks, strict=True), *spec.optional):
         if name in descriptors:
             _validate_tma_descriptor(descriptors[name], f"{where}.tma_descriptors.{name}", dtype, rank)
+    recorded_ranks = tuple(descriptors[name]["rank"] for name in spec.operands)
+    if spec.kernels and (cluster, recorded_ranks) not in spec.kernels:
+        expected = " or ".join(f"cluster {list(c)} with ranks {list(r)}" for c, r in spec.kernels)
+        _fail(f"{where} pairs cluster {list(cluster)} with ranks {list(recorded_ranks)}; expected {expected}")
 
 
 def _validate_runtime_aliases(value: object, where: str, keys: tuple[str, str]) -> tuple[dict[str, object], ...]:

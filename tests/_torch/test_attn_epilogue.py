@@ -20,6 +20,7 @@ import torch
 
 from bionemo_ir._torch.custom_ops.attn_epilogue import AttnEpilogue, get_attn_epilogue_op
 from bionemo_ir._torch.custom_ops.attn_epilogue import cutedsl as epilogue_cutedsl
+from bionemo_ir._torch.custom_ops.attn_epilogue.ops import BLACKWELL_SMS
 from bionemo_ir._torch.layers.attention import MSAAttention
 from bionemo_ir._torch.layers.triangle_nodes import TriangleAttentionNode, TriangleAttentionNodeType
 from bionemo_ir._torch.utils import ChunkPolicy
@@ -38,6 +39,9 @@ MODES = cutedsl_test_modes("bionemo_ir._torch.custom_ops.attn_epilogue._source")
 
 
 def _require_mode(mode: str) -> None:
+    major, minor = torch.cuda.get_device_capability()
+    if mode in ("source", "cubin") and major * 10 + minor in BLACKWELL_SMS:
+        pytest.skip("SM100 and SM103 run their own epilogues: test_attn_epilogue_sm100.py covers them")
     if mode == "cubin":
         require_cubin_family("attn_epilogue")
 

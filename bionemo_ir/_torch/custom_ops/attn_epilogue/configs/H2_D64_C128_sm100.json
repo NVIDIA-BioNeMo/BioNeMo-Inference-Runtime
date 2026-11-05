@@ -1,0 +1,34 @@
+{
+  "kernel_abi": "sm80",
+  "configs": {
+    "R=1600": {
+      "tile_m": 16,
+      "tile_k": 64,
+      "num_stages": 3,
+      "atom_layout_mnk": [1, 4, 1]
+    },
+    "R=2304": {
+      "tile_m": 16,
+      "tile_k": 64,
+      "num_stages": 3,
+      "atom_layout_mnk": [1, 2, 1]
+    },
+    "R=12800": {
+      "tile_m": 32,
+      "tile_k": 64,
+      "num_stages": 2,
+      "atom_layout_mnk": [2, 2, 1]
+    },
+    "R=15360": {
+      "tile_m": 64,
+      "tile_k": 64,
+      "num_stages": 2,
+      "atom_layout_mnk": [4, 1, 1]
+    },
+    "R=23040": {
+      "kernel_abi": "sm100",
+      "og_stages": 3,
+      "z_stages": 3
+    }
+  }
+}

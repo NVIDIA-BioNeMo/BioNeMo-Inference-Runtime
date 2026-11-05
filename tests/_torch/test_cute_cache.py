@@ -28,6 +28,9 @@ import os
 import stat
 import threading
 import time
+from collections.abc import Callable
+from pathlib import Path
+from types import ModuleType
 
 import pytest
 
@@ -308,3 +311,386 @@ def test_miss_waits_for_a_peer_compile(cache_dir, monkeypatch):
     assert cache.load_from_cache(key) is sentinel
     thread.join()
     assert sha not in cute_cache._compile_claims
+
+
+def _dsl_op_locations() -> tuple[list[str], object]:
+    """Build locations the way a kernel does: the DSL's op wrapper tags each call with its caller's site."""
+    from cutlass._mlir import ir
+    from cutlass.base_dsl._mlir_helpers import op as dsl_op
+
+    @dsl_op.dsl_user_op
+    def record(*, loc: ir.Location | None = None) -> str:
+        """Return the location attached by the DSL wrapper."""
+        return str(loc)
+
+    with ir.Context(), ir.Location.unknown():
+        # Two sites, the first one hit three times.
+        locations = [record() for _ in range(3)]
+        locations.append(record())
+    return locations, dsl_op.inspect
+
+
+@requires_compiler
+def test_memoized_op_locations_match_the_dsl() -> None:
+    """The memo hands the DSL the locations it computes itself, one lookup per site."""
+    import inspect
+
+    plain, plain_inspect = _dsl_op_locations()
+    with cute_cache.memoized_op_locations():
+        memoized, memo = _dsl_op_locations()
+    assert plain_inspect is inspect
+    assert isinstance(memo, cute_cache._SiteMemoizedInspect)
+    assert memoized == plain
+    assert len(set(plain)) == 2 and "record()" in plain[0]
+    assert len(memo._sites) == 2
+
+
+def _caller_frame_info(memo: cute_cache._SiteMemoizedInspect) -> tuple[object, object]:
+    """Look up the caller's frame, suspended at this call, through the memo and through ``inspect``."""
+    import inspect
+    import sys
+
+    frame = sys._getframe(1)
+    return memo.getframeinfo(frame), inspect.getframeinfo(frame)
+
+
+def test_memoized_frame_info_equals_inspect() -> None:
+    """Each memoized answer is ``inspect.getframeinfo``'s, positions and source context included."""
+    import inspect
+
+    memo = cute_cache._SiteMemoizedInspect()
+    answers = [_caller_frame_info(memo) for _ in range(3)]
+    answers.append(_caller_frame_info(memo))
+    for got, want in answers:
+        assert got == want and got.positions == want.positions
+    assert answers[0][0] is answers[2][0] and answers[0][0] != answers[3][0]
+    assert len(memo._sites) == 2
+    assert memo.currentframe is inspect.currentframe
+
+
+@requires_compiler
+def test_memoized_op_locations_restore_on_exit() -> None:
+    """Nested and failing compiles restore the DSL's ``inspect`` only when the outermost one ends."""
+    import inspect
+
+    from cutlass.base_dsl._mlir_helpers import op as dsl_op
+
+    with pytest.raises(RuntimeError, match="compile failed"):
+        with cute_cache.memoized_op_locations():
+            outer = dsl_op.inspect
+            with cute_cache.memoized_op_locations():
+                assert dsl_op.inspect is outer
+            assert dsl_op.inspect is outer
+            raise RuntimeError("compile failed")
+    assert isinstance(outer, cute_cache._SiteMemoizedInspect)
+    assert dsl_op.inspect is inspect
+
+
+@requires_compiler
+def test_memoized_op_locations_keep_each_file(tmp_path: Path) -> None:
+    """Equal code objects from two files keep their own file's location.
+
+    Args:
+        tmp_path: Directory for the two generated source files.
+    """
+    from cutlass._mlir import ir
+    from cutlass.base_dsl._mlir_helpers import op as dsl_op
+
+    @dsl_op.dsl_user_op
+    def record(*, loc: ir.Location | None = None) -> str:
+        """Return the location attached to each generated file's call site."""
+        return str(loc)
+
+    source = "def site():\n    return record()\n"
+    sites = []
+    for name in ("first.py", "second.py"):
+        path = tmp_path / name
+        path.write_text(source)
+        namespace = {"record": record}
+        exec(compile(source, str(path), "exec"), namespace)
+        sites.append(namespace["site"])
+    assert sites[0].__code__ == sites[1].__code__
+
+    with ir.Context(), ir.Location.unknown():
+        plain = [site() for site in sites]
+        with cute_cache.memoized_op_locations():
+            memoized = [site() for site in sites]
+    assert "first.py" in plain[0] and "second.py" in plain[1]
+    assert memoized == plain
+
+
+def _exit_code_in_fork(check: Callable[[], bool]) -> int:
+    """Run ``check`` in a forked child; 0 if it returns true, -SIGALRM if it hangs for 5 s."""
+    import signal
+
+    pid = os.fork()
+    if pid == 0:
+        code = 1
+        try:
+            signal.alarm(5)
+            code = 0 if check() else 2
+        finally:
+            os._exit(code)
+    _, status = os.waitpid(pid, 0)
+    return os.waitstatus_to_exitcode(status)
+
+
+def _scope_restores() -> bool:
+    """Check that a memo scope restores the upstream inspect module."""
+    import inspect
+
+    from cutlass.base_dsl._mlir_helpers import op as dsl_op
+
+    with cute_cache.memoized_op_locations():
+        entered = isinstance(dsl_op.inspect, cute_cache._SiteMemoizedInspect)
+    return entered and dsl_op.inspect is inspect
+
+
+@requires_compiler
+@pytest.mark.filterwarnings("ignore::DeprecationWarning")
+def test_fork_drops_other_threads_scopes() -> None:
+    """A child forked while another thread compiles restores ``inspect`` after its own compile."""
+    import inspect
+
+    from cutlass.base_dsl._mlir_helpers import op as dsl_op
+
+    entered, release = threading.Event(), threading.Event()
+
+    def compiling() -> None:
+        """Hold a memo scope open until the child fork check completes."""
+        with cute_cache.memoized_op_locations():
+            entered.set()
+            release.wait()
+
+    thread = threading.Thread(target=compiling)
+    thread.start()
+    entered.wait()
+    try:
+        code = _exit_code_in_fork(_scope_restores)
+    finally:
+        release.set()
+        thread.join()
+    assert code == 0
+    assert dsl_op.inspect is inspect
+
+
+@requires_compiler
+@pytest.mark.filterwarnings("ignore::DeprecationWarning")
+def test_fork_while_another_thread_holds_the_lock() -> None:
+    """A child forked while another thread holds the memo lock can still compile."""
+    locked, release = threading.Event(), threading.Event()
+
+    def holding() -> None:
+        """Hold the memo lock until the child fork check completes."""
+        with cute_cache._memo_lock:
+            locked.set()
+            release.wait()
+
+    thread = threading.Thread(target=holding)
+    thread.start()
+    locked.wait()
+    try:
+        code = _exit_code_in_fork(_scope_restores)
+    finally:
+        release.set()
+        thread.join()
+    assert code == 0
+
+
+@requires_compiler
+@pytest.mark.filterwarnings("ignore::DeprecationWarning")
+def test_fork_inside_a_scope_keeps_it() -> None:
+    """A child forked inside two memo scopes keeps the memo until it leaves both, then restores."""
+    import inspect
+    import signal
+
+    from cutlass.base_dsl._mlir_helpers import op as dsl_op
+
+    pid = -1
+    checks: list[bool] = []
+    try:
+        with cute_cache.memoized_op_locations():
+            with cute_cache.memoized_op_locations():
+                memo = dsl_op.inspect
+                pid = os.fork()
+                if pid == 0:
+                    signal.alarm(5)
+                    checks.append(dsl_op.inspect is memo)
+                    with cute_cache.memoized_op_locations():
+                        checks.append(dsl_op.inspect is memo)
+                checks.append(dsl_op.inspect is memo)
+            checks.append(dsl_op.inspect is memo)
+        checks.extend([dsl_op.inspect is inspect, not cute_cache._memo_scopes])
+    finally:
+        if pid == 0:
+            os._exit(0 if len(checks) == 6 and all(checks) else 2)
+    _, status = os.waitpid(pid, 0)
+    assert os.waitstatus_to_exitcode(status) == 0
+    assert dsl_op.inspect is inspect
+
+
+@requires_compiler
+def test_memoized_op_locations_leave_a_foreign_patch(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An ``inspect`` someone else put on the DSL's op module stays in place.
+
+    Args:
+        monkeypatch: Fixture that restores the foreign inspect reference.
+    """
+    from cutlass.base_dsl._mlir_helpers import op as dsl_op
+
+    foreign = object()
+    monkeypatch.setattr(dsl_op, "inspect", foreign)
+    with cute_cache.memoized_op_locations():
+        assert dsl_op.inspect is foreign
+    assert dsl_op.inspect is foreign
+
+
+@requires_compiler
+@pytest.mark.parametrize("version", ["4.5.2", "4.5.3"])
+def test_memoized_op_locations_validated_versions(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture, version: str
+) -> None:
+    """Validated compiler versions enable memoization without warnings.
+
+    Args:
+        monkeypatch: Fixture that restores the compiler version and warning state.
+        caplog: Captured log records.
+        version: Validated compiler version to exercise.
+    """
+    import inspect
+
+    import cutlass
+    from cutlass.base_dsl._mlir_helpers import op as dsl_op
+
+    monkeypatch.setattr(cutlass, "__version__", version)
+    monkeypatch.setattr(cute_cache, "_memo_warning_logged", False)
+    with cute_cache.memoized_op_locations():
+        assert isinstance(dsl_op.inspect, cute_cache._SiteMemoizedInspect)
+    assert dsl_op.inspect is inspect
+    assert not caplog.records
+
+
+@requires_compiler
+@pytest.mark.parametrize("version", ["4.6.0", "4.8.1", "999.0", "4.5.3.dev0", "unknown"])
+def test_unvalidated_version_compiles_unchanged_and_warns_once(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture, version: str
+) -> None:
+    """An unsupported compiler bypasses the private API and preserves compile results and errors.
+
+    Args:
+        monkeypatch: Fixture that restores the compiler stub, version and warning state.
+        caplog: Captured log records.
+        version: Unsupported compiler version to exercise.
+    """
+    import inspect
+
+    import cutlass
+    from cutlass.base_dsl._mlir_helpers import op as dsl_op
+
+    monkeypatch.setattr(cutlass, "__version__", version)
+    monkeypatch.setattr(cute_cache, "_memo_warning_logged", False)
+    calls = []
+    result = object()
+
+    def compile_kernel(*args: object, **kwargs: object) -> object:
+        """Record forwarded arguments and simulate an upstream compiler failure."""
+        assert dsl_op.inspect is inspect
+        calls.append((args, kwargs))
+        if len(calls) == 2:
+            raise ValueError("upstream compiler error at kernel.py:42")
+        return result
+
+    monkeypatch.setattr(cute_cache._cute(), "compile", compile_kernel)
+    cache = cute_cache.CuteKernelCache()
+    assert cache.compile("kernel", "tensor", options="--test", extra=3) is result
+    with pytest.raises(ValueError, match="upstream compiler error at kernel.py:42"):
+        cache.compile("kernel", "tensor", options="--test", extra=3)
+    assert calls == [(("kernel", "tensor"), {"options": "--test", "extra": 3})] * 2
+    assert not cute_cache._memo_scopes
+    assert len(caplog.records) == 1
+    warning = caplog.records[0]
+    assert warning.levelname == "WARNING"
+    assert f"CuTeDSL {version}" in warning.message
+    assert "upstream compiler unchanged" in warning.message
+    assert "_OP_LOCATION_MEMO_VERSIONS" in warning.message
+
+
+@requires_compiler
+@pytest.mark.parametrize("change", ["missing_module", "missing_inspect", "foreign_inspect"])
+def test_changed_location_helper_falls_back_and_warns_once(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture, change: str
+) -> None:
+    """A changed private helper is left untouched, even on a validated version.
+
+    Args:
+        monkeypatch: Fixture that restores the compiler version, helper and warning state.
+        caplog: Captured log records.
+        change: Private helper incompatibility to simulate.
+    """
+    import sys
+
+    import cutlass
+    from cutlass.base_dsl import _mlir_helpers
+    from cutlass.base_dsl._mlir_helpers import op as dsl_op
+
+    monkeypatch.setattr(cutlass, "__version__", "4.5.3")
+    monkeypatch.setattr(cute_cache, "_memo_warning_logged", False)
+    if change == "missing_module":
+        monkeypatch.delattr(_mlir_helpers, "op")
+        monkeypatch.setitem(sys.modules, dsl_op.__name__, None)
+    elif change == "missing_inspect":
+        monkeypatch.delattr(dsl_op, "inspect")
+    else:
+        monkeypatch.setattr(dsl_op, "inspect", object())
+    original = getattr(dsl_op, "inspect", None)
+    for _ in range(2):
+        with cute_cache.memoized_op_locations():
+            assert getattr(dsl_op, "inspect", None) is original
+    assert not cute_cache._memo_scopes
+    assert len(caplog.records) == 1
+    expected = "private location helper is unavailable" if change == "missing_module" else "inspect reference changed"
+    assert expected in caplog.text
+
+
+@requires_compiler
+@pytest.mark.parametrize("version", ["4.5.2", "4.5.3"])
+@pytest.mark.parametrize("fails", [False, True])
+def test_compile_memoizes_locations_and_restores_inspect(
+    monkeypatch: pytest.MonkeyPatch, version: str, fails: bool
+) -> None:
+    """The compile entry point scopes memoization around the upstream call.
+
+    Args:
+        monkeypatch: Fixture that restores the compiler stub and version.
+        version: Validated compiler version to exercise.
+        fails: Whether the compiler stub raises instead of returning an artifact.
+    """
+    import inspect
+
+    import cutlass
+    from cutlass.base_dsl._mlir_helpers import op as dsl_op
+
+    monkeypatch.setattr(cutlass, "__version__", version)
+    result = object()
+    calls = []
+
+    def compile_kernel(*args: object, **kwargs: object) -> object:
+        """Check the active memo and preserve upstream results or errors."""
+        assert isinstance(dsl_op.inspect, cute_cache._SiteMemoizedInspect)
+        calls.append((args, kwargs))
+        if fails:
+            raise ValueError("upstream compile failed")
+        return result
+
+    compiler = ModuleType("stub_cute")
+    monkeypatch.setattr(compiler, "compile", compile_kernel, raising=False)
+    monkeypatch.setattr(cute_cache, "_cute", lambda: compiler)
+    cache = cute_cache.CuteKernelCache()
+    if fails:
+        with pytest.raises(ValueError, match="upstream compile failed"):
+            cache.compile("kernel", "tensor", options="--test", extra=3)
+    else:
+        assert cache.compile("kernel", "tensor", options="--test", extra=3) is result
+    assert calls == [(("kernel", "tensor"), {"options": "--test", "extra": 3})]
+    assert dsl_op.inspect is inspect
+    assert not cute_cache._memo_scopes

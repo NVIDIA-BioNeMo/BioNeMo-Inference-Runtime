@@ -62,18 +62,23 @@ Controls:
 
 from __future__ import annotations
 
+import contextlib
 import fcntl
 import functools
 import hashlib
+import inspect
+import logging
 import os
 import pickle
 import platform
 import stat
 import sys
 import tempfile
+import threading
 import time
+from collections.abc import Iterator
 from pathlib import Path
-from types import ModuleType
+from types import CodeType, FrameType, ModuleType
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -89,6 +94,7 @@ __all__ = [
     "FORCE_CUBIN_ENV",
     "get_cache_dir",
     "FileLock",
+    "memoized_op_locations",
 ]
 
 CACHE_ENABLED: bool = DiskCache.ENABLED
@@ -113,6 +119,125 @@ def _cute() -> ModuleType:
     import cutlass.cute as cute
 
     return cute
+
+
+class _SiteMemoizedInspect:
+    """``inspect`` with ``getframeinfo`` memoized per call site; every other name is the real module's."""
+
+    def __init__(self) -> None:
+        # Keyed by code object identity: equal code objects from different files compare equal. Each entry
+        # holds its code object, so the id is not reused while the entry lives.
+        self._sites: dict[tuple[int, int, int, int], tuple[CodeType, inspect.Traceback]] = {}
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(inspect, name)
+
+    def getframeinfo(self, frame: FrameType, context: int = 1) -> inspect.Traceback:
+        """Return ``inspect.getframeinfo(frame, context)``, computed once per code object and instruction."""
+        if not inspect.isframe(frame):
+            return inspect.getframeinfo(frame, context)
+        code = frame.f_code
+        key = (id(code), frame.f_lasti, frame.f_lineno, context)
+        site = self._sites.get(key)
+        if site is None:
+            site = self._sites[key] = (code, inspect.getframeinfo(frame, context))
+        return site[1]
+
+
+_memo_lock = threading.Lock()
+# Open memo scopes per thread.
+_memo_scopes: dict[int, int] = {}
+# 4.6 moved the helper and changed location capture; newer releases also cache
+# source lookups upstream. Recheck locations and error diagnostics before adding
+# a version here rather than assuming that a private API remains compatible.
+_OP_LOCATION_MEMO_VERSIONS = frozenset({"4.5.2", "4.5.3"})
+_memo_warning_logged = False
+_logger = logging.getLogger(__name__)
+
+
+def _reset_memo_after_fork() -> None:
+    """Keep only the forking thread's memo scopes in a forked child, with a fresh lock."""
+    global _memo_lock
+    _memo_lock = threading.Lock()
+    forking = threading.get_ident()
+    for thread in [t for t in _memo_scopes if t != forking]:
+        del _memo_scopes[thread]
+    dsl_op = sys.modules.get("cutlass.base_dsl._mlir_helpers.op")
+    if not _memo_scopes and isinstance(getattr(dsl_op, "inspect", None), _SiteMemoizedInspect):
+        dsl_op.inspect = inspect
+
+
+os.register_at_fork(after_in_child=_reset_memo_after_fork)
+
+
+@contextlib.contextmanager
+def memoized_op_locations() -> Iterator[None]:
+    """Memoize the CuTeDSL front end's source-location lookup for one compile.
+
+    ``dsl_user_op`` (``cutlass/base_dsl/_mlir_helpers/op.py``) calls
+    ``inspect.getframeinfo`` on its caller for every IR op it builds. Each
+    call decodes the code object's position table up to the current
+    instruction and, on Python 3.12, also scans the source back to the
+    enclosing ``def``; one kernel builds tens of thousands of ops from about a
+    thousand call sites, so uncached these lookups are most of a cold compile.
+    A site's answer depends only on its code object, instruction and source
+    file, none of which change during a compile. The DSL re-executes the
+    kernel source for every compile, so the memo lives until the last open
+    compile in any thread returns; a forked child counts only the forking
+    thread's. Untested versions and changed helpers use the upstream compiler
+    unchanged and log one warning per process so maintainers can recheck this
+    workaround. ``CuteKernelCache.compile`` and the CUBIN pack builders enter
+    this scope; cache hits and CUBIN launches never do.
+    """
+    global _memo_warning_logged
+    dsl_op = None
+    dsl_version = "unknown"
+    skip_reason = "CuTeDSL is unavailable"
+    try:
+        import cutlass
+    except ImportError:
+        pass
+    else:
+        dsl_version = getattr(cutlass, "__version__", "unknown")
+        if dsl_version not in _OP_LOCATION_MEMO_VERSIONS:
+            skip_reason = "this version has not been validated for the private helper"
+        else:
+            try:
+                from cutlass.base_dsl._mlir_helpers import op as dsl_op
+            except ImportError:
+                skip_reason = "the private location helper is unavailable"
+            else:
+                skip_reason = "the private helper's inspect reference changed"
+    thread = threading.get_ident()
+    warn = False
+    with _memo_lock:
+        memo = getattr(dsl_op, "inspect", None)
+        active = isinstance(memo, _SiteMemoizedInspect) or memo is inspect
+        if active:
+            if not isinstance(memo, _SiteMemoizedInspect):
+                memo = dsl_op.inspect = _SiteMemoizedInspect()
+            _memo_scopes[thread] = _memo_scopes.get(thread, 0) + 1
+        elif not _memo_warning_logged:
+            _memo_warning_logged = warn = True
+    if warn:
+        _logger.warning(
+            "CuTeDSL %s: BioIR source-location memoization disabled: %s. "
+            "Using the upstream compiler unchanged; cold compilation may be slower. "
+            "Maintainers: recheck source locations and compile-error diagnostics, then update "
+            "_OP_LOCATION_MEMO_VERSIONS in bionemo_ir/dsl_kernels/cute_cache.py if compatible.",
+            dsl_version,
+            skip_reason,
+        )
+    try:
+        yield
+    finally:
+        if active:
+            with _memo_lock:
+                _memo_scopes[thread] -= 1
+                if not _memo_scopes[thread]:
+                    del _memo_scopes[thread]
+                if not _memo_scopes and dsl_op.inspect is memo:
+                    dsl_op.inspect = inspect
 
 
 def get_cache_dir() -> Path:
@@ -404,7 +529,9 @@ class CuteKernelCache(KernelCacheBase):
         Returns:
             The compiled ``TVMFFIJitCompiledFunction``.
         """
-        return _cute().compile(kernel_callable, *fake_tensors, options=options, **kwargs)
+        cute = _cute()
+        with memoized_op_locations():
+            return cute.compile(kernel_callable, *fake_tensors, options=options, **kwargs)
 
     def save_to_cache(self, key: tuple, artifact: Any) -> None:
         """Export compiled kernel as ``.o`` to disk cache.

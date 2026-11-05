@@ -536,10 +536,15 @@ class CUDAGraphOptimizationTracker(GraphOptimizationTracker):
         )
         self._reserve_graph_budget(input_key)
         # Include warmup activations retained by the graph mempool.
-        check = check_capacity_for_capture(
-            working_set_bytes=(state.working_set_bytes + state.warmup_peak_activation_bytes),
-            input_container=(state.static_input_arg, state.static_input_kwargs),
-        )
+        capture_bytes = state.working_set_bytes + state.warmup_peak_activation_bytes
+        static_inputs = (state.static_input_arg, state.static_input_kwargs)
+        check = check_capacity_for_capture(working_set_bytes=capture_bytes, input_container=static_inputs)
+        if not check.ok and check.gpu_short:
+            # Free device memory excludes the allocator's unused cache, which
+            # capture entry releases anyway. Release it before refusing a
+            # capture that only the cache crowds out.
+            torch.cuda.empty_cache()
+            check = check_capacity_for_capture(working_set_bytes=capture_bytes, input_container=static_inputs)
         if not check.ok:
             logger.info(f"{type(self).__name__}: skipping capture, revert to eager ({check.reason})")
             self._revert_to_eager(input_key)

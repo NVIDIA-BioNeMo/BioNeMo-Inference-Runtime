@@ -1026,9 +1026,9 @@ def test_op_accepts_contiguous_bf16_rows_and_pair_maps_with_their_lengths():
     assert not op.accepts(z, mask.cpu())
     assert not op.accepts(z, mask[:1])
     assert not op.accepts(z, torch.ones(2, 9, 9, 2, device="cuda", dtype=torch.bfloat16)[..., :1])
-    # z on a device of another SM than the op's backend
-    sm80_op = w_norm.TransitionMlpWNormOp(TransitionMlpWNormCuTe(80), op.width, op.hidden, op.activation)
-    assert not sm80_op.accepts(z, mask)
+    # z on a device of another SM than the op's backend; the op needs an SM with a kernel layout
+    sm100_op = w_norm.TransitionMlpWNormOp(TransitionMlpWNormCuTe(100), op.width, op.hidden, op.activation)
+    assert not sm100_op.accepts(z, mask)
 
 
 def test_op_takes_out_in_place_or_apart_from_every_operand():

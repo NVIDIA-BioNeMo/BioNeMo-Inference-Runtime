@@ -48,6 +48,11 @@ class MemoryCheck(NamedTuple):
     needed_gpu_bytes: int
     free_gpu_bytes: int
 
+    @property
+    def gpu_short(self) -> bool:
+        """Whether the capture estimate exceeds free GPU memory."""
+        return self.needed_gpu_bytes > self.free_gpu_bytes
+
 
 def tensor_bytes(value: Any) -> int:
     """Sum tensor bytes recursively; non-tensor leaves contribute zero."""
@@ -121,10 +126,11 @@ def check_capacity_for_capture(working_set_bytes: int, input_container: Any = No
     device = container_device(input_container)
     needed_gpu = estimate_capture_gpu_bytes(working_set_bytes)
     free_gpu = gpu_free_bytes(device)
-    if needed_gpu > free_gpu:
-        return MemoryCheck(
-            False, f"insufficient GPU memory: need {needed_gpu} B, free {free_gpu} B", needed_gpu, free_gpu
-        )
+    gpu_check = MemoryCheck(
+        False, f"insufficient GPU memory: need {needed_gpu} B, free {free_gpu} B", needed_gpu, free_gpu
+    )
+    if gpu_check.gpu_short:
+        return gpu_check
 
     needed_host = working_set_bytes + GRAPH_METADATA_BYTES
     host_free = host_available_bytes()

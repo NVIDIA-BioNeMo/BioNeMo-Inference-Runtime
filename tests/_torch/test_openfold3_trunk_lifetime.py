@@ -19,6 +19,7 @@ from types import SimpleNamespace
 import pytest
 import torch
 
+import bionemo_ir.models.openfold3.modeling as openfold3_modeling
 from bionemo_ir._torch.graph_optimization import GraphRegion
 from bionemo_ir._torch.layers.transformers.pairformer import PairformerLayerV1
 from bionemo_ir._torch.layers.triangle_nodes import TriangleMultiplicationMetadata
@@ -105,10 +106,16 @@ def test_pairformer_reuses_owned_pair_storage_only_when_safe(mode: str, monkeypa
 
 class _TrunkLifetimeProbe:
     forward = OpenFold3.forward
+    _pair_preparation = OpenFold3._pair_preparation
 
-    def __init__(self, device: torch.device | str = "cpu") -> None:
+    def __init__(self, device: torch.device | str = "cpu", *, pair_min_size: int = 6) -> None:
         self.device = torch.device(device)
-        self.diffusion_module = SimpleNamespace(dtype=torch.float32)
+        # The probe's trunk pair has 3 tokens; above ``pair_min_size`` prediction stages it on host.
+        self.diffusion_module = SimpleNamespace(
+            dtype=torch.float32,
+            diffusion_conditioning=SimpleNamespace(pair_projection_chunk_policy=ChunkPolicy(min_size=pair_min_size)),
+        )
+        self.diffusion_sampler = SimpleNamespace(use_conditioning=True)
         self.trunk_refs: list[weakref.ReferenceType[torch.Tensor]] = []
         self.expected: tuple[torch.Tensor, ...] = ()
 
@@ -138,42 +145,172 @@ class _TrunkLifetimeProbe:
         return {"zij_trunk": zij_trunk}
 
 
-def test_prediction_releases_superseded_trunk_precision() -> None:
+def _reject_cuda_memory_calls(monkeypatch: pytest.MonkeyPatch, reason: str) -> None:
+    def reject(name: str) -> object:
+        def fail(*_args: object, **_kwargs: object) -> None:
+            raise AssertionError(f"{name} is not needed {reason}")
+
+        return fail
+
+    for name in ("empty_cache", "mem_get_info", "memory_reserved", "memory_allocated"):
+        monkeypatch.setattr(torch.cuda, name, reject(name))
+
+
+def test_prediction_releases_superseded_trunk_precision(monkeypatch: pytest.MonkeyPatch) -> None:
     probe = _TrunkLifetimeProbe()
+    # A CPU trunk pair neither queries nor releases CUDA memory.
+    _reject_cuda_memory_calls(monkeypatch, "for a CPU trunk pair")
     output = probe.forward({"token_mask": torch.ones(1, 3)})
     assert torch.equal(output["zij_trunk"], probe.expected[2])
 
 
+_MIB = 1 << 20
+
+
+_MEMORY_QUERIES = ["free", "reserved", "allocated"]
+
+
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
-def test_prediction_reclaims_dead_cuda_cache_before_inference(monkeypatch) -> None:
+@pytest.mark.parametrize(
+    ("max_tokens", "pair_min_size", "free_bytes", "expected_events", "expected_queries"),
+    [
+        pytest.param(3, 6, 511 * _MIB, ["empty_cache", "prediction"], ["cap", *_MEMORY_QUERIES], id="short-memory"),
+        pytest.param(3, 6, 512 * _MIB, ["prediction"], ["cap", *_MEMORY_QUERIES], id="cache-fits"),
+        pytest.param(2, 6, 64 * 1024 * _MIB, ["empty_cache", "prediction"], ["cap"], id="above-token-cap"),
+        # A lowered pair chunk threshold that still keeps the pair on device does not lower the cap.
+        pytest.param(3, 4, 512 * _MIB, ["prediction"], ["cap", *_MEMORY_QUERIES], id="pair-min-size-ignored"),
+        pytest.param(3, 2, 0, ["prediction"], [], id="pair-staged-on-host"),
+    ],
+)
+def test_prediction_reclaims_dead_cuda_cache_for_long_inputs_or_short_memory(
+    max_tokens: int,
+    pair_min_size: int,
+    free_bytes: int,
+    expected_events: list[str],
+    expected_queries: list[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     events: list[str] = []
-    probe = _TrunkLifetimeProbe("cuda")
+    queried: list[tuple[str, torch.device]] = []
+
+    def query(name: str, value: object) -> object:
+        def answer(device: torch.device) -> object:
+            queried.append((name, device))
+            return value
+
+        return answer
+
+    # The cap is half the memory-scaled auto-chunk threshold.
+    monkeypatch.setattr(openfold3_modeling, "default_autochunk_min", query("cap", 2 * max_tokens))
+    probe = _TrunkLifetimeProbe("cuda", pair_min_size=pair_min_size)
     original_prediction = probe.prediction
 
-    def record_prediction(**kwargs):
+    def record_prediction(**kwargs: object) -> dict[str, torch.Tensor]:
         events.append("prediction")
         return original_prediction(**kwargs)
 
+    # The allocator caches 768 - 256 = 512 MiB it is not using.
     monkeypatch.setattr(probe, "prediction", record_prediction)
     monkeypatch.setattr(torch.cuda, "empty_cache", lambda: events.append("empty_cache"))
     monkeypatch.setattr(torch.cuda, "is_current_stream_capturing", lambda: False)
+    monkeypatch.setattr(torch.cuda, "mem_get_info", query("free", (free_bytes, 1 << 40)))
+    monkeypatch.setattr(torch.cuda, "memory_reserved", query("reserved", 768 * _MIB))
+    monkeypatch.setattr(torch.cuda, "memory_allocated", query("allocated", 256 * _MIB))
 
     with torch.inference_mode():
         output = probe.forward({"token_mask": torch.ones(1, 3, device="cuda")})
 
-    assert events == ["empty_cache", "prediction"]
+    device = probe.expected[2].device
+    assert events == expected_events
+    assert queried == [(name, device) for name in expected_queries]
     assert torch.equal(output["zij_trunk"], probe.expected[2])
 
 
+_GIB = 1 << 30
+
+
+@pytest.mark.parametrize(
+    ("total_bytes", "expected_tokens"),
+    [
+        pytest.param(int(179.06 * _GIB), 1920, id="b200-180gb"),
+        pytest.param(85_064_286_208, 1280, id="h100-80gb"),
+        pytest.param(int(39.39 * _GIB), 896, id="a100-40gb"),
+        pytest.param(24 * _GIB, 512, id="24gb"),
+        pytest.param(int(14.6 * _GIB), 512, id="16gb"),
+        pytest.param(268 * _GIB, 2048, id="b300-288gb-limit"),
+    ],
+)
+def test_trunk_cache_cap_scales_with_device_memory(
+    total_bytes: int, expected_tokens: int, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    read: list[torch.device] = []
+
+    def device_properties(device: torch.device) -> SimpleNamespace:
+        read.append(device)
+        return SimpleNamespace(total_memory=total_bytes)
+
+    device = torch.device("cuda", 3)
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "get_device_properties", device_properties)
+    openfold3_modeling.default_autochunk_min.cache_clear()
+    try:
+        assert openfold3_modeling._keep_trunk_cache_max_tokens(device) == expected_tokens
+    finally:
+        openfold3_modeling.default_autochunk_min.cache_clear()
+    assert read == [device]
+
+
+_CUDA = torch.device("cuda", 0)
+
+
+@pytest.mark.parametrize(
+    ("device", "capturing", "num_tokens", "free_bytes", "released", "expected_queries"),
+    [
+        pytest.param(torch.device("cpu"), False, 0, 0, False, [], id="cpu"),
+        pytest.param(_CUDA, True, 0, 0, False, [], id="capturing"),
+        pytest.param(_CUDA, False, 9, 1 << 40, True, ["cap"], id="above-token-cap"),
+        pytest.param(_CUDA, False, 8, 511 * _MIB, True, ["cap", *_MEMORY_QUERIES], id="cache-crowds-device"),
+        pytest.param(_CUDA, False, 8, 512 * _MIB, False, ["cap", *_MEMORY_QUERIES], id="cache-fits"),
+    ],
+)
+def test_release_trunk_cache(
+    device: torch.device,
+    capturing: bool,
+    num_tokens: int,
+    free_bytes: int,
+    released: bool,
+    expected_queries: list[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[str] = []
+
+    def query(name: str, value: object) -> object:
+        def answer(queried: torch.device) -> object:
+            assert queried == device
+            events.append(name)
+            return value
+
+        return answer
+
+    # The cap is 8 tokens, and the allocator caches 768 - 256 = 512 MiB it is not using.
+    monkeypatch.setattr(openfold3_modeling, "_keep_trunk_cache_max_tokens", query("cap", 8))
+    monkeypatch.setattr(torch.cuda, "is_current_stream_capturing", lambda: capturing)
+    monkeypatch.setattr(torch.cuda, "mem_get_info", query("free", (free_bytes, 1 << 40)))
+    monkeypatch.setattr(torch.cuda, "memory_reserved", query("reserved", 768 * _MIB))
+    monkeypatch.setattr(torch.cuda, "memory_allocated", query("allocated", 256 * _MIB))
+    monkeypatch.setattr(torch.cuda, "empty_cache", lambda: events.append("empty_cache"))
+
+    assert openfold3_modeling._release_trunk_cache(device, num_tokens) is released
+    assert events == expected_queries + ["empty_cache"] * released
+
+
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
-def test_prediction_keeps_cache_during_cuda_graph_capture(monkeypatch) -> None:
+def test_prediction_keeps_cache_during_cuda_graph_capture(monkeypatch: pytest.MonkeyPatch) -> None:
     probe = _TrunkLifetimeProbe("cuda")
     monkeypatch.setattr(torch.cuda, "is_current_stream_capturing", lambda: True)
 
-    def reject_empty_cache() -> None:
-        raise AssertionError("empty_cache is not capture safe")
-
-    monkeypatch.setattr(torch.cuda, "empty_cache", reject_empty_cache)
+    # Capture keeps the cache without querying memory.
+    _reject_cuda_memory_calls(monkeypatch, "during capture")
     with torch.inference_mode():
         output = probe.forward({"token_mask": torch.ones(1, 3, device="cuda")})
 
@@ -481,6 +618,7 @@ class _PairCacheAuxHeads:
 
 class _PairCachePredictionProbe:
     prediction = OpenFold3.prediction
+    _pair_preparation = OpenFold3._pair_preparation
 
     def __init__(
         self,

@@ -306,6 +306,85 @@ def test_memory_gate_refusal_reverts_to_eager(monkeypatch):
     assert torch.allclose(out, ref, atol=1e-5)
 
 
+def test_memory_gate_releases_cached_memory_before_refusing(monkeypatch: pytest.MonkeyPatch) -> None:
+    m, raw = _make()
+    x = torch.randn(2, 8, device="cuda")
+    events: list[str] = []
+    checks = iter(
+        [
+            gc_mem.MemoryCheck(False, "insufficient GPU memory", 1 << 30, 1 << 20),
+            gc_mem.MemoryCheck(True, "ok", 1 << 20, 1 << 30),
+        ]
+    )
+
+    def check(*_args: object, **_kwargs: object) -> gc_mem.MemoryCheck:
+        result = next(checks)
+        events.append(f"check:{result.ok}")
+        return result
+
+    real_empty_cache = torch.cuda.empty_cache
+
+    def empty_cache() -> None:
+        events.append("empty_cache")
+        real_empty_cache()
+
+    monkeypatch.setattr(trk, "check_capacity_for_capture", check)
+    monkeypatch.setattr(torch.cuda, "empty_cache", empty_cache)
+    with torch.no_grad():
+        ref = raw(x)
+        for _ in range(NUM_CALLS_TO_CAPTURE):
+            out = m(x)
+
+    # The retry runs before capture entry, which empties the cache again.
+    assert events[:3] == ["check:False", "empty_cache", "check:True"]
+    assert m.fallback_to_eager_by_key.get(_key(m, x)) is not True
+    assert next(iter(m.graph_state_by_key.values())).graph is not None
+    assert torch.allclose(out, ref, atol=1e-5)
+
+
+def test_memory_gate_refuses_after_one_release_when_still_short(monkeypatch: pytest.MonkeyPatch) -> None:
+    m, raw = _make()
+    x = torch.randn(2, 8, device="cuda")
+    events: list[str] = []
+
+    def check(*_args: object, **_kwargs: object) -> gc_mem.MemoryCheck:
+        events.append("check")
+        return gc_mem.MemoryCheck(False, "insufficient GPU memory", 1 << 30, 1 << 20)
+
+    monkeypatch.setattr(trk, "check_capacity_for_capture", check)
+    monkeypatch.setattr(torch.cuda, "empty_cache", lambda: events.append("empty_cache"))
+    with torch.no_grad():
+        ref = raw(x)
+        for _ in range(NUM_CALLS_TO_CAPTURE + 2):
+            out = m(x)
+
+    # One release and one recheck, then the key stays eager without further checks.
+    assert events == ["check", "empty_cache", "check"]
+    assert m.fallback_to_eager_by_key.get(_key(m, x)) is True
+    assert torch.allclose(out, ref, atol=1e-5)
+
+
+def test_memory_gate_refuses_host_shortage_without_releasing_cache(monkeypatch: pytest.MonkeyPatch) -> None:
+    m, raw = _make()
+    x = torch.randn(2, 8, device="cuda")
+    events: list[str] = []
+
+    def check(*_args: object, **_kwargs: object) -> gc_mem.MemoryCheck:
+        events.append("check")
+        return gc_mem.MemoryCheck(False, "insufficient host memory", 1 << 20, 1 << 30)
+
+    monkeypatch.setattr(trk, "check_capacity_for_capture", check)
+    monkeypatch.setattr(torch.cuda, "empty_cache", lambda: events.append("empty_cache"))
+    with torch.no_grad():
+        ref = raw(x)
+        for _ in range(NUM_CALLS_TO_CAPTURE):
+            out = m(x)
+
+    assert events == ["check"]
+    assert m.fallback_to_eager_by_key.get(_key(m, x)) is True
+    assert torch.allclose(out, ref, atol=1e-5)
+
+
 def test_capture_failure_reverts_to_eager(monkeypatch):
     m, raw = _make()
     x = torch.randn(2, 8, device="cuda")

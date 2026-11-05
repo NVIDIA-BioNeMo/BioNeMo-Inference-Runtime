@@ -14,6 +14,8 @@
 # limitations under the License.
 
 
+from typing import Literal
+
 import torch
 import torch.nn as nn
 
@@ -54,6 +56,7 @@ from bionemo_ir._torch.utils import (
     CHUNK_REGISTRY,
     RECYCLE_PAIR_UPDATE,
     ChunkPolicy,
+    default_autochunk_min,
     iter_chunks,
     tensor_tree_map,
 )
@@ -64,6 +67,64 @@ from bionemo_ir.models.openfold3.convert import convert_hf_openfold3_torch
 from bionemo_ir.registry import SupMat
 
 from ..optimize_module_setter import OptimizedModuleSetterMixin
+
+# On B300 (268 GiB) the scaled cap is 2368 tokens. Keeping the cache added
+# 0.8 GiB peak reserved at 2284 tokens but 18 GiB at 2398, so the growth starts
+# in between. The limit stays below 2284, the largest size measured harmless.
+_KEEP_TRUNK_CACHE_TOKEN_LIMIT = 2048
+
+
+def _keep_trunk_cache_max_tokens(device: torch.device) -> int:
+    """Largest input that keeps the trunk's cached memory for prediction.
+
+    Half the memory-scaled auto-chunk threshold, at most 2048 tokens. The ratio
+    is fitted to B200, H100 and B300 runs with five diffusion samples at the
+    default threshold: above it, prediction's pair tensors outgrew the trunk's
+    cached blocks and keeping them raised peak reserved memory. A ``min_size``
+    set on the pair-conditioning chunk policy does not move the cap, because no
+    run measured one. Neither the cap nor the free-memory test reads the sample
+    count, so more samples can make prediction outgrow a kept cache below the
+    cap; the allocator then frees its cached blocks and retries before
+    reporting out of memory.
+
+    Args:
+        device: CUDA device of the trunk pair representation.
+    """
+    return min(default_autochunk_min(device) // 2, _KEEP_TRUNK_CACHE_TOKEN_LIMIT)
+
+
+def _cache_crowds_device(device: torch.device) -> bool:
+    """Whether free device memory is below the allocator's cached, unallocated bytes.
+
+    Neither query synchronizes the device.
+    """
+    free_bytes, _total_bytes = torch.cuda.mem_get_info(device)
+    cached_bytes = torch.cuda.memory_reserved(device) - torch.cuda.memory_allocated(device)
+    return free_bytes < cached_bytes
+
+
+def _release_trunk_cache(device: torch.device, num_tokens: int) -> bool:
+    """Return the trunk's unused cached CUDA memory for long inputs or short memory.
+
+    Releasing drains the device and unmaps the allocator's unused segments,
+    which prediction then maps again. Inputs of at most
+    ``_keep_trunk_cache_max_tokens`` tokens keep the cache unless it crowds the
+    device; prediction then reuses the cache or fits beside it. CPU devices and
+    CUDA stream capture never release.
+
+    Args:
+        device: Device of the trunk pair representation.
+        num_tokens: Token count of the trunk pair representation.
+
+    Returns:
+        Whether the cache was released.
+    """
+    if device.type != "cuda" or torch.cuda.is_current_stream_capturing():
+        return False
+    if num_tokens <= _keep_trunk_cache_max_tokens(device) and not _cache_crowds_device(device):
+        return False
+    torch.cuda.empty_cache()
+    return True
 
 
 class OpenFold3(nn.Module, OptimizedModuleSetterMixin):
@@ -360,6 +421,26 @@ class OpenFold3(nn.Module, OptimizedModuleSetterMixin):
             inplace_safe=True,
         )
 
+    def _pair_preparation(self, zij_trunk: torch.Tensor) -> Literal["none", "on_device", "from_host"]:
+        """How prediction conditions the trunk pair once before sampling.
+
+        ``"from_host"`` stages the pair on host first, above the pair-conditioning
+        chunk threshold; ``"none"`` leaves conditioning to each denoising step.
+
+        Args:
+            zij_trunk: [*, N_token, N_token, C_z] trunk pair representation.
+        """
+        if not (
+            self.diffusion_sampler.use_conditioning
+            and zij_trunk.is_cuda
+            and not torch.cuda.is_current_stream_capturing()
+        ):
+            return "none"
+        pair_policy = self.diffusion_module.diffusion_conditioning.pair_projection_chunk_policy
+        if pair_policy is not None and pair_policy.should_chunk_size(zij_trunk.shape[-3], zij_trunk.device):
+            return "from_host"
+        return "on_device"
+
     def prediction(
         self,
         batch: dict,
@@ -393,20 +474,10 @@ class OpenFold3(nn.Module, OptimizedModuleSetterMixin):
         no_rollout_steps_eff = no_rollout_steps if no_rollout_steps is not None else self.no_rollout_steps
         no_rollout_samples_eff = no_rollout_samples if no_rollout_samples is not None else self.no_rollout_samples
 
-        pair_policy = self.diffusion_module.diffusion_conditioning.pair_projection_chunk_policy
-        prepare_pair_once = (
-            self.diffusion_sampler.use_conditioning
-            and zij_trunk.is_cuda
-            and not torch.cuda.is_current_stream_capturing()
-        )
+        pair_preparation = self._pair_preparation(zij_trunk)
         prepared_zij = None
         zij_trunk_host = None
-        offload_trunk_pair = (
-            prepare_pair_once
-            and pair_policy is not None
-            and pair_policy.should_chunk_size(zij_trunk.shape[-3], zij_trunk.device)
-        )
-        if offload_trunk_pair:
+        if pair_preparation == "from_host":
             # Confidence needs the original FP32 trunk pair after sampling.
             # Stage it first, then construct conditioned rows on device from
             # the host snapshot so the two full pair tensors never overlap.
@@ -419,7 +490,7 @@ class OpenFold3(nn.Module, OptimizedModuleSetterMixin):
             )
             torch.cuda.empty_cache()
             zij_trunk = prepared_zij
-        elif prepare_pair_once:
+        elif pair_preparation == "on_device":
             # Pair conditioning is noise-independent even below the chunking
             # threshold. Keep the original trunk pair for confidence heads.
             prepared_zij = self.diffusion_module.diffusion_conditioning.prepare_pair(
@@ -504,10 +575,11 @@ class OpenFold3(nn.Module, OptimizedModuleSetterMixin):
         zij_trunk = zij_trunk.to(dtype=diffusion_dtype)
 
         # Feature extraction and diffusion use different allocation shapes.
-        # Return wholly unused trunk segments before prediction while the
-        # final trunk representations are the only live model outputs.
-        if zij_trunk.is_cuda and not torch.cuda.is_current_stream_capturing():
-            torch.cuda.empty_cache()
+        # For long inputs or short memory, return the allocator's unused cached
+        # memory while the final trunk representations are the only live model
+        # outputs. Staging the pair on host releases after the copy instead.
+        if self._pair_preparation(zij_trunk) != "from_host":
+            _release_trunk_cache(zij_trunk.device, zij_trunk.shape[-3])
 
         pair_holder = [zij_trunk]
         del zij_trunk

@@ -1054,7 +1054,7 @@ def test_op_takes_out_in_place_or_apart_from_every_operand():
         H,
         "silu_gate",
     )
-    with pytest.raises(ValueError, match="activation='relu' pack"):
+    with pytest.raises(ValueError, match="activation='relu', kernel_abi='sm90' pack"):
         op(z, mask, gated, EPS)
     assert op(z, mask, pack, EPS, out=z) is z
 

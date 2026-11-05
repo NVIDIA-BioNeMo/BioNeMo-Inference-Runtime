@@ -31,7 +31,7 @@ namespace bioir::cutedsl::transition_mlp_w_norm
 void bind(nb::module_& parent)
 {
   nb::module_ module = parent.def_submodule(
-    "transition_mlp_w_norm", "Direct CUDA Driver launcher for the precompiled SM90 transition with its LayerNorm");
+    "transition_mlp_w_norm", "Direct CUDA Driver launcher for the precompiled transition with its LayerNorm");
 
   nb::enum_<DType>(module, "DType").value("BFLOAT16", DType::kBFloat16);
   nb::enum_<Activation>(module, "Activation")
@@ -77,6 +77,8 @@ void bind(nb::module_& parent)
 
   /* The device ABI this launcher drives; an adapter that needs the launch layout arguments checks it. */
   module.attr("LAUNCH_ABI") = "transition_mlp_w_norm_sm90_v3";
+  module.attr("SM100_LAUNCH_ABI") = "transition_mlp_w_norm_sm100_v1";
+  module.attr("SM100_OUTPUT_LAUNCH_ABI") = "transition_mlp_w_norm_sm100_output_v2";
   module.def("kernel_specs", &kernel_specs, "Return every registered fused transition image.");
   module.def(
     "supports_layout",

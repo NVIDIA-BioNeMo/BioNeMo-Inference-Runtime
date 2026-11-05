@@ -126,6 +126,92 @@ static_assert(offsetof(SM90Params, residual) == 0x5c);
 static_assert(offsetof(SM90Params, split) == 0x60);
 static_assert(offsetof(SM90Params, tile_wgs) == 0x64);
 
+/* Blackwell transition_mlp_w_norm_sm100_v1, checked against EIATTR_KPARAM_INFO:
+ * ord 0/1: 3-byte tiled MMA states; ord 2: X atom at 0x40 (128 B);
+ * ord 3: X row extent at 0xc0 (4 B); ord 4/5: static W1/W2 atoms at
+ * 0x100/0x180 (128 B each); ord 6: raw X at 0x200 (16 B);
+ * ord 7/8: mask/vector pointers at 0x210/0x218 (8 B each);
+ * ord 9: output at 0x220 (16 B); ord 10/11: eps/residual at 0x230/0x234.
+ * W1 and W2 have static shapes, so neither has a coordinate parameter.
+ */
+/* The pinned MmaF16BF16Op builds its atom from three Boolean(false) values.
+ * PTX reads only the low bits of bytes 1 and 2 (operand negation). This
+ * kernel overwrites ACCUMULATE before every MMA, so byte 0 is never read.
+ * All-zero bytes therefore reproduce the source constructor's state.
+ */
+struct SM100TiledMmaDescriptor
+{
+  std::uint8_t fields[3]{};
+};
+
+struct SM100Params
+{
+  SM100TiledMmaDescriptor tiled_mma_g1;
+  SM100TiledMmaDescriptor tiled_mma_g2;
+  CUtensorMap x_tma;
+  CoordTensorS1 x_coord;
+  CUtensorMap w1_tma;
+  CUtensorMap w2_tma;
+  cute_tensor_s1_d0_t x;
+  std::uint64_t mask;
+  cute_tensor_s0_d0_t vec;
+  cute_tensor_s1_d0_t output;
+  float eps;
+  std::int32_t residual;
+};
+
+inline constexpr std::size_t kSM100ParameterCount = 12;
+inline constexpr std::size_t kSM100OutputParameterCount = 14;
+
+inline void pack_sm100_kernel_params(SM100Params* params, void* kernel_params[kSM100ParameterCount])
+{
+  kernel_params[0] = &params->tiled_mma_g1;
+  kernel_params[1] = &params->tiled_mma_g2;
+  kernel_params[2] = &params->x_tma;
+  kernel_params[3] = &params->x_coord;
+  kernel_params[4] = &params->w1_tma;
+  kernel_params[5] = &params->w2_tma;
+  kernel_params[6] = &params->x;
+  kernel_params[7] = &params->mask;
+  kernel_params[8] = &params->vec;
+  kernel_params[9] = &params->output;
+  kernel_params[10] = &params->eps;
+  kernel_params[11] = &params->residual;
+}
+
+/* Output ABI v2 inserts the store tensor map and its row extent after W2:
+ * ordinal 6: 128 bytes at 0x200; ordinal 7: 4 bytes at 0x280.
+ * The remaining v1 arguments move to ordinals 8..13 (0x288..0x2bc).
+ */
+inline void pack_sm100_output_kernel_params(
+  SM100Params* params,
+  CUtensorMap* output_tma,
+  CoordTensorS1* output_coord,
+  void* kernel_params[kSM100OutputParameterCount])
+{
+  void* original[kSM100ParameterCount]{};
+  pack_sm100_kernel_params(params, original);
+  for (std::size_t i = 0; i < 6; ++i)
+    kernel_params[i] = original[i];
+  kernel_params[6] = output_tma;
+  kernel_params[7] = output_coord;
+  for (std::size_t i = 6; i < kSM100ParameterCount; ++i)
+    kernel_params[i + 2] = original[i];
+}
+
+static_assert(std::is_standard_layout_v<SM100Params>);
+static_assert(sizeof(SM100TiledMmaDescriptor) == 3);
+static_assert(sizeof(CoordTensorS1) == 4);
+static_assert(sizeof(cute_tensor_s1_d0_t) == 16);
+static_assert(offsetof(SM100Params, tiled_mma_g2) == 0x3);
+/* CUDA headers may align CUtensorMap more strictly than the device bank. The
+ * Driver receives a pointer per argument, so each value's size, not this
+ * aggregate's inter-field padding, is the ABI contract.
+ */
+static_assert(sizeof(CUtensorMap) == 128);
+static_assert(alignof(CUtensorMap) >= 64);
+static_assert(sizeof(cute_tensor_s0_d0_t) == 8);
+
 } // namespace bioir::cutedsl::transition_mlp_w_norm::abi
 
 namespace bioir::cutedsl::transition_mlp_w_norm
@@ -187,7 +273,8 @@ std::uint32_t dynamic_smem_bytes(KernelConfig const& config);
  *
  * split and tile_wgs choose the launch layout, a pair KernelSpec::layouts holds; tile_wgs 0 is the CTA's every
  * warpgroup. split 1 with every warpgroup is the persistent grid, and the output of split 1 does not depend on
- * tile_wgs. A split above 1 sums the tile's partials in a fixed order, so its output is the same every launch.
+ * tile_wgs. A split above 1 sums the tile's partials in a fixed order, so its output is the same every launch. On
+ * SM100 a split counts CTA pairs: the image that takes every layout runs each row tile on a cluster of 2 split CTAs.
  */
 struct LaunchParams
 {

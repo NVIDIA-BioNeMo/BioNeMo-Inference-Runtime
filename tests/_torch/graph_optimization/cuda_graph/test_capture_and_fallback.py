@@ -112,6 +112,22 @@ def test_precision_contexts_have_independent_graph_keys() -> None:
     assert tracker.execution_counts["capture"] == 2
 
 
+def test_forcing_cubins_keys_another_graph(monkeypatch) -> None:
+    """Ops choose their CuTeDSL source or CUBIN path per call, so a graph captured under one choice
+    never replays under the other."""
+    tracker = CUDAGraphOptimizationTracker(_early_config(), nn.Linear(8, 8).cuda()).eval()
+    value = torch.randn(2, 8, device="cuda")
+    monkeypatch.delenv("CUTEDSL_FORCE_CUBIN", raising=False)
+    source_key = tracker.input_key_for_this_call(value)
+    monkeypatch.setenv("CUTEDSL_FORCE_CUBIN", "1")
+    assert tracker.input_key_for_this_call(value) != source_key
+    with torch.inference_mode():
+        tracker(value)
+        monkeypatch.setenv("CUTEDSL_FORCE_CUBIN", "0")
+        tracker(value)
+    assert tracker.execution_counts["capture"] == 2
+
+
 def test_graph_budget_evicts_old_states_but_keeps_one_graph() -> None:
     tracker = CUDAGraphOptimizationTracker(_early_config(graph_cache_budget_bytes=1), nn.ReLU().cuda()).eval()
     with torch.inference_mode():

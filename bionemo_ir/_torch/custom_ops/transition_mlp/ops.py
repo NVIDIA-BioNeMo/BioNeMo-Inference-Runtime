@@ -74,8 +74,9 @@ def get_transition_mlp_op(
 ) -> TransitionMlpOp | None:
     """Return the fused op when this build ships a kernel for the variant on the current GPU, else ``None``.
 
-    SM90 runs the TMA kernel and SM80, SM86 and SM89 the ``cp.async`` one. The kernel ships as
-    source in a private checkout and as a packaged CUBIN otherwise. Callers check
+    SM100 and SM103 run the ``tcgen05`` kernel, SM90 the TMA kernel and SM80, SM86 and SM89 the
+    ``cp.async`` one. The kernel ships as source in a private checkout and as a packaged CUBIN
+    otherwise. Callers check
     :meth:`TransitionMlpOp.accepts` before computing ``x``, and the op still returns ``None`` for a
     call it cannot run, so callers keep their own path as the fallback.
     """

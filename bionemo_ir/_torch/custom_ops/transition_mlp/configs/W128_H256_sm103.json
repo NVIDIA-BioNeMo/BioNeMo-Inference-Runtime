@@ -1,0 +1,8 @@
+{
+  "kernel_abi": "sm100",
+  "configs": {
+    "act=silu_gate|bias=0|mask=0": {"x_stages": 2, "w2_stages": 4, "gemm2_lag": 3, "first_use_loads": 1},
+    "act=silu_gate|bias=0|mask=1": {"x_stages": 2, "w2_stages": 4, "gemm2_lag": 3, "first_use_loads": 1},
+    "act=silu_gate_3way|bias=0|mask=0|res=0": {"x_stages": 2, "w2_stages": 4, "gemm2_lag": 1, "first_use_loads": 1}
+  }
+}

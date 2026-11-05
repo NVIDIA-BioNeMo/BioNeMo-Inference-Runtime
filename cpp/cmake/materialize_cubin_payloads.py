@@ -42,6 +42,7 @@ _FAMILIES = frozenset(
     {
         "adaln_layernorm_sigmoid",
         "attn_epilogue",
+        "conditioned_transition_mlp",
         "dual_gemm_x0_x1",
         "dual_gemm_x_x",
         "gated_sigmoid",
@@ -71,6 +72,7 @@ _PREVIOUS_FAMILIES = frozenset(
         "pair_weighted_averaging",
         "pairwise_attention",
         "transition_mlp",
+        "transition_mlp_w_norm",
         "triangle_attention",
         "trimul_kf_k1",
         "trimul_kf_k2",
@@ -78,8 +80,18 @@ _PREVIOUS_FAMILIES = frozenset(
         "window_attention",
     }
 )
+# Families whose images on a ``*_mask_ptr_v1`` launch ABI take the row mask as a nullable pointer, so one image
+# serves both mask states.
+_NULLABLE_MASK_FAMILIES = frozenset({"dual_gemm_x_x", "transition_mlp"})
 _BF16_ONLY_FAMILIES = frozenset(
-    {"transition_mlp", "transition_mlp_w_norm", "trimul_kf_k1", "trimul_kf_k2", "trimul_kf_k3"}
+    {
+        "conditioned_transition_mlp",
+        "transition_mlp",
+        "transition_mlp_w_norm",
+        "trimul_kf_k1",
+        "trimul_kf_k2",
+        "trimul_kf_k3",
+    }
 )
 _DTYPES = {
     "adaln_layernorm_sigmoid": frozenset({"fp16", "bf16", "fp32"}),
@@ -409,6 +421,7 @@ _FAMILY_SPECS: dict[str, _FamilySpec] = {
             "bucket",
         ),
         sm90=_Sm90Spec("enabled", ("x", "w1", "w2", "residual", "output"), rank=2),
+        sm100=_Sm100Spec("enabled", ("x", "w1", "w2"), clusters=True, ranks=(2, 4, 2)),
     ),
     # The SM90 image bulk-copies from raw addresses, not through TMA, so it records no tensor maps.
     "transition_mlp_w_norm": _FamilySpec(
@@ -430,6 +443,27 @@ _FAMILY_SPECS: dict[str, _FamilySpec] = {
             _Field("is_persistent", _BOOL, "bool is_persistent;", default=False),
         ),
         runtime_key=("is_bfloat16", "width", "hidden", "is_silu_gate", "is_persistent"),
+        sm100=_Sm100Spec("enabled", ("x", "w1", "w2"), clusters=True, ranks=(2, (3, 4), 2), optional=(("output", 2),)),
+    ),
+    # A sample-major image maps x and the output as [atoms, C, samples] (rank 3), the others as rows (rank 2).
+    "conditioned_transition_mlp": _FamilySpec(
+        fields=(
+            _Field("is_bfloat16", _BOOL, "bool is_bfloat16;"),
+            _Field("width", _POSITIVE, "std::int32_t width;"),
+            _Field("hidden", _POSITIVE, "std::int32_t hidden;"),
+            # The 3-way SwiGLU, with a second value block, rather than the 2-way one.
+            _Field("is_three_way", _BOOL, "bool is_three_way;"),
+            # Whether the image stages each atom's conditioning in shared memory.
+            _Field("cond_stage", _BOOL, "bool cond_stage;"),
+            # The samples of a sample-major image's tiles; 0 for row tiles.
+            _Field("samples", _COUNT, "std::uint32_t samples;", suffix="U"),
+            # Rows of a CTA pair's row tile, and atoms of its sample-major tile (0 for row tiles).
+            _Field("tile_m", _POSITIVE, "std::uint32_t tile_m;", suffix="U"),
+            _Field("tile_atoms", _COUNT, "std::uint32_t tile_atoms;", suffix="U"),
+            _Field("num_threads", _POSITIVE, "std::uint32_t num_threads;", suffix="U"),
+        ),
+        runtime_key=("is_bfloat16", "width", "hidden", "is_three_way", "cond_stage", "samples"),
+        sm100=_Sm100Spec("enabled", ("x", "w1", "w2", "output"), clusters=True, ranks=((2, 3), 4, 2, (2, 3))),
     ),
     "attn_epilogue": _FamilySpec(
         fields=(
@@ -645,6 +679,13 @@ _PUBLIC_ALIAS_FIELDS: dict[str, tuple[tuple[str, int | None], ...]] = {
         ("has_residual", None),
     ),
     "transition_mlp_w_norm": (("width", 1), ("hidden", 1), ("is_silu_gate", None)),
+    "conditioned_transition_mlp": (
+        ("width", 1),
+        ("hidden", 1),
+        ("is_three_way", None),
+        ("cond_stage", None),
+        ("samples", 0),
+    ),
     "triangle_attention": (("head_dim", 1), ("packed", None)),
     "attn_epilogue": (
         ("heads", 1),
@@ -1106,17 +1147,17 @@ def _runtime_keys(family: str, variant: VariantRecord) -> tuple[tuple[object, ..
     )
 
     def value(token: str, alias: Mapping[str, object], mask_override: bool | None) -> object:
-        # dual_gemm_x_x keys its nullable-mask images on a legacy field; transition_mlp's
-        # has_mask is an ordinary metadata field.
+        # A nullable-mask image claims both mask states. Otherwise dual_gemm_x_x keys its images on a
+        # legacy field; transition_mlp's has_mask is an ordinary metadata field.
+        if token == "has_mask" and mask_override is not None:
+            return mask_override
         if token == "has_mask" and family == "dual_gemm_x_x":
-            if mask_override is not None:
-                return mask_override
             return metadata["legacy_has_mask"]
         raw = alias[token[1:]] if token.startswith("@") else metadata[token]
         return tuple(cast("list[object]", raw)) if isinstance(raw, list) else raw
 
     mask_modes: tuple[bool | None, ...] = (
-        (False, True) if family == "dual_gemm_x_x" and variant.launch_abi.endswith("_mask_ptr_v1") else (None,)
+        (False, True) if family in _NULLABLE_MASK_FAMILIES and variant.launch_abi.endswith("_mask_ptr_v1") else (None,)
     )
     return tuple(
         (sm, *(value(token, alias, mask_override) for token in spec.runtime_key))

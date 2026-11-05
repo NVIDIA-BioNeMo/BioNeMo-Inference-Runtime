@@ -402,6 +402,7 @@ class DiffusionModule(nn.Module):
             buffers=buffers,
             prepared_pair_biases=diffusion_conditioning_kwargs.get("prepared_atom_enc_bias"),
             prepared_atom_to_token=diffusion_conditioning_kwargs.get("prepared_atom_to_token"),
+            prepared_transition_conds=diffusion_conditioning_kwargs.get("prepared_atom_enc_transition"),
         )
         # a: [B, multiplicity, N_res, 2 * token_s]
         # q_skip: [B, multiplicity, N_atoms, atom_s]
@@ -439,6 +440,7 @@ class DiffusionModule(nn.Module):
             buffers=buffers,
             prepared_pair_biases=diffusion_conditioning_kwargs.get("prepared_atom_dec_bias"),
             prepared_atom_to_token=diffusion_conditioning_kwargs.get("prepared_atom_to_token"),
+            prepared_transition_conds=diffusion_conditioning_kwargs.get("prepared_atom_dec_transition"),
         )
 
         return r_update, a
@@ -1322,6 +1324,12 @@ class BoltzDiffusionSampler(nn.Module):
             for name, attention in (("atom_enc_bias", atom_encoder), ("atom_dec_bias", atom_decoder)):
                 network_condition_kwargs[f"prepared_{name}"] = attention.prepare_pair_biases(
                     network_condition_kwargs[name], atom_pad_mask, attn_metadata
+                )
+            # So is the atom conditioning: project each atom layer's fused transition table once, and the layers run
+            # their transitions as one kernel.
+            for name, attention in (("atom_enc_transition", atom_encoder), ("atom_dec_transition", atom_decoder)):
+                network_condition_kwargs[f"prepared_{name}"] = attention.prepare_transition_conds(
+                    network_condition_kwargs["c"]
                 )
             # The atom-to-token map is step-invariant too: resolve its per-token
             # atom slots once instead of contracting the one-hot at every step.

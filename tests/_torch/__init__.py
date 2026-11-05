@@ -105,6 +105,7 @@ _CUTEDSL_OP_SUPPORTED_SM: "dict[str, tuple[int, ...]]" = {
     "pair_weighted_averaging": (80, 90, 100, 103),
     "pairwise_attention": (80, 86, 89, 90, 100, 103),
     "triangle_attention": (80, 86, 89, 90, 100, 103),
+    "transition_mlp": (80, 86, 89, 90, 100, 103),
 }
 
 CUTEDSL_TEST_MODES_ENV = "BIOIR_TEST_CUTEDSL_MODES"

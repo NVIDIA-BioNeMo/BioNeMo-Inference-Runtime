@@ -12,7 +12,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Weight pack, PyTorch reference and op for the SM90 transition with its LayerNorm."""
+"""Weight pack, PyTorch reference and op for the SM90 and SM100 transition with its LayerNorm."""
 
 from __future__ import annotations
 
@@ -52,6 +52,9 @@ _W1_BLOCKS = {"relu": 1, "silu_gate": 2}
 #: Per activation, up to this width the kernel reads z from registers as GEMM 1's A fragments, and W1's columns
 #: follow their order (:func:`_a_fragment_order`); the kernel's ``A_REGS_WIDTH`` is the same.
 A_REGS_WIDTH = {"relu": 128}
+#: Per activation, the widths the SM100 kernel takes. Its image is W1' and then W2, both row-major: it loads them
+#: by tensor maps, which swizzle them into shared memory.
+SM100_WIDTHS = {"relu": (64, 128, 256, 384), "silu_gate": (64, 128, 256)}
 # The kernel bulk-copies z and the weight image and stores the output 16 bytes at a time.
 _ALIGNMENT_BYTES = 16
 # One backend per SM version, so a process that drives GPUs of different SMs gets each its own configs.
@@ -139,14 +142,17 @@ class TransitionMlpWNormPack:
     """A transition's weights as the fused kernel reads them; see :func:`pack_weights`.
 
     Attributes:
-        image: bf16 ``[(blocks + 1) * width * hidden]``: W1 with the LayerNorm folded in, every row centred, and W2
-            with its rows permuted, in the kernel's consumption order and shared-memory layout. ``blocks`` is W1's
-            rows over ``hidden``: 1 for ReLU, 2 for SwiGLU.
+        image: bf16 packed W1 and W2. SM90 holds ``(blocks + 1) * width * hidden`` elements in its shared-memory
+            order, with permuted W2 rows. Blackwell holds three ``width * hidden`` matrices: ReLU stores its folded
+            W1 and a rounding correction as ``[hidden, 2 * width]``, then row-major W2; SwiGLU stores its value and
+            gate rows as ``[2 * hidden, width]``, then W2. The correction accumulates into the same FP32 GEMM1 tile.
         vec: fp32 ``[blocks * hidden + width]``: ``b1 + W1 beta`` (SwiGLU: the value half, then the gate half
             halved), then ``b2``.
         width: Feature width ``C``.
         hidden: Hidden width ``H``.
         activation: ``"relu"`` or ``"silu_gate"``.
+        kernel_abi: The kernel whose image layout ``image`` holds: ``"sm90"`` (above), or ``"sm100"``, where W1' and
+            W2 are row-major and W2's rows keep their order.
     """
 
     image: torch.Tensor
@@ -154,15 +160,18 @@ class TransitionMlpWNormPack:
     width: int
     hidden: int
     activation: str = "relu"
+    kernel_abi: str = "sm90"
     device: torch.device = field(init=False)
 
     def __post_init__(self) -> None:
         if self.activation not in _config.W1_BLOCKS:
             raise ValueError(f"TransitionMlpWNormPack has no {self.activation!r} activation")
+        if self.kernel_abi not in _config.KERNEL_ABIS.values():
+            raise ValueError(f"TransitionMlpWNormPack has no {self.kernel_abi!r} kernel layout")
         width, hidden, activation = self.width, self.hidden, self.activation
         if (
             self.image.dtype != _SUPPORTED_DTYPE
-            or self.image.shape != (_config.image_elements(width, hidden, activation),)
+            or self.image.shape != (_config.image_elements(width, hidden, activation, kernel_abi=self.kernel_abi),)
             or not self.image.is_contiguous()
             or self.vec.dtype != torch.float32
             or self.vec.shape != (_config.vec_elements(width, hidden, activation),)
@@ -176,6 +185,13 @@ class TransitionMlpWNormPack:
         object.__setattr__(self, "device", self.image.device)
 
 
+def _sm100_bias_order(folded_bias: torch.Tensor, hidden: int, activation: str) -> torch.Tensor:
+    """Interleave the biases by hidden half, lane group, block, and column pair."""
+    blocks = _W1_BLOCKS[activation]
+    halves = folded_bias.view(blocks, hidden // 32, 4, 4, 2)
+    return halves.permute(1, 3, 0, 2, 4).reshape(-1)
+
+
 @torch.no_grad()
 def pack_weights(
     norm_weight: torch.Tensor,
@@ -186,6 +202,7 @@ def pack_weights(
     b2: torch.Tensor | None,
     *,
     activation: str = "relu",
+    kernel_abi: str | None = None,
 ) -> TransitionMlpWNormPack:
     """Fold the LayerNorm into the first linear and lay both linears out for the fused kernel.
 
@@ -205,11 +222,17 @@ def pack_weights(
         b2: ``[C]`` second linear bias, or ``None``.
         activation: ``"relu"`` or ``"silu_gate"``; the kernel's weight order (:data:`IMAGE_LAYOUT`) depends on it
             and on ``C``.
+        kernel_abi: The kernel to lay the weights out for (``"sm90"`` or ``"sm100"``); by default that of the
+            weights' CUDA device, and SM90's off one.
     """
     width, hidden = w2.shape
+    if kernel_abi is None:
+        kernel_abi = _config.KERNEL_ABIS.get(_device_sm(w1.device), "sm90") if w1.is_cuda else "sm90"
+    widths = SM100_WIDTHS if kernel_abi == "sm100" else IMAGE_LAYOUT
     if (
-        activation not in IMAGE_LAYOUT
-        or width not in IMAGE_LAYOUT[activation]
+        kernel_abi not in _config.KERNEL_ABIS.values()
+        or activation not in widths
+        or width not in widths[activation]
         or hidden not in (2 * width, 4 * width)
         or w1.shape != (_W1_BLOCKS[activation] * hidden, width)
         or norm_weight.shape != (width,)
@@ -218,8 +241,8 @@ def pack_weights(
         or (b2 is not None and b2.shape != (width,))
     ):
         raise ValueError(
-            f"the fused transition packs W1 [H, C] and W2 [C, H] with C in {sorted(IMAGE_LAYOUT.get(activation, ()))} "
-            f"and H = 2 C or 4 C ({activation}), not W1 {tuple(w1.shape)} and W2 {tuple(w2.shape)}"
+            f"the fused transition packs W1 [H, C] and W2 [C, H] with C in {sorted(widths.get(activation, ()))} "
+            f"and H = 2 C or 4 C ({activation}, {kernel_abi}), not W1 {tuple(w1.shape)} and W2 {tuple(w2.shape)}"
         )
     device = w1.device
     w1d = w1.double()
@@ -231,9 +254,20 @@ def pack_weights(
     if activation == "silu_gate":
         folded = torch.cat([folded[:hidden], folded[hidden:] * 0.5])
         folded_bias = torch.cat([folded_bias[:hidden], folded_bias[hidden:] * 0.5])
-    image = _weight_image(folded, w2.to(_SUPPORTED_DTYPE), activation)
+    if kernel_abi == "sm100":
+        if activation == "relu":
+            # Recover the rounding lost when centering and folding gamma into bf16.
+            # Both terms accumulate in one fp32 GEMM1 tile, reusing the raw input.
+            exact = w1d * norm_weight.double()
+            exact = exact - exact.mean(dim=-1, keepdim=True)
+            correction = (exact - folded.double()).to(_SUPPORTED_DTYPE)
+            folded = torch.cat([folded, correction], dim=-1)
+        image = torch.cat([folded.reshape(-1), w2.to(_SUPPORTED_DTYPE).reshape(-1)]).contiguous()
+        folded_bias = _sm100_bias_order(folded_bias, hidden, activation)
+    else:
+        image = _weight_image(folded, w2.to(_SUPPORTED_DTYPE), activation)
     vec = torch.cat([folded_bias, bias2]).contiguous()
-    return TransitionMlpWNormPack(image, vec, width, hidden, activation)
+    return TransitionMlpWNormPack(image, vec, width, hidden, activation, kernel_abi)
 
 
 def transition_mlp_w_norm_reference(
@@ -287,6 +321,12 @@ class TransitionMlpWNormOp:
     width: int
     hidden: int
     activation: str = "relu"
+    # The pack fields a call checks: this op's shape, activation and kernel layout.
+    _pack_identity: tuple[int, int, str, str] = field(init=False, repr=False, compare=False)
+
+    def __post_init__(self) -> None:
+        kernel_abi = _config.KERNEL_ABIS[self.backend.sm_version]
+        object.__setattr__(self, "_pack_identity", (self.width, self.hidden, self.activation, kernel_abi))
 
     def accepts(self, z: torch.Tensor, mask: torch.Tensor | None, *, n_valid: torch.Tensor | None = None) -> bool:
         """Whether a call on ``z``, ``mask`` and ``n_valid`` can run.
@@ -294,7 +334,8 @@ class TransitionMlpWNormOp:
         ``z`` is contiguous, 16-byte aligned bf16 ``[..., width]`` on a CUDA device of the backend's SM with between 1
         and :data:`MAX_ROWS` rows. ``mask`` is ``None``, or contiguous bf16 on ``z``'s device with one value per row,
         shaped ``z.shape[:-1]`` with or without a trailing 1. With ``n_valid``, ``z`` is a square pair map
-        ``[B, N, N, width]`` with ``B <= MAX_BATCH`` and ``n_valid`` contiguous int32 ``[B]`` on its device.
+        ``[B, N, N, width]`` with ``B <= MAX_BATCH`` and ``n_valid`` contiguous int32 ``[B]`` on its device; the SM100
+        kernel takes flat rows only, so there ``n_valid`` must be ``None``.
         """
         if (
             z.dim() < 2
@@ -308,7 +349,8 @@ class TransitionMlpWNormOp:
         ):
             return False
         if n_valid is not None and not (
-            z.dim() == 4
+            self.backend.sm_version < 100
+            and z.dim() == 4
             and z.shape[0] <= MAX_BATCH
             and z.shape[1] == z.shape[2]
             and n_valid.dtype == torch.int32
@@ -365,12 +407,29 @@ class TransitionMlpWNormOp:
                 "contiguous bf16 mask with one value per row on its device or None, and, with n_valid, pair maps "
                 f"[B, N, N, {self.width}] with B <= {MAX_BATCH} and contiguous int32 n_valid [B]"
             )
-        if (pack.width, pack.hidden, pack.activation) != (self.width, self.hidden, self.activation) or (
-            pack.device != z.device
+        return self.launch(z, mask, pack, eps, residual=residual, n_valid=n_valid, out=out, layout=layout)
+
+    def launch(
+        self,
+        z: torch.Tensor,
+        mask: torch.Tensor | None,
+        pack: TransitionMlpWNormPack,
+        eps: float,
+        *,
+        residual: bool = True,
+        n_valid: torch.Tensor | None = None,
+        out: torch.Tensor | None = None,
+        layout: tuple[int, int] | None = None,
+    ) -> torch.Tensor:
+        """:meth:`__call__` for operands that :meth:`accepts` has passed, which it does not check again: a layer that
+        checks them before its own work saves the second check on every call. It still checks ``pack`` and ``out``."""
+        if (pack.width, pack.hidden, pack.activation, pack.kernel_abi) != self._pack_identity or (
+            pack.image.get_device() != z.get_device()
         ):
+            width, hidden, activation, kernel_abi = self._pack_identity
             raise ValueError(
-                f"the fused transition needs the width={self.width}, hidden={self.hidden}, "
-                f"activation={self.activation!r} pack on z's device"
+                f"the fused transition needs the width={width}, hidden={hidden}, "
+                f"activation={activation!r}, kernel_abi={kernel_abi!r} pack on z's device"
             )
         if out is None:
             out = torch.empty_like(z)
@@ -428,7 +487,7 @@ def get_transition_mlp_w_norm_op(
     """Return the fused transition when this build ships it for ``(width, hidden, activation)`` on this GPU, else
     ``None``.
 
-    A shape ships on SM90 in bf16 where a config entry declares it (see :mod:`._config`), from source in a private
+    A shape ships in bf16 where its SM's config entry declares it (see :mod:`._config`), from source in a private
     checkout and as a packaged CUBIN otherwise. ``candidates`` also returns the op for a shape whose entry is a
     candidate: built, but not yet shown to beat the path it would replace.
     """

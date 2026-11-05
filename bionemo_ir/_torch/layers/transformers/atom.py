@@ -118,6 +118,13 @@ class AtomTransformer(nn.Module):
         z = bias.view((B, 1, N // W, W, H, -1))
         return self.diffusion_transformer.prepare_pair_biases(z, mask.view(B, 1, N // W, W), attn_metadata)
 
+    def prepare_transition_conds(self, c: torch.Tensor) -> list[torch.Tensor | None] | None:
+        """Each layer's fused transition table of a rollout-invariant ``c`` ``[B, (1), N, D]``, laid out as
+        :meth:`forward` lays out ``c``; ``None`` where no layer runs fused."""
+        B, N, D = c.shape[0], c.shape[-2], c.shape[-1]
+        W = self.attn_window_queries
+        return self.diffusion_transformer.prepare_transition_conds(c.reshape(B, 1, N // W, W, D))
+
     def forward(
         self,
         q: torch.Tensor,
@@ -127,6 +134,7 @@ class AtomTransformer(nn.Module):
         attn_metadata: AttentionMetadata | None = None,
         buffers: PreallocatedBuffers | None = None,
         prepared_pair_biases: list[torch.Tensor] | None = None,
+        prepared_transition_conds: list[torch.Tensor | None] | None = None,
     ) -> torch.Tensor:
         """
         Args:
@@ -141,6 +149,9 @@ class AtomTransformer(nn.Module):
             prepared_pair_biases: list[torch.Tensor]
                 Biases from :meth:`prepare_pair_biases`; they replace ``bias`` and
                 carry the key mask.
+            prepared_transition_conds: list[torch.Tensor | None]
+                Tables from :meth:`prepare_transition_conds` of ``c``; each layer's
+                transition then runs as one kernel.
         Returns:
             torch.Tensor
                 The output tensor. Shape [B, multiplicity, N, D]
@@ -196,6 +207,7 @@ class AtomTransformer(nn.Module):
             attn_metadata=attn_metadata,
             buffers=buffers,
             prepared_pair_biases=prepared_pair_biases,
+            prepared_transition_conds=prepared_transition_conds,
         )
         a = a.view((B, multiplicity, N, -1))
         return a
@@ -283,6 +295,11 @@ class AtomAttentionEncoder(nn.Module):
         mask = atom_pad_mask.bool().to(self.atom_encoder_dtype)
         return self.atom_encoder.prepare_pair_biases(bias.to(self.atom_encoder_dtype), mask, attn_metadata)
 
+    def prepare_transition_conds(self, c: torch.Tensor) -> list[torch.Tensor | None] | None:
+        """Each atom-transformer layer's fused transition table of the rollout-invariant ``c`` :meth:`forward` would
+        receive, projected once; ``None`` where no layer runs fused."""
+        return self.atom_encoder.prepare_transition_conds(c.to(self.atom_encoder_dtype))
+
     def forward(
         self,
         atom_to_token: torch.Tensor,
@@ -295,6 +312,7 @@ class AtomAttentionEncoder(nn.Module):
         buffers: PreallocatedBuffers | None = None,
         prepared_pair_biases: list[torch.Tensor] | None = None,
         prepared_atom_to_token: dict[str, torch.Tensor] | None = None,
+        prepared_transition_conds: list[torch.Tensor | None] | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         Args:
@@ -315,6 +333,8 @@ class AtomAttentionEncoder(nn.Module):
             prepared_atom_to_token: dict[str, torch.Tensor]
                 Slots from :func:`prepare_atom_to_token`; they replace the dense
                 contraction over ``atom_to_token`` with an ordered per-token reduction.
+            prepared_transition_conds: list[torch.Tensor | None]
+                Tables from :meth:`prepare_transition_conds` of ``c``.
         Returns:
             a: torch.Tensor
                 The atom feature tensor. Shape [B, multiplicity, N_res, 2 * token_s]
@@ -359,6 +379,7 @@ class AtomAttentionEncoder(nn.Module):
             attn_metadata=attn_metadata,
             buffers=buffers,
             prepared_pair_biases=prepared_pair_biases,
+            prepared_transition_conds=prepared_transition_conds,
         )
         q = q.to(self.dtype)
         with torch.autocast("cuda", enabled=False):
@@ -459,6 +480,11 @@ class AtomAttentionDecoder(nn.Module):
         mask = atom_pad_mask.bool().to(self.atom_decoder_dtype)
         return self.atom_decoder.prepare_pair_biases(bias.to(self.atom_decoder_dtype), mask, attn_metadata)
 
+    def prepare_transition_conds(self, c: torch.Tensor) -> list[torch.Tensor | None] | None:
+        """Each atom-transformer layer's fused transition table of the rollout-invariant ``c`` :meth:`forward` would
+        receive, projected once; ``None`` where no layer runs fused."""
+        return self.atom_decoder.prepare_transition_conds(c.to(self.atom_decoder_dtype))
+
     def forward(
         self,
         atom_to_token: torch.Tensor,
@@ -471,6 +497,7 @@ class AtomAttentionDecoder(nn.Module):
         buffers: PreallocatedBuffers | None = None,
         prepared_pair_biases: list[torch.Tensor] | None = None,
         prepared_atom_to_token: dict[str, torch.Tensor] | None = None,
+        prepared_transition_conds: list[torch.Tensor | None] | None = None,
     ) -> torch.Tensor:
         """
         Args:
@@ -493,6 +520,8 @@ class AtomAttentionDecoder(nn.Module):
             prepared_atom_to_token: dict[str, torch.Tensor]
                 Slots from :func:`prepare_atom_to_token`; they replace the dense
                 contraction over ``atom_to_token`` with a per-atom gather.
+            prepared_transition_conds: list[torch.Tensor | None]
+                Tables from :meth:`prepare_transition_conds` of ``c``.
         """
         assert a.ndim == 4, "a must be 4D, shape: (B, multiplicity, N_res, 2 * token_s)"
         assert attn_metadata is not None, "Attention metadata is required for AtomAttentionDecoder"
@@ -530,6 +559,7 @@ class AtomAttentionDecoder(nn.Module):
             attn_metadata=attn_metadata,
             buffers=buffers,
             prepared_pair_biases=prepared_pair_biases,
+            prepared_transition_conds=prepared_transition_conds,
         )
         q = q.to(self.dtype)
         # [B, multiplicity, N_atoms, 3]

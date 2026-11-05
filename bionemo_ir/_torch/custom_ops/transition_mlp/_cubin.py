@@ -33,6 +33,10 @@ if TYPE_CHECKING:
     from ._config import TransitionMlpVariant
 
 
+class TransitionMlpCubinMissing(CuTeDSLKernelVariantUnavailable):
+    """The kernel library carries no image for the requested SM, variant and bucket."""
+
+
 class TransitionMlpCubinExecutable(CuTeDSLKernelLibraryExecutable):
     """Match the CuTeDSL compiled-function call ABI using the C++ launcher."""
 
@@ -60,9 +64,13 @@ class TransitionMlpCubinExecutable(CuTeDSLKernelLibraryExecutable):
                 variant.hidden,
                 bucket,
             )
+        except IndexError as error:
+            raise TransitionMlpCubinMissing(
+                f"No transition MLP CUBIN for SM{target_sm}, dtype={dtype}, {variant}, bucket={bucket}"
+            ) from error
         except (RuntimeError, TypeError, ValueError) as error:
             raise CuTeDSLKernelVariantUnavailable(
-                f"No transition MLP CUBIN for SM{target_sm}, dtype={dtype}, {variant}, bucket={bucket}"
+                f"Transition MLP CUBIN for SM{target_sm}, dtype={dtype}, {variant}, bucket={bucket} cannot launch"
             ) from error
         self._kernel_library = kernel_library
         self._launcher = launcher

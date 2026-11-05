@@ -16,7 +16,8 @@
 
 One ``configs/W{C}_H{H}_sm{sm}.json`` bundle per shape and SM declares the ``kernel_abi`` that runs it
 and maps keys to tile parameters, which the ABI's kernel takes as keyword arguments. An entry may
-name its own ``kernel_abi``. A key reads ``[S=<bucket>|]act=<activation>|bias=<0|1>|mask=<0|1>[|res=<0|1>]``:
+name its own ``kernel_abi``, and a ``min_seqlen`` below which calls keep the caller's own path,
+where that path beats the kernel on small inputs. A key reads ``[S=<bucket>|]act=<activation>|bias=<0|1>|mask=<0|1>[|res=<0|1>]``:
 
 - Without ``res``, an entry serves both residual states; an entry naming the call's state wins.
 - With ``S``, an entry is tuned for that pseudo sequence length, and a call takes the nearest
@@ -28,7 +29,11 @@ dual GEMM buckets on: ``sqrt(I * J)`` for a pair representation ``[I, J, C]``. T
 enumerates every bundle through :func:`bundle_variants`, so each image is the tile a call of its
 bucket selects. SM80, SM86 and SM89 run the SM80 kernel. SM90 runs the SM90 kernel, or the SM80
 kernel where a bundle or an entry declares it: the SM90 kernel's CTA multiplies 128 rows by every
-weight, so a call of few rows reaches few SMs.
+weight, so a call of few rows reaches few SMs. SM100 and SM103 run the SM100 kernel for SwiGLU.
+
+The SM100 kernel takes the row mask as a run-time address, so one image serves both mask states of a variant
+(:data:`RUNTIME_MASK_ABIS`): a bundle keeps an entry per mask state, each with its own ``min_seqlen``, and the two
+entries of a bucket must name the same tile.
 """
 
 from __future__ import annotations
@@ -44,9 +49,12 @@ CONFIGS_DIR = Path(__file__).with_name("configs")
 # W1 row blocks per activation, as the kernels count them: the ReLU input; the SwiGLU value and gate; the
 # 3-way SwiGLU value, gate and second value.
 ACTIVATIONS = {"relu": 1, "silu_gate": 2, "silu_gate_3way": 3}
-# Each SM's own kernel ABI, and every ABI its bundles may declare.
-KERNEL_ABIS = {80: "sm80", 86: "sm80", 89: "sm80", 90: "sm90"}
-_RUNNABLE_ABIS = {80: {"sm80"}, 86: {"sm80"}, 89: {"sm80"}, 90: {"sm90", "sm80"}}
+# Each SM's own kernel ABI, and every ABI its bundles may declare. SM103 runs the SM100 kernel's images, built for
+# sm_103a; its bundles are copies of SM100's, tiles and small-call cutoffs alike, until a B300 retunes them.
+KERNEL_ABIS = {80: "sm80", 86: "sm80", 89: "sm80", 90: "sm90", 100: "sm100", 103: "sm100"}
+_RUNNABLE_ABIS = {80: {"sm80"}, 86: {"sm80"}, 89: {"sm80"}, 90: {"sm90", "sm80"}, 100: {"sm100"}, 103: {"sm100"}}
+#: Kernel ABIs whose kernels take the row mask as a run-time address, 0 for none: one compile serves both mask states.
+RUNTIME_MASK_ABIS = frozenset({"sm100"})
 # The bucket of a size-independent entry.
 ANY_SIZE = 0
 _FILE_RE = re.compile(r"^W(?P<width>\d+)_H(?P<hidden>\d+)_sm(?P<sm>\d+)\.json$")
@@ -78,11 +86,21 @@ class ConfigKey(NamedTuple):
 
 
 class TileEntry(NamedTuple):
-    """One resolved ``configs`` entry: its key, the kernel ABI that runs it and that kernel's keyword arguments."""
+    """One resolved ``configs`` entry: its key, the kernel ABI that runs it and that kernel's keyword arguments.
+
+    ``min_seqlen`` is the smallest pseudo sequence length the entry serves; 0 serves every call.
+    """
 
     key: str
     kernel_abi: str
     tile_params: dict[str, Any]
+    min_seqlen: int = 0
+
+
+def image_variant(variant: TransitionMlpVariant, kernel_abi: str | None) -> TransitionMlpVariant:
+    """The variant ``kernel_abi`` compiles to run ``variant``: one without a mask state where the mask is a run-time
+    operand (:data:`RUNTIME_MASK_ABIS`), so both mask states share it."""
+    return variant._replace(has_mask=False) if kernel_abi in RUNTIME_MASK_ABIS else variant
 
 
 def w1_rows(variant: TransitionMlpVariant) -> int:
@@ -153,7 +171,8 @@ def _variant_entries(configs: dict[str, Any], variant: TransitionMlpVariant, ker
             continue
         tile_params = dict(tile)
         entry_abi = tile_params.pop("kernel_abi", kernel_abi)
-        group[ANY_SIZE if parsed.bucket is None else parsed.bucket] = TileEntry(key, entry_abi, tile_params)
+        min_seqlen = int(tile_params.pop("min_seqlen", 0))
+        group[ANY_SIZE if parsed.bucket is None else parsed.bucket] = TileEntry(key, entry_abi, tile_params, min_seqlen)
     entries = exact or shared
     if ANY_SIZE in entries and len(entries) > 1:
         keys = sorted(entry.key for entry in entries.values())
@@ -175,7 +194,20 @@ def bundle_variants(
             variants.add(
                 TransitionMlpVariant(parsed.activation, parsed.has_bias, parsed.has_mask, has_residual, width, hidden)
             )
-    return {variant: _variant_entries(configs, variant, kernel_abi) for variant in variants}
+    declared = {variant: _variant_entries(configs, variant, kernel_abi) for variant in variants}
+    # A run-time mask's one image runs both mask states: their entries of a bucket must name one tile.
+    tiles: dict[tuple, TileEntry] = {}
+    for variant, entries in declared.items():
+        for bucket, entry in entries.items():
+            if entry.kernel_abi not in RUNTIME_MASK_ABIS:
+                continue
+            twin = tiles.setdefault((image_variant(variant, entry.kernel_abi), bucket), entry)
+            if twin.tile_params != entry.tile_params or twin.kernel_abi != entry.kernel_abi:
+                raise ValueError(
+                    f"transition MLP {twin.key} and {entry.key} run one {entry.kernel_abi} image with the mask as an "
+                    f"operand, so they need one tile; got {twin.tile_params} and {entry.tile_params}"
+                )
+    return declared
 
 
 def _bundle(sm: int, file_name: str) -> KernelConfigBundle | None:
@@ -213,6 +245,12 @@ def kernel_abi(sm: int, variant: TransitionMlpVariant, bucket: int) -> str | Non
     """The kernel ABI that runs ``variant`` at ``bucket`` on ``sm``, or ``None`` when that entry does not ship."""
     entry = _entry(sm, variant, bucket)
     return None if entry is None else entry.kernel_abi
+
+
+def min_seqlen(sm: int, variant: TransitionMlpVariant, bucket: int) -> int:
+    """The smallest pseudo sequence length ``variant``'s entry at ``bucket`` serves on ``sm``; 0 if unshipped."""
+    entry = _entry(sm, variant, bucket)
+    return 0 if entry is None else entry.min_seqlen
 
 
 def buckets(sm: int, variant: TransitionMlpVariant) -> tuple[int, ...]:

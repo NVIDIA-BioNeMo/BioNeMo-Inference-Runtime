@@ -1,0 +1,7 @@
+{
+  "kernel_abi": "sm100",
+  "configs": {
+    "act=silu_gate": {},
+    "act=relu": {}
+  }
+}

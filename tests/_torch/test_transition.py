@@ -13,6 +13,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import os
+import subprocess
+import sys
 from dataclasses import dataclass
 
 import pytest
@@ -25,6 +27,9 @@ from test_utils.boltz.ref_layers import RefConditionedTransitionBlock
 
 from bionemo_ir._torch.custom_ops.dual_gemm_x_x import cutedsl as dual_gemm_x_x_cutedsl
 from bionemo_ir._torch.custom_ops.dual_gemm_x_x import ops as dual_gemm_x_x_ops
+from bionemo_ir._torch.graph_optimization.config import CUDAGraphOptimizationConfig, GraphOptimizationMode
+from bionemo_ir._torch.graph_optimization.region import GraphRegion
+from bionemo_ir._torch.graph_optimization.tensor_copy_utils import _copy_tensors_into
 from bionemo_ir._torch.layers.transition import ConditionedTransitionBlock, MSATransition, PairTransition, Transition
 from bionemo_ir._torch.utils import ChunkPolicy
 from bionemo_ir._torch.utils.kernel import CuTeDSLKernelLibraryExecutable
@@ -311,6 +316,10 @@ class _CountingKernel:
         self.calls += 1
         return self.op(*args, **kwargs)
 
+    def launch(self, *args, **kwargs):
+        self.calls += 1
+        return self.op.launch(*args, **kwargs)
+
 
 @pytest.mark.parametrize("batch", [1, 2])
 @pytest.mark.parametrize("normalize", [False, True])
@@ -573,3 +582,137 @@ def test_conditioned_transition_dual_gemm_runs_cubins_chosen_at_call_time(
 
     assert isinstance(dual_gemm_x_x_ops._DUAL_GEMM_XX_CUTE._last_exe, CuTeDSLKernelLibraryExecutable)
     torch.testing.assert_close(output, split, atol=2e-2, rtol=2e-2)
+
+
+@pytest.mark.parametrize("using_silu", [True, False], ids=["2way", "3way"])
+@pytest.mark.parametrize(
+    "leading_shape",
+    [(1, 5, 7, 32), (1, 5, 91, 32), (1, 2, 421, 32), (1, 1, 3, 32)],
+    ids=["sample-major-224", "sample-major-2912", "multi-tile-13472", "one-sample-96"],
+)
+def test_conditioned_transition_fused_condition_matches_unfused(
+    leading_shape: tuple[int, ...], using_silu: bool
+) -> None:
+    """With a residual of ``a`` and no mask, :meth:`fused_condition` runs the block as one kernel, for the 2-way
+    SwiGLU of OpenFold3 and Protenix and the 3-way one of Boltz.
+
+    Every sample of ``a`` takes the same per-atom conditioning, so ``s`` carries one sample.
+    """
+    torch.manual_seed(11)
+    module = (
+        ConditionedTransitionBlock(
+            dim_single=128, dim_single_cond=128, expansion_factor=2, using_silu=using_silu, dtype=torch.bfloat16
+        )
+        .cuda()
+        .eval()
+    )
+    with torch.no_grad():
+        for parameter in module.parameters():
+            parameter.normal_(mean=0.0, std=0.05)
+    a = torch.randn(*leading_shape, 128, device="cuda", dtype=torch.bfloat16)
+    s = torch.randn(1, 1, *leading_shape[2:], 128, device="cuda", dtype=torch.bfloat16)
+
+    with torch.inference_mode():
+        condition = module.fused_condition(s)
+        if condition is None:
+            pytest.skip("the fused conditioned transition does not ship for this GPU and build")
+        assert condition.shape == (s.numel() // 128, 3 * 128)
+        op = module._conditioned_op
+        fused_out = op(a, module.fused_swl_a_to_b.weight, module.b_to_a.weight, condition)
+        assert fused_out is not None
+        fused = module(a, s, residual=a, fused_condition=condition)
+        unfused = module(a, s.expand_as(a), residual=a)
+        masked = module(
+            a, s, residual=a, mask=torch.ones(s.shape[:-1], device="cuda", dtype=torch.bool), fused_condition=condition
+        )
+
+    assert torch.equal(fused, fused_out)
+    torch.testing.assert_close(fused, unfused, atol=2e-2, rtol=2e-2)
+    torch.testing.assert_close(masked, unfused, atol=2e-2, rtol=2e-2)
+
+
+def test_transition_layer_import_leaves_the_cutedsl_compiler_unloaded() -> None:
+    """Importing the transition layers loads no CuTeDSL compiler; only a source compile or cache load does."""
+    probe = "import sys, bionemo_ir._torch.layers.transition; print(sorted(m for m in sys.modules if m.startswith('cutlass')))"
+    loaded = subprocess.run([sys.executable, "-c", probe], capture_output=True, text=True, check=True).stdout
+    assert loaded.strip() == "[]", loaded
+
+
+def test_conditioned_transition_fused_table_survives_forced_cubins(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Forcing CUBINs keeps the table's structure, so it still copies into the static inputs held for an
+    earlier rollout's table; called eagerly, the block then runs the packaged kernel, the source kernel's code, or its
+    unfused path where the library has none."""
+    module = (
+        ConditionedTransitionBlock(
+            dim_single=128, dim_single_cond=128, expansion_factor=2, using_silu=True, dtype=torch.bfloat16
+        )
+        .cuda()
+        .eval()
+    )
+    if module._conditioned_op is None:
+        pytest.skip("the fused conditioned transition does not run on this GPU")
+    monkeypatch.delenv("CUTEDSL_FORCE_CUBIN", raising=False)
+    torch.manual_seed(13)
+    with torch.no_grad():
+        for parameter in module.parameters():
+            parameter.normal_(mean=0.0, std=0.05)
+    a = torch.randn(1, 5, 7, 32, 128, device="cuda", dtype=torch.bfloat16)
+    s = torch.randn(1, 1, 7, 32, 128, device="cuda", dtype=torch.bfloat16)
+
+    with torch.inference_mode():
+        static = (module.fused_condition(s),)
+        fused = module(a, s, residual=a, fused_condition=static[0])
+        monkeypatch.setenv("CUTEDSL_FORCE_CUBIN", "1")
+        packaged = module._conditioned_op.backend.ships(128, 256)
+        live = (module.fused_condition(s),)
+        _copy_tensors_into(static, live)
+        forced = module(a, s, residual=a, fused_condition=live[0])
+        unfused = module(a, s, residual=a)
+
+    assert torch.equal(forced, fused if packaged else unfused)
+
+
+class _GraphedConditionedTransition(torch.nn.Module):
+    def __init__(self, block: ConditionedTransitionBlock) -> None:
+        super().__init__()
+        self.block = block
+        config = CUDAGraphOptimizationConfig(
+            graph_optimization_mode=GraphOptimizationMode.CUDA_GRAPH_VIA_TORCH, capture_on_first_call=True
+        )
+        self.region = GraphRegion(self, "step", config)
+
+    def step(self, a: torch.Tensor, s: torch.Tensor, condition: torch.Tensor | None) -> torch.Tensor:
+        return self.block(a, s, residual=a, fused_condition=condition)
+
+
+def test_conditioned_transition_graph_recaptures_after_forcing_cubins(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A graph captured while the source kernel ran is not replayed once CUBINs are forced: the region
+    captures again and matches the forced eager call."""
+    block = (
+        ConditionedTransitionBlock(
+            dim_single=128, dim_single_cond=128, expansion_factor=2, using_silu=True, dtype=torch.bfloat16
+        )
+        .cuda()
+        .eval()
+    )
+    if block._conditioned_op is None:
+        pytest.skip("the fused conditioned transition does not run on this GPU")
+    monkeypatch.delenv("CUTEDSL_FORCE_CUBIN", raising=False)
+    torch.manual_seed(13)
+    with torch.no_grad():
+        for parameter in block.parameters():
+            parameter.normal_(mean=0.0, std=0.05)
+    graphed = _GraphedConditionedTransition(block).eval()
+    a = torch.randn(1, 5, 7, 32, 128, device="cuda", dtype=torch.bfloat16)
+    s = torch.randn(1, 1, 7, 32, 128, device="cuda", dtype=torch.bfloat16)
+
+    with torch.inference_mode():
+        graphed.region(a, s, block.fused_condition(s))
+        assert graphed.region.tracker.execution_counts["capture"] == 1
+        monkeypatch.setenv("CUTEDSL_FORCE_CUBIN", "1")
+        condition = block.fused_condition(s)
+        replayed = graphed.region(a, s, condition).clone()
+        forced = graphed.step(a, s, condition)
+
+    assert graphed.region.tracker.execution_counts["capture"] == 2
+    assert torch.equal(replayed, forced)

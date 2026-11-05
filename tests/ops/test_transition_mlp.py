@@ -25,6 +25,7 @@ from bionemo_ir._torch.custom_ops.transition_mlp import (
     transition_mlp_reference,
 )
 from bionemo_ir._torch.custom_ops.transition_mlp import _config as transition_config
+from bionemo_ir._torch.custom_ops.transition_mlp import _cubin as transition_cubin
 from bionemo_ir._torch.custom_ops.transition_mlp import cutedsl as transition_cutedsl
 from bionemo_ir._torch.custom_ops.transition_mlp import ops as transition_ops
 from bionemo_ir._torch.custom_ops.transition_mlp._config import (
@@ -39,15 +40,30 @@ from bionemo_ir._torch.custom_ops.transition_mlp._config import (
 )
 from bionemo_ir._torch.custom_ops.transition_mlp.cutedsl import TransitionMlpCuTe, TransitionMlpOp
 from bionemo_ir._torch.layers.transition import ConditionedTransitionBlock, MSATransition, PairTransition, Transition
-from bionemo_ir._torch.utils.kernel import launch_compiled_kernel
-from tests._torch import cutedsl_test_modes, require_cubin_library, run_cutedsl_test_mode, skip_if_not_sm90
+from bionemo_ir._torch.utils.kernel import (
+    CuTeDSLKernelLibraryUnavailable,
+    CuTeDSLKernelVariantUnavailable,
+    launch_compiled_kernel,
+)
+from tests._torch import (
+    SM_VERSION,
+    cutedsl_test_modes,
+    init_module_weights,
+    require_cubin_library,
+    run_cutedsl_test_mode,
+    skip_if_not_sm90,
+    skip_if_not_sm100_family,
+)
 
 _CUTEDSL_MODES = cutedsl_test_modes("bionemo_ir._torch.custom_ops.transition_mlp._source")
 _SM90_VARIANTS = sorted(shipped_variants(90))
+_SM100_VARIANTS = sorted(shipped_variants(100))
 # SM versions whose configs run the SM80 kernel; each tunes its own tile per variant.
 _SM8X = (80, 86, 89)
 # Shared memory per block each SM8x config may use: 163 KB on SM80 (A100, A30), 99 KB on SM86 and SM89.
 _SM8X_SMEM_BYTES = {80: 163 * 1024, 86: 99 * 1024, 89: 99 * 1024}
+# Shared memory per block an SM100 or SM103 config may use: the 227 KiB opt-in less the 1 KiB the runtime reserves.
+_SM100_SMEM_BYTES = 226 * 1024
 
 # (batch, tokens) whose batch * tokens**2 rows leave a partial final 128-row tile: 25 and 121
 # rows fit in one tile (the second warpgroup gets none, then some), and tails of 2, 65 and 27 rows.
@@ -120,7 +136,7 @@ def _launch_into_guarded_output(op, operands: tuple, bucket: int | None = None) 
     rows = x.numel() // width
     buffer = torch.full((rows + _GUARD_ROWS, width), float("nan"), device="cuda", dtype=torch.bfloat16)
     if bucket is None:
-        bucket = op.backend.bucket(op.variant, rows)
+        bucket = op.backend._plan(op.variant, rows)[0]
     executable = op.backend._get_or_compile(torch.bfloat16, op.variant, bucket)
     launch_compiled_kernel(
         executable,
@@ -462,7 +478,8 @@ def test_op_declines_calls_it_cannot_run():
 
 def test_three_way_op_declines_a_two_way_projection():
     """The 3-way op reads three blocks of W1 rows, so a 2-way block's two blocks keep the caller's own path."""
-    skip_if_not_sm90()
+    if SM_VERSION not in (90, 100, 103):
+        pytest.skip(f"the 3-way SwiGLU ships on SM90, SM100 and SM103 (current SM{SM_VERSION})")
     variant = TransitionMlpVariant("silu_gate_3way", False, False, False, 128, 256)
     op = get_transition_mlp_op(torch.bfloat16, **variant._asdict())
     assert op is not None
@@ -480,7 +497,7 @@ def test_three_way_op_declines_a_two_way_projection():
         TransitionMlpVariant("relu", True, True, False, 384, 768),
         TransitionMlpVariant("relu", True, True, False, 256, 768),
         TransitionMlpVariant("relu", False, True, True, 256, 512),
-        TransitionMlpVariant("silu_gate", False, False, False, 256, 512),
+        TransitionMlpVariant("silu_gate", False, False, False, 256, 768),
         TransitionMlpVariant("silu_gate_3way", False, False, True, 128, 256),
     ],
     ids=_variant_id,
@@ -500,13 +517,13 @@ def test_shipped_variants_skip_bundles_the_runtime_rejects(tmp_path, monkeypatch
         ("W128_H512_sm86.json", {"kernel_abi": "sm80"}),
         ("W64_H128_sm86.json", {"kernel_abi": "sm90"}),
         ("W64_H256_sm86.json", {"kernel_abi": "sm80", "kernel_variant": "other"}),
-        ("W64_H128_sm100.json", {"kernel_abi": "sm100"}),
+        ("W64_H128_sm120.json", {"kernel_abi": "sm100"}),
     ):
         (tmp_path / name).write_text(json.dumps({**header, "configs": configs}))
 
     shipped = {TransitionMlpVariant("relu", True, True, residual, 128, 512) for residual in (False, True)}
     assert shipped_variants(86) == shipped
-    assert shipped_variants(100) == frozenset()
+    assert shipped_variants(120) == frozenset()
     for width, hidden in ((128, 512), (64, 128), (64, 256)):
         variant = TransitionMlpVariant("relu", True, True, True, width, hidden)
         assert (get_tile_params(86, variant) is not None) == (variant in shipped)
@@ -921,3 +938,609 @@ def test_fused_transitions_replay_under_cuda_graph_capture(mode, monkeypatch):
     torch.testing.assert_close(captured_z, expected_z, atol=5e-2, rtol=2e-2)
     torch.testing.assert_close(captured_m, expected_m, atol=5e-2, rtol=2e-2)
     torch.testing.assert_close(captured_x, expected_x, atol=5e-2, rtol=2e-2)
+
+
+def _require_sm100() -> None:
+    """Skip unless this GPU runs the SM100 launch ABI."""
+    skip_if_not_sm100_family()
+
+
+def _require_sm100_cubins(*sms: int) -> None:
+    """Skip unless the kernel library carries SM100-kernel images for ``sms``: one linked from packs that predate
+    them keeps these SMs on the layers' own path."""
+    specs = require_cubin_library().transition_mlp.kernel_specs()
+    if missing := sorted(set(sms) - {spec.target_sm for spec in specs if spec.kernel_sm == 100}):
+        pytest.skip(f"this kernel library has no transition MLP CUBIN for SM{', SM'.join(map(str, missing))} yet")
+
+
+def test_sm100_ships_the_model_swiglu_shapes_on_both_family_members():
+    """SM100 and SM103 ship the same SwiGLU variants: every mask and residual state at the widths the pair, MSA and
+    template transitions and the atom transformer use, and the 3-way atom block's MLP, on the SM100 kernel at every
+    bucket. SM103's configs copy SM100's until a B300 retunes them."""
+    widths = {(64, 128), (64, 256), (128, 256), (128, 512), (256, 512), (256, 1024)}
+    expected = {
+        TransitionMlpVariant("silu_gate", False, mask, residual, width, hidden)
+        for width, hidden in widths
+        for mask in (False, True)
+        for residual in (False, True)
+    }
+    expected.add(TransitionMlpVariant("silu_gate_3way", False, False, False, 128, 256))
+    assert set(_SM100_VARIANTS) == expected
+    assert shipped_variants(103) == shipped_variants(100)
+    for sm in (100, 103):
+        for variant in _SM100_VARIANTS:
+            for bucket in buckets(sm, variant):
+                assert transition_config.kernel_abi(sm, variant, bucket) == "sm100", (sm, variant, bucket)
+
+
+def test_sm100_configs_fit_shared_memory():
+    """Every SM100 and SM103 tile fits a CTA's shared memory and names only the SM100 kernel's knobs."""
+    try:
+        source = transition_cutedsl.load_source_module(transition_cutedsl.__package__)
+    except ImportError:
+        pytest.skip("kernel sources are stripped from this build")
+
+    for sm in (100, 103):
+        for variant in _SM100_VARIANTS:
+            for bucket in buckets(sm, variant):
+                tile = get_tile_params(sm, variant, bucket)
+                knobs = {"x_stages", "w1_stages", "w2_stages", "gemm2_lag", "first_use_loads"}
+                assert set(tile) <= knobs, (sm, variant, tile)
+                kernel = source.make_kernel(variant, tile, kernel_abi="sm100")
+                smem = kernel.dynamic_smem_bytes(variant.width, variant.hidden, **tile, activation=variant.activation)
+                assert smem <= _SM100_SMEM_BYTES, (sm, variant, smem)
+
+
+@pytest.mark.parametrize(
+    "variant",
+    [
+        pytest.param(variant, marks=pytest.mark.xdist_group(f"transition-sm100-{_variant_id(variant)}"))
+        for variant in _SM100_VARIANTS
+    ],
+    ids=_variant_id,
+)
+@pytest.mark.parametrize(("batch", "tokens"), _NON_ALIGNED_TOKENS)
+@pytest.mark.parametrize("mode", _CUTEDSL_MODES)
+def test_sm100_kernel_matches_reference_on_non_aligned_tokens(mode, variant, batch, tokens, monkeypatch):
+    """Every row, including a partial last 256-row pair tile and pairs that loop over several tiles,
+    matches fp32 as closely as the unfused bf16 path; rows past the end stay untouched."""
+    _require_sm100()
+    if mode == "cubin":
+        _require_sm100_cubins(SM_VERSION)
+    op = get_transition_mlp_op(torch.bfloat16, **variant._asdict())
+    assert op is not None
+    operands = _operands(variant, batch, tokens)
+    with torch.inference_mode():
+        output = run_cutedsl_test_mode(
+            mode,
+            monkeypatch,
+            TransitionMlpCuTe,
+            transition_cutedsl,
+            lambda: _launch_into_guarded_output(op, operands),
+        )
+        _check_guarded_output(output, operands, variant)
+        if mode == "cubin":
+            assert all(ex._config.cubin.kernel_sm == 100 for ex in TransitionMlpCuTe._compiled_cache.values())
+
+
+def test_sm100_kernel_matches_reference_at_a_large_pair():
+    """The largest benchmark complex's padded pair (1600 tokens, 2.56 M rows) through the Pairformer transition
+    (C = 256, H = 1024, residual written in place): every row of the fused output stays as close to fp32 as the
+    unfused bf16 path. The reference runs in row chunks to bound its memory."""
+    _require_sm100()
+    free_bytes, _ = torch.cuda.mem_get_info()
+    if free_bytes < 16 * 2**30:
+        pytest.skip("needs about 16 GiB of free device memory")
+    variant = TransitionMlpVariant("silu_gate", False, False, True, 256, 1024)
+    op = get_transition_mlp_op(torch.bfloat16, **variant._asdict())
+    x, w1, b1, w2, b2, residual, mask = _operands(variant, 1, 1600)
+    rows = x.numel() // variant.width
+    with torch.inference_mode():
+        target = residual.clone()
+        output = op(x, w1, b1, w2, b2, target, mask, out=target)
+        assert output is not None and output.data_ptr() == target.data_ptr()
+        x_rows, residual_rows, output_rows = (t.reshape(rows, variant.width) for t in (x, residual, output))
+        fused_error = unfused_error = 0.0
+        chunk = 1 << 18
+        for start in range(0, rows, chunk):
+            part = slice(start, start + chunk)
+            reference = transition_mlp_reference(
+                x_rows[part].float(),
+                w1.float(),
+                None,
+                w2.float(),
+                None,
+                residual_rows[part].float(),
+                None,
+                activation=variant.activation,
+            )
+            unfused = transition_mlp_reference(
+                x_rows[part], w1, None, w2, None, residual_rows[part], None, activation=variant.activation
+            )
+            fused_error = max(fused_error, _max_abs_error(output_rows[part], reference))
+            unfused_error = max(unfused_error, _max_abs_error(unfused, reference))
+    assert fused_error <= 2 * unfused_error
+
+
+@pytest.mark.parametrize(("width", "hidden"), [(128, 512), (256, 1024)])
+def test_sm100_op_writes_over_its_residual(width, hidden):
+    """The in-place call the Pairformer makes: the output overwrites the residual it adds."""
+    _require_sm100()
+    variant = TransitionMlpVariant("silu_gate", False, True, True, width, hidden)
+    op = get_transition_mlp_op(torch.bfloat16, **variant._asdict())
+    x, w1, b1, w2, b2, residual, mask = _operands(variant, 1, 300)
+    reference = transition_mlp_reference(*_float((x, w1, b1, w2, b2, residual, mask)), activation=variant.activation)
+    bf16 = transition_mlp_reference(x, w1, b1, w2, b2, residual, mask, activation=variant.activation)
+    with torch.inference_mode():
+        target = residual.clone()
+        output = op(x, w1, b1, w2, b2, target, mask, out=target)
+    assert output is not None and output.data_ptr() == target.data_ptr()
+    assert _max_abs_error(output, reference) <= 2 * _max_abs_error(bf16, reference)
+
+
+def test_sm100_forced_cubin_binds_the_fused_op(monkeypatch):
+    """Layers bind the SM100 op when packaged kernels are forced."""
+    skip_if_not_sm100_family()
+    _require_sm100_cubins(SM_VERSION)
+    monkeypatch.setenv("CUTEDSL_FORCE_CUBIN", "1")
+    for width, hidden in ((64, 128), (64, 256), (128, 256), (128, 512), (256, 512), (256, 1024)):
+        layer = Transition(width, hidden, dtype=torch.bfloat16).cuda()
+        for (masked, residual), op in layer._fused_mlp_ops.items():
+            variant = TransitionMlpVariant("silu_gate", False, masked, residual, width, hidden)
+            assert (op is not None) == (variant in _SM100_VARIANTS)
+        x = torch.randn(1, 9, 9, width, device="cuda", dtype=torch.bfloat16)
+        with torch.inference_mode():
+            assert layer(x, None, residual=True).shape == x.shape
+
+
+@pytest.mark.parametrize(("width", "hidden"), [(128, 512), (256, 1024)])
+def test_sm100_layer_uses_cubins_when_forced_after_build(monkeypatch, width, hidden):
+    """An existing layer switches to its packaged kernel with identical output."""
+    _require_sm100()
+    _require_sm100_cubins(SM_VERSION)
+    torch.manual_seed(0)
+    layer = Transition(width, hidden, dtype=torch.bfloat16).cuda()
+    with torch.no_grad():
+        for parameter in layer.parameters():
+            parameter.normal_(0.0, parameter.shape[-1] ** -0.5 if parameter.ndim > 1 else 0.1)
+    ops = layer._fused_mlp_ops
+    assert all(op is not None for op in ops.values())
+    # 129 tokens: above every SM's small-call cutoff, so the fused path runs the kernel.
+    x = torch.randn(1, 129, 129, width, device="cuda", dtype=torch.bfloat16)
+    mask = (torch.rand(1, 129, 129, 1, device="cuda") > 0.2).to(torch.bfloat16)
+    with torch.inference_mode():
+        fused = layer(x.clone(), mask, residual=True, inplace=True)
+        monkeypatch.setenv("CUTEDSL_FORCE_CUBIN", "1")
+        forced = layer(x.clone(), mask, residual=True, inplace=True)
+        rebuilt = Transition(width, hidden, dtype=torch.bfloat16).cuda()
+        monkeypatch.delenv("CUTEDSL_FORCE_CUBIN", raising=False)
+        again = layer(x.clone(), mask, residual=True, inplace=True)
+    assert torch.equal(forced, fused)
+    assert all(op is not None for op in rebuilt._fused_mlp_ops.values())
+    assert torch.equal(again, fused)
+
+
+def test_sm100_layer_keeps_its_path_on_a_library_without_sm100_cubins(monkeypatch):
+    """A kernel library built before the SM100 and SM103 CUBINs shipped has no image for them. Under
+    ``CUTEDSL_FORCE_CUBIN`` a layer bound before it runs its unfused path rather than failing, and its fused
+    kernel again once the switch is cleared."""
+    _require_sm100()
+    monkeypatch.delenv("CUTEDSL_FORCE_CUBIN", raising=False)
+    torch.manual_seed(0)
+    layer = _on_transition_mlp(init_module_weights(Transition(128, 512, dtype=torch.bfloat16).cuda()))
+    ops = layer._fused_mlp_ops
+    assert all(op is not None for op in ops.values())
+    x = torch.randn(1, 129, 129, 128, device="cuda", dtype=torch.bfloat16)
+    mask = (torch.rand(1, 129, 129, 1, device="cuda") > 0.2).to(torch.bfloat16)
+
+    def library_without_sm100(*_args, **_kwargs):
+        raise transition_cubin.TransitionMlpCubinMissing("no SM100 transition MLP CUBIN")
+
+    with torch.inference_mode():
+        fused = layer(x.clone(), mask, residual=True, inplace=True)
+        layer._fused_mlp_ops = dict.fromkeys(ops)
+        unfused = layer(x.clone(), mask, residual=True, inplace=True)
+        layer._fused_mlp_ops = ops
+        with monkeypatch.context() as patch:
+            patch.setattr(transition_cutedsl, "populate_compiled_cache_from_library", library_without_sm100)
+            patch.setattr(TransitionMlpCuTe, "_compiled_cache", {})
+            patch.setenv("CUTEDSL_FORCE_CUBIN", "1")
+            forced = layer(x.clone(), mask, residual=True, inplace=True)
+            assert Transition(128, 512, dtype=torch.bfloat16).cuda()._fused_mlp_ops == dict.fromkeys(ops)
+        again = layer(x.clone(), mask, residual=True, inplace=True)
+    assert torch.isfinite(unfused).all()
+    assert torch.equal(forced, unfused)
+    assert torch.equal(again, fused)
+
+
+@pytest.mark.parametrize(
+    "fault",
+    [
+        CuTeDSLKernelLibraryUnavailable("the kernel library failed to load"),
+        CuTeDSLKernelVariantUnavailable("the CUBIN config cannot launch"),
+    ],
+    ids=["library", "config"],
+)
+def test_sm100_a_broken_kernel_library_raises_under_forced_cubins(monkeypatch, fault):
+    """Only a library without the image keeps the caller's path: one that fails to load, or whose image cannot
+    launch, is a broken installation and must not degrade silently."""
+    _require_sm100()
+    layer = _on_transition_mlp(Transition(128, 512, dtype=torch.bfloat16).cuda())
+    assert all(op is not None for op in layer._fused_mlp_ops.values())
+    # 129 tokens: above every SM's small-call cutoff, so the fused path reaches the kernel.
+    x = torch.randn(1, 129, 129, 128, device="cuda", dtype=torch.bfloat16)
+
+    def broken_library(*_args, **_kwargs):
+        raise fault
+
+    monkeypatch.setattr(transition_cutedsl, "populate_compiled_cache_from_library", broken_library)
+    monkeypatch.setattr(TransitionMlpCuTe, "_compiled_cache", {})
+    monkeypatch.setenv("CUTEDSL_FORCE_CUBIN", "1")
+    with torch.inference_mode(), pytest.raises(RuntimeError, match="CUTEDSL_FORCE_CUBIN"):
+        layer(x, None, residual=True)
+
+
+@pytest.mark.parametrize(
+    ("raised", "missing"), [(IndexError, True), (ValueError, False), (TypeError, False), (RuntimeError, False)]
+)
+def test_the_cubin_adapter_tells_a_missing_image_from_a_bad_config(raised, missing):
+    """The launcher reports a registry miss as IndexError; any other config failure is not a missing image."""
+
+    class Launcher:
+        class DType:
+            BFLOAT16 = 0
+
+        def make_kernel_config(self, *_args):
+            raise raised("make_kernel_config failed")
+
+    variant = TransitionMlpVariant("silu_gate", False, True, True, 128, 512)
+    with pytest.raises(CuTeDSLKernelVariantUnavailable) as error:
+        transition_cubin.TransitionMlpCubinExecutable(None, Launcher(), 100, torch.bfloat16, variant, 960)
+    assert isinstance(error.value, transition_cubin.TransitionMlpCubinMissing) is missing
+
+
+def test_the_launcher_reports_a_missing_image_as_index_error():
+    """The registry miss the layer fallback keys on comes from the C++ lookup, not from argument checks."""
+    _require_sm100()
+    launcher = require_cubin_library().transition_mlp
+    with pytest.raises(IndexError, match="No embedded transition MLP CUBIN"):
+        launcher.make_kernel_config(100, launcher.DType.BFLOAT16, True, False, False, False, False, 48, 96, 1)
+
+
+# (128, 256) unmasked is Boltz's pair conditioning (``PairwiseConditioning``), which ships no masked variant.
+@pytest.mark.parametrize(
+    ("width", "hidden", "masked"),
+    [(128, 512, False), (128, 512, True), (256, 1024, False), (256, 1024, True), (128, 256, False)],
+)
+def test_sm100_transition_layer_takes_the_fused_path(width, hidden, masked):
+    """``Transition`` picks the fused op on SM100 and matches its own unfused path, in place."""
+    _require_sm100()
+    torch.manual_seed(0)
+    layer = Transition(width, hidden, dtype=torch.bfloat16).cuda()
+    with torch.no_grad():
+        for parameter in layer.parameters():
+            parameter.normal_(0.0, parameter.shape[-1] ** -0.5 if parameter.ndim > 1 else 0.1)
+    assert all(layer._fused_mlp_ops[(masked, residual)] is not None for residual in (False, True))
+    # 129 tokens: above every SM's small-call cutoff, so the fused path runs the kernel.
+    x = torch.randn(1, 129, 129, width, device="cuda", dtype=torch.bfloat16)
+    mask = (torch.rand(1, 129, 129, 1, device="cuda") > 0.2).to(torch.bfloat16) if masked else None
+    with torch.inference_mode():
+        fused = layer(x.clone(), mask, residual=True, inplace=True)
+        ops = layer._fused_mlp_ops
+        layer._fused_mlp_ops = dict.fromkeys(ops)
+        unfused = layer(x.clone(), mask, residual=True, inplace=True)
+        layer._fused_mlp_ops = ops
+    update = (unfused.float() - x.float()).abs().max().item()
+    assert (fused.float() - unfused.float()).abs().max().item() <= 0.05 * max(update, 1.0)
+
+
+def test_sm100_op_declines_an_output_off_its_32_byte_alignment():
+    """The SM100 kernel stores rows in 32-byte vectors, so an output 16 bytes off that alignment keeps
+    the caller's path instead of faulting."""
+    _require_sm100()
+    variant = TransitionMlpVariant("silu_gate", False, False, True, 128, 512)
+    op = get_transition_mlp_op(torch.bfloat16, **variant._asdict())
+    # 65 tokens: above every SM's small-call cutoff for this variant.
+    x, w1, b1, w2, b2, residual, mask = _operands(variant, 1, 65)
+    storage = torch.empty(residual.numel() + 16, device="cuda", dtype=torch.bfloat16)
+    assert storage.data_ptr() % 32 == 0
+    shifted = storage[8 : 8 + residual.numel()].view_as(residual)
+    with torch.inference_mode():
+        assert op(x, w1, b1, w2, b2, residual, mask, out=shifted) is None
+        aligned = storage[16 : 16 + residual.numel()].view_as(residual)
+        assert op(x, w1, b1, w2, b2, residual, mask, out=aligned) is not None
+        torch.cuda.synchronize()
+
+
+@pytest.mark.parametrize("masked", [False, True])
+@pytest.mark.parametrize(("width", "hidden"), [(256, 512), (256, 1024), (128, 512)])
+def test_sm100_small_calls_keep_the_layer_path_where_it_is_faster(width, hidden, masked):
+    """At C = 256 the kernel streams every weight through a few CTA pairs, so calls below the config's
+    ``min_seqlen`` (set per mask variant) keep the unfused path; C = 128 serves every size. SM103 copies SM100's
+    cutoffs."""
+    _require_sm100()
+    variant = TransitionMlpVariant("silu_gate", False, masked, True, width, hidden)
+    # The smallest bucket's entry serves the small calls.
+    assert (transition_config.min_seqlen(100, variant, buckets(100, variant)[0]) > 0) == (width == 256)
+    if width == 256:
+        assert transition_config.min_seqlen(103, variant, buckets(103, variant)[0]) > 0
+    major, minor = torch.cuda.get_device_capability()
+    sm = major * 10 + minor
+    threshold = transition_config.min_seqlen(sm, variant, buckets(sm, variant)[0])
+    small, large = (threshold - 1, threshold) if threshold else (8, 64)
+    op = get_transition_mlp_op(torch.bfloat16, **variant._asdict())
+    for tokens, expected in ((small, threshold == 0), (large, True)):
+        x, w1, b1, w2, b2, residual, mask = _operands(variant, 1, tokens)
+        assert op.accepts(residual, mask, w1, b1, w2, b2) == expected, tokens
+
+
+def _atom_block(seed: int = 0, using_silu: bool = True) -> ConditionedTransitionBlock:
+    """The diffusion atom transformer's conditioned transition (Protenix-v2, OpenFold3): C = 128, 2-way SwiGLU, or
+    with ``using_silu=False`` the 3-way SwiGLU."""
+    torch.manual_seed(seed)
+    layer = ConditionedTransitionBlock(128, 128, dtype=torch.bfloat16, using_silu=using_silu).cuda()
+    with torch.no_grad():
+        for parameter in layer.parameters():
+            parameter.normal_(0.0, parameter.shape[-1] ** -0.5 if parameter.ndim > 1 else 0.1)
+    return layer
+
+
+def _dual_gemm_mlp(layer: ConditionedTransitionBlock, a: torch.Tensor) -> torch.Tensor:
+    """The block's MLP on the path it takes without the fused op: the dual GEMM's SiLU gate, then ``b_to_a``."""
+    op = layer._fused_mlp_op
+    layer._fused_mlp_op = None
+    try:
+        return layer._swiglu_mlp(a)
+    finally:
+        layer._fused_mlp_op = op
+
+
+# Atom windows of 32 rows over 5 diffusion samples (the 5SBJ, 7QSJ, 7WR3_A_C and 8IC7_A_B calls): one 256-row
+# tile per CTA pair ending in a partial one (7 and 91 windows), one pair looping over three tiles while the
+# rest run two (238), and pairs running three or four (421).
+@pytest.mark.parametrize("windows", [7, 91, 238, 421])
+def test_sm100_atom_conditioned_transition_runs_the_fused_mlp(windows):
+    """The atom transformer's SwiGLU MLP takes the fused op on SM100 and matches fp32 as closely as the dual GEMM
+    path it replaces, which rounds the hidden activation to bf16 the same way."""
+    _require_sm100()
+    layer = _atom_block()
+    assert layer._fused_mlp_op is not None and layer._dual_gemm_silu_op is not None
+    a = torch.randn(1, 5, windows, 32, 128, device="cuda", dtype=torch.bfloat16)
+    weight, projection = layer.fused_swl_a_to_b.weight, layer.b_to_a.weight
+    with torch.inference_mode():
+        assert layer._fused_mlp_op.accepts(a, None, weight, None, projection, None)
+        fused = layer._swiglu_mlp(a)
+        dual_gemm = _dual_gemm_mlp(layer, a)
+    reference = transition_mlp_reference(
+        a.float(), weight.float(), None, projection.float(), None, None, None, activation="silu_gate"
+    )
+    assert fused.shape == a.shape
+    assert _max_abs_error(fused, reference) <= 2 * _max_abs_error(dual_gemm, reference)
+
+
+def test_sm100_atom_conditioned_transition_block_matches_its_dual_gemm_path():
+    """The whole block (AdaLN, MLP, output gate, residual) agrees with the block on its dual GEMM path."""
+    _require_sm100()
+    layer = _atom_block()
+    a = torch.randn(1, 5, 29, 32, 128, device="cuda", dtype=torch.bfloat16)
+    s = torch.randn(1, 1, 29, 32, 128, device="cuda", dtype=torch.bfloat16)
+    with torch.inference_mode():
+        fused = layer(a, s, residual=a)
+        op = layer._fused_mlp_op
+        layer._fused_mlp_op = None
+        dual_gemm = layer(a, s, residual=a)
+        layer._fused_mlp_op = op
+    update = (dual_gemm.float() - a.float()).abs().max().item()
+    assert (fused.float() - dual_gemm.float()).abs().max().item() <= 0.05 * max(update, 1.0)
+
+
+def test_sm100_atom_mlp_op_runs_under_forced_cubins(monkeypatch):
+    """Forcing packaged kernels keeps the atom MLP on the fused path."""
+    _require_sm100()
+    _require_sm100_cubins(SM_VERSION)
+    layer = _atom_block()
+    op = layer._fused_mlp_op
+    a = torch.randn(1, 5, 20, 32, 128, device="cuda", dtype=torch.bfloat16)
+    weights = (layer.fused_swl_a_to_b.weight, None, layer.b_to_a.weight, None)
+    projections = []
+
+    def dual_gemm(x, weight_a, weight_b, gate):
+        # The dual GEMM ships CUBINs of its own; this test only checks that the block reaches it.
+        projections.append(gate)
+        return torch.zeros(*x.shape[:-1], layer.dim_inner, device=x.device, dtype=x.dtype)
+
+    layer._dual_gemm_silu_op = dual_gemm
+    with torch.inference_mode():
+        assert op(a, *weights, None, None) is not None
+        layer._swiglu_mlp(a)
+        assert projections == []
+        monkeypatch.setenv("CUTEDSL_FORCE_CUBIN", "1")
+        assert op(a, *weights, None, None) is not None
+        output = layer._swiglu_mlp(a)
+    assert projections == []
+    assert output.shape == a.shape
+    assert get_transition_mlp_op(torch.bfloat16, **op.variant._asdict()) is not None
+
+
+def test_sm103_images_resolve_for_every_sm103_call():
+    """SM103 runs the SM100 kernel's images, built for sm_103a. Every SM103 variant and bucket, masked and unmasked
+    calls and the 3-way SwiGLU, resolves through the C++ lookup to an SM103-target image of kernel SM100; a masked call
+    and its unmasked twin get one image. A registry lookup, so it needs no SM103 GPU."""
+    if SM_VERSION == 0:
+        pytest.skip("loading the kernel library needs the CUDA driver")
+    _require_sm100_cubins(103)
+    launcher = require_cubin_library().transition_mlp
+    variants = shipped_variants(103)
+    assert {v.has_mask for v in variants} == {False, True} and any(v.activation == "silu_gate_3way" for v in variants)
+    images = {}
+    for variant in variants:
+        for bucket in buckets(103, variant):
+            config = launcher.make_kernel_config(
+                103,
+                launcher.DType.BFLOAT16,
+                True,
+                variant.activation == "silu_gate_3way",
+                False,
+                variant.has_mask,
+                variant.has_residual,
+                variant.width,
+                variant.hidden,
+                bucket,
+            )
+            assert (config.spec.target_sm, config.spec.kernel_sm) == (103, 100), (variant, bucket)
+            assert config.spec.has_mask == variant.has_mask and config.spec.bucket == bucket
+            images.setdefault((variant._replace(has_mask=False), bucket), set()).add(config.variant_id)
+    assert all(len(ids) == 1 for ids in images.values())
+    specs = [spec for spec in launcher.kernel_specs() if spec.target_sm == 103]
+    assert {spec.kernel_sm for spec in specs} == {100} and len(specs) == len(images)
+
+
+def test_sm103_launch_passes_every_check_before_the_device_check():
+    """An SM103 image launched on another SM100-family GPU gets through the CUBIN adapter and every image and operand
+    check of the C++ launcher, and stops at the device check, for every SM103 variant: masked and unmasked calls and
+    the 3-way SwiGLU. On an SM103 GPU the CUBIN-mode reference tests launch these images instead."""
+    _require_sm100()
+    if SM_VERSION == 103:
+        pytest.skip("the CUBIN-mode reference tests launch the SM103 images on this GPU")
+    _require_sm100_cubins(103)
+    library = require_cubin_library()
+    for variant in shipped_variants(103):
+        bucket = buckets(103, variant)[0]
+        executable = transition_cubin.TransitionMlpCubinExecutable(
+            library, library.transition_mlp, 103, torch.bfloat16, variant, bucket
+        )
+        x, w1, b1, w2, b2, residual, mask = _operands(variant, 1, 17)
+        rows, width = x.numel() // variant.width, variant.width
+        out = torch.empty(rows, width, device="cuda", dtype=torch.bfloat16)
+        residual = None if residual is None else residual.reshape(rows, width)
+        mask = None if mask is None else mask.reshape(rows)
+        with pytest.raises(ValueError, match=f"selects SM103 but current device is SM{SM_VERSION}"):
+            executable(x.reshape(rows, width), w1, b1, w2, b2, residual, mask, out)
+
+
+def test_sm100_library_covers_every_tuned_config():
+    """Every SM100 and SM103 variant and bucket resolves to an SM100-kernel image, and the masked and unmasked calls of
+    a bucket resolve to the same one: the kernel takes the mask as an address. The config records the call's state."""
+    _require_sm100()
+    _require_sm100_cubins(100, 103)
+    launcher = require_cubin_library().transition_mlp
+    images = {}
+    for sm in (100, 103):
+        for variant in shipped_variants(sm):
+            for bucket in buckets(sm, variant):
+                config = launcher.make_kernel_config(
+                    sm,
+                    launcher.DType.BFLOAT16,
+                    True,
+                    variant.activation == "silu_gate_3way",
+                    False,
+                    variant.has_mask,
+                    variant.has_residual,
+                    variant.width,
+                    variant.hidden,
+                    bucket,
+                )
+                assert config.spec.kernel_sm == 100 and config.spec.has_mask == variant.has_mask
+                images.setdefault((sm, variant._replace(has_mask=False), bucket), set()).add(config.variant_id)
+    assert all(len(ids) == 1 for ids in images.values())
+    # One image per variant without its mask state and bucket; each records no compile-time mask.
+    specs = [spec for spec in launcher.kernel_specs() if spec.kernel_sm == 100]
+    assert not any(spec.has_mask for spec in specs)
+    keys = [(s.target_sm, s.width, s.hidden, s.bucket, s.is_three_way, s.has_residual) for s in specs]
+    assert len(keys) == len(set(keys)) == len(images)
+
+
+def _unfused_mlp(layer: ConditionedTransitionBlock, a: torch.Tensor) -> torch.Tensor:
+    """The block's MLP without the fused op: the projection, the Triton SwiGLU, then ``b_to_a``."""
+    op = layer._fused_mlp_op
+    layer._fused_mlp_op = None
+    try:
+        return layer._swiglu_mlp(a)
+    finally:
+        layer._fused_mlp_op = op
+
+
+# The 5SBJ, 7QSJ, 7WR3_A_C and 8IC7_A_B atom windows (see the 2-way test above).
+@pytest.mark.parametrize("windows", [7, 91, 238, 421])
+@pytest.mark.parametrize("mode", _CUTEDSL_MODES)
+def test_sm100_three_way_atom_block_runs_the_fused_mlp(mode, windows, monkeypatch):
+    """The 3-way atom block's SwiGLU MLP takes the fused op on SM100 and matches fp32 as closely as its unfused path,
+    which rounds the hidden activation to bf16 the same way."""
+    _require_sm100()
+    if mode == "cubin":
+        _require_sm100_cubins(SM_VERSION)
+    layer = _atom_block(using_silu=False)
+    assert layer._fused_mlp_op is not None and layer._fused_mlp_op.variant.activation == "silu_gate_3way"
+    a = torch.randn(1, 5, windows, 32, 128, device="cuda", dtype=torch.bfloat16)
+    weight, projection = layer.fused_swl_a_to_b.weight, layer.b_to_a.weight
+    with torch.inference_mode():
+        assert layer._fused_mlp_op.accepts(a, None, weight, None, projection, None)
+        fused = run_cutedsl_test_mode(
+            mode,
+            monkeypatch,
+            TransitionMlpCuTe,
+            transition_cutedsl,
+            lambda: layer._fused_mlp_op(a, weight, None, projection, None, None, None),
+        )
+        unfused = _unfused_mlp(layer, a)
+    reference = transition_mlp_reference(
+        a.float(), weight.float(), None, projection.float(), None, None, None, activation="silu_gate_3way"
+    )
+    assert fused.shape == a.shape
+    assert _max_abs_error(fused, reference) <= 2 * _max_abs_error(unfused, reference)
+
+
+def test_sm100_three_way_atom_block_matches_its_unfused_path():
+    """The whole 3-way block (AdaLN, MLP, output gate, residual) agrees with the block on its unfused MLP."""
+    _require_sm100()
+    layer = _atom_block(using_silu=False)
+    a = torch.randn(1, 5, 29, 32, 128, device="cuda", dtype=torch.bfloat16)
+    s = torch.randn(1, 1, 29, 32, 128, device="cuda", dtype=torch.bfloat16)
+    with torch.inference_mode():
+        fused = layer(a, s, residual=a)
+        op = layer._fused_mlp_op
+        layer._fused_mlp_op = None
+        unfused = layer(a, s, residual=a)
+        layer._fused_mlp_op = op
+    update = (unfused.float() - a.float()).abs().max().item()
+    assert (fused.float() - unfused.float()).abs().max().item() <= 0.05 * max(update, 1.0)
+
+
+@pytest.mark.parametrize("mode", _CUTEDSL_MODES)
+def test_sm100_masked_and_three_way_mlps_replay_under_cuda_graph_capture(mode, monkeypatch):
+    """The atom-row calls the SM100 kernel gained, captured with the unmasked call that shares the masked call's image:
+    the C = 128, H = 256 SwiGLU update with and without a row mask (a partial last tile) and the 3-way atom block's
+    MLP. Replays of new inputs match the layers' unfused paths."""
+    _require_sm100()
+    if mode == "cubin":
+        _require_sm100_cubins(SM_VERSION)
+    torch.manual_seed(0)
+    swiglu = _init(Transition(128, 256, dtype=torch.bfloat16, normalize=False).cuda())
+    assert all(op is not None for op in swiglu._fused_mlp_ops.values())
+    block = _atom_block(using_silu=False)
+    x = torch.randn(1, 4100, 128, device="cuda", dtype=torch.bfloat16)
+    mask = (torch.rand(1, 4100, device="cuda") > 0.3).to(torch.bfloat16)
+    a = torch.randn(1, 5, 23, 32, 128, device="cuda", dtype=torch.bfloat16)
+    static_x, static_a = x.clone(), a.clone()
+
+    def step():
+        return swiglu(static_x, mask), swiglu(static_x), block._swiglu_mlp(static_a)
+
+    with torch.inference_mode():
+        run_cutedsl_test_mode(mode, monkeypatch, TransitionMlpCuTe, transition_cutedsl, lambda: step()[0])
+        step()
+        graph = torch.cuda.CUDAGraph()
+        with torch.cuda.graph(graph):
+            masked, unmasked, three_way = step()
+        x_new, a_new = torch.randn_like(x), torch.randn_like(a)
+        static_x.copy_(x_new)
+        static_a.copy_(a_new)
+        graph.replay()
+        torch.cuda.synchronize()
+        expected_masked = swiglu._forward_impl(x_new, mask)
+        expected_unmasked = swiglu._forward_impl(x_new, None)
+        expected_three_way = _unfused_mlp(block, a_new)
+    torch.testing.assert_close(masked, expected_masked, atol=5e-2, rtol=2e-2)
+    torch.testing.assert_close(unmasked, expected_unmasked, atol=5e-2, rtol=2e-2)
+    torch.testing.assert_close(three_way, expected_three_way, atol=5e-2, rtol=2e-2)
+    assert (masked.float().abs().sum(-1) == 0).equal((mask == 0).expand_as(masked[..., 0]))

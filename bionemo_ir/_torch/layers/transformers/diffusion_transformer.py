@@ -258,6 +258,7 @@ class DiffusionTransformerLayer(nn.Module):
         attn_metadata: AttentionMetadata | None = None,
         precomputed_single_masks: PrecomputedSingleMasks | None = None,
         buffers: PreallocatedBuffers | None = None,
+        transition_cond: torch.Tensor | None = None,
         **kwargs,
     ) -> torch.Tensor:
         """Forward for a single layer.
@@ -266,6 +267,8 @@ class DiffusionTransformerLayer(nn.Module):
             a: ``[B, (mult), ..., N, C]`` token or windowed atom activations.
             s: Conditioning with ``a``'s leading dimensions, where one of them
                 may be 1 and broadcast, such as the multiplicity.
+            transition_cond: The transition's :meth:`ConditionedTransitionBlock.fused_condition`
+                of ``s``, projected once per rollout; the transition then runs as one kernel.
         """
         if self.initial_norm:
             b = self.adaln(a, s, buffers=buffers, buffer_key="dit_bsd_scratch")
@@ -285,7 +288,9 @@ class DiffusionTransformerLayer(nn.Module):
             buffers=buffers,
             residual=a,
         )
-        a = self.transition(a, s, buffers=buffers, buffer_key="dit_bsd_scratch", residual=a)
+        a = self.transition(
+            a, s, buffers=buffers, buffer_key="dit_bsd_scratch", residual=a, fused_condition=transition_cond
+        )
         if self.post_lnorm is not None:
             a = self.post_lnorm(a)
         return a
@@ -404,6 +409,15 @@ class BoltzDiffusionTransformer(_WindowAttentionLayers, nn.Module):
         biases = list(z.unbind(0)) if self.pairwise_attention_backend == "CuTeDSL" else list(z.unbind(-1))
         return _add_key_masks(self.layers, biases, mask, attn_metadata)
 
+    def prepare_transition_conds(self, s: torch.Tensor) -> list[torch.Tensor | None] | None:
+        """Each layer's fused transition table of a step-invariant ``s``
+        (:meth:`ConditionedTransitionBlock.fused_condition`), for :meth:`forward`; ``None`` where no layer has the
+        fused kernel, or ``s`` holds more than one batch item, which the table's row broadcast cannot follow."""
+        if s.shape[0] != 1:
+            return None
+        conds = [layer.transition.fused_condition(s) for layer in self.layers]
+        return conds if any(cond is not None for cond in conds) else None
+
     def forward(
         self,
         a: torch.Tensor = None,
@@ -414,9 +428,11 @@ class BoltzDiffusionTransformer(_WindowAttentionLayers, nn.Module):
         precomputed_single_masks: PrecomputedSingleMasks | None = None,
         buffers: PreallocatedBuffers | None = None,
         prepared_pair_biases: list[torch.Tensor] | None = None,
+        prepared_transition_conds: list[torch.Tensor | None] | None = None,
         **kwargs,
     ) -> torch.Tensor:
-        """Apply every layer; ``prepared_pair_biases`` from :meth:`prepare_pair_biases` replaces ``z``."""
+        """Apply every layer; ``prepared_pair_biases`` from :meth:`prepare_pair_biases` replaces ``z``, and
+        ``prepared_transition_conds`` from :meth:`prepare_transition_conds` runs each transition as one kernel."""
         biases = prepared_pair_biases if prepared_pair_biases is not None else self.prepare_pair_biases(z)
         if len(biases) != len(self.layers):
             raise ValueError("Prepared pair bias count must match transformer depth")
@@ -430,9 +446,17 @@ class BoltzDiffusionTransformer(_WindowAttentionLayers, nn.Module):
         if buffers is None and self.pairwise_attention_backend == "CuTeDSL":
             buffers = {}
 
-        for layer, bias in zip(self.layers, biases, strict=True):
+        conds = prepared_transition_conds or [None] * len(self.layers)
+        for layer, bias, cond in zip(self.layers, biases, conds, strict=True):
             a = layer(
-                a, s, bias, mask, attn_metadata, precomputed_single_masks=precomputed_single_masks, buffers=buffers
+                a,
+                s,
+                bias,
+                mask,
+                attn_metadata,
+                precomputed_single_masks=precomputed_single_masks,
+                buffers=buffers,
+                transition_cond=cond,
             )
         return a
 
@@ -687,7 +711,10 @@ def _conditioned_token_layer(
 
 
 class LocalLayerConditioning(NamedTuple):
-    """One atom layer's conditioning, projected once per rollout; ``cond`` is the blocked ``s``."""
+    """One atom layer's conditioning, projected once per rollout; ``cond`` is the blocked ``s``.
+
+    ``transition_cond`` optionally holds the fused transition table for one batch item.
+    """
 
     q_scale: torch.Tensor
     q_shift: torch.Tensor
@@ -697,6 +724,7 @@ class LocalLayerConditioning(NamedTuple):
     transition_scale: torch.Tensor
     transition_shift: torch.Tensor
     cond: torch.Tensor
+    transition_cond: torch.Tensor | None = None
 
 
 def _local_conditioning_supported(layers: nn.ModuleList) -> bool:
@@ -736,6 +764,10 @@ def _project_local_conditioning(
         q_scale, q_shift = project(attention.layer_norm_a_q, s_q)
         k_scale, k_shift = project(attention.layer_norm_a_k, s_q if layer_windowed else s_k)
         transition_scale, transition_shift = project(transition.adaln, s_q)
+        # The fused table broadcasts over samples of one batch item, as row r % atoms.
+        transition_cond = (
+            transition.fused_condition(s_q, transition_scale, transition_shift) if s_q.shape[0] == 1 else None
+        )
         conditioning.append(
             tuple(
                 LocalLayerConditioning(
@@ -747,6 +779,7 @@ def _project_local_conditioning(
                     transition_scale,
                     transition_shift,
                     s_q,
+                    transition_cond,
                 )
             )
         )
@@ -779,6 +812,10 @@ def _conditioned_local_layer(
     )
     # ConditionedTransitionBlock.forward with its AdaLN projection precomputed.
     transition = layer.transition
+    if conditioning.transition_cond is not None:
+        out = transition.run_fused(a, conditioning.transition_cond)
+        if out is not None:
+            return out
     t = transition.adaln.normalize(
         a, conditioning.transition_scale, conditioning.transition_shift, buffers=buffers, buffer_key="dit_bsd_scratch"
     )

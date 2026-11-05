@@ -21,7 +21,10 @@ from dataclasses import dataclass
 import pytest
 import torch
 
-from bionemo_ir._torch.layers.transformers.diffusion_transformer import ProtenixDiffusionTransformer
+from bionemo_ir._torch.layers.transformers.diffusion_transformer import (
+    LocalLayerConditioning,
+    ProtenixDiffusionTransformer,
+)
 from bionemo_ir.configs import DiffusionTransformerConfig
 from bionemo_ir.utils import str_dtype_to_torch
 from tests.common.test_utils.protenix.create_and_load_weights_from_protenixoss import convert_atom_transformer
@@ -118,12 +121,13 @@ def test_protenix_atom_transformer(sc: Scenario):
     assert r < tol, f"rmse_ratio={r:.3e} exceeds {tol:.0e} ({sc.dtype})"
 
 
-def test_prepared_local_conditioning_matches_the_per_layer_path():
+@pytest.mark.parametrize("dtype", ["float32", "bfloat16"])
+def test_prepared_local_conditioning_matches_the_per_layer_path(dtype: str) -> None:
     """Prepared atom conditioning reproduces the per-layer path on the same prepared biases. A mask given to forward
     takes the per-layer path, which applies it; without s, that is refused."""
     torch.manual_seed(0)
     device = torch.device("cuda")
-    sc = Scenario(n_atoms=200, n_blocks=2)
+    sc = Scenario(n_atoms=200, n_blocks=2, dtype=dtype)
     config = DiffusionTransformerConfig(
         num_blocks=sc.n_blocks,
         num_heads=sc.n_heads,
@@ -137,20 +141,38 @@ def test_prepared_local_conditioning_matches_the_per_layer_path():
         for parameter in model.parameters():
             parameter.normal_(0, 0.05)
     blocks = math.ceil(sc.n_atoms / sc.n_queries)
-    q = torch.randn(1, sc.n_atoms, sc.c_atom, device=device)
-    c = torch.randn(1, sc.n_atoms, sc.c_atom, device=device)
-    p_lm = torch.randn(1, blocks, sc.n_queries, sc.n_keys, sc.c_atompair, device=device)
+    q = torch.randn(1, sc.n_atoms, sc.c_atom, device=device, dtype=config.torch_dtype)
+    c = torch.randn(1, sc.n_atoms, sc.c_atom, device=device, dtype=config.torch_dtype)
+    p_lm = torch.randn(1, blocks, sc.n_queries, sc.n_keys, sc.c_atompair, device=device, dtype=config.torch_dtype)
     mask = torch.ones(1, sc.n_atoms, device=device)
     mask[:, -24:] = 0
     metadata = model.build_attn_metadata(blocks, sc.n_queries, sc.n_keys, device)
     window = (sc.n_queries, sc.n_keys, metadata)
     with torch.inference_mode():
-        conditioning = model.prepare_local_conditioning(c, sc.n_queries, blocks, metadata)
-        assert conditioning is not None, "the prepared path did not engage"
+        fused_conditioning = model.prepare_local_conditioning(c, sc.n_queries, blocks, metadata)
+        assert fused_conditioning is not None, "the prepared path did not engage"
+        conditioning = [
+            tuple(LocalLayerConditioning(*entry)._replace(transition_cond=None)) for entry in fused_conditioning
+        ]
         masked = model.prepare_pair_biases(p_lm.unsqueeze(1), mask, metadata)
         per_layer = model(q, c, p_lm, None, *window, prepared_pair_biases=masked)
         prepared = model(q, None, p_lm, None, *window, prepared_pair_biases=masked, prepared_conditioning=conditioning)
         torch.testing.assert_close(prepared, per_layer, rtol=1e-5, atol=1e-5)
+        fused = model(
+            q, None, p_lm, None, *window, prepared_pair_biases=masked, prepared_conditioning=fused_conditioning
+        )
+        repeated = model(
+            q,
+            None,
+            p_lm,
+            None,
+            *window,
+            prepared_pair_biases=masked,
+            prepared_conditioning=model.prepare_local_conditioning(c, sc.n_queries, blocks, metadata),
+        )
+        assert torch.equal(fused, repeated)
+        rel = ((fused - per_layer).float().abs().mean() / per_layer.float().abs().mean()).item()
+        assert rel < 0.02, f"fused atom transitions differ by mean-relative {rel:.2%} (> 2%)"
         plain = model.prepare_pair_biases(p_lm.unsqueeze(1), None, metadata)
         want = model(q, c, p_lm, mask, *window, prepared_pair_biases=plain)
         got = model(q, c, p_lm, mask, *window, prepared_pair_biases=plain, prepared_conditioning=conditioning)

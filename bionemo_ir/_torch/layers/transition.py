@@ -29,6 +29,7 @@ from collections.abc import Callable
 import torch
 import torch.nn as nn
 
+from bionemo_ir._torch.custom_ops.conditioned_transition_mlp import get_conditioned_transition_mlp_op
 from bionemo_ir._torch.custom_ops.dual_gemm_x_x import get_cute_dual_gemm_x_x_min_rows, get_cute_dual_gemm_x_x_op
 from bionemo_ir._torch.custom_ops.gated_sigmoid import get_gated_sigmoid_op
 from bionemo_ir._torch.custom_ops.transition_mlp import get_transition_mlp_op
@@ -95,6 +96,8 @@ def _row_mask(x: torch.Tensor, mask: torch.Tensor) -> torch.Tensor | None:
     the rows. ``None`` for a mask that does not hold one value per row.
     """
     rows = x.shape[:-1]
+    if mask.shape == rows and mask.dtype == x.dtype and mask.is_contiguous():
+        return mask
     if mask.ndim == x.ndim and mask.shape[-1] == 1:
         mask = mask.squeeze(-1)
     if mask.ndim != len(rows) or any(size not in (1, count) for size, count in zip(mask.shape, rows, strict=True)):
@@ -127,11 +130,12 @@ class _LayerNormFusedPath:
         self._w_norm_op = op
         self._w_norm_activation = activation
         self._w_norm_pack = self._fold_w_norm_weights()
-        self._w_norm_state = self._w_norm_weight_state()
+        self._w_norm_state = self._w_norm_weight_state(self._w_norm_parts())
         self.register_load_state_dict_post_hook(_refold_after_load_state_dict)
 
-    def _w_norm_weight_state(self) -> tuple[tuple[int, int], ...] | None:
-        """Each folded weight's address and in-place write count, or ``None`` where versions are not tracked.
+    def _w_norm_weight_state(self, parts: tuple[nn.LayerNorm, Linear, Linear]) -> tuple[tuple[int, int], ...] | None:
+        """The weights of ``parts`` (:meth:`_w_norm_parts`): each one's address and in-place write count, or ``None``
+        where versions are not tracked.
 
         A load into one child module, an in-place edit or a replaced parameter changes it. Inference tensors keep no
         version counter; for them the pack refolds only as :meth:`post_load_weights` and device moves do.
@@ -140,7 +144,7 @@ class _LayerNormFusedPath:
             return None
         state = []
         try:
-            for module in self._w_norm_parts():
+            for module in parts:
                 parameters = module._parameters  # Module.__getattr__ costs about as much as the rest of the check
                 for name in ("weight", "bias"):
                     weight = parameters.get(name)
@@ -179,7 +183,7 @@ class _LayerNormFusedPath:
     def post_load_weights(self) -> None:
         """Refold the LayerNorm-fused kernel's weights from the loaded ones."""
         self._w_norm_pack = self._fold_w_norm_weights()
-        self._w_norm_state = self._w_norm_weight_state()
+        self._w_norm_state = self._w_norm_weight_state(self._w_norm_parts())
 
     def _forward_w_norm(
         self, x: torch.Tensor, mask: torch.Tensor | None, *, residual: bool, inplace: bool = False
@@ -194,8 +198,9 @@ class _LayerNormFusedPath:
         row_mask = None if mask is None else _row_mask(x, mask)
         if (mask is not None and row_mask is None) or not op.accepts(x, row_mask):
             return None
+        parts = self._w_norm_parts()
         pack = self._w_norm_pack
-        state = self._w_norm_weight_state()
+        state = self._w_norm_weight_state(parts)
         if pack is None or pack.device != x.device or state != self._w_norm_state:
             pack = self._fold_w_norm_weights(x.device)
             if pack is None:
@@ -203,8 +208,7 @@ class _LayerNormFusedPath:
             # A fold under graph capture is filled only when the graph replays: this call uses it, later ones refold.
             if not torch.cuda.is_current_stream_capturing():
                 self._w_norm_pack, self._w_norm_state = pack, state
-        eps = self._w_norm_parts()[0].eps
-        return op(x, row_mask, pack, eps, residual=residual, out=x if residual and inplace else None)
+        return op.launch(x, row_mask, pack, parts[0].eps, residual=residual, out=x if residual and inplace else None)
 
 
 class Transition(_LayerNormFusedPath, nn.Module):
@@ -441,6 +445,42 @@ class ConditionedTransitionBlock(nn.Module):
             N=self.dim_single,
             K=self.dim_single_cond,
         )
+        self._conditioned_op = get_conditioned_transition_mlp_op(
+            dtype or torch.get_default_dtype(),
+            width=self.dim_single,
+            hidden=self.dim_inner,
+            activation="silu_gate" if using_silu else "silu_gate_3way",
+            eps=eps,
+            norm_type=norm_type,
+        )
+
+    def fused_condition(
+        self, s: torch.Tensor, scale: torch.Tensor | None = None, shift: torch.Tensor | None = None
+    ) -> torch.Tensor | None:
+        """Project a step-invariant ``s`` into the fused kernel's per-row table, or ``None`` without the kernel.
+
+        Args:
+            s: ``[..., d_cond]`` conditioning, one row per atom.
+            scale, shift: The AdaLN's ``project_condition(s)`` halves, if already projected.
+
+        Returns:
+            ``[rows, 3 d]`` contiguous ``[sigmoid(scale), shift, sigmoid(s Wo^T + bo)]`` in ``s``'s dtype, for
+            :meth:`forward`'s ``fused_condition``. It is built whenever the block has the kernel, so a captured
+            graph's inputs keep one structure even where the kernel declines a call and the block runs unfused.
+        """
+        if self._conditioned_op is None:
+            return None
+        if scale is None or shift is None:
+            scale, shift = self.adaln.project_condition(s).split([self.dim_single, self.dim_single], dim=-1)
+        gate = torch.nn.functional.linear(s, self.output_projection.weight, self.output_projection.bias)
+        cond = torch.cat([torch.sigmoid(scale), shift, torch.sigmoid(gate)], dim=-1)
+        return cond.to(s.dtype).reshape(-1, 3 * self.dim_single).contiguous()
+
+    def run_fused(self, a: torch.Tensor, fused_condition: torch.Tensor) -> torch.Tensor | None:
+        """``a + gate * MLP(AdaLN(a))`` in one kernel from :meth:`fused_condition`, or ``None`` if it can't run."""
+        if self._conditioned_op is None:
+            return None
+        return self._conditioned_op(a, self.fused_swl_a_to_b.weight, self.b_to_a.weight, fused_condition)
 
     def forward(
         self,
@@ -453,6 +493,7 @@ class ConditionedTransitionBlock(nn.Module):
         excluded: torch.Tensor | None = None,
         mask_value: torch.Tensor | None = None,
         projected_condition: torch.Tensor | None = None,
+        fused_condition: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """
         Args:
@@ -469,10 +510,17 @@ class ConditionedTransitionBlock(nn.Module):
                 precomputed likewise; the output gate then skips its cast.
             projected_condition: the AdaLN's ``project_condition(s)``,
                 precomputed.
+            fused_condition: :meth:`fused_condition` of ``s``, ``[A, 3d]``,
+                where row ``r`` of ``a`` takes row ``r % A``. With
+                ``residual`` ``a`` and no mask, the block runs as one kernel.
 
         Returns:
             a: [B, I, d]
         """
+        if fused_condition is not None and residual is a and mask is None:
+            out = self.run_fused(a, fused_condition)
+            if out is not None:
+                return out
         a = self.adaln(
             a,
             s,
@@ -504,11 +552,10 @@ class ConditionedTransitionBlock(nn.Module):
         """``b_to_a(swiglu(fused_swl_a_to_b(a)))`` on the chosen kernel path, else unfused."""
         weight = self.fused_swl_a_to_b.weight
         if self._fused_mlp_op is not None:
-            weights = (weight, None, self.b_to_a.weight, None)
-            if self._fused_mlp_op.accepts(a, None, *weights):
-                output = self._fused_mlp_op(a, *weights, None, None)
-                if output is not None:
-                    return output
+            # The op declines, with None, any call it cannot run; a is already computed, so no accepts() first.
+            output = self._fused_mlp_op(a, weight, None, self.b_to_a.weight, None, None, None)
+            if output is not None:
+                return output
         if self._dual_gemm_silu_op is not None and a.numel() >= self._dual_gemm_min_rows * self.dim_single:
             # The dual GEMM gates its first weight; the projection holds value rows, then gate rows.
             b = self._dual_gemm_silu_op(a, weight[self.dim_inner :], weight[: self.dim_inner], gate="silu")

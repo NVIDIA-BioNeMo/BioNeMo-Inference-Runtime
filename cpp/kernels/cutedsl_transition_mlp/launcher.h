@@ -191,6 +191,64 @@ static_assert(sizeof(SM90Params::num_tiles) == 0x04, "unexpected transition MLP 
 static_assert(sm90_parameter_count(true, true, true) == 14U);
 static_assert(sm90_parameter_count(false, false, false) == 9U);
 
+/* transition_mlp_sm100_mask_ptr_v1, from EIATTR_KPARAM_INFO: two 3-byte MMA
+ * records, x atom (128 B), x rows (4 B), W1 and W2 atoms (128 B each), optional
+ * residual (24 B), the row mask's address (8 B, 0 for none) and output (24 B).
+ * Static weight coordinates and layouts occupy no parameter. Without the
+ * residual, the offsets are 0x0, 0x3, 0x40, 0xc0, 0x100, 0x180, 0x200, 0x208.
+ * One image serves masked and unmasked calls. The 2-way and 3-way SwiGLU share
+ * the ABI; only W1's tensor map differs.
+ */
+struct SM100TiledMmaDescriptor
+{
+  std::uint8_t fields[3]{};
+};
+
+struct SM100Params
+{
+  SM100TiledMmaDescriptor gemm1;
+  SM100TiledMmaDescriptor gemm2;
+  CUtensorMap x_tma;
+  CoordTensorS1 x_coord;
+  CUtensorMap w1_tma;
+  CUtensorMap w2_tma;
+  cute_tensor_s1_d1_t residual;
+  std::uint64_t mask;
+  cute_tensor_s1_d1_t output;
+};
+
+constexpr std::size_t sm100_parameter_count(bool has_residual)
+{
+  return 8U + (has_residual ? 1U : 0U);
+}
+
+inline constexpr std::size_t kSM100MaxParameterCount = sm100_parameter_count(true);
+
+inline std::size_t
+pack_sm100_kernel_params(SM100Params* params, bool has_residual, void* kernel_params[kSM100MaxParameterCount])
+{
+  std::size_t count = 0;
+  kernel_params[count++] = &params->gemm1;
+  kernel_params[count++] = &params->gemm2;
+  kernel_params[count++] = &params->x_tma;
+  kernel_params[count++] = &params->x_coord;
+  kernel_params[count++] = &params->w1_tma;
+  kernel_params[count++] = &params->w2_tma;
+  if (has_residual)
+    kernel_params[count++] = &params->residual;
+  kernel_params[count++] = &params->mask;
+  kernel_params[count++] = &params->output;
+  return count;
+}
+
+static_assert(std::is_standard_layout_v<SM100Params>);
+static_assert(sizeof(SM100TiledMmaDescriptor) == 3 && alignof(SM100TiledMmaDescriptor) == 1);
+static_assert(offsetof(SM100Params, gemm2) == 3);
+static_assert(sizeof(SM100Params::x_tma) == 128 && sizeof(SM100Params::x_coord) == 4);
+static_assert(sizeof(SM100Params::residual) == 24 && sizeof(SM100Params::mask) == 8);
+static_assert(sizeof(SM100Params::output) == 24);
+static_assert(sm100_parameter_count(true) == 9U);
+
 } // namespace bioir::cutedsl::transition_mlp::abi
 
 namespace bioir::cutedsl::transition_mlp
@@ -202,7 +260,9 @@ enum class DType : std::uint8_t
 };
 
 /* Launch fields generated with the corresponding CUBIN. bucket is the pseudo sequence length the
- * image was tuned for, or 0 for an image that serves every size.
+ * image was tuned for, or 0 for an image that serves every size. An SM100 image takes the row mask's
+ * address and serves both mask states: kernel_specs() lists it without a mask, and make_kernel_config()
+ * records the requested state.
  */
 struct KernelSpec
 {

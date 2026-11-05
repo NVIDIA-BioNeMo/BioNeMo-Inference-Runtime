@@ -97,6 +97,13 @@ void bind(nb::module_& module);
 
 } // namespace bioir::cutedsl::transition_mlp
 
+namespace bioir::cutedsl::conditioned_transition_mlp
+{
+
+void bind(nb::module_& module);
+
+} // namespace bioir::cutedsl::conditioned_transition_mlp
+
 namespace bioir::cutedsl::transition_mlp_w_norm
 {
 
@@ -234,6 +241,7 @@ NB_MODULE(_cutedsl_kernels, module)
   dual_gemm_x0_x1::bind(module);
   pair_weighted_averaging::bind(module);
   transition_mlp::bind(module);
+  conditioned_transition_mlp::bind(module);
   transition_mlp_w_norm::bind(module);
   attn_epilogue::bind(module);
   trimul_kf_k1::bind(module);

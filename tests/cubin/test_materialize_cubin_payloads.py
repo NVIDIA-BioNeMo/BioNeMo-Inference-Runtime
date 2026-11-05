@@ -48,6 +48,7 @@ materializer = _load_materializer()
 
 FAMILIES = (
     "adaln_layernorm_sigmoid",
+    "conditioned_transition_mlp",
     "dual_gemm_x0_x1",
     "dual_gemm_x_x",
     "gated_sigmoid",
@@ -63,7 +64,14 @@ FAMILIES = (
     "trimul_kf_k3",
     "window_attention",
 )
-_BF16_ONLY_FAMILIES = {"transition_mlp", "transition_mlp_w_norm", "trimul_kf_k1", "trimul_kf_k2", "trimul_kf_k3"}
+_BF16_ONLY_FAMILIES = {
+    "conditioned_transition_mlp",
+    "transition_mlp",
+    "transition_mlp_w_norm",
+    "trimul_kf_k1",
+    "trimul_kf_k2",
+    "trimul_kf_k3",
+}
 # Operand names, TMA rank (per operand where they differ), whether an epilogue tile is recorded,
 # and threads per block, per native-SM90 family. The attention epilogue and transition MLP run one
 # load and two compute warpgroups; the TriMul KF K1 and K3 mix rank-2 rows with rank-3
@@ -85,9 +93,11 @@ _SM90_LAUNCH_SHAPES = {
 # attention epilogue run 2-SM UMMA on a CTA-pair cluster.
 _SM100_LAUNCH_SHAPES = {
     "attn_epilogue": (("o", "g", "w", "z", "d"), (3, 3, 2, 3, 3), True, 512),
+    "conditioned_transition_mlp": (("x", "w1", "w2", "output"), (2, 4, 2, 2), True, 512),
     "dual_gemm_x0_x1": (("x0", "x1", "w0", "w1", "residual", "output"), 2, True, 256),
     "dual_gemm_x_x": (("x", "w0", "w1", "output"), 2, True, 256),
     "pairwise_attention": (("q", "k", "v", "bias", "output"), 4, False, 512),
+    "transition_mlp": (("x", "w1", "w2"), (2, 4, 2), True, 512),
     "triangle_attention": (("q", "k", "v", "bias", "output"), 4, False, 512),
 }
 
@@ -99,6 +109,9 @@ def _stable_json(value: object) -> bytes:
 def _aliases(family: str) -> list[dict[str, object]]:
     return {
         "adaln_layernorm_sigmoid": [{"feature_dim": 128, "num_threads": 128}],
+        "conditioned_transition_mlp": [
+            {"width": 128, "hidden": 256, "is_three_way": False, "cond_stage": False, "samples": 0}
+        ],
         "dual_gemm_x0_x1": [{"K": 64, "K1": 64, "N": 32, "has_bias": False, "fused_residual": False}],
         "dual_gemm_x_x": [{"N": 32, "bucket": 64}],
         "gated_sigmoid": [{"K": 64, "N": 32, "m_bucket": 0}],
@@ -243,6 +256,7 @@ def _metadata(family: str, dtype: str, kernel_sm: int) -> dict[str, object]:
             "tile_m": 128,
             "num_threads": 384,
             "sm90_launch": _sm90_launch(family, dtype) if kernel_sm == 90 else None,
+            **({"sm100_launch": _sm100_launch(family, dtype)} if kernel_sm == 100 else {}),
         }
     elif family == "trimul_kf_k1":
         concrete = {
@@ -304,6 +318,19 @@ def _metadata(family: str, dtype: str, kernel_sm: int) -> dict[str, object]:
             "tile_j": 64,
             "num_threads": 384,
             "sm90_launch": _sm90_launch(family, dtype) if kernel_sm == 90 else None,
+            **({"sm100_launch": _sm100_launch(family, dtype)} if kernel_sm == 100 else {}),
+        }
+    elif family == "conditioned_transition_mlp":
+        concrete = {
+            "is_bfloat16": dtype == "bf16",
+            "width": 128,
+            "hidden": 256,
+            "is_three_way": False,
+            "cond_stage": False,
+            "samples": 0,
+            "tile_m": 256,
+            "tile_atoms": 0,
+            "num_threads": 512,
             **({"sm100_launch": _sm100_launch(family, dtype)} if kernel_sm == 100 else {}),
         }
     elif family == "transition_mlp_w_norm":
@@ -384,6 +411,8 @@ def _write_case(
     image: bytes | None = None,
     indexed_image: bytes | None = None,
     kernel_sm: int = 80,
+    target_sm: int | None = None,
+    launch_abi: str | None = None,
     archive_name: str | None = None,
     member_type: bytes = tarfile.REGTYPE,
     duplicate_member: bool = False,
@@ -394,8 +423,9 @@ def _write_case(
     image = image if image is not None else b"\x7fELF" + family.encode()
     indexed_image = indexed_image if indexed_image is not None else image
     image_hash = hashlib.sha256(indexed_image).hexdigest()
-    target_sm = kernel_sm if kernel_sm in {90, 100} else 80
-    target_arch = f"sm_{target_sm}a" if target_sm in {90, 100} else "sm_80"
+    if target_sm is None:
+        target_sm = kernel_sm if kernel_sm in {90, 100} else 80
+    target_arch = f"sm_{target_sm}a" if target_sm in {90, 100, 103} else "sm_80"
     dtype = "fp32" if family == "adaln_layernorm_sigmoid" else "bf16" if family in _BF16_ONLY_FAMILIES else "fp16"
     identity_spec = {"family_case": family, "kernel_sm": kernel_sm}
     canonical = {
@@ -431,7 +461,7 @@ def _write_case(
         "target_sm": target_sm,
         "target_arch": target_arch,
         "kernel_sm": kernel_sm,
-        "launch_abi": f"{family}_sm{kernel_sm}",
+        "launch_abi": launch_abi or f"{family}_sm{kernel_sm}",
         "dtype": dtype,
         "kernel_symbol": symbol_id,
         "dynamic_smem_bytes": metadata.pop("dynamic_smem_bytes"),
@@ -574,6 +604,37 @@ def test_transition_mlp_three_way_swiglu_is_a_distinct_runtime_key(tmp_path: Pat
     assert source.count('"transition_mlp_sm80"') == 2
 
 
+@pytest.mark.parametrize(
+    ("launch_abi", "kernel_sm", "both_states"),
+    [("transition_mlp_sm100_mask_ptr_v1", 100, True), ("transition_mlp_sm90_v1", 90, False)],
+    ids=["mask-pointer", "compile-time-mask"],
+)
+def test_transition_mlp_mask_pointer_images_claim_both_mask_states(
+    tmp_path: Path, launch_abi: str, kernel_sm: int, both_states: bool
+) -> None:
+    """A transition MLP image on the mask-pointer ABI runs masked and unmasked calls, so an image of the other mask state
+    beside it claims a runtime key it already holds; on a compile-time-mask ABI the two images are distinct."""
+    family = "transition_mlp"
+    index = _write_case(tmp_path / "source", family, kernel_sm=kernel_sm, launch_abi=launch_abi)
+
+    def add_mask_twin(value: dict[str, object]) -> None:
+        variants = value["variants"]
+        assert isinstance(variants, list)
+        twin = json.loads(json.dumps(variants[0]))
+        twin["runtime_metadata"]["has_mask"] = not twin["runtime_metadata"]["has_mask"]
+        twin["variant_id"] = hashlib.sha256(b"mask-twin").hexdigest()[:20]
+        variants.append(twin)
+
+    _mutate_records(index, add_mask_twin)
+    if both_states:
+        with pytest.raises(materializer.MaterializationError, match="runtime key"):
+            materializer.materialize([(family, index)], tmp_path / "build")
+        return
+    result = materializer.materialize([(family, index)], tmp_path / "build")
+    source = (result.output_dir / f"{family}_registry.cpp").read_text()
+    assert source.count(f'"{launch_abi}"') == 2
+
+
 def test_adaln_norm_kind_is_a_distinct_runtime_key(tmp_path: Path) -> None:
     family = "adaln_layernorm_sigmoid"
     index = _write_case(tmp_path / "source", family)
@@ -698,13 +759,160 @@ def test_transition_mlp_w_norm_sm90_registry_has_no_tma_metadata(
     source = (result.output_dir / f"{family}_registry.cpp").read_text()
 
     assert "SM90LaunchInfo" not in header
-    assert "TmaDescriptorInfo" not in header
+    assert "SM100LaunchInfo sm100;" in header
+    assert "TmaDescriptorInfo x;" in header and "TmaDescriptorInfo w1;" in header
+    assert "TmaDescriptorInfo w2;" in header
+    assert "CU_TENSOR_MAP_DATA_TYPE_BFLOAT16" not in source
     assert (
         "  std::int32_t width;\n  std::int32_t hidden;\n  bool is_silu_gate;\n  std::uint32_t num_threads;\n"
         "  std::uint32_t tile_m;\n  std::uint32_t ctas_per_sm;\n  std::uint32_t layouts;\n  bool is_persistent;\n"
     ) in header
     assert '"transition_mlp_w_norm_sm90"' in source
-    assert "    true,\n    384,\n    768,\n    true,\n    256U,\n    128U,\n    2U,\n    256U,\n    true,\n" in source
+    assert (
+        "    true,\n    384,\n    768,\n    true,\n    256U,\n    128U,\n    2U,\n    256U,\n    true,\n    {},\n"
+        in source
+    )
+
+
+def _normalized_transition_blackwell_metadata(is_silu_gate: bool) -> dict[str, object]:
+    """The two activation descriptor groups, independent of the private builder."""
+    width, hidden = (128, 512) if is_silu_gate else (384, 768)
+    boxes = {
+        "x": [64, 128],
+        "w1": [64, 64, 1, 1] if is_silu_gate else [64, 32, 1],
+        "w2": [64, min(width, 128) // 2],
+    }
+    descriptors = {
+        name: {
+            **_tma_descriptor("bf16", len(box)),
+            "global_dim_order": list(range(len(box))),
+            "box_dims": box,
+        }
+        for name, box in boxes.items()
+    }
+    return {
+        "dynamic_smem_bytes": 4096,
+        "non_portable_cluster_size_allowed": True,
+        "is_bfloat16": True,
+        "width": width,
+        "hidden": hidden,
+        "is_silu_gate": is_silu_gate,
+        "num_threads": 512,
+        "tile_m": 256,
+        "ctas_per_sm": 1,
+        "layouts": 1 << 16,
+        "is_persistent": False,
+        "sm100_launch": {
+            "block_dims": [512, 1, 1],
+            "cluster_dims": [2, 1, 1],
+            "cluster_scheduling_policy": "default",
+            "tma_descriptors": descriptors,
+        },
+    }
+
+
+@pytest.mark.parametrize("target_sm", (100, 103))
+@pytest.mark.parametrize("is_silu_gate", (False, True), ids=("relu", "swiglu"))
+def test_transition_mlp_w_norm_blackwell_registry_keeps_activation_descriptor_groups(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, target_sm: int, is_silu_gate: bool
+) -> None:
+    """Native target images retain two-CTA rank-3 ReLU or rank-4 SwiGLU W1 maps."""
+    family = "transition_mlp_w_norm"
+    metadata = _normalized_transition_blackwell_metadata(is_silu_gate)
+    monkeypatch.setattr(sys.modules[__name__], "_metadata", lambda *_args: metadata.copy())
+    index = _write_case(tmp_path / "source", family, kernel_sm=100, target_sm=target_sm)
+    result = materializer.materialize([(family, index)], tmp_path / "build")
+    header = (result.output_dir / f"{family}_registry.h").read_text()
+    source = (result.output_dir / f"{family}_registry.cpp").read_text()
+
+    assert "SM90LaunchInfo" not in header
+    assert "SM100LaunchInfo sm100;" in header
+    assert "std::uint32_t cluster_dims[3];" in header
+    assert "TmaDescriptorInfo x;" in header
+    assert "TmaDescriptorInfo w1;" in header
+    assert "TmaDescriptorInfo w2;" in header
+    assert source.count("CU_TENSOR_MAP_DATA_TYPE_BFLOAT16") == 3
+    assert "{512U, 1U, 1U}" in source and "{2U, 1U, 1U}" in source
+    assert "CU_CLUSTER_SCHEDULING_POLICY_DEFAULT" in source
+    assert ("{64U, 64U, 1U, 1U, 1U}" if is_silu_gate else "{64U, 32U, 1U, 1U, 1U}") in source
+    assert f"      {target_sm},\n      100,\n" in source
+    assert '"transition_mlp_w_norm_sm100"' in source
+
+
+@pytest.mark.parametrize("samples", (0, 5))
+def test_conditioned_transition_registry_keeps_row_and_sample_major_maps(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, samples: int
+) -> None:
+    """A sample-major image maps x and the output as rank-3 [atoms, C, samples] boxes, a row-tiled one as rank 2;
+    both land in the same four-map launch record."""
+    family = "conditioned_transition_mlp"
+    rows = {**_tma_descriptor("bf16", 3), "global_dim_order": [1, 0, 2], "box_dims": [64, 24, 1]}
+    if not samples:
+        rows = {**_tma_descriptor("bf16", 2), "global_dim_order": [1, 0], "box_dims": [64, 128]}
+    metadata = _metadata(family, "bf16", 100)
+    metadata.update(samples=samples, cond_stage=bool(samples), tile_atoms=48 if samples else 0)
+    metadata["sm100_launch"]["tma_descriptors"].update(x=rows, output=rows)
+    monkeypatch.setattr(sys.modules[__name__], "_metadata", lambda *_args: metadata.copy())
+    index = _write_case(tmp_path / "source", family, kernel_sm=100)
+    result = materializer.materialize([(family, index)], tmp_path / "build")
+    header = (result.output_dir / f"{family}_registry.h").read_text()
+    source = (result.output_dir / f"{family}_registry.cpp").read_text()
+
+    for operand in ("x", "w1", "w2", "output"):
+        assert f"TmaDescriptorInfo {operand};" in header
+    assert "bool is_three_way;" in header and "bool cond_stage;" in header and "std::uint32_t samples;" in header
+    assert source.count("CU_TENSOR_MAP_DATA_TYPE_BFLOAT16") == 4
+    assert ("{64U, 24U, 1U, 1U, 1U}" if samples else "{64U, 128U, 1U, 1U, 1U}") in source
+
+
+@pytest.mark.parametrize("with_output", (False, True))
+def test_normalized_transition_optional_output_map_materializes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, with_output: bool
+) -> None:
+    metadata = _normalized_transition_blackwell_metadata(True)
+    if with_output:
+        metadata["sm100_launch"]["tma_descriptors"]["output"] = {
+            **_tma_descriptor("bf16", 2),
+            "global_dim_order": [0, 1],
+            "box_dims": [64, 32],
+        }
+    monkeypatch.setattr(sys.modules[__name__], "_metadata", lambda *_args: metadata.copy())
+    family = "transition_mlp_w_norm"
+    index = _write_case(tmp_path / "source", family, kernel_sm=100)
+    result = materializer.materialize([(family, index)], tmp_path / "build")
+    header = (result.output_dir / f"{family}_registry.h").read_text()
+    source = (result.output_dir / f"{family}_registry.cpp").read_text()
+    assert "TmaDescriptorInfo output;" in header
+    assert source.count("CU_TENSOR_MAP_DATA_TYPE_BFLOAT16") == 3 + int(with_output)
+
+
+@pytest.mark.parametrize("is_silu_gate", (False, True), ids=("relu", "swiglu"))
+@pytest.mark.parametrize("change", ("missing_launch", "missing_map", "wrong_rank", "missing_cluster", "output_rank"))
+def test_transition_mlp_w_norm_blackwell_registry_rejects_incomplete_descriptor_groups(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, is_silu_gate: bool, change: str
+) -> None:
+    """Each activation requires all three typed operand maps and the cluster fields."""
+    metadata = _normalized_transition_blackwell_metadata(is_silu_gate)
+    launch = metadata["sm100_launch"]
+    if change == "missing_launch":
+        del metadata["sm100_launch"]
+        match = "sm100_launch is required"
+    elif change == "missing_map":
+        del launch["tma_descriptors"]["w1"]
+        match = "tma_descriptors"
+    elif change == "wrong_rank":
+        launch["tma_descriptors"]["w1"] = _tma_descriptor("bf16", 2)
+        match = r"w1\.rank must be one of"
+    elif change == "output_rank":
+        launch["tma_descriptors"]["output"] = _tma_descriptor("bf16", 3)
+        match = r"output\.rank must be 2"
+    else:
+        del launch["cluster_dims"]
+        match = "cluster_dims"
+    monkeypatch.setattr(sys.modules[__name__], "_metadata", lambda *_args: metadata.copy())
+    index = _write_case(tmp_path / "source", "transition_mlp_w_norm", kernel_sm=100)
+    with pytest.raises(materializer.MaterializationError, match=match):
+        materializer.verify_packs([("transition_mlp_w_norm", index)])
 
 
 def test_transition_mlp_w_norm_records_predating_the_activation_keep_their_meaning(tmp_path: Path) -> None:
@@ -715,7 +923,10 @@ def test_transition_mlp_w_norm_records_predating_the_activation_keep_their_meani
     index = _write_case(tmp_path / "source", family, kernel_sm=90)
     result = materializer.materialize([(family, index)], tmp_path / "build")
     source = (result.output_dir / f"{family}_registry.cpp").read_text()
-    assert "    true,\n    384,\n    768,\n    false,\n    256U,\n    128U,\n    1U,\n    0U,\n    false,\n" in source
+    assert (
+        "    true,\n    384,\n    768,\n    false,\n    256U,\n    128U,\n    1U,\n    0U,\n    false,\n    {},\n"
+        in source
+    )
 
 
 def test_transition_mlp_w_norm_activation_is_a_distinct_runtime_key(tmp_path: Path) -> None:
@@ -1559,3 +1770,19 @@ def test_cli_prints_only_materialized_directory(tmp_path: Path, capsys: pytest.C
     assert status == 0
     assert Path(captured.out.strip()).is_dir()
     assert captured.err == ""
+
+
+@pytest.mark.parametrize("target_sm", [100, 103])
+def test_transition_mlp_sm100_mixed_tma_ranks(tmp_path: Path, target_sm: int) -> None:
+    family = "transition_mlp"
+    index = _write_case(tmp_path / "source", family, kernel_sm=100, target_sm=target_sm)
+    result = materializer.materialize([(family, index)], tmp_path / "build")
+    header = (result.output_dir / f"{family}_registry.h").read_text()
+    assert "SM100LaunchInfo sm100;" in header
+    assert all(f"TmaDescriptorInfo {name};" in header for name in ("x", "w1", "w2"))
+    _mutate_records(
+        index,
+        lambda value: value["variants"][0]["runtime_metadata"]["sm100_launch"]["tma_descriptors"]["w1"].update(rank=2),
+    )
+    with pytest.raises(materializer.MaterializationError, match=r"w1.rank must be 4"):
+        materializer.verify_packs([(family, index)])

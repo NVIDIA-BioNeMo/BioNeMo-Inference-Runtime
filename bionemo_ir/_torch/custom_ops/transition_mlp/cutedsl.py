@@ -37,28 +37,31 @@ from ._config import (
     TransitionMlpVariant,
     buckets,
     get_tile_params,
+    image_variant,
+    min_seqlen,
     nearest_bucket,
     pseudo_seqlen,
     shipped_variants,
     w1_rows,
 )
 from ._config import kernel_abi as tile_kernel_abi
-from ._cubin import TransitionMlpCubinExecutable
+from ._cubin import TransitionMlpCubinExecutable, TransitionMlpCubinMissing
 
 __all__ = ["TransitionMlpCuTe", "TransitionMlpOp"]
 
 _DTYPES = (torch.bfloat16,)
 # TMA and cp.async move these operands in 16-byte vectors, so base addresses and row strides need 16 bytes.
 _ROW_ALIGNMENT_BYTES = 16
+# The SM100 kernel stores each output row in 32-byte vectors.
+_OUT_ALIGNMENT_BYTES = {"sm100": 32}
+# SMs whose CUBINs shipped after earlier kernel libraries: under CUTEDSL_FORCE_CUBIN a library without
+# them keeps the caller's path rather than failing.
+_LAYER_FALLBACK_SMS = frozenset({100, 103})
 
 
-def _rows_aligned(tensor: torch.Tensor) -> bool:
+def _rows_aligned(tensor: torch.Tensor, alignment: int = _ROW_ALIGNMENT_BYTES) -> bool:
     row_bytes = tensor.stride(0) * tensor.element_size()
-    return (
-        tensor.stride(-1) == 1
-        and tensor.data_ptr() % _ROW_ALIGNMENT_BYTES == 0
-        and row_bytes % _ROW_ALIGNMENT_BYTES == 0
-    )
+    return tensor.stride(-1) == 1 and tensor.data_ptr() % alignment == 0 and row_bytes % alignment == 0
 
 
 class TransitionMlpCuTe(CuteKernelCache):
@@ -80,15 +83,25 @@ class TransitionMlpCuTe(CuteKernelCache):
             sm_version = major * 10 + minor
         self._sm_version = sm_version
         self._variants = shipped_variants(sm_version)
-        self._anchors: dict[TransitionMlpVariant, tuple[int, ...]] = {}
+        # Per variant and row count: the call's plan (:meth:`_plan`).
+        self._plans: dict[tuple[TransitionMlpVariant, int], tuple[int, bool, int]] = {}
         self._unavailable: set[tuple] = set()
 
-    def bucket(self, variant: TransitionMlpVariant, rows: int) -> int:
-        """The bucket a call of ``variant`` over ``rows`` flattened rows runs."""
-        anchors = self._anchors.get(variant)
-        if anchors is None:
-            anchors = self._anchors[variant] = buckets(self._sm_version, variant)
-        return nearest_bucket(anchors, pseudo_seqlen(rows))
+    def _plan(self, variant: TransitionMlpVariant, rows: int) -> tuple[int, bool, int]:
+        """``(bucket, served, alignment)`` for a call of ``variant`` over ``rows`` flattened rows: the bucket nearest
+        its pseudo sequence length, whether that bucket's entry serves the call (its ``min_seqlen``), and the byte
+        alignment the entry's kernel needs of the output rows."""
+        key = (variant, rows)
+        plan = self._plans.get(key)
+        if plan is None:
+            seqlen = pseudo_seqlen(rows)
+            bucket = nearest_bucket(buckets(self._sm_version, variant), seqlen)
+            served = not rows or seqlen >= min_seqlen(self._sm_version, variant, bucket)
+            alignment = _OUT_ALIGNMENT_BYTES.get(
+                tile_kernel_abi(self._sm_version, variant, bucket), _ROW_ALIGNMENT_BYTES
+            )
+            plan = self._plans[key] = (bucket, served, alignment)
+        return plan
 
     def _key(self, dtype: torch.dtype, variant: TransitionMlpVariant, bucket: int) -> tuple:
         return (self._sm_version, dtype, *variant, bucket)
@@ -109,8 +122,13 @@ class TransitionMlpCuTe(CuteKernelCache):
         anchors = buckets(self._sm_version, variant)
         if not anchors:
             return False
+        key = self._key(dtype, variant, anchors[0])
+        cached = TransitionMlpCuTe._compiled_cache.get(key)
+        if cached is not None and not isinstance(cached, CuTeDSLKernelLibraryExecutable):
+            # Compiled from source earlier in this process: not a packaged image, so it proves nothing here.
+            TransitionMlpCuTe._compiled_cache.pop(key)
         try:
-            self._load_cubin_executable(self._key(dtype, variant, anchors[0]), dtype, variant, anchors[0])
+            self._load_cubin_executable(key, dtype, variant, anchors[0])
         except (CuTeDSLKernelLibraryError, RuntimeError):
             return False
         return True
@@ -133,7 +151,8 @@ class TransitionMlpCuTe(CuteKernelCache):
                 ),
             )
         except CuTeDSLKernelLibraryError as library_error:
-            if self.force_cubin():
+            missing = isinstance(library_error, TransitionMlpCubinMissing)
+            if self.force_cubin() and not (missing and self._sm_version in _LAYER_FALLBACK_SMS):
                 raise RuntimeError(
                     f"{FORCE_CUBIN_ENV}=1 forces the transition MLP CUBIN path, but no CUBIN is "
                     f"available for SM{self._sm_version}, dtype={dtype}, {variant}, bucket={bucket}"
@@ -145,10 +164,14 @@ class TransitionMlpCuTe(CuteKernelCache):
         )
         return executable
 
-    def _get_or_compile(self, dtype: torch.dtype, variant: TransitionMlpVariant, bucket: int) -> Any:
+    def _get_or_compile(
+        self, dtype: torch.dtype, variant: TransitionMlpVariant, bucket: int, force_cubin: bool | None = None
+    ) -> Any:
+        """The executable for ``variant`` at ``bucket``; ``force_cubin`` is :meth:`force_cubin` read by the caller."""
         key = self._key(dtype, variant, bucket)
         executable = TransitionMlpCuTe._compiled_cache.get(key)
-        force_cubin = self.force_cubin()
+        if force_cubin is None:
+            force_cubin = self.force_cubin()
         if executable is not None and (not force_cubin or isinstance(executable, CuTeDSLKernelLibraryExecutable)):
             return executable
         if force_cubin:
@@ -163,17 +186,19 @@ class TransitionMlpCuTe(CuteKernelCache):
         if tile_params is None:
             raise ValueError(f"transition MLP has no SM{self._sm_version} config for {variant} at bucket {bucket}")
         kernel_abi = tile_kernel_abi(self._sm_version, variant, bucket)
-        # Buckets that share a tile share its compile.
-        disk_key = ("transition_mlp_cute_v4", *key[:-1], kernel_abi, tuple(sorted(tile_params.items())))
+        # Buckets that share a tile share its compile, and so do the mask states of a run-time-mask kernel.
+        compiled = image_variant(variant, kernel_abi)
+        tile = tuple(sorted(tile_params.items()))
+        disk_key = ("transition_mlp_cute_v4", self._sm_version, dtype, *compiled, kernel_abi, tile)
         executable = TransitionMlpCuTe._compiled_cache.get(disk_key) or self.load_from_cache(disk_key)
         if executable is None:
-            logger.info(f"CuTeDSL transition MLP: compiling kernel for SM{self._sm_version}, {variant}, {tile_params}")
+            logger.info(f"CuTeDSL transition MLP: compiling kernel for SM{self._sm_version}, {compiled}, {tile_params}")
             executable = source.compile_transition_mlp_source(
-                self.compile, cute_numeric(dtype), variant, tile_params, kernel_abi
+                self.compile, cute_numeric(dtype), compiled, tile_params, kernel_abi
             )
             self.save_to_cache(disk_key, executable)
         TransitionMlpCuTe._compiled_cache[disk_key] = executable
-        TransitionMlpCuTe._compiled_cache[key] = executable
+        executable = TransitionMlpCuTe._compiled_cache[key] = source.call_adapter(executable, kernel_abi)
         return executable
 
     def accepts(
@@ -203,6 +228,13 @@ class TransitionMlpCuTe(CuteKernelCache):
             or any((bias is not None) != variant.has_bias for bias in biases)
             or (mask is not None) != variant.has_mask
         ):
+            return False
+        rows = like.numel() // width
+        bucket, served, _ = self._plan(variant, rows)
+        if not served:
+            return False
+        # A kernel the library lacks declines before the caller computes x; keyed on the switch, as in run.
+        if rows and self._unavailable and (self.force_cubin(), dtype, *variant, bucket) in self._unavailable:
             return False
         present = [t for t in (w1, w2, *biases) if t is not None]
         if any(t.dtype != dtype or t.device != like.device or not t.is_contiguous() for t in present):
@@ -245,27 +277,26 @@ class TransitionMlpCuTe(CuteKernelCache):
         x_rows = x.reshape(rows, width)
         residual_rows = None if residual is None else residual.reshape(rows, width)
         if out is None:
-            out = torch.empty(like.shape, dtype=dtype, device=like.device)
+            out = torch.empty_like(like, memory_format=torch.contiguous_format)
         elif out.shape != like.shape or out.dtype != dtype or out.device != like.device:
             return None
         out_rows = out.view(rows, width) if out.is_contiguous() else None
-        if out_rows is None or not _rows_aligned(x_rows) or not _rows_aligned(out_rows):
+        if rows == 0:
+            return out if out_rows is not None else None
+        bucket, _, out_alignment = self._plan(variant, rows)
+        if out_rows is None or not _rows_aligned(x_rows) or not _rows_aligned(out_rows, out_alignment):
             return None
         mask_rows = None if mask is None else mask.reshape(rows).to(dtype=dtype).contiguous()
-        if rows == 0:
-            return out
 
-        bucket = self.bucket(variant, rows)
-        key = (dtype, *variant, bucket)
-        if key in self._unavailable:
-            return None
+        force_cubin = self.force_cubin()
         try:
-            executable = self._get_or_compile(dtype, variant, bucket)
+            executable = self._get_or_compile(dtype, variant, bucket, force_cubin)
         except CuTeDSLKernelLibraryError as error:
             logger.warning(
                 f"CuTeDSL transition MLP unavailable for {variant} at bucket {bucket}; using the unfused path: {error}"
             )
-            self._unavailable.add(key)
+            # Keyed on the switch too: a kernel the library lacks under it still compiles once it is cleared.
+            self._unavailable.add((force_cubin, dtype, *variant, bucket))
             return None
         # A source-backed launch takes its stream from the current device, not the operands'. Switch
         # only when they differ: an unconditional guard costs several microseconds a call.

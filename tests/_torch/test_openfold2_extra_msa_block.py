@@ -76,7 +76,7 @@ def _create_extra_msa_block(ref_module, sc, torch_dtype):
     ids=["vanilla", "cueequiv", "cutedsl_bf16"],
 )
 def test_extra_msa_block(sc: Scenario):
-    _skip_if_cutedsl(sc.triangle_attn_backend)
+    _skip_if_cutedsl(sc.triangle_attn_backend, "triangle_attention")
     torch.manual_seed(42)
     os.environ["TORCH_ALLOW_TF32_CUBLAS_OVERRIDE"] = "0"
     os.environ["NVIDIA_TF32_OVERRIDE"] = "0"
@@ -156,7 +156,7 @@ def test_extra_msa_block(sc: Scenario):
 )
 def test_extra_msa_block_precomputed_masks(sc: Scenario):
     """Outputs with precomputed masks must exactly match the original path."""
-    _skip_if_cutedsl(sc.triangle_attn_backend)
+    _skip_if_cutedsl(sc.triangle_attn_backend, "triangle_attention")
     torch.manual_seed(42)
     os.environ["TORCH_ALLOW_TF32_CUBLAS_OVERRIDE"] = "0"
     os.environ["NVIDIA_TF32_OVERRIDE"] = "0"

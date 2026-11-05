@@ -175,8 +175,9 @@ and `bionemo_ir._torch.custom_ops`). Layers wrap the same ops:
 | Attention epilogue                  | Attention gate + output projection + residual | CuTeDSL → CUBIN (bf16)                                          | 80, 86, 89, 90, 100, 103                      | [`get_attn_epilogue_op`](../../bionemo_ir/_torch/custom_ops/attn_epilogue/ops.py)                                                                                                           |
 | AdaLN (LayerNorm/RMSNorm + sigmoid) | Diffusion adaptive normalization              | CuTeDSL → CUBIN                                                 | 80, 86, 89, 90, 100, 103, 120, 121            | [`get_adaln_layernorm_sigmoid_op`](../../bionemo_ir/_torch/custom_ops/adaln_layernorm_sigmoid/ops.py)                                                                                       |
 | Fused LN + proj + moveaxis/pad      | Pair-bias LayerNorm + linear + layout         | Triton                                                          | all CUDA                                      | [`LNProjMoveaxisPad`](../../bionemo_ir/_torch/custom_ops/fused_ln_proj_moveaxis_pad.py) / [`fused_ln_proj_moveaxis_pad`](../../bionemo_ir/dsl_kernels/triton/fused_ln_proj_moveaxis_pad.py) |
-| Transition MLP                      | SwiGLU / ReLU transition, hidden kept on chip | CuTeDSL → CUBIN (bf16)                                          | 80, 86, 89, 90                                | [`get_transition_mlp_op`](../../bionemo_ir/_torch/custom_ops/transition_mlp/ops.py)                                                                                                         |
-| Transition with LayerNorm           | ReLU and SwiGLU transitions, C 64 to 384      | CuTeDSL → CUBIN (bf16)                                          | 90                                            | [`get_transition_mlp_w_norm_op`](../../bionemo_ir/_torch/custom_ops/transition_mlp_w_norm/ops.py)                                                                                           |
+| Transition MLP                      | SwiGLU / ReLU transition, hidden kept on chip | CuTeDSL → CUBIN (bf16)                                          | 80, 86, 89, 90, 100, 103                      | [`get_transition_mlp_op`](../../bionemo_ir/_torch/custom_ops/transition_mlp/ops.py)                                                                                                         |
+| Transition with LayerNorm           | ReLU and SwiGLU transitions, C 64 to 384      | CuTeDSL → CUBIN (bf16)                                          | 90, 100, 103                                  | [`get_transition_mlp_w_norm_op`](../../bionemo_ir/_torch/custom_ops/transition_mlp_w_norm/ops.py)                                                                                           |
+| Conditioned transition MLP          | Atom AdaLN + 2-/3-way SwiGLU + gate           | CuTeDSL → CUBIN (bf16); else AdaLN + transition MLP             | 100, 103                                      | [`get_conditioned_transition_mlp_op`](../../bionemo_ir/_torch/custom_ops/conditioned_transition_mlp/ops.py)                                                                                 |
 | Fused SwiGLU                        | Transition / FFN                              | Triton                                                          | all CUDA                                      | [`FusedSwiGLU`](../../bionemo_ir/dsl_kernels/triton/fused_swiglu.py) / [`fused_swiglu`](../../bionemo_ir/dsl_kernels/triton/fused_swiglu.py)                                                |
 
 On 100 and 103 the attention epilogue runs two kernels of its own, at any head
@@ -198,22 +199,45 @@ atom transformers (the shipped presets run them in bf16) with 32-dim heads in
 32-query windows over 128 keys; other calls, dtypes, and GPUs, including
 SM120 / SM121, take SDPA.
 
-A transition's SwiGLU MLP takes the first path that ships for its shape: the
-transition MLP; then, in `ConditionedTransitionBlock` only, the `x_x` dual
+A normalizing `Transition` first tries the fused LayerNorm route described
+below. Its SwiGLU MLP otherwise takes the first path that ships for its shape:
+the transition MLP; then, in `ConditionedTransitionBlock` only, the `x_x` dual
 GEMM's silu gate for the gated projection; then the Triton fused SwiGLU. On
-SM100 / SM103 the transition MLP does not ship, so `ConditionedTransitionBlock`
-projects through the Blackwell `x_x` kernels.
+SM100 / SM103 the transition MLP serves the SwiGLU `Transition` at (width,
+hidden) of (64, 128), (64, 256), (128, 256), (128, 512), (256, 512) and
+(256, 1024), masked or not, and small width-256 calls keep the unfused path,
+which is faster there. At (128, 256) it also serves the MLP of the
+atom-transformer `ConditionedTransitionBlock`: 2-way SwiGLU in OpenFold3 and
+Protenix, 3-way in Boltz-1. Other 2-way `ConditionedTransitionBlock` calls
+project through the Blackwell `x_x` kernels, and other 3-way ones run the
+Triton fused SwiGLU.
+
+On SM100 the OpenFold3 and Protenix atom transformers fuse their whole
+`ConditionedTransitionBlock` while they sample. Each rollout projects the
+block's conditioning once into a per-atom table of AdaLN scale, shift and
+output-gate values, which every diffusion step reuses. The block then runs its
+AdaLN, SwiGLU MLP, gate and residual as one bf16 kernel for a rollout of one
+batch item, with any number of samples. The kernel ships as source, not as a
+CUBIN, so released wheels run the AdaLN, transition MLP and gate separately, as
+do batches of several items and SM103 GPUs.
 
 `PairTransition`, `MSATransition`, and a `Transition` that normalizes its input
-run the LayerNorm and both linears as one `transition_mlp_w_norm` kernel on SM90
-in bf16 wherever the op ships the layer's width, hidden width, and activation.
-The kernel reads each row of the pair or MSA map once, with or without the mask
-and the residual. Each layer folds its LayerNorm into the first linear's weights
-when it is built, and again after `load_weights` or `load_state_dict`. Other
-shapes, other GPUs, and inputs the op declines, such as strided ones, take the
-LayerNorm followed by the transition MLP where it ships for the call, else by
-the layer's own linears. On SM90 the transition MLP ships only for ReLU at 256
-→ 512 and for SwiGLU at 128 → 256 without the residual.
+run the LayerNorm and both linears as one `transition_mlp_w_norm` kernel in bf16
+wherever the op ships the layer's width, hidden width, and activation. The
+kernel reads each row of the pair or MSA map once, with or without the mask and
+the residual. Each layer folds its LayerNorm into the first linear's weights
+when it is built, and again after `load_weights` or `load_state_dict`.
+
+SM100 and SM103 ship every shape and activation that SM90 ships, plus ReLU at
+256 → 512; SM103 runs SM100's configs until they are tuned on a B300. A call
+too small to fill the GPU splits each row tile's hidden width across two to
+eight CTA pairs, which sum their partial outputs in a fixed order, so every call
+size runs the kernel. Only ReLU at 384 → 768 below about 2,560 rows (N ≤ 50)
+runs slower than the unfused path would. Other shapes, other GPUs, and inputs
+the op declines, such as strided ones, take the LayerNorm followed by the
+transition MLP where it ships for the call, else by the layer's own linears. On
+SM90 the transition MLP ships only for ReLU at 256 → 512 and for SwiGLU at
+128 → 256 without the residual.
 
 An `x_x` tuning bundle may declare `min_rows`, below which the dual GEMM's fixed
 cost outweighs a separate projection and SwiGLU pass. On SM100 / SM103 the

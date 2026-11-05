@@ -52,6 +52,7 @@ from bionemo_ir._torch.graph_optimization.tracker import (
     TensorContainerHostShapes,
     TensorContainerShapes,
 )
+from bionemo_ir.dsl_kernels.cute_cache import CuteKernelCache
 from bionemo_ir.logger import logger
 from bionemo_ir.utils import is_device_fatal
 
@@ -246,7 +247,7 @@ class CUDAGraphOptimizationTracker(GraphOptimizationTracker):
         self.register_load_state_dict_pre_hook(_reset_before_load)
 
     def input_key_for_this_call(self, *args, **kwargs) -> str:
-        """Keep graphs separate across precision and deterministic contexts."""
+        """Keep graphs separate across precision, deterministic and CuTeDSL source-or-CUBIN contexts."""
         context = (
             torch.is_autocast_enabled("cuda"),
             torch.get_autocast_dtype("cuda"),
@@ -254,6 +255,7 @@ class CUDAGraphOptimizationTracker(GraphOptimizationTracker):
             torch.backends.cuda.matmul.allow_tf32,
             torch.backends.cudnn.allow_tf32,
             torch.are_deterministic_algorithms_enabled(),
+            CuteKernelCache.force_cubin(),
         )
         return f"{super().input_key_for_this_call(*args, **kwargs)};context={context}"
 

@@ -1,0 +1,23 @@
+{
+  "kernel_abi": "sm100",
+  "configs": {
+    "act=silu_gate": {
+      "layouts": [
+        {
+          "waves": 0.098,
+          "tile_wgs": 4,
+          "split": 4
+        }
+      ]
+    },
+    "act=relu": {
+      "layouts": [
+        {
+          "waves": 0.098,
+          "tile_wgs": 4,
+          "split": 4
+        }
+      ]
+    }
+  }
+}

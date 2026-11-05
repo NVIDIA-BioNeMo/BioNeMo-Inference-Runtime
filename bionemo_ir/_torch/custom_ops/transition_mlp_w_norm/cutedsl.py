@@ -12,11 +12,12 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Source-or-CUBIN interface for the SM90 transition with its LayerNorm."""
+"""Source-or-CUBIN interface for the SM90 and SM100 transition with its LayerNorm."""
 
 from __future__ import annotations
 
 import contextlib
+import functools
 from typing import Any
 
 import torch
@@ -35,6 +36,16 @@ from . import _config
 from ._cubin import TransitionMlpWNormCubinExecutable
 
 __all__ = ["TransitionMlpWNormCuTe"]
+
+
+@functools.cache
+def _source_available() -> bool:
+    """Whether this build carries the kernel source. Checked once: a failed import costs about 10 us a call."""
+    try:
+        load_source_module(__package__)
+    except ImportError:
+        return False
+    return True
 
 
 class TransitionMlpWNormCuTe(CuteKernelCache):
@@ -73,21 +84,13 @@ class TransitionMlpWNormCuTe(CuteKernelCache):
         CUBINs; with ``candidates``, a shape whose config entry is a candidate counts too."""
         if not _config.ships(self._sm_version, width, hidden, activation, candidates=candidates):
             return False
-        if not self.force_cubin() and self._source_available():
+        if not self.force_cubin() and _source_available():
             return True
         try:
             for persistent in (False, True):
                 key = self._key(width, hidden, activation, persistent)
                 self._load_cubin_executable(key, width, hidden, activation, persistent)
         except (CuTeDSLKernelLibraryError, RuntimeError):
-            return False
-        return True
-
-    @staticmethod
-    def _source_available() -> bool:
-        try:
-            load_source_module(__package__)
-        except ImportError:
             return False
         return True
 
@@ -155,7 +158,13 @@ class TransitionMlpWNormCuTe(CuteKernelCache):
             description = self._describe(width, hidden, activation, persistent)
             logger.info(f"CuTeDSL fused transition: compiling for {description}")
             executable = source.compile_transition_mlp_w_norm_source(
-                self.compile, width, hidden, self._num_sms, activation, persistent=persistent
+                self.compile,
+                width,
+                hidden,
+                self._num_sms,
+                activation,
+                persistent=persistent,
+                kernel_abi=_config.KERNEL_ABIS[self._sm_version],
             )
             self.save_to_cache(disk_key, executable)
         TransitionMlpWNormCuTe._compiled_cache[key] = executable
@@ -165,7 +174,7 @@ class TransitionMlpWNormCuTe(CuteKernelCache):
         """``(tile_m, num_wg, layouts)`` of the image that takes every layout: rows per full tile, warpgroups per CTA
         and the mask of the ``(tile_wgs, split)`` pairs it launches with (:func:`._config.layout_mask`)."""
         force_cubin = self.force_cubin()
-        library = force_cubin or not self._source_available()
+        library = force_cubin or not _source_available()
         return self._geometry(width, hidden, activation, library, force_cubin)
 
     def _geometry(
@@ -176,7 +185,9 @@ class TransitionMlpWNormCuTe(CuteKernelCache):
         key = self._key(width, hidden, activation)
         geometry = TransitionMlpWNormCuTe._source_geometry.get(key)
         if geometry is None:
-            fields = load_source_module(__package__).launch_geometry(width, hidden, activation)
+            fields = load_source_module(__package__).launch_geometry(
+                width, hidden, activation, kernel_abi=_config.KERNEL_ABIS[self._sm_version]
+            )
             geometry = (fields["tile_m"], fields["num_threads"] // 128, fields["layouts"])
             TransitionMlpWNormCuTe._source_geometry[key] = geometry
         return geometry
@@ -185,7 +196,7 @@ class TransitionMlpWNormCuTe(CuteKernelCache):
         """``(tile_wgs, split)`` for a call of ``rows`` rows on CUDA device ``device``, from the config's layouts
         (:func:`._config.choose_layout`)."""
         force_cubin = self.force_cubin()
-        library = force_cubin or not self._source_available()
+        library = force_cubin or not _source_available()
         return self._layout(width, hidden, activation, rows, device, library, force_cubin)[:2]
 
     def _layout(
@@ -238,7 +249,7 @@ class TransitionMlpWNormCuTe(CuteKernelCache):
         on_device = z.get_device() == torch.cuda.current_device()
         with contextlib.nullcontext() if on_device else torch.cuda.device(z.device):
             force_cubin = self.force_cubin()
-            library = force_cubin or not self._source_available()
+            library = force_cubin or not _source_available()
             if layout is None:
                 tile_wgs, split, persistent = self._layout(
                     width, hidden, activation, rows, z.get_device(), library, force_cubin

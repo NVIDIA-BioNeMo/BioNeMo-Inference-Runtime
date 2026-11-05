@@ -12,9 +12,9 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Shipped and candidate shapes of the SM90 transition with its LayerNorm.
+"""Shipped and candidate shapes of the SM90 and SM100 transition with its LayerNorm.
 
-One ``configs/C{width}_H{hidden}_sm90.json`` per ``(width, hidden)``, with one entry per activation the kernel serves
+One ``configs/C{width}_H{hidden}_sm{sm}.json`` per ``(width, hidden)``, with one entry per activation the kernel serves
 at that shape. A shape ships only where the fused kernel beats the LayerNorm pass and ``transition_mlp`` it replaces,
 so an entry is the shipping decision: an activation without one is not served. An entry marked as a candidate is
 built into the CUBIN library and runs when a caller asks for candidates, but it does not ship until a measurement
@@ -48,7 +48,9 @@ W1_BLOCKS = {"relu": 1, "silu_gate": 2}
 #: The hidden activations: ReLU, and SwiGLU ``silu(gate) * value`` with W1's first ``hidden`` rows making ``value`` and
 #: the next ``hidden`` rows ``gate``.
 ACTIVATIONS = tuple(W1_BLOCKS)
-KERNEL_ABIS = {90: "sm90"}
+# SM103 runs the SM100 kernel ABI from images compiled for it. Its configs copy SM100's (B200-measured) until a B300
+# tunes them.
+KERNEL_ABIS = {90: "sm90", 100: "sm100", 103: "sm100"}
 _FILE_RE = re.compile(r"^C(?P<width>\d+)_H(?P<hidden>\d+)_sm(?P<sm>\d+)\.json$")
 _KEY_RE = re.compile(r"^act=(?P<activation>relu|silu_gate)$")
 # An entry's keys: whether it is a candidate, and its launch layouts for small calls.
@@ -79,9 +81,10 @@ def parse_config_key(key: str) -> str:
     return match["activation"]
 
 
-def image_elements(width: int, hidden: int, activation: str) -> int:
-    """bf16 elements of the packed weight image: every W1 block, then W2."""
-    return (W1_BLOCKS[activation] + 1) * width * hidden
+def image_elements(width: int, hidden: int, activation: str, *, kernel_abi: str = "sm90") -> int:
+    """BF16 elements of the ABI-specific image, including the Blackwell ReLU correction."""
+    copies = 2 if kernel_abi == "sm100" and activation == "relu" else 1
+    return (copies * W1_BLOCKS[activation] + 1) * width * hidden
 
 
 def vec_elements(width: int, hidden: int, activation: str) -> int:

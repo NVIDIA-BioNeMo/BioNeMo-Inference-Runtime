@@ -35,6 +35,14 @@ namespace
 
 constexpr char kSM90LaunchAbi[] = "transition_mlp_w_norm_sm90_v3";
 constexpr std::int32_t kSM90KernelSM = 90;
+constexpr char kSM100LaunchAbi[] = "transition_mlp_w_norm_sm100_v1";
+constexpr char kSM100OutputLaunchAbi[] = "transition_mlp_w_norm_sm100_output_v2";
+
+char const* sm100_launch_abi(std::int32_t width, Activation activation)
+{
+  return activation == Activation::kSiLUGate && width <= 128 ? kSM100OutputLaunchAbi : kSM100LaunchAbi;
+}
+
 /* The kernel's per-item tile table holds this many pair maps. */
 constexpr std::int64_t kMaxBatch = 64;
 /* Rows are int32 in the kernel's tile arithmetic, with a tile of headroom: rows < 2^31 - 256. */
@@ -117,12 +125,14 @@ void validate_image(KernelConfig const& config)
     throw std::invalid_argument("embedded CUBIN variant_id must not be empty");
   if (config.cubin.kernel_symbol == nullptr || config.cubin.kernel_symbol[0] == '\0')
     throw std::invalid_argument("kernel_symbol must not be empty");
+  bool const sm90 = config.cubin.kernel_sm == kSM90KernelSM && config.spec.target_sm == 90;
+  bool const sm100 = config.cubin.kernel_sm == 100 && (config.spec.target_sm == 100 || config.spec.target_sm == 103);
+  char const* expected_abi = sm100 ? sm100_launch_abi(config.spec.width, config.spec.activation) : kSM90LaunchAbi;
   if (
-    config.cubin.kernel_sm != kSM90KernelSM || config.cubin.launch_abi == nullptr
-    || std::strcmp(config.cubin.launch_abi, kSM90LaunchAbi) != 0)
+    (!sm90 && !sm100) || config.cubin.launch_abi == nullptr || std::strcmp(config.cubin.launch_abi, expected_abi) != 0)
     throw std::invalid_argument("fused transition CUBIN has an incompatible launch ABI");
-  if (config.cubin.non_portable_cluster_size_allowed)
-    throw std::invalid_argument("fused transition CUBIN must launch with portable cluster sizes");
+  if (config.cubin.non_portable_cluster_size_allowed != sm100)
+    throw std::invalid_argument("fused transition CUBIN has incompatible cluster attributes");
   if (config.embedded_image == nullptr)
     throw std::invalid_argument("fused transition config has no generated CUBIN image");
   if (!cubin_supports_sm(config.cubin, config.spec.target_sm))
@@ -136,12 +146,7 @@ void validate_image(KernelConfig const& config)
     throw std::invalid_argument("fused transition CUBIN has invalid launch geometry");
 }
 
-void launch_sm90(
-  cubin_kernel_t loaded,
-  KernelConfig const& config,
-  LaunchParams const& params,
-  CUcontext context,
-  std::uint32_t smem_bytes)
+void validate_operands(KernelConfig const& config, LaunchParams const& params, CUcontext context)
 {
   std::int32_t const device = cuda_device_for_context(context);
   KernelSpec const& spec = config.spec;
@@ -187,8 +192,10 @@ void launch_sm90(
   bool const has_mask = params.mask.data != 0;
   if (has_mask)
     validate_flat(params.mask, rows, kBf16Bytes, device, "mask");
+  std::int64_t const image_matrices
+    = config.cubin.kernel_sm == 100 && spec.activation == Activation::kReLU ? 3 : blocks + 1;
   std::int64_t const image_elements
-    = checked_mul(checked_mul(blocks + 1, width, "fused transition image"), hidden, "fused transition image");
+    = checked_mul(checked_mul(image_matrices, width, "fused transition image"), hidden, "fused transition image");
   validate_flat(params.image, image_elements, 16, device, "image");
   validate_tensor(params.vec, "vec", 16);
   check_device(params.vec.device, device, "vec");
@@ -214,7 +221,21 @@ void launch_sm90(
     if (overlaps(output, operand))
       throw std::invalid_argument(std::string("fused transition output must not overlap ") + operand.name);
   }
+}
 
+void launch_sm90(
+  cubin_kernel_t loaded,
+  KernelConfig const& config,
+  LaunchParams const& params,
+  CUcontext context,
+  std::uint32_t smem_bytes)
+{
+  validate_operands(config, params, context);
+  KernelSpec const& spec = config.spec;
+  std::int64_t const rows = params.rows;
+  bool const pair_map = params.n_valid.data != 0;
+  std::int32_t const split = params.split;
+  std::int32_t const tile_wgs = params.tile_wgs == 0 ? num_wg(spec) : params.tile_wgs;
   abi::SM90Params device_params{};
   device_params.x = {static_cast<CUdeviceptr>(params.x.data), params.x.extent};
   device_params.mask = params.mask.data;
@@ -276,6 +297,101 @@ void launch_sm90(
     "launch_cubin_kernel(transition_mlp_w_norm_sm90)");
 }
 
+void launch_sm100(
+  cubin_kernel_t loaded,
+  KernelConfig const& config,
+  LaunchParams const& params,
+  CUcontext context,
+  std::uint32_t smem_bytes)
+{
+  validate_operands(config, params, context);
+  if (params.n_valid.data != 0)
+    throw std::invalid_argument("SM100 fused transition takes flat rows, without n_valid");
+  KernelSpec const& spec = config.spec;
+  embedded::SM100LaunchInfo const& metadata = config.embedded_image->sm100;
+  if (
+    !metadata.enabled || metadata.cluster_dims[0] != 2 || metadata.cluster_dims[1] != 1 || metadata.cluster_dims[2] != 1
+    || metadata.block_dims[0] != spec.num_threads || metadata.block_dims[1] != 1 || metadata.block_dims[2] != 1)
+    throw std::invalid_argument("SM100 fused transition has invalid clustered launch metadata");
+  std::uint64_t const width = spec.width;
+  std::uint64_t const hidden = spec.hidden;
+  std::uint64_t const blocks = w1_blocks(spec.activation);
+  std::uint64_t const rows = params.rows;
+  if (metadata.x.rank != 2 || metadata.w1.rank != (blocks == 1 ? 3U : 4U) || metadata.w2.rank != 2)
+    throw std::invalid_argument("SM100 fused transition has invalid TMA ranks");
+  TmaTensorSource const x_source{params.x.data, {width, rows, 0, 0}, {1, width, 0, 0}};
+  // ReLU packs high and low BF16 parts across W1's K axis; SwiGLU packs its two row blocks.
+  std::uint64_t const w1_width = spec.activation == Activation::kReLU ? 2 * width : width;
+  TmaTensorSource const w1_source{
+    params.image.data,
+    {w1_width, 64, blocks == 2 ? blocks : hidden / 64, blocks == 2 ? hidden / 64 : 0},
+    {1, w1_width, blocks == 2 ? w1_width * hidden : w1_width * 64, blocks == 2 ? w1_width * 64 : 0},
+  };
+  TmaTensorSource const w2_source{
+    params.image.data + blocks * w1_width * hidden * kBf16Bytes,
+    {hidden, width, 0, 0},
+    {1, hidden, 0, 0},
+  };
+  abi::SM100Params device_params{};
+  CUtensorMap output_tma{};
+  CoordTensorS1 output_coord{};
+  bool const has_output_tma = std::strcmp(config.cubin.launch_abi, kSM100OutputLaunchAbi) == 0;
+  if (metadata.output.rank != (has_output_tma ? 2U : 0U))
+    throw std::invalid_argument("SM100 fused transition output map disagrees with its launch ABI");
+  auto const dtype = CU_TENSOR_MAP_DATA_TYPE_BFLOAT16;
+  encode_tma_descriptor(device_params.x_tma, metadata.x, dtype, x_source, "x");
+  encode_tma_descriptor(device_params.w1_tma, metadata.w1, dtype, w1_source, "w1");
+  encode_tma_descriptor(device_params.w2_tma, metadata.w2, dtype, w2_source, "w2");
+  finalize_sm100_tma_atom(device_params.x_tma);
+  finalize_sm100_tma_atom(device_params.w1_tma);
+  finalize_sm100_tma_atom(device_params.w2_tma);
+  if (has_output_tma)
+  {
+    TmaTensorSource const output_source{params.output.data, {width, rows, 0, 0}, {1, width, 0, 0}};
+    encode_tma_descriptor(output_tma, metadata.output, dtype, output_source, "output");
+    finalize_sm100_tma_atom(output_tma);
+    output_coord.dynamic_shapes[0] = static_cast<std::int32_t>(rows);
+  }
+  device_params.x_coord.dynamic_shapes[0] = static_cast<std::int32_t>(rows);
+  device_params.x.data = params.x.data;
+  device_params.x.dynamic_shapes[0] = static_cast<std::int32_t>(rows);
+  device_params.mask = params.mask.data;
+  device_params.vec.data = params.vec.data;
+  device_params.output.data = params.output.data;
+  device_params.output.dynamic_shapes[0] = static_cast<std::int32_t>(rows);
+  device_params.eps = params.eps;
+  device_params.residual = params.residual ? 1 : 0;
+  std::int32_t const multiprocessors = cuda_multiprocessor_count_for_context(context);
+  if (multiprocessors < 2)
+    throw std::invalid_argument("SM100 fused transition requires at least two active SMs");
+  std::uint64_t const tiles = ceil_div(rows, spec.tile_m);
+  /* The persistent image strides a grid of CTA pairs over the row tiles. The image that takes every layout runs one
+     row tile per cluster of split CTA pairs, each pair a share of the tile's hidden chunks; it reads split from the
+     cluster's size, so the grid must hold every tile. */
+  std::uint64_t const split = spec.is_persistent ? 1 : static_cast<std::uint64_t>(params.split);
+  std::uint64_t const clusters
+    = spec.is_persistent ? std::min(tiles, static_cast<std::uint64_t>(multiprocessors / 2)) : tiles;
+  cubin_launch_config_t launch_config{};
+  launch_config.grid_x = checked_u32(2 * split * clusters, "SM100 fused transition grid.x");
+  launch_config.grid_y = launch_config.grid_z = 1;
+  launch_config.block_x = spec.num_threads;
+  launch_config.block_y = launch_config.block_z = 1;
+  launch_config.cluster_x = static_cast<std::uint32_t>(2 * split);
+  launch_config.cluster_y = launch_config.cluster_z = 1;
+  launch_config.cluster_scheduling_policy = metadata.cluster_scheduling_policy;
+  launch_config.dynamic_smem_bytes = smem_bytes;
+  launch_config.stream = reinterpret_cast<CUstream>(static_cast<std::uintptr_t>(params.stream));
+  launch_config.programmatic_stream_serialization = 0;
+  void* kernel_params[abi::kSM100OutputParameterCount]{};
+  if (has_output_tma)
+    abi::pack_sm100_output_kernel_params(&device_params, &output_tma, &output_coord, kernel_params);
+  else
+    abi::pack_sm100_kernel_params(&device_params, kernel_params);
+  check_cuda_driver(
+    launch_cubin_kernel(loaded, &launch_config, kernel_params, nullptr),
+    "launch_cubin_kernel(transition_mlp_w_norm_sm100)");
+}
+
 KernelSpec make_kernel_spec(embedded::CubinImage const& image)
 {
   return KernelSpec{
@@ -304,9 +420,10 @@ embedded::CubinImage const& find_embedded_cubin(
     embedded::CubinImage const& image = registry.images[index];
     if (
       cubin_supports_sm(image.cubin, target_sm) && image.cubin.launch_abi != nullptr
-      && std::strcmp(image.cubin.launch_abi, kSM90LaunchAbi) == 0 && image.is_bfloat16 == is_bfloat16
-      && image.width == width && image.hidden == hidden && image.is_silu_gate == is_silu_gate
-      && image.is_persistent == persistent)
+      && std::strcmp(image.cubin.launch_abi, target_sm == 90 ? kSM90LaunchAbi : sm100_launch_abi(width, activation))
+        == 0
+      && image.is_bfloat16 == is_bfloat16 && image.width == width && image.hidden == hidden
+      && image.is_silu_gate == is_silu_gate && image.is_persistent == persistent)
       return image;
   }
   throw std::invalid_argument(
@@ -365,7 +482,10 @@ void launch(KernelConfig const& config, LaunchParams const& params)
       + std::to_string(device_sm));
   }
   cubin_kernel_t const loaded = load_embedded_kernel(context, config.cubin);
-  launch_sm90(loaded, config, params, context, dynamic_smem_bytes(config));
+  if (config.cubin.kernel_sm == 100)
+    launch_sm100(loaded, config, params, context, dynamic_smem_bytes(config));
+  else
+    launch_sm90(loaded, config, params, context, dynamic_smem_bytes(config));
 }
 
 } // namespace bioir::cutedsl::transition_mlp_w_norm

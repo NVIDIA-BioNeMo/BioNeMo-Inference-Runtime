@@ -154,6 +154,10 @@ class _CountingOp:
         self.calls += 1
         return self.op(*args, **kwargs)
 
+    def launch(self, *args, **kwargs) -> torch.Tensor:
+        self.calls += 1
+        return self.op.launch(*args, **kwargs)
+
 
 # ---- the routing and the folded weights, on a PyTorch stand-in for the op --------------------------------------------
 
@@ -209,6 +213,8 @@ class _ReferenceOp:
             update = update * mask.unsqueeze(-1).float()
         result = (zf + update if residual else update).to(z.dtype)
         return result if out is None else out.copy_(result)
+
+    launch = __call__
 
 
 def _reference_get_op(dtype: torch.dtype, width: int, hidden: int, activation: str = "relu") -> _ReferenceOp | None:

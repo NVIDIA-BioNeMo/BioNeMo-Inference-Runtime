@@ -14,15 +14,19 @@
 # limitations under the License.
 """Static atom bias reuse across model families."""
 
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import Mock, patch
 
 import pytest
 import torch
 import torch.nn as nn
 
 from bionemo_ir._torch.layers.transformers.diffusion_transformer import (
+    LocalLayerConditioning,
     OpenFold3DiffusionTransformer,
     ProtenixDiffusionTransformer,
+    _conditioned_local_layer,
+    _project_local_conditioning,
 )
 from bionemo_ir._torch.modules.openfold3.sequence_local_atom_attention import AtomAttentionEncoder
 from bionemo_ir.configs import DiffusionTransformerConfig
@@ -165,12 +169,20 @@ def test_prepared_openfold3_atom_conditioning(windowed: bool, dtype: str, batch_
     metadata = ProtenixDiffusionTransformer.build_attn_metadata(windows, queries, keys, a.device)
     with torch.inference_mode():
         biases = model.prepare_pair_biases(z, mask, metadata)
-        conditioning = model.prepare_local_conditioning(s, metadata)
-        assert conditioning is not None
+        fused_conditioning = model.prepare_local_conditioning(s, metadata)
+        assert fused_conditioning is not None
+        conditioning = [
+            tuple(LocalLayerConditioning(*entry)._replace(transition_cond=None)) for entry in fused_conditioning
+        ]
         kwargs = {"a": a, "s": s, "z": z, "mask": None, "attn_metadata": metadata, "prepared_pair_biases": biases}
         expected = model(**kwargs)
         actual = model(**kwargs, prepared_conditioning=conditioning)
         assert torch.equal(actual, expected)
+        fused = model(**kwargs, prepared_conditioning=fused_conditioning)
+        repeated = model(**kwargs, prepared_conditioning=model.prepare_local_conditioning(s, metadata))
+        assert torch.equal(fused, repeated)
+        rel = ((fused - expected).float().abs().mean() / expected.float().abs().mean()).item()
+        assert rel < 0.02, f"fused atom transitions differ by mean-relative {rel:.2%} (> 2%)"
         with pytest.raises(ValueError, match="carry the mask"):
             model(**{**kwargs, "mask": mask}, prepared_conditioning=conditioning)
 
@@ -205,3 +217,53 @@ def test_incomplete_atom_cache(prepared: str) -> None:
         assert transformer.call_args.kwargs["prepared_pair_biases"] is None
         for result, reference in zip(actual, expected, strict=True):
             torch.testing.assert_close(result, reference, rtol=0, atol=0)
+
+
+@pytest.mark.parametrize("batch_size", [1, 2])
+def test_local_conditioning_reuses_transition_projection(batch_size: int) -> None:
+    """Preparing a fused table reuses the projected AdaLN halves; denoising steps project nothing again."""
+    s = torch.randn(batch_size, 1, 2, 3, 4)
+    a = torch.randn(batch_size, 2, 2, 3, 4)
+    projected = torch.randn(batch_size, 1, 2, 3, 8)
+    table = torch.randn(6, 12)
+    transition_adaln = SimpleNamespace(
+        dim=4, project_condition=Mock(return_value=projected), normalize=Mock(return_value=a)
+    )
+    transition = SimpleNamespace(
+        adaln=transition_adaln,
+        fused_condition=Mock(return_value=table),
+        run_fused=Mock(return_value=a),
+        _swiglu_mlp=Mock(return_value=a),
+        _gated_sigmoid_op=Mock(return_value=a),
+        output_projection=SimpleNamespace(weight=torch.zeros(4, 4), bias=torch.zeros(4)),
+    )
+    attention = Mock(return_value=a)
+    attention.window_attention = None
+    attention.layer_norm_a_q = SimpleNamespace(dim=4, project_condition=Mock(return_value=projected))
+    attention.layer_norm_a_k = SimpleNamespace(dim=4, project_condition=Mock(return_value=projected))
+    attention.output_projection = Mock(return_value=s)
+    layer = SimpleNamespace(pair_bias_attn=attention, transition=transition)
+    metadata = SimpleNamespace(query_to_keys=Mock(return_value=s))
+
+    (conditioning,) = _project_local_conditioning([layer], s, metadata)
+    prepared = LocalLayerConditioning(*conditioning)
+    if batch_size == 1:
+        transition.fused_condition.assert_called_once()
+        given_s, given_scale, given_shift = transition.fused_condition.call_args.args
+        assert given_s is s
+        assert given_scale is prepared.transition_scale
+        assert given_shift is prepared.transition_shift
+        assert prepared.transition_cond is table
+    else:
+        transition.fused_condition.assert_not_called()
+        assert prepared.transition_cond is None
+
+    for _ in range(2):
+        _conditioned_local_layer(layer, a, torch.zeros(1), metadata, None, conditioning)
+    transition_adaln.project_condition.assert_called_once_with(s)
+    attention.layer_norm_a_q.project_condition.assert_called_once_with(s)
+    attention.layer_norm_a_k.project_condition.assert_called_once_with(s)
+    attention.output_projection.assert_called_once_with(s)
+    assert transition.run_fused.call_count == (2 if batch_size == 1 else 0)
+    assert transition.fused_condition.call_count == (1 if batch_size == 1 else 0)
+    assert transition_adaln.normalize.call_count == (0 if batch_size == 1 else 2)

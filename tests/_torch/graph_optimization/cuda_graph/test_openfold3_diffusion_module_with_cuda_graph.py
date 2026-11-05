@@ -34,6 +34,7 @@ from bionemo_ir._torch.graph_optimization.cuda_graph.runtime import (
     CUDAGraphOptimizationTracker,
     CUDAGraphPreparationState,
 )
+from bionemo_ir._torch.layers.transformers.diffusion_transformer import LocalLayerConditioning
 from bionemo_ir._torch.modules.openfold3.diffusion_module import DiffusionModule
 from bionemo_ir.models.openfold3.config import DiffusionModuleConfig
 from tests.common.test_utils.openfold3.batched_input_tools import (
@@ -168,6 +169,11 @@ def test_of3_diffusion_module_b1_cuda_graph_byte_identical(_of3_diffusion_captur
             assert torch.equal(module(**kwargs), eager_out)
             kwargs["prepared_si"] = _prepare_single(module, kwargs)
             assert torch.equal(module(**kwargs), eager_out)
+            kwargs.update(_prepare_atom_cache(module, kwargs, kwargs["prepared_zij"]))
+            fused_eager = module(**kwargs).clone()
+            rel = ((fused_eager - eager_out).float().abs().mean() / eager_out.float().abs().mean()).item()
+            assert rel < 0.02, f"prepared atom cache differs by mean-relative {rel:.2%} (> 2%)"
+            eager_out = fused_eager
 
     # --- Drive the CUDA-graph tracker: warmup -> capture -> replay ------------
     tracker = CUDAGraphOptimizationTracker(_diffusion_graph_config(), inner_module=module).eval()
@@ -204,6 +210,7 @@ def test_of3_diffusion_module_b1_cuda_graph_byte_identical(_of3_diffusion_captur
             )
             kwargs["prepared_si"] = _prepare_single(module, kwargs)
             kwargs.update(_prepare_token_biases(module, kwargs["prepared_zij"]))
+            kwargs.update(_prepare_atom_cache(module, kwargs, kwargs["prepared_zij"]))
             refreshed_eager = module(**kwargs).clone()
             refreshed_graph = tracker(**kwargs).clone()
         assert len(tracker.graph_state_by_key) == 1
@@ -263,8 +270,13 @@ def test_of3_prepared_atom_conditioning_matches_uncached_step(_of3_diffusion_cap
             uncached = module(**kwargs).clone()
             pair = module.diffusion_conditioning.prepare_pair(batch=kwargs["batch"], zij_trunk=kwargs["zij_trunk"])
             atom_cache = _prepare_atom_cache(module, kwargs, pair)
-            conditioning = {key: atom_cache.pop(key) for key in _CONDITIONING_KEYS}
-            assert all(conditioning.values()), "the atom layers should take prepared conditioning"
+            fused_conditioning = {key: atom_cache.pop(key) for key in _CONDITIONING_KEYS}
+            assert all(fused_conditioning.values()), "the atom layers should take prepared conditioning"
+            # Cache parity compares the same unfused transition; the fused kernel has its own rounding bound.
+            conditioning = {
+                key: [tuple(LocalLayerConditioning(*entry)._replace(transition_cond=None)) for entry in entries]
+                for key, entries in fused_conditioning.items()
+            }
             biases = {key: atom_cache.pop(key) for key in _BIAS_KEYS}
             cached = module(**kwargs, prepared_zij=pair, **atom_cache)
             cached_biases = module(**kwargs, prepared_zij=pair, **atom_cache, **biases)
@@ -280,6 +292,20 @@ def test_of3_prepared_atom_conditioning_matches_uncached_step(_of3_diffusion_cap
                 **conditioning,
                 **token_biases,
             )
+            cached_fused = module(**kwargs, prepared_zij=pair, **atom_cache, **biases, **fused_conditioning)
+            cl = atom_cache["prepared_atom_cl"]
+            cached_reprepared_fused = module(
+                **kwargs,
+                prepared_zij=pair,
+                **atom_cache,
+                **biases,
+                prepared_atom_encoder_conditioning=module.atom_attn_enc.prepare_conditioning(
+                    cl, kwargs["attn_metadata"]
+                ),
+                prepared_atom_decoder_conditioning=module.atom_attn_dec.prepare_conditioning(
+                    cl, kwargs["attn_metadata"]
+                ),
+            )
     finally:
         for block in atom_blocks:
             block.atom_transformer.enable_window_attention(block.n_query, block.n_key)
@@ -288,6 +314,9 @@ def test_of3_prepared_atom_conditioning_matches_uncached_step(_of3_diffusion_cap
     assert torch.equal(cached_conditioning, uncached)
     assert torch.equal(cached_token, uncached)
     assert torch.equal(cached_single, uncached)
+    assert torch.equal(cached_fused, cached_reprepared_fused)
+    rel = ((cached_fused - uncached).float().abs().mean() / uncached.float().abs().mean()).item()
+    assert rel < 0.02, f"fused atom transitions differ by mean-relative {rel:.2%} (> 2%)"
 
 
 @pytest.mark.parametrize("prepare_pair", [False, True])
@@ -312,6 +341,8 @@ def test_of3_diffusion_module_b2_cuda_graph_byte_identical(_of3_diffusion_captur
     if prepare_pair:
         with torch.no_grad():
             batched.update(_prepare_atom_cache(module, batched, batched["prepared_zij"]))
+            for key in _CONDITIONING_KEYS:
+                assert all(LocalLayerConditioning(*entry).transition_cond is None for entry in batched[key])
             batched.update(_prepare_token_biases(module, batched["prepared_zij"]))
             batched["prepared_si"] = _prepare_single(module, batched)
     assert batched["xl_noisy"].shape[0] == len(_SAMPLE_IDS), (

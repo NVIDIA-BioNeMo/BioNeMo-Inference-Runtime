@@ -31,6 +31,8 @@ from bionemo_ir._torch.utils.kernel import (
 
 #: The launch ABI this adapter drives: the kernel takes its launch layout (``split``, ``tile_wgs``) as arguments.
 LAUNCH_ABI = "transition_mlp_w_norm_sm90_v3"
+SM100_LAUNCH_ABI = "transition_mlp_w_norm_sm100_v1"
+SM100_OUTPUT_LAUNCH_ABI = "transition_mlp_w_norm_sm100_output_v2"
 
 
 class TransitionMlpWNormCubinExecutable(CuTeDSLKernelLibraryExecutable):
@@ -56,9 +58,13 @@ class TransitionMlpWNormCubinExecutable(CuTeDSLKernelLibraryExecutable):
         persistent: bool = False,
     ) -> None:
         activations = getattr(launcher, "Activation", None)
-        if activations is None or getattr(launcher, "LAUNCH_ABI", None) != LAUNCH_ABI:
+        abi_attribute = "SM100_LAUNCH_ABI" if target_sm in (100, 103) else "LAUNCH_ABI"
+        expected_abi = SM100_LAUNCH_ABI if target_sm in (100, 103) else LAUNCH_ABI
+        if target_sm in (100, 103) and activation == "silu_gate" and width <= 128:
+            abi_attribute, expected_abi = "SM100_OUTPUT_LAUNCH_ABI", SM100_OUTPUT_LAUNCH_ABI
+        if activations is None or getattr(launcher, abi_attribute, None) != expected_abi:
             raise CuTeDSLKernelVariantUnavailable(
-                f"this fused transition CUBIN library predates launch ABI {LAUNCH_ABI}"
+                f"this fused transition CUBIN library predates launch ABI {expected_abi}"
             )
         try:
             config = launcher.make_kernel_config(

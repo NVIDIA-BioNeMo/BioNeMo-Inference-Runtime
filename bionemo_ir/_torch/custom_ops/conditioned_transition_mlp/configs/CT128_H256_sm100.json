@@ -1,0 +1,11 @@
+{
+  "kernel_abi": "sm100",
+  "configs": {
+    "act=silu_gate|tile=base": {"x_stages": 3, "w2_stages": 4, "gemm2_lag": 3, "out_stages": 1, "norm_tree": 1, "norm_group": 4, "norm_ahead": 1},
+    "act=silu_gate|tile=staged": {"x_stages": 3, "w2_stages": 4, "gemm2_lag": 3, "out_stages": 1, "norm_tree": 1, "norm_group": 4, "norm_ahead": 1, "cond_stage": 1, "gate_group": 8, "gate_ahead": 1},
+    "act=silu_gate|tile=sample_major": {"x_stages": 3, "w2_stages": 4, "gemm2_lag": 3, "out_stages": 1, "norm_tree": 1, "norm_group": 4, "norm_ahead": 1, "cond_stage": 1, "gate_group": 8, "gate_ahead": 1, "sample_major": 5},
+    "act=silu_gate|tile=sample_stream": {"x_stages": 3, "w2_stages": 4, "gemm2_lag": 3, "out_stages": 1, "norm_tree": 1, "norm_group": 4, "norm_ahead": 1, "sample_major": 5},
+    "act=silu_gate_3way|tile=base": {"x_stages": 2, "w2_stages": 4, "gemm2_lag": 1, "out_stages": 1, "norm_tree": 1, "norm_group": 4, "norm_ahead": 1},
+    "act=silu_gate_3way|tile=sample_stream": {"x_stages": 2, "w2_stages": 4, "gemm2_lag": 1, "out_stages": 1, "norm_tree": 1, "norm_group": 4, "norm_ahead": 1, "sample_major": 5}
+  }
+}

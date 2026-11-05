@@ -196,7 +196,8 @@ class ProtenixConfidenceHead(nn.Module):
             "z": z,
             "single_mask": single_mask,
             "pair_mask": pair_mask,
-            "rep_mask": _unbatch_leading(input_feature_dict["distogram_rep_atom_mask"]).bool(),
+            # Boolean indexing reads the selected count back on every sample.
+            "rep_indices": _unbatch_leading(input_feature_dict["distogram_rep_atom_mask"]).bool().nonzero().flatten(),
             "atom_to_token_idx": _unbatch_leading(input_feature_dict["atom_to_token_idx"]),
             "atom_to_tokatom_idx": atom_slots,
         }
@@ -214,7 +215,7 @@ class ProtenixConfidenceHead(nn.Module):
             ``pde`` ``[B, N_token, N_token, b_pde]``,
             ``resolved`` ``[B, N_atom, b_resolved]``
         """
-        x_rep = x_pred_coords_i[..., ctx["rep_mask"], :]
+        x_rep = x_pred_coords_i.index_select(-2, ctx["rep_indices"])
         return self._per_sample(
             ctx["atom_to_token_idx"],
             ctx["atom_to_tokatom_idx"],

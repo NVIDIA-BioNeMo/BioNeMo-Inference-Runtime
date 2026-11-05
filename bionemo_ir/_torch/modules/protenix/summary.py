@@ -18,8 +18,8 @@ Converts distogram / confidence head logits into OSS-format
 ``summary_confidence`` + ``full_data`` (inference path only).
 
 The chain bookkeeping (which tokens and atoms each chain and chain pair
-holds, frame positions, ligand and polymer flags) comes from two host
-copies, one of the token rows and one of the atom rows (:class:`ChainIndex`). The scores gather with its
+holds, frame positions, ligand and polymer flags) comes from one packed host
+copy of the token and atom rows (:class:`ChainIndex`). The scores gather with its
 ascending index lists, the elements and order boolean masks select, so each
 score is OSS's arithmetic on the same values without a host synchronization
 per chain or chain pair.
@@ -93,14 +93,12 @@ class _TokenSet:
 
 
 class ChainIndex:
-    """Chain bookkeeping of one structure, built on the host from one copy of its token rows and one of its atom rows.
+    """Chain bookkeeping of one structure, built on the host from one packed copy of its token and atom rows.
 
     Chains are numbered ``0..K-1`` in ascending ``asym_id`` order (``torch.unique``'s order). Each index
     list is ascending, as a boolean mask selects; all of them reach the device in one copy.
 
-    Args:
-        asym_id, has_frame, token_is_ligand: ``[N_token]``
-        atom_to_token_idx, is_polymer: ``[N_atom]``
+    Each group's tensors must share a device; atom rows on another device move to ``asym_id.device`` first.
     """
 
     def __init__(
@@ -111,10 +109,23 @@ class ChainIndex:
         atom_to_token_idx: torch.Tensor,
         is_polymer: torch.Tensor,
     ) -> None:
+        """Build ascending indices on ``asym_id.device``.
+
+        Args:
+            asym_id: ``[N_token]`` chain IDs, converted to int64.
+            has_frame: ``[N_token]`` frame flags; nonzero values are true.
+            token_is_ligand: ``[N_token]`` ligand flags; nonzero values are true.
+            atom_to_token_idx: ``[N_atom]`` token indices, converted to int64.
+            is_polymer: ``[N_atom]`` polymer flags; nonzero values are true.
+        """
         device = asym_id.device
         # Flags as the boolean masks read them (nonzero), before the integer copy: a fractional flag stays set.
-        tokens = torch.stack([asym_id.long(), (has_frame != 0).long(), (token_is_ligand != 0).long()]).cpu().numpy()
-        atoms = torch.stack([atom_to_token_idx.long(), (is_polymer != 0).long()]).cpu().numpy()
+        n_token, n_atom = asym_id.numel(), atom_to_token_idx.numel()
+        token_rows = [asym_id.long(), (has_frame != 0).long(), (token_is_ligand != 0).long()]
+        atom_rows = [atom_to_token_idx.long(), (is_polymer != 0).long()]
+        metadata = torch.cat(token_rows + [row.to(device) for row in atom_rows]).cpu().numpy()
+        tokens = metadata[: 3 * n_token].reshape(3, n_token)
+        atoms = metadata[3 * n_token :].reshape(2, n_atom)
         chains = np.unique(tokens[0])
         asym = np.searchsorted(chains, tokens[0])  # contiguous 0..K-1, ascending asym_id
         frame, ligand = tokens[1] != 0, tokens[2] != 0
@@ -126,10 +137,12 @@ class ChainIndex:
         spans: list[tuple[int, int]] = []
 
         def push(index: np.ndarray) -> int:
+            """Append one index list and return its slot in the packed buffer."""
             lists.append(np.asarray(index, dtype=np.int64))
             return len(lists) - 1
 
         def token_set(selected: np.ndarray) -> tuple[int, int, int]:
+            """Pack token and frame positions for one chain selection."""
             token_ids = np.flatnonzero(selected)
             frames = np.flatnonzero(frame[token_ids])
             return push(token_ids), push(frames), len(frames)
@@ -159,7 +172,7 @@ class ChainIndex:
         for index in lists:
             spans.append((offset, offset + len(index)))
             offset += len(index)
-        blob = torch.from_numpy(np.concatenate(lists)).to(device)
+        blob = torch.from_numpy(np.concatenate(lists)).to(device, non_blocking=True)
         self._views = [blob[start:end] for start, end in spans]
         self.asym = self._views[0]
 

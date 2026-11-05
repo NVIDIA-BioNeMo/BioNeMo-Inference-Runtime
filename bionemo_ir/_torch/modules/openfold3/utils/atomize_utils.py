@@ -16,6 +16,7 @@
 # limitations under the License.
 
 import math
+from functools import cache
 from typing import Literal
 
 import torch
@@ -303,10 +304,9 @@ def get_token_representative_atoms(batch: dict, x: torch.Tensor, atom_mask: torc
     # Get index of representative atoms
     restype = batch["restype"].float()
     start_atom_index = batch["start_atom_index"].long()
-    cb_atom_index_offset, cb_atom_mask = get_token_atom_index_offset(atom_name="CB", restype=restype)
-    ca_atom_index_offset, ca_atom_mask = get_token_atom_index_offset(atom_name="CA", restype=restype)
-    c4_atom_index_offset, c4_atom_mask = get_token_atom_index_offset(atom_name="C4", restype=restype)
-    c2_atom_index_offset, c2_atom_mask = get_token_atom_index_offset(atom_name="C2", restype=restype)
+    offsets, masks = get_token_atom_index_offsets(("CB", "CA", "C4", "C2"), restype)
+    cb_atom_index_offset, ca_atom_index_offset, c4_atom_index_offset, c2_atom_index_offset = offsets.unbind(-1)
+    cb_atom_mask, ca_atom_mask, c4_atom_mask, c2_atom_mask = masks.unbind(-1)
     rep_index = (
         ((start_atom_index + cb_atom_index_offset) * is_standard_protein * (1 - is_standard_glycine))
         + (start_atom_index + ca_atom_index_offset) * is_standard_glycine
@@ -344,7 +344,40 @@ def get_token_representative_atoms(batch: dict, x: torch.Tensor, atom_mask: torc
     return rep_x, rep_atom_mask
 
 
-def get_token_atom_index_offset(atom_name: str, restype: torch.Tensor):
+@cache
+def _atom_index_tables_on(atom_names: tuple[str, ...], device: torch.device) -> torch.Tensor:
+    """Immutable ``[K, 2M]`` float32 table on ``device``: M index columns, then M mask columns; cached."""
+    tables = [atom_name_to_index_by_restype[name] for name in atom_names]
+    columns = [table["index"] for table in tables] + [table["mask"] for table in tables]
+    return torch.tensor(columns, dtype=torch.float32).T.contiguous().to(device)
+
+
+def get_token_atom_index_offsets(
+    atom_names: tuple[str, ...], restype: torch.Tensor
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """
+    Get indices of several atoms (within their residues) in each residue, with one product.
+
+    Args:
+        atom_names:
+            M atom names to get indices
+        restype:
+            [*, N_token, 32] One-hot residue types. Must be float dtype.
+    Returns:
+        token_atom_index_offset:
+            [*, N_token, M] Atom indices (within their residues) of each atom name
+        token_atom_mask:
+            [*, N_token, M] Atom masks to indicate missing atoms
+    """
+    # Read-only device constant: its first upload is synchronous, so every stream and graph may share it.
+    # That upload cannot run under graph capture, so the first call per device must happen outside one.
+    table = _atom_index_tables_on(atom_names, restype.device)
+    # One-hot rows select exact small integers, so the product matches one einsum per name bit for bit.
+    lookup = (restype @ table).long()
+    return lookup[..., : len(atom_names)], lookup[..., len(atom_names) :]
+
+
+def get_token_atom_index_offset(atom_name: str, restype: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
     """
     Get index of a given atom (within its residue) in each residues.
 
@@ -359,23 +392,8 @@ def get_token_atom_index_offset(atom_name: str, restype: torch.Tensor):
         token_atom_mask:
             [*, N_token] Atom mask to indicate missing atoms
     """
-    token_atom_index_offset = torch.einsum(
-        "...k,k->...",
-        restype,
-        torch.tensor(
-            atom_name_to_index_by_restype[atom_name]["index"],
-            device=restype.device,
-        ).float(),
-    ).long()
-    token_atom_mask = torch.einsum(
-        "...k,k->...",
-        restype,
-        torch.tensor(
-            atom_name_to_index_by_restype[atom_name]["mask"],
-            device=restype.device,
-        ).float(),
-    ).long()
-    return token_atom_index_offset, token_atom_mask
+    token_atom_index_offset, token_atom_mask = get_token_atom_index_offsets((atom_name,), restype)
+    return token_atom_index_offset.squeeze(-1), token_atom_mask.squeeze(-1)
 
 
 def _insert_x_leading_dims(
@@ -549,12 +567,16 @@ def get_token_frame_mask(
     is_standard_nucleotide = (batch["is_dna"] + batch["is_rna"]) * (1 - batch["is_atomized"])
 
     restype = batch["restype"].float()
-    n_atom_index_offset, n_atom_mask = get_token_atom_index_offset(atom_name="N", restype=restype)
-    ca_atom_index_offset, ca_atom_mask = get_token_atom_index_offset(atom_name="CA", restype=restype)
-    c_atom_index_offset, c_atom_mask = get_token_atom_index_offset(atom_name="C", restype=restype)
-    c3p_atom_index_offset, c3p_atom_mask = get_token_atom_index_offset(atom_name="C3'", restype=restype)
-    c1p_atom_index_offset, c1p_atom_mask = get_token_atom_index_offset(atom_name="C1'", restype=restype)
-    c4p_atom_index_offset, c4p_atom_mask = get_token_atom_index_offset(atom_name="C4'", restype=restype)
+    offsets, masks = get_token_atom_index_offsets(("N", "CA", "C", "C3'", "C1'", "C4'"), restype)
+    (
+        n_atom_index_offset,
+        ca_atom_index_offset,
+        c_atom_index_offset,
+        c3p_atom_index_offset,
+        c1p_atom_index_offset,
+        c4p_atom_index_offset,
+    ) = offsets.unbind(-1)
+    n_atom_mask, ca_atom_mask, c_atom_mask, c3p_atom_mask, c1p_atom_mask, c4p_atom_mask = masks.unbind(-1)
     frame_atoms = {
         "a": {
             "index": (

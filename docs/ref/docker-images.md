@@ -170,5 +170,16 @@ not place it on a filesystem writable by untrusted users. BioIR restricts the
 CuTe DSL cache directory to mode `0700` and ignores cached objects it does not
 own.
 
+The `devdeps`, `dev` and runtime images set `CUDA_CACHE_MAXSIZE=4294967296`, the
+driver's maximum JIT cache size; CI's GPU jobs run in `devdeps`. A driver newer
+than PyTorch's build can JIT PyTorch's own kernels, over 1 GiB for one model
+across token counts. With the 1 GiB default the driver evicts modules, and the
+next process spends seconds compiling them again. The setting applies to every
+CUDA process in the container and lets the cache under `$HOME/.nv/ComputeCache`,
+or `CUDA_CACHE_PATH` when set, grow to 4 GiB of disk. Mount that directory to
+keep the cache across containers, and pass `--env CUDA_CACHE_MAXSIZE=<bytes>` to
+choose another limit. Importing `bionemo_ir` does not change it; outside these
+images, set it before the process initializes CUDA.
+
 [devcontainers]: https://marketplace.visualstudio.com/items?itemName=ms-vscode-remote.remote-containers
 [fetch]: ../../scripts/fetch_weights.sh

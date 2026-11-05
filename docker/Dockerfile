@@ -135,6 +135,9 @@ RUN --mount=type=cache,target=/cache/uv \
         --reinstall-package nvidia-cutlass-dsl-libs-cu13 \
         --requirements /tmp/bioir-dev.txt \
     && rm -f /tmp/bioir-dev.txt
+# Set here so that CI's GPU jobs, which run in this stage, and the dev image get
+# it; see the runtime stage.
+ENV CUDA_CACHE_MAXSIZE=4294967296
 
 # ---------------------------------------------------------------------- dev
 FROM devdeps AS dev
@@ -235,7 +238,14 @@ FROM ${RUNTIME_IMAGE}:${RUNTIME_TAG} AS runtime
 #
 # The Triton kernels do compile at run time: their launcher stubs are host C
 # extensions, so gcc and python3.12-dev below are what make the model buildable.
+#
+# A driver newer than PyTorch's build may still JIT PyTorch's own kernels, over
+# 1 GiB for one model across token counts. Past the 1 GiB default JIT cache the
+# driver evicts modules that the next process compiles again, seconds each;
+# 4 GiB is the driver maximum. Process-wide and read at CUDA initialization,
+# so it is set here rather than by the library; `docker run --env` overrides it.
 ENV NVIDIA_VISIBLE_DEVICES=all \
+    CUDA_CACHE_MAXSIZE=4294967296 \
     NVIDIA_DRIVER_CAPABILITIES=compute,utility \
     DEBIAN_FRONTEND=noninteractive \
     VIRTUAL_ENV=/opt/venv \

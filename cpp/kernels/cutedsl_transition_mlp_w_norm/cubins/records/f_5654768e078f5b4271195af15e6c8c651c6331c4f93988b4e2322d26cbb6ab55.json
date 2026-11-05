@@ -1,0 +1,625 @@
+{
+  "executables": {
+    "f05f70b46907e1b8645bd1b2128375c2074debbefb1b68f4b962e7417b50483e": {
+      "dtype": "bf16",
+      "dynamic_smem_bytes": 200704,
+      "image_sha256": "840e2c19993bbe6878626f0e25929c946a85d353dff4c90665fed830e106dfdb",
+      "image_size": 154008,
+      "kernel_sm": 100,
+      "kernel_symbol": "d8d26e80619e41475890b8f1afd825b2e2343fea5d466d02155bdbcaedaeaf11",
+      "launch_abi": "transition_mlp_w_norm_sm100_output_v2",
+      "non_portable_cluster_size_allowed": true,
+      "target_arch": "sm_103a",
+      "target_sm": 103
+    },
+    "f85924229d66c541aae3e1988d11b4e45eb1b3da0c5436a50d15e0f3c6b6310a": {
+      "dtype": "bf16",
+      "dynamic_smem_bytes": 101376,
+      "image_sha256": "d1118b1a1abf00ce068d2a447cdae3069ff5ebb265aeab6e86b925e3a6901d31",
+      "image_size": 93376,
+      "kernel_sm": 100,
+      "kernel_symbol": "d8d26e80619e41475890b8f1afd825b2e2343fea5d466d02155bdbcaedaeaf11",
+      "launch_abi": "transition_mlp_w_norm_sm100_output_v2",
+      "non_portable_cluster_size_allowed": true,
+      "target_arch": "sm_103a",
+      "target_sm": 103
+    }
+  },
+  "kernel_symbols": {},
+  "sm90_launches": {},
+  "variants": [
+    {
+      "executable": "a6705e2989a6d87aa68f8df773d0b9eea7a27e7661f98136f525da4808293c34",
+      "runtime_metadata": {
+        "ctas_per_sm": 1,
+        "hidden": 512,
+        "is_persistent": true,
+        "is_silu_gate": false,
+        "layouts": 65536,
+        "num_threads": 512,
+        "sm100_launch": {
+          "block_dims": [
+            512,
+            1,
+            1
+          ],
+          "cluster_dims": [
+            2,
+            1,
+            1
+          ],
+          "cluster_scheduling_policy": "default",
+          "tma_descriptors": {
+            "w1": {
+              "box_dims": [
+                64,
+                32,
+                1
+              ],
+              "data_type": "bfloat16",
+              "element_strides": [
+                1,
+                1,
+                1
+              ],
+              "global_dim_order": [
+                0,
+                1,
+                2
+              ],
+              "interleave": "none",
+              "l2_promotion": "128b",
+              "oob_fill": "none",
+              "rank": 3,
+              "swizzle": "128b"
+            },
+            "w2": {
+              "box_dims": [
+                64,
+                64
+              ],
+              "data_type": "bfloat16",
+              "element_strides": [
+                1,
+                1
+              ],
+              "global_dim_order": [
+                0,
+                1
+              ],
+              "interleave": "none",
+              "l2_promotion": "128b",
+              "oob_fill": "none",
+              "rank": 2,
+              "swizzle": "128b"
+            },
+            "x": {
+              "box_dims": [
+                64,
+                128
+              ],
+              "data_type": "bfloat16",
+              "element_strides": [
+                1,
+                1
+              ],
+              "global_dim_order": [
+                0,
+                1
+              ],
+              "interleave": "none",
+              "l2_promotion": "128b",
+              "oob_fill": "none",
+              "rank": 2,
+              "swizzle": "128b"
+            }
+          }
+        },
+        "tile_m": 256,
+        "width": 256
+      },
+      "variant_id": "f0d0f96aa2cd72230298"
+    },
+    {
+      "executable": "b8b56906514dc752ebe8ca3802d62bc59575bec17a00781ad8e0b66951b86737",
+      "runtime_metadata": {
+        "ctas_per_sm": 1,
+        "hidden": 256,
+        "is_persistent": false,
+        "is_silu_gate": false,
+        "layouts": 196608,
+        "num_threads": 512,
+        "sm100_launch": {
+          "block_dims": [
+            512,
+            1,
+            1
+          ],
+          "cluster_dims": [
+            2,
+            1,
+            1
+          ],
+          "cluster_scheduling_policy": "default",
+          "tma_descriptors": {
+            "w1": {
+              "box_dims": [
+                64,
+                32,
+                1
+              ],
+              "data_type": "bfloat16",
+              "element_strides": [
+                1,
+                1,
+                1
+              ],
+              "global_dim_order": [
+                0,
+                1,
+                2
+              ],
+              "interleave": "none",
+              "l2_promotion": "128b",
+              "oob_fill": "none",
+              "rank": 3,
+              "swizzle": "128b"
+            },
+            "w2": {
+              "box_dims": [
+                64,
+                32
+              ],
+              "data_type": "bfloat16",
+              "element_strides": [
+                1,
+                1
+              ],
+              "global_dim_order": [
+                0,
+                1
+              ],
+              "interleave": "none",
+              "l2_promotion": "128b",
+              "oob_fill": "none",
+              "rank": 2,
+              "swizzle": "128b"
+            },
+            "x": {
+              "box_dims": [
+                64,
+                128
+              ],
+              "data_type": "bfloat16",
+              "element_strides": [
+                1,
+                1
+              ],
+              "global_dim_order": [
+                0,
+                1
+              ],
+              "interleave": "none",
+              "l2_promotion": "128b",
+              "oob_fill": "none",
+              "rank": 2,
+              "swizzle": "128b"
+            }
+          }
+        },
+        "tile_m": 256,
+        "width": 64
+      },
+      "variant_id": "f260786e321e35d6225b"
+    },
+    {
+      "executable": "68a9bb47e6093e9dd45349f7371454c6f9386cad72ba4b7e88be125adda16eea",
+      "runtime_metadata": {
+        "ctas_per_sm": 1,
+        "hidden": 512,
+        "is_persistent": true,
+        "is_silu_gate": true,
+        "layouts": 65536,
+        "num_threads": 512,
+        "sm100_launch": {
+          "block_dims": [
+            512,
+            1,
+            1
+          ],
+          "cluster_dims": [
+            2,
+            1,
+            1
+          ],
+          "cluster_scheduling_policy": "default",
+          "tma_descriptors": {
+            "output": {
+              "box_dims": [
+                64,
+                32
+              ],
+              "data_type": "bfloat16",
+              "element_strides": [
+                1,
+                1
+              ],
+              "global_dim_order": [
+                0,
+                1
+              ],
+              "interleave": "none",
+              "l2_promotion": "128b",
+              "oob_fill": "none",
+              "rank": 2,
+              "swizzle": "128b"
+            },
+            "w1": {
+              "box_dims": [
+                64,
+                64,
+                1,
+                1
+              ],
+              "data_type": "bfloat16",
+              "element_strides": [
+                1,
+                1,
+                1,
+                1
+              ],
+              "global_dim_order": [
+                0,
+                1,
+                2,
+                3
+              ],
+              "interleave": "none",
+              "l2_promotion": "128b",
+              "oob_fill": "none",
+              "rank": 4,
+              "swizzle": "128b"
+            },
+            "w2": {
+              "box_dims": [
+                64,
+                64
+              ],
+              "data_type": "bfloat16",
+              "element_strides": [
+                1,
+                1
+              ],
+              "global_dim_order": [
+                0,
+                1
+              ],
+              "interleave": "none",
+              "l2_promotion": "128b",
+              "oob_fill": "none",
+              "rank": 2,
+              "swizzle": "128b"
+            },
+            "x": {
+              "box_dims": [
+                64,
+                128
+              ],
+              "data_type": "bfloat16",
+              "element_strides": [
+                1,
+                1
+              ],
+              "global_dim_order": [
+                0,
+                1
+              ],
+              "interleave": "none",
+              "l2_promotion": "128b",
+              "oob_fill": "none",
+              "rank": 2,
+              "swizzle": "128b"
+            }
+          }
+        },
+        "tile_m": 256,
+        "width": 128
+      },
+      "variant_id": "f514c97040e5058b8a7a"
+    },
+    {
+      "executable": "56894f1088d37c3780af75db5470be15dfb730833530b131f64e1d360cb72838",
+      "runtime_metadata": {
+        "ctas_per_sm": 1,
+        "hidden": 768,
+        "is_persistent": true,
+        "is_silu_gate": false,
+        "layouts": 65536,
+        "num_threads": 512,
+        "sm100_launch": {
+          "block_dims": [
+            512,
+            1,
+            1
+          ],
+          "cluster_dims": [
+            2,
+            1,
+            1
+          ],
+          "cluster_scheduling_policy": "default",
+          "tma_descriptors": {
+            "w1": {
+              "box_dims": [
+                64,
+                32,
+                1
+              ],
+              "data_type": "bfloat16",
+              "element_strides": [
+                1,
+                1,
+                1
+              ],
+              "global_dim_order": [
+                0,
+                1,
+                2
+              ],
+              "interleave": "none",
+              "l2_promotion": "128b",
+              "oob_fill": "none",
+              "rank": 3,
+              "swizzle": "128b"
+            },
+            "w2": {
+              "box_dims": [
+                64,
+                64
+              ],
+              "data_type": "bfloat16",
+              "element_strides": [
+                1,
+                1
+              ],
+              "global_dim_order": [
+                0,
+                1
+              ],
+              "interleave": "none",
+              "l2_promotion": "128b",
+              "oob_fill": "none",
+              "rank": 2,
+              "swizzle": "128b"
+            },
+            "x": {
+              "box_dims": [
+                64,
+                128
+              ],
+              "data_type": "bfloat16",
+              "element_strides": [
+                1,
+                1
+              ],
+              "global_dim_order": [
+                0,
+                1
+              ],
+              "interleave": "none",
+              "l2_promotion": "128b",
+              "oob_fill": "none",
+              "rank": 2,
+              "swizzle": "128b"
+            }
+          }
+        },
+        "tile_m": 256,
+        "width": 384
+      },
+      "variant_id": "fae00dea3d0224839947"
+    },
+    {
+      "executable": "82baca2a874a5eb162377d0d8948534609d62b0f80ac96e13037af554a98f852",
+      "runtime_metadata": {
+        "ctas_per_sm": 1,
+        "hidden": 512,
+        "is_persistent": true,
+        "is_silu_gate": true,
+        "layouts": 256,
+        "num_threads": 256,
+        "sm100_launch": null,
+        "tile_m": 128,
+        "width": 128
+      },
+      "variant_id": "fd6661abe9c164b8e8ba"
+    },
+    {
+      "executable": "6512fcf0a6f452b750338393574c635c30811bc77a8098744f694ac392bc7901",
+      "runtime_metadata": {
+        "ctas_per_sm": 1,
+        "hidden": 512,
+        "is_persistent": false,
+        "is_silu_gate": false,
+        "layouts": 720896,
+        "num_threads": 512,
+        "sm100_launch": {
+          "block_dims": [
+            512,
+            1,
+            1
+          ],
+          "cluster_dims": [
+            2,
+            1,
+            1
+          ],
+          "cluster_scheduling_policy": "default",
+          "tma_descriptors": {
+            "w1": {
+              "box_dims": [
+                64,
+                32,
+                1
+              ],
+              "data_type": "bfloat16",
+              "element_strides": [
+                1,
+                1,
+                1
+              ],
+              "global_dim_order": [
+                0,
+                1,
+                2
+              ],
+              "interleave": "none",
+              "l2_promotion": "128b",
+              "oob_fill": "none",
+              "rank": 3,
+              "swizzle": "128b"
+            },
+            "w2": {
+              "box_dims": [
+                64,
+                64
+              ],
+              "data_type": "bfloat16",
+              "element_strides": [
+                1,
+                1
+              ],
+              "global_dim_order": [
+                0,
+                1
+              ],
+              "interleave": "none",
+              "l2_promotion": "128b",
+              "oob_fill": "none",
+              "rank": 2,
+              "swizzle": "128b"
+            },
+            "x": {
+              "box_dims": [
+                64,
+                128
+              ],
+              "data_type": "bfloat16",
+              "element_strides": [
+                1,
+                1
+              ],
+              "global_dim_order": [
+                0,
+                1
+              ],
+              "interleave": "none",
+              "l2_promotion": "128b",
+              "oob_fill": "none",
+              "rank": 2,
+              "swizzle": "128b"
+            }
+          }
+        },
+        "tile_m": 256,
+        "width": 128
+      },
+      "variant_id": "fd876b507ef2f3e437f2"
+    },
+    {
+      "executable": "8006d22f5c693a9348429f64297265622d18760fbaa7e91e8e2084982325e04a",
+      "runtime_metadata": {
+        "ctas_per_sm": 1,
+        "hidden": 1024,
+        "is_persistent": true,
+        "is_silu_gate": true,
+        "layouts": 65536,
+        "num_threads": 512,
+        "sm100_launch": {
+          "block_dims": [
+            512,
+            1,
+            1
+          ],
+          "cluster_dims": [
+            2,
+            1,
+            1
+          ],
+          "cluster_scheduling_policy": "default",
+          "tma_descriptors": {
+            "w1": {
+              "box_dims": [
+                64,
+                64,
+                1,
+                1
+              ],
+              "data_type": "bfloat16",
+              "element_strides": [
+                1,
+                1,
+                1,
+                1
+              ],
+              "global_dim_order": [
+                0,
+                1,
+                2,
+                3
+              ],
+              "interleave": "none",
+              "l2_promotion": "128b",
+              "oob_fill": "none",
+              "rank": 4,
+              "swizzle": "128b"
+            },
+            "w2": {
+              "box_dims": [
+                64,
+                64
+              ],
+              "data_type": "bfloat16",
+              "element_strides": [
+                1,
+                1
+              ],
+              "global_dim_order": [
+                0,
+                1
+              ],
+              "interleave": "none",
+              "l2_promotion": "128b",
+              "oob_fill": "none",
+              "rank": 2,
+              "swizzle": "128b"
+            },
+            "x": {
+              "box_dims": [
+                64,
+                128
+              ],
+              "data_type": "bfloat16",
+              "element_strides": [
+                1,
+                1
+              ],
+              "global_dim_order": [
+                0,
+                1
+              ],
+              "interleave": "none",
+              "l2_promotion": "128b",
+              "oob_fill": "none",
+              "rank": 2,
+              "swizzle": "128b"
+            }
+          }
+        },
+        "tile_m": 256,
+        "width": 256
+      },
+      "variant_id": "ff2e10f04209ff41f0de"
+    }
+  ]
+}

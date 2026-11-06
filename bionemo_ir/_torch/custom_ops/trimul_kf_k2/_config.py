@@ -44,8 +44,8 @@ whose tiles (:class:`TrimulKFK2Sm100Tile`) name the Blackwell kernels instead::
 ``K2_B0`` takes ``tile_m`` (128, or 256 on a CTA pair), ``tile_n`` and optionally ``cluster_n`` (2: two 1-SM
 CTAs on adjacent column tiles share A; 1 by default); ``K2_B1`` runs 256-row tiles on CTA pairs and takes
 ``tile_n``, ``cluster_n`` (two pairs along N share A) and ``clc`` (cluster launch control hands out the work
-instead of a static split); ``K2_B2`` runs 256 x 256 pair tiles with narrow tail tiles ``tail_w`` wide, on
-incoming planes only. Anchors and tile lists work as on SM90, except that a list may also hold tiles of one
+instead of a static split); ``K2_B2`` runs 256 x 256 pair tiles with tail tiles ``tail_w`` wide (a multiple
+of 32 up to 224) in both directions. Anchors and tile lists work as on SM90, except that a list may also hold tiles of one
 width that pad ``N`` differently: :meth:`TrimulKFK2Sm100Tile.padded` counts the column tiles a cluster runs
 past ``N`` and the columns tail tiles save, and ties go to the wider tile, then to the one without tails. A
 ``K2_B0`` tile on paired CTAs runs them unpaired where ``N`` takes an odd number of its column tiles, as anchors
@@ -108,8 +108,13 @@ class TrimulKFK2Tile(NamedTuple):
         return 2 if self.kernel_variant == "K2_1" and self.tile_n == 192 else 1
 
     def padded(self, n: int) -> int:
-        """Columns a call over ``n`` tokens computes, padding included; a cluster that cannot fill falls back."""
-        return -(-n // self.tile_n) * self.tile_n
+        """Columns a call over ``n`` tokens computes, padding included; a cluster that cannot fill falls back.
+
+        ``K2_2`` pairs two column tiles along N (its ``cluster_m`` CTAs share A), so its clusters compute whole
+        ``cluster_m * tile_n`` column spans and one past ``N`` still runs.
+        """
+        span = self.tile_n * (self.cluster_m if self.kernel_variant == "K2_2" else 1)
+        return -(-n // span) * span
 
 
 class TrimulKFK2Sm100Tile(NamedTuple):
@@ -171,7 +176,7 @@ def _parse_sm100_tile(entry: dict[str, Any], source: str) -> TrimulKFK2Sm100Tile
         supported = tile.tile_n in _SM100_TILE_N and tile.cluster_n in (1, 2)
     else:
         tile = TrimulKFK2Sm100Tile(variant, tail_w=int(entry["tail_w"]))
-        supported = tile.tail_w in (32, 64)
+        supported = tile.tail_w % 32 == 0 and 32 <= tile.tail_w <= 224
     if not supported:
         raise ValueError(f"{source}: unsupported {variant} tile {tile}")
     return tile
@@ -239,8 +244,6 @@ def parse_entry(entry: Any, source: str, kernel_abi: str = "sm90") -> tuple[tupl
         incoming = parse_tiles(entry["in"], f"{source}: in", kernel_abi)
     else:
         out = incoming = parse_tiles(entry, source, kernel_abi)
-    if any(tile.kernel_variant == "K2_B2" for tile in out):
-        raise ValueError(f"{source}: K2_B2 runs incoming planes only")
     return out, incoming
 
 

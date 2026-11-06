@@ -140,8 +140,14 @@ def _force_cubins(monkeypatch: pytest.MonkeyPatch) -> None:
 
 @pytest.fixture(params=MODES)
 def kernel_mode(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch):
-    """Serve the CuTeDSL kernels from their source or from their CUBINs."""
+    """Serve the CuTeDSL kernels from their source or from their CUBINs.
+
+    Each test starts with empty executable caches: an unforced call returns whatever a cached key holds, so a CUBIN
+    an earlier ``cubin`` test on the same worker loaded would stand in for the source kernel.
+    """
     monkeypatch.delenv(FORCE_CUBIN_ENV, raising=False)
+    for backend in (epilogue_cutedsl.AttnEpilogueCuTe, epilogue_cutedsl.AttnEpilogueTokenCuTe):
+        monkeypatch.setattr(backend, "_compiled_cache", {})
     if request.param == "cubin":
         _force_cubins(monkeypatch)
     elif not source_module_available(_SOURCE_MODULE):

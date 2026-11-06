@@ -205,21 +205,25 @@ def test_k2_tile_lists_take_the_tile_that_pads_n_least():
 
 
 #: Distinct K2 tiles a bundle may run per direction (outgoing, incoming) over all token counts: the CUBIN budget. D=256
-#: adds cluster_m 1 tiles for 513-988 tokens (RFD4 and Protenix): two more outgoing, one more incoming.
-_K2_TILE_BUDGET = {256: (6, 5)}
+#: adds cluster_m 1 tiles for 513-988 tokens (RFD4 and Protenix): two more outgoing, one more incoming, and a 240-wide
+#: dynamic tile from 989 tokens. D=128 runs dynamic 192/224/240/256 tiles and a K2_2 192 pair from 433 to 1888 tokens
+#: beside the static tiles of its other anchors: nine outgoing, seven incoming.
+_K2_TILE_BUDGET = {128: (9, 7), 256: (7, 5)}
 
 
 @pytest.mark.parametrize("D", sorted(k2_config.shipped_widths(90)))
 def test_k2_tables_stay_within_the_cubin_budget(D):
-    """Every shipped bundle runs at most four distinct tiles per direction over all token counts (CUBIN budget); D=256
-    at most six outgoing and five incoming."""
+    """Every shipped bundle runs at most four distinct tiles per direction over all token counts (CUBIN budget), except
+    the widths :data:`_K2_TILE_BUDGET` lists."""
     for outgoing, budget in zip((True, False), _K2_TILE_BUDGET.get(D, (4, 4)), strict=True):
         assert len({k2_config.select(90, D, n, outgoing)[1] for n in range(8, 4097, 8)}) <= budget
 
 
 #: D=256's K2 tile for every token count from 449 to 1100, per direction, as (first, last, tile). The single-CTA tiles
-#: run outgoing at 513-672 (224), 769-832 (208) and 833-896 (224), incoming at 769-896 (224); incoming 897-952 moved
-#: from the single-CTA 192 to the 256 pair; every other count runs the tile it ran before.
+#: run outgoing at 513-672 (224), 769-832 (208) and 833-896 (224), and the 240-wide pair takes 897-960 from the 256
+#: pair (H100: 1.01-1.05x where 256 pads 64 more columns); incoming runs the 224-wide CTA pair at 577-672 and
+#: 769-896 (H100: 1.03-1.17x over the 256 pair and the single-CTA 224 at B = 1, 2 and 4); incoming 897-952 moved from
+#: the single-CTA 192 to the 256 pair; every other count runs the tile it ran before.
 _D256_K2_MAP = {
     True: [
         (449, 512, _K2("K2_0", 256, 2, 4, False, True)),
@@ -227,14 +231,16 @@ _D256_K2_MAP = {
         (673, 768, _K2("K2_0", 256, 2, 4, False, True)),
         (769, 832, _K2("K2_0", 208, 1, 3, True, True)),
         (833, 896, _K2("K2_0", 224, 1, 3, True, True)),
-        (897, 1024, _K2("K2_0", 256, 2, 4, False, True)),
+        (897, 960, _K2("K2_0", 240, 2, 4, True, True)),
+        (961, 1024, _K2("K2_0", 256, 2, 4, False, True)),
         (1025, 1100, _K2("K2_0", 224, 2, 3, True, True)),
     ],
     False: [
         (449, 512, _K2("K2_0", 256, 2, 4, True, True)),
         (513, 576, _K2("K2_0", 192, 1, 3, True, True)),
-        (577, 768, _K2("K2_0", 256, 2, 4, True, True)),
-        (769, 896, _K2("K2_0", 224, 1, 3, True, True)),
+        (577, 672, _K2("K2_0", 224, 2, 4, True, True)),
+        (673, 768, _K2("K2_0", 256, 2, 4, True, True)),
+        (769, 896, _K2("K2_0", 224, 2, 4, True, True)),
         (897, 1100, _K2("K2_0", 256, 2, 4, True, True)),
     ],
 }

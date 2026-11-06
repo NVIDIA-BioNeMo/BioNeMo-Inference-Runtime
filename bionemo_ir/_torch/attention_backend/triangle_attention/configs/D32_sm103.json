@@ -25,6 +25,6 @@
       "swizzle_b": 3,
       "load_bias_before_gemm": true
     },
-    "S=240": {}
+    "S=240": {"split_mma": false, "bias_pipe_gates": false}
   }
 }

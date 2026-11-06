@@ -80,6 +80,20 @@ def get_nearest_bucket(sm_version: int, head_dim: int, S: int) -> int:
     return bucket
 
 
+#: The options an SM100-ABI anchor may name; the kernel's schedule otherwise has no tunable parameters.
+SM100_OPTIONS = ("split_mma", "bias_pipe_gates")
+
+
+def sm100_options(tile_params: dict[str, Any]) -> dict[str, bool]:
+    """Validate an SM100-ABI anchor's options (:data:`SM100_OPTIONS`, booleans) and return them."""
+    unknown = set(tile_params) - set(SM100_OPTIONS)
+    if unknown:
+        raise ValueError(f"SM100 triangle attention takes only {SM100_OPTIONS}; got {sorted(unknown)}")
+    if any(type(value) is not bool for value in tile_params.values()):
+        raise ValueError(f"SM100 triangle-attention options are true or false; got {tile_params}")
+    return dict(tile_params)
+
+
 def get_kernel_config(
     sm_version: int,
     head_dim: int,
@@ -97,9 +111,7 @@ def get_kernel_config(
     implementation = source.source_implementation(kernel_abi, None, bundle.kernel_variant)
     kernel_cls = resolve_implementation(implementation)
     if kernel_abi == "sm100":
-        if tile_params:
-            raise ValueError(f"SM100 triangle attention has no tunable tile parameters; got {tile_params}")
-        return source._build_sm100_config(kernel_cls)
+        return source._build_sm100_config(kernel_cls, **sm100_options(tile_params))
     if "mma_tiler_mn" in tile_params:
         return source._build_sm90_config(kernel_cls, **tile_params)
     return source._build_sm80_config(kernel_cls, sm_version=sm_version, **tile_params)

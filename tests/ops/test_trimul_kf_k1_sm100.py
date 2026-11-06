@@ -206,16 +206,26 @@ def test_cubin_matches_source_on_this_gpu(B, N, C, D, monkeypatch):
 # --- configs and selection (no GPU work) ---------------------------------------------------------------------------
 
 
+#: SM103 anchors retuned on B300; every other SM103 anchor is the SM100 one.
+_SM103_RETUNED = {(256, 256): {"S=480"}}
+
+
+def _sm103_s480(sm: int, C: int, D: int, n: int) -> bool:
+    """Whether a call runs SM103's retuned C = 256 S=480 anchor (289 to 516 tokens)."""
+    return sm == 103 and (C, D) == (256, 256) and 288 < n <= 516
+
+
 def test_sm100_and_sm103_ship_one_bundle_per_shape():
-    """Every shape ships on both SMs from identical ``sm100`` bundles."""
+    """Every shape ships on both SMs from ``sm100`` bundles with the same anchors, equal except SM103's retuned ones."""
     assert k1_config.shipped_shapes(100) == k1_config.shipped_shapes(103) == set(_SHAPES)
     assert k1_config.KERNEL_ABIS[100] == k1_config.KERNEL_ABIS[103] == "sm100"
     for C, D in _SHAPES:
-        bundles = [json.loads((k1_config.CONFIGS_DIR / f"C{C}_D{D}_sm{sm}.json").read_text()) for sm in _BLACKWELL]
-        assert bundles[0] == bundles[1] and bundles[0]["kernel_abi"] == "sm100", (C, D)
+        sm100, sm103 = (json.loads((k1_config.CONFIGS_DIR / f"C{C}_D{D}_sm{sm}.json").read_text()) for sm in _BLACKWELL)
+        assert sm100["kernel_abi"] == sm103["kernel_abi"] == "sm100", (C, D)
+        assert sm100["configs"].keys() == sm103["configs"].keys(), (C, D)
+        differing = {key for key, entry in sm100["configs"].items() if sm103["configs"][key] != entry}
+        assert differing == _SM103_RETUNED.get((C, D), set()), (C, D)
         assert k1_config.anchors(100, C, D) == k1_config.anchors(103, C, D)
-        assert k1_config.layout_rules(100, C, D) == k1_config.layout_rules(103, C, D)
-        assert k1_config.tiles(100, C, D) == k1_config.tiles(103, C, D)
 
 
 @pytest.mark.parametrize("sm", _BLACKWELL)
@@ -224,12 +234,13 @@ def test_sm100_selection_follows_the_measured_dispatch(sm, shape):
     """K1_B1 at C = 32 and K1_B0 elsewhere, tiles switching where the interleaved measurements put them, the
     pad_n_mod_16_8 layout from 512 tokens (from C = 128's wider tile, past 320; at D = 256 past 288 where padding
     adds 8 columns), separate folds and no statistics, at every token count. Four epilogue groups run C = 64 past
-    200 tokens and up to 512, and C = 128 past 64 and up to 1032; two run every other tile."""
+    200 tokens and up to 512, and C = 128 past 64 and up to 1032; two run every other tile. SM103 pads every
+    N % 16 == 8 from 289 to 516 tokens at C = 256, with 32-wide epilogue subtiles there."""
     C, D = shape
     pad_from = 321 if C == 128 else 513
     for n in range(8, 4097, 8):
         selection = k1_config.select(sm, C, D, n)
-        padded = n % 16 == 8 and (n >= pad_from or (D == 256 and n > 288 and n % 64 == 56))
+        padded = n % 16 == 8 and (n >= pad_from or (D == 256 and n > 288 and n % 64 == 56) or _sm103_s480(sm, C, D, n))
         assert selection.ab_layout == ("padded" if padded else "dense"), n
         assert not selection.interleaved and not selection.writes_stats, n
         if C == 32:
@@ -247,7 +258,7 @@ def test_sm100_selection_follows_the_measured_dispatch(sm, shape):
             assert tile.bnc == (128 if n > 320 else 64), n
             assert tile.epi_groups == (4 if 64 < n <= 1032 else 2), n
         else:
-            assert tile == _Tile(128, 16, 2, 4, 2, 1, 2), n
+            assert tile == _Tile(128, 32 if _sm103_s480(sm, C, D, n) else 16, 2, 4, 2, 1, 2), n
 
 
 @_requires_source

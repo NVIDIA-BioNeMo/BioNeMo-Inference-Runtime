@@ -111,17 +111,42 @@ def test_sm100_and_sm103_ship_identical_bundles_for_every_width():
 
 
 @pytest.mark.parametrize("D", _WIDTHS)
-def test_sm100_dispatch_runs_k2_b0_below_512_then_pair_tiles_and_incoming_tails(D):
+def test_sm100_dispatch_runs_k2_b0_below_512_then_pair_tiles_and_tails(D):
     """K2_B0 below N = 512 and, from D = 64, up to N = 544; K2_B1 elsewhere, on columns 192 wide up to N = 576 (incoming
-    below D = 128: 544) and outgoing 224 wide up to N = 672; K2_B2's tails only incoming, past N = 2592, just past
-    256 k."""
+    below D = 128: 544) and outgoing 224 wide up to N = 672; K2_B2's tails where they pay: at D = 128 and 256 for
+    the anchors S = 768 to 1600 (N = 680 to 1800 at D = 128, 744 to 1800 at D = 256), each listing the widths the
+    locked-clock harness showed to pay there: outgoing 64/96/128 up to N = 892, 64/96/128/192 to 1020, 96/128/192 to
+    1212, 96/128 to 1500 at D = 128 only (at D = 256 the 96 tail lost 2.7% at N = 1368 in the harness) and none past
+    that; incoming 64/128 throughout, plus 192 for N = 896 to 1020 (an incoming B half of 96 columns is 1.5 lines per
+    row; 192 only pays where the remainder is near 192). Past 1800 the plain tiles run
+    again, and incoming 32 wide past N = 2592, just past 256 k. The narrowest listed tail that covers the remainder wins,
+    unless K2_B1's 224 x 2 cluster pads less (N = 1288 to 1344)."""
+    pair_s, pair_c = _T("K2_B1", tile_n=256, cluster_n=1, clc=False), _T("K2_B1", tile_n=256, cluster_n=1, clc=True)
+    quad = _T("K2_B1", tile_n=224, cluster_n=2, clc=True)
+    bands = [  # (first N, last N, plain tiles, outgoing tail widths, incoming tail widths)
+        (680 if D == 128 else 744, 892, (pair_s,), (64, 96, 128), (64, 128)),
+        (896, 1020, (pair_s,), (64, 96, 128, 192), (64, 128, 192)),
+        (1024, 1212, (pair_c, quad), (96, 128, 192), (64, 128)),
+        (1216, 1500, (pair_c, quad), (96, 128) if D == 128 else (), (64, 128)),
+        (1504, 1800, (pair_c, quad), (), (64, 128)),
+    ]
     for outgoing in (True, False):
         for n in range(8, 4097, 8):
             _, tile = k2_config.select(100, D, n, outgoing)
+            rem = n % 256
+            band = next((b for b in bands if b[0] <= n <= b[1]), None) if D >= 128 else None
             if n < 512 or (D >= 64 and 520 <= n <= 544):
                 assert tile.kernel_variant == "K2_B0", (n, tile)
-            elif not outgoing and n >= 2600 and 0 < n % 256 <= 32:
+            elif not outgoing and n >= 2600 and 0 < rem <= 32:
                 assert tile == _T("K2_B2", tail_w=32), (n, tile)
+            elif band is not None:
+                plain = band[2] if outgoing else band[2][:1]
+                tails = tuple(_T("K2_B2", tail_w=w) for w in (band[3] if outgoing else band[4]))
+                assert tile == k2_config.least_padding(plain + tails, n), (n, tile)
+                if tile.kernel_variant == "K2_B2":
+                    assert 0 < rem <= tile.tail_w and all(
+                        w < rem for w in (band[3] if outgoing else band[4]) if w < tile.tail_w
+                    ), (n, tile)
             else:
                 assert tile.kernel_variant == "K2_B1" and tile.tile_m == 256, (n, tile)
                 assert tile.clc == (n >= (1032 if D == 32 else 1024)), (n, tile)
@@ -133,8 +158,9 @@ def test_sm100_dispatch_runs_k2_b0_below_512_then_pair_tiles_and_incoming_tails(
                     assert tile.tile_n == (192 if narrow else 256 if wide else 224), (n, tile)
                 else:
                     assert tile.tile_n == 256 or (outgoing and tile.padded(n) < -(-n // 256) * 256), (n, tile)
-        # Each direction compiles a handful of images, fallbacks included (23 across both, shared by every width).
-        assert len(k2_config.shipped_tiles(list(k2_config.anchors(100, D, outgoing).values()))) <= 12
+        # Each direction compiles a handful of images, fallbacks included (up to 16 per direction at D = 128 and 256,
+        # tail widths included; shared by every width that lists them).
+        assert len(k2_config.shipped_tiles(list(k2_config.anchors(100, D, outgoing).values()))) <= 16
 
 
 @pytest.mark.parametrize("D", _WIDTHS)
@@ -202,12 +228,15 @@ def test_malformed_sm100_tiles_are_rejected(entry):
         k2_config.parse_tile(entry, "test", "sm100")
 
 
-def test_sm100_anchors_keep_tails_incoming_and_lists_distinct():
+def test_sm100_anchors_take_tails_in_both_directions_and_keep_lists_distinct():
     tails = {"kernel_variant": "K2_B2", "tail_w": 32}
+    wide = {"kernel_variant": "K2_B2", "tail_w": 192}
     pair = {"kernel_variant": "K2_B1", "tile_n": 256, "cluster_n": 1, "clc": True}
-    out, inc = k2_config.parse_entry({"out": pair, "in": [pair, tails]}, "ok", "sm100")
-    assert out == (_T("K2_B1", tile_n=256, cluster_n=1, clc=True),) and len(inc) == 2
-    for bad in (tails, [pair, tails], {"out": [pair, tails], "in": pair}, [pair, {**pair, "clc": False}]):
+    out, inc = k2_config.parse_entry({"out": [pair, tails, wide], "in": [pair, tails]}, "ok", "sm100")
+    assert out == (_T("K2_B1", tile_n=256, cluster_n=1, clc=True), _T("K2_B2", tail_w=32), _T("K2_B2", tail_w=192))
+    assert len(inc) == 2 and k2_config.parse_entry([pair, tails], "ok", "sm100") == (out[:2], out[:2])
+    # Lists must pad N differently.
+    for bad in ([pair, {**pair, "clc": False}], [pair, tails, tails]):
         with pytest.raises(ValueError):
             k2_config.parse_entry(bad, "bad", "sm100")
     # SM90 bundles keep their own schema.
@@ -352,6 +381,13 @@ _CASES = [
     (1, 1016, 384, 256, "tail"),
     (1, 1032, 64, 64, "random"),
     (1, 1320, 32, 32, "random"),
+    # K2_B2's general tails: outgoing 96 and incoming 128 wide at N = 848 (B = 2) and 1368 (padded planes), 128 wide
+    # in both directions at N = 1144 (padded planes), 192 wide at N = 960, 64 wide at N = 1600.
+    (2, 848, 128, 128, "tail"),
+    (1, 960, 256, 256, "random"),
+    (1, 1144, 128, 128, "tail"),
+    (1, 1368, 128, 128, "random"),
+    (1, 1600, 256, 256, "tail"),
 ]
 # Large N, on synthetic masked planes: incoming tails at r = 8 and 24, outgoing 256 and 224 x 2.
 _LARGE_CASES = [(1, 2824, 32, "tail"), (1, 3096, 128, "random")]

@@ -96,6 +96,7 @@ _SM100_LAUNCH_SHAPES = {
     "conditioned_transition_mlp": (("x", "w1", "w2", "output"), (2, 4, 2, 2), True, 512),
     "dual_gemm_x0_x1": (("x0", "x1", "w0", "w1", "residual", "output"), 2, True, 256),
     "dual_gemm_x_x": (("x", "w0", "w1", "output"), 2, True, 256),
+    "gated_sigmoid": (("s", "weight"), 2, False, 576),
     "pairwise_attention": (("q", "k", "v", "bias", "output"), 4, False, 512),
     "transition_mlp": (("x", "w1", "w2"), (2, 4, 2), True, 512),
     "triangle_attention": (("q", "k", "v", "bias", "output"), 4, False, 512),
@@ -207,6 +208,13 @@ def _metadata(family: str, dtype: str, kernel_sm: int) -> dict[str, object]:
             "num_threads": 128,
             "atom_layout_mnk": [2, 2, 1],
         }
+        if kernel_sm == 100:
+            concrete.update(
+                m_block_size=128,
+                num_threads=576,
+                atom_layout_mnk=[1, 1, 1],
+                sm100_launch=_sm100_launch(family, dtype),
+            )
     elif family == "outer_product_mean":
         concrete = {
             "is_bfloat16": dtype == "bf16",

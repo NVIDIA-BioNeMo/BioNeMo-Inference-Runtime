@@ -306,6 +306,8 @@ _FAMILY_SPECS: dict[str, _FamilySpec] = {
             "atom_layout_mnk",
             "unroll",
         ),
+        # The persistent tcgen05 kernel's tensor maps for s and W; no cluster.
+        sm100=_Sm100Spec("enabled", ("s", "weight"), rank=2),
     ),
     "outer_product_mean": _FamilySpec(
         fields=(

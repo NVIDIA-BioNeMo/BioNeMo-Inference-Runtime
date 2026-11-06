@@ -34,6 +34,7 @@ namespace
 
 constexpr char kSM80LaunchAbi[] = "gated_sigmoid_sm80";
 constexpr char kSM90LaunchAbi[] = "gated_sigmoid_sm90";
+constexpr char kSM100LaunchAbi[] = "gated_sigmoid_sm100";
 
 LaunchAbi launch_abi_of(EmbeddedCubinImage const& cubin)
 {
@@ -41,6 +42,8 @@ LaunchAbi launch_abi_of(EmbeddedCubinImage const& cubin)
     return LaunchAbi::kSM80;
   if (cubin.launch_abi != nullptr && cubin.kernel_sm == 90 && std::strcmp(cubin.launch_abi, kSM90LaunchAbi) == 0)
     return LaunchAbi::kSM90;
+  if (cubin.launch_abi != nullptr && cubin.kernel_sm == 100 && std::strcmp(cubin.launch_abi, kSM100LaunchAbi) == 0)
+    return LaunchAbi::kSM100;
   throw std::invalid_argument("gated-sigmoid CUBIN has an incompatible launch ABI");
 }
 
@@ -98,6 +101,15 @@ void validate_launch(KernelConfig const& config, LaunchParams const& params)
       throw std::invalid_argument("SM90 gated sigmoid needs N to be a multiple of 8");
     if (params.chunk < 0)
       throw std::invalid_argument("chunk must not be negative");
+  }
+
+  if (config.spec.launch_abi == LaunchAbi::kSM100)
+  {
+    /* TMA needs 16-byte row strides on both tensor-mapped operands; their pointers are checked above, and a
+     * Tensor2View is contiguous along K by construction: it carries only the row stride.
+     */
+    if ((params.s.strides[0] * 2) % 16 != 0 || (params.weight.strides[0] * 2) % 16 != 0)
+      throw std::invalid_argument("SM100 TMA gated sigmoid needs 16-byte aligned row strides for s and weight");
   }
 
   if (params.mult <= 0)
@@ -272,6 +284,75 @@ void launch_sm90(
     launch_cubin_kernel(loaded, &launch_config, kernel_params, nullptr), "launch_cubin_kernel(gated_sigmoid_sm90)");
 }
 
+void launch_sm100(
+  cubin_kernel_t loaded,
+  KernelConfig const& config,
+  LaunchParams const& params,
+  CUcontext context,
+  std::uint32_t smem_bytes)
+{
+  validate_operand_devices(config, params, cuda_device_for_context(context));
+  KernelSpec const& spec = config.spec;
+  /* Each box is one swizzle atom of the K block and the tile's rows; the builder checks the recipe against the atoms
+   * CuTeDSL lowers, so a change there fails the build, not a launch.
+   */
+  auto const& metadata = config.embedded_image->sm100;
+  if (!metadata.enabled)
+    throw std::invalid_argument("gated-sigmoid SM100 CUBIN has no tensor-map metadata");
+  auto const dtype = tma_data_type(config.dtype == DType::kBFloat16);
+
+  abi::SM100Params device_params{};
+  encode_tma_descriptor(device_params.s_tma, metadata.s, dtype, make_tma_tensor2_source(params.s, false), "s");
+  encode_tma_descriptor(
+    device_params.weight_tma, metadata.weight, dtype, make_tma_tensor2_source(params.weight, false), "weight");
+  finalize_sm100_tma_atom(device_params.s_tma);
+  finalize_sm100_tma_atom(device_params.weight_tma);
+  device_params.s_coord = make_tensor2_s2_coord(params.s);
+  device_params.weight_coord = make_tensor2_s2_coord(params.weight);
+  if (config.has_bias)
+    device_params.bias = make_tensor1_descriptor(params.bias);
+  device_params.mha_out = make_tensor2_s2_d1_descriptor(params.mha_out);
+  if (config.has_residual)
+    device_params.residual = make_tensor2_s2_d1_descriptor(params.residual);
+  if (config.has_mask)
+    device_params.mask = make_tensor1_descriptor(params.mask);
+  device_params.output = make_tensor2_s2_d1_descriptor(params.output);
+  device_params.mult = params.mult;
+  device_params.inner = params.inner;
+
+  void* kernel_params[abi::kSM100MaxParameterCount];
+  std::size_t const count = abi::pack_sm100_kernel_params(
+    &device_params, kernel_params, config.has_bias, config.has_residual, config.has_mask);
+  if (count != abi::sm100_parameter_count(config.has_bias, config.has_residual, config.has_mask))
+    throw std::invalid_argument("gated-sigmoid packed an unexpected number of kernel parameters");
+
+  /* One persistent CTA per SM: tensor memory is per SM, so a second resident CTA could not allocate its own. The
+   * kernel walks (batch, inner tile, N tile) work items with a grid-sized stride.
+   */
+  std::uint64_t const inner_tiles
+    = ceil_div(static_cast<std::uint64_t>(params.inner), static_cast<std::uint64_t>(spec.m_block_size));
+  std::uint64_t const batches
+    = static_cast<std::uint64_t>(params.s.shape[0]) / static_cast<std::uint64_t>(params.inner);
+  std::uint64_t const n_tiles
+    = ceil_div(static_cast<std::uint64_t>(params.output.shape[1]), static_cast<std::uint64_t>(spec.n_block_size));
+  std::uint64_t const work_items = batches * inner_tiles * n_tiles;
+  std::uint64_t const sm_count = static_cast<std::uint64_t>(cuda_multiprocessor_count_for_context(context));
+  std::uint64_t const grid = work_items < sm_count ? work_items : sm_count;
+
+  cubin_launch_config_t launch_config = {0};
+  launch_config.grid_x = checked_u32(grid, "gated-sigmoid grid.x");
+  launch_config.grid_y = 1;
+  launch_config.grid_z = 1;
+  launch_config.block_x = static_cast<std::uint32_t>(spec.num_threads);
+  launch_config.block_y = 1;
+  launch_config.block_z = 1;
+  launch_config.dynamic_smem_bytes = smem_bytes;
+  launch_config.stream = reinterpret_cast<CUstream>(static_cast<std::uintptr_t>(params.stream));
+
+  check_cuda_driver(
+    launch_cubin_kernel(loaded, &launch_config, kernel_params, nullptr), "launch_cubin_kernel(gated_sigmoid_sm100)");
+}
+
 embedded::CubinImage const& find_embedded_cubin(
   std::int32_t target_sm,
   DType dtype,
@@ -395,6 +476,8 @@ void launch(KernelConfig const& config, LaunchParams const& params)
   cubin_kernel_t const loaded = load_embedded_kernel(context, config.cubin);
   if (config.spec.launch_abi == LaunchAbi::kSM90)
     launch_sm90(loaded, config, params, context, dynamic_smem_bytes(config));
+  else if (config.spec.launch_abi == LaunchAbi::kSM100)
+    launch_sm100(loaded, config, params, context, dynamic_smem_bytes(config));
   else
     launch_sm80(loaded, config, params, context, dynamic_smem_bytes(config));
 }

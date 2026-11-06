@@ -27,6 +27,7 @@ from test_utils.boltz.ref_layers import RefConditionedTransitionBlock
 
 from bionemo_ir._torch.custom_ops.dual_gemm_x_x import cutedsl as dual_gemm_x_x_cutedsl
 from bionemo_ir._torch.custom_ops.dual_gemm_x_x import ops as dual_gemm_x_x_ops
+from bionemo_ir._torch.custom_ops.gated_sigmoid.cutedsl import GatedSigmoidCuTe, published_cubin_sms
 from bionemo_ir._torch.graph_optimization.config import CUDAGraphOptimizationConfig, GraphOptimizationMode
 from bionemo_ir._torch.graph_optimization.region import GraphRegion
 from bionemo_ir._torch.graph_optimization.tensor_copy_utils import _copy_tensors_into
@@ -638,6 +639,13 @@ def test_transition_layer_import_leaves_the_cutedsl_compiler_unloaded() -> None:
     assert loaded.strip() == "[]", loaded
 
 
+def _leave_gated_sigmoid_unforced_without_an_image(monkeypatch: pytest.MonkeyPatch) -> None:
+    """FORCE_CUBIN must not demand a gated-sigmoid image this pack does not publish."""
+    if SM_VERSION in published_cubin_sms():
+        return
+    monkeypatch.setattr(GatedSigmoidCuTe, "force_cubin", lambda self: False)
+
+
 def test_conditioned_transition_fused_table_survives_forced_cubins(monkeypatch: pytest.MonkeyPatch) -> None:
     """Forcing CUBINs keeps the table's structure, so it still copies into the static inputs held for an
     earlier rollout's table; called eagerly, the block then runs the packaged kernel, the source kernel's code, or its
@@ -652,6 +660,7 @@ def test_conditioned_transition_fused_table_survives_forced_cubins(monkeypatch: 
     if module._conditioned_op is None:
         pytest.skip("the fused conditioned transition does not run on this GPU")
     monkeypatch.delenv("CUTEDSL_FORCE_CUBIN", raising=False)
+    _leave_gated_sigmoid_unforced_without_an_image(monkeypatch)
     torch.manual_seed(13)
     with torch.no_grad():
         for parameter in module.parameters():
@@ -698,6 +707,7 @@ def test_conditioned_transition_graph_recaptures_after_forcing_cubins(monkeypatc
     if block._conditioned_op is None:
         pytest.skip("the fused conditioned transition does not run on this GPU")
     monkeypatch.delenv("CUTEDSL_FORCE_CUBIN", raising=False)
+    _leave_gated_sigmoid_unforced_without_an_image(monkeypatch)
     torch.manual_seed(13)
     with torch.no_grad():
         for parameter in block.parameters():

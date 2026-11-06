@@ -1,0 +1,66 @@
+{
+  "kernel_abi": "sm100",
+  "configs": {
+    "0": {
+      "kernel_abi": "sm80",
+      "m_block_size": 16,
+      "n_block_size": 32,
+      "k_block_size": 32,
+      "num_stages": 4,
+      "atom_layout_mnk": [
+        1,
+        2,
+        1
+      ],
+      "raster_factor": 1
+    },
+    "257": {
+      "m_block_size": 128,
+      "n_block_size": 32,
+      "k_block_size": 128,
+      "num_stages": 4,
+      "atom_layout_mnk": [
+        1,
+        1,
+        1
+      ],
+      "raster_factor": 1
+    },
+    "769": {
+      "m_block_size": 128,
+      "n_block_size": 64,
+      "k_block_size": 128,
+      "num_stages": 4,
+      "atom_layout_mnk": [
+        1,
+        1,
+        1
+      ],
+      "raster_factor": 1
+    },
+    "1025": {
+      "m_block_size": 128,
+      "n_block_size": 128,
+      "k_block_size": 64,
+      "num_stages": 3,
+      "atom_layout_mnk": [
+        1,
+        1,
+        1
+      ],
+      "raster_factor": 1
+    },
+    "2049": {
+      "m_block_size": 128,
+      "n_block_size": 128,
+      "k_block_size": 64,
+      "num_stages": 3,
+      "atom_layout_mnk": [
+        1,
+        1,
+        1
+      ],
+      "raster_factor": 1
+    }
+  }
+}

@@ -22,7 +22,7 @@ import torch
 
 from bionemo_ir.utils import get_sm_version
 
-_SUPPORTED_SM = {80, 86, 89, 90}
+_SUPPORTED_SM = {80, 86, 89, 90, 100, 103, 120, 121}
 _SUPPORTED_NK = {
     (64, 64),
     (128, 128),

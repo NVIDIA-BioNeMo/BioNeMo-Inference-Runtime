@@ -13,6 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import json
 from dataclasses import dataclass, field
 
 import pytest
@@ -26,8 +27,11 @@ from bionemo_ir._torch.custom_ops.gated_sigmoid import (
 )
 from bionemo_ir._torch.custom_ops.gated_sigmoid import _config as gated_config
 from bionemo_ir._torch.custom_ops.gated_sigmoid import cutedsl as gated_cutedsl
+from bionemo_ir._torch.custom_ops.gated_sigmoid import ops as gated_ops
 from bionemo_ir._torch.custom_ops.gated_sigmoid._cubin import GatedSigmoidCubinExecutable
+from bionemo_ir._torch.utils.kernel import load_kernel_configs
 from tests._torch import (
+    _CUTEDSL_MODE_CACHES,
     SM_VERSION,
     cutedsl_test_modes,
     require_cubin_library,
@@ -36,6 +40,60 @@ from tests._torch import (
 )
 
 _CUTEDSL_MODES = cutedsl_test_modes("bionemo_ir._torch.custom_ops.gated_sigmoid._source")
+
+
+def _skip_cubin_without_an_image(mode: str) -> None:
+    """CUBIN mode needs an image for this SM. The Blackwell packs are not published yet."""
+    if mode == "cubin" and SM_VERSION not in gated_cutedsl.published_cubin_sms():
+        pytest.skip(f"the gated-sigmoid CUBIN pack has no image for SM{SM_VERSION}")
+
+
+_SUPPORTED_SMS = tuple(sorted(gated_ops._SUPPORTED_SM))
+_BLACKWELL_SMS = (100, 103, 120, 121)
+
+
+@pytest.fixture
+def no_fallback(monkeypatch):
+    """Fail a call that would run PyTorch instead of the kernel."""
+
+    def reject(*_args, **_kwargs):
+        raise AssertionError("unexpected vanilla fallback")
+
+    monkeypatch.setattr(gated_cutedsl, "_invoke_vanilla_gated_sigmoid", reject)
+
+
+@pytest.fixture
+def source_free_selection(monkeypatch):
+    """Fail configuration selection that imports a private kernel."""
+
+    def reject(_implementation):
+        raise AssertionError("configuration selection imported a private kernel")
+
+    monkeypatch.setattr(gated_config, "resolve_implementation", reject)
+
+
+def _broadcast_problem(
+    dtype, K, N, outer, mult, inner, *, has_bias=True, has_residual=False, has_mask=False, seed=0
+) -> dict:
+    """Operands of one call whose ``outer * inner`` gate rows each serve ``mult`` output rows."""
+    torch.manual_seed(seed)
+    s = torch.randn(outer, 1, inner, K, device="cuda", dtype=dtype)
+    weight = (torch.randn(N, K, device="cuda") / K**0.5).to(dtype)
+    bias = torch.randn(N, device="cuda", dtype=dtype) if has_bias else None
+    mha_out = torch.randn(outer, mult, inner, N, device="cuda", dtype=dtype)
+    residual = torch.randn_like(mha_out) if has_residual else None
+    mask = (torch.rand(outer, mult, inner, device="cuda") > 0.3).to(dtype) if has_mask else None
+    return {"s": s, "weight": weight, "mha_out": mha_out, "bias": bias, "residual": residual, "mask": mask}
+
+
+def _assert_matches_pytorch(result: torch.Tensor, problem: dict) -> None:
+    def fp32(name):
+        return None if problem[name] is None else problem[name].float()
+
+    reference = _invoke_vanilla_gated_sigmoid(
+        fp32("s"), fp32("weight"), fp32("mha_out"), fp32("bias"), residual=fp32("residual"), mask=problem["mask"]
+    )
+    torch.testing.assert_close(result.float(), reference, atol=0.05, rtol=0.02)
 
 
 def _ref_gated_sigmoid(
@@ -105,9 +163,10 @@ class Scenario:
 @pytest.mark.parametrize("mode", _CUTEDSL_MODES)
 @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16], ids=["fp16", "bf16"])
 @pytest.mark.parametrize("has_bias", [False, True], ids=["no_bias", "bias"])
-@pytest.mark.parametrize("M", [65, 1025, 2049], ids=["short", "medium", "long"])
+@pytest.mark.parametrize("M", [65, 513, 1025, 2049], ids=["tiny", "short", "medium", "long"])
 def test_gated_sigmoid_source_and_cubin(mode, dtype, has_bias, M, monkeypatch):
-    if SM_VERSION not in (80, 86, 89, 90):
+    _skip_cubin_without_an_image(mode)
+    if SM_VERSION not in _SUPPORTED_SMS:
         pytest.skip(f"gated-sigmoid CUBINs do not target SM{SM_VERSION}")
     torch.manual_seed(13)
     K, N = 128, 256
@@ -129,14 +188,12 @@ def test_gated_sigmoid_source_and_cubin(mode, dtype, has_bias, M, monkeypatch):
 
 def test_gated_sigmoid_force_cubin_ignores_warmed_source(monkeypatch):
     backend = GatedSigmoidCuTe()
-    key = (backend._sm_version, torch.bfloat16, True, False, False, 128, 256, "short")
+    resolved = gated_config.resolve(backend._sm_version, 128, 256, 65)
+    key = (backend._sm_version, torch.bfloat16, True, False, False, 128, 256) + backend._tile_signature(resolved)
     cached_source, cubin = object(), object()
     monkeypatch.setattr(GatedSigmoidCuTe, "_compiled_cache", {key: cached_source})
-    monkeypatch.setattr(backend, "force_cubin", lambda: True)
     monkeypatch.setattr(backend, "_load_cubin_executable", lambda *_args, **_kwargs: cubin)
-    executable = backend._get_or_compile(
-        torch.bfloat16, has_bias=True, has_residual=False, has_mask=False, K=128, N=256, M=65, key=key
-    )
+    executable = backend._get_or_compile(torch.bfloat16, True, False, False, 128, 256, 65, resolved, force_cubin=True)
     assert executable is cubin
 
 
@@ -152,49 +209,31 @@ def test_gated_sigmoid_force_cubin_ignores_warmed_source(monkeypatch):
 @pytest.mark.parametrize(
     "outer,mult,inner,bucket",
     # s has outer * inner rows, which pick the M bucket.
-    [(1, 5, 65, "short"), (2, 1, 700, "medium"), (1, 3, 2100, "long")],
-    ids=["short_mult5", "medium_mult1", "long_mult3"],
+    [(1, 5, 65, "tiny"), (1, 1, 300, "short"), (2, 1, 700, "medium"), (1, 3, 2100, "long")],
+    ids=["tiny_mult5", "short_mult1", "medium_mult1", "long_mult3"],
 )
-def test_gated_sigmoid_residual_mask(mode, has_mask, has_residual, K, N, outer, mult, inner, bucket, monkeypatch):
-    if SM_VERSION not in (80, 86, 89, 90):
+def test_gated_sigmoid_residual_mask(
+    mode, has_mask, has_residual, K, N, outer, mult, inner, bucket, no_fallback, monkeypatch
+):
+    _skip_cubin_without_an_image(mode)
+    if SM_VERSION not in _SUPPORTED_SMS:
         pytest.skip(f"gated-sigmoid CUBINs do not target SM{SM_VERSION}")
     assert _classify_m_range(outer * inner) == bucket
-    torch.manual_seed(7)
-    dtype = torch.bfloat16
-    s = torch.randn(outer, 1, inner, K, device="cuda", dtype=dtype)
-    weight = (torch.randn(N, K, device="cuda") / K**0.5).to(dtype)
-    bias = torch.randn(N, device="cuda", dtype=dtype)
-    mha_out = torch.randn(outer, mult, inner, N, device="cuda", dtype=dtype)
-    residual = torch.randn_like(mha_out) if has_residual else None
-    mask = (torch.rand(outer, mult, inner, device="cuda") > 0.3).to(dtype) if has_mask else None
-
-    def reject_fallback(*_args, **_kwargs):
-        raise AssertionError("unexpected vanilla fallback")
-
-    monkeypatch.setattr(gated_cutedsl, "_invoke_vanilla_gated_sigmoid", reject_fallback)
+    problem = _broadcast_problem(
+        torch.bfloat16, K, N, outer, mult, inner, has_residual=has_residual, has_mask=has_mask, seed=7
+    )
     result = run_cutedsl_test_mode(
-        mode,
-        monkeypatch,
-        GatedSigmoidCuTe,
-        gated_cutedsl,
-        lambda: GatedSigmoidCuTe()(s, weight, mha_out, bias, residual=residual, mask=mask),
+        mode, monkeypatch, GatedSigmoidCuTe, gated_cutedsl, lambda: GatedSigmoidCuTe()(**problem)
     )
-    reference = _invoke_vanilla_gated_sigmoid(
-        s.float(),
-        weight.float(),
-        mha_out.float(),
-        bias.float(),
-        residual=None if residual is None else residual.float(),
-        mask=mask,
-    )
-    torch.testing.assert_close(result.float(), reference, atol=0.05, rtol=0.02)
+    _assert_matches_pytorch(result, problem)
 
 
 @pytest.mark.parametrize("mode", _CUTEDSL_MODES)
 @pytest.mark.parametrize("K,N", [(384, 768), (128, 128)], ids=["K384_N768", "K128_N128"])
 def test_gated_sigmoid_residual_inplace(mode, K, N, monkeypatch):
     """Writing the sum over the residual matches the out-of-place result exactly."""
-    if SM_VERSION not in (80, 86, 89, 90):
+    _skip_cubin_without_an_image(mode)
+    if SM_VERSION not in _SUPPORTED_SMS:
         pytest.skip(f"gated-sigmoid CUBINs do not target SM{SM_VERSION}")
     torch.manual_seed(11)
     dtype = torch.bfloat16
@@ -215,11 +254,7 @@ def test_gated_sigmoid_residual_inplace(mode, K, N, monkeypatch):
     run_cutedsl_test_mode(mode, monkeypatch, GatedSigmoidCuTe, gated_cutedsl, operation)
 
 
-def test_gated_sigmoid_sm90_config_selects_sm90_kernel(monkeypatch):
-    def reject_source(_implementation):
-        raise AssertionError("configuration selection imported a private kernel")
-
-    monkeypatch.setattr(gated_config, "resolve_implementation", reject_source)
+def test_gated_sigmoid_sm90_config_selects_sm90_kernel(source_free_selection):
     for K in (384, 768):
         config = gated_config.get_kernel_config(90, K, 768, 65)
         assert config.kernel_abi == "sm90"
@@ -227,11 +262,97 @@ def test_gated_sigmoid_sm90_config_selects_sm90_kernel(monkeypatch):
     assert gated_config.get_kernel_config(80, 384, 768, 65).kernel_abi == "sm80"
 
 
-def test_gated_sigmoid_config_selection_is_source_free(monkeypatch):
-    def reject_source(_implementation):
-        raise AssertionError("configuration selection imported a private kernel")
+@pytest.mark.parametrize("sm", _BLACKWELL_SMS)
+def test_gated_sigmoid_blackwell_config_selects_sm100_kernel(sm, source_free_selection):
+    for K, N in ((64, 64), (384, 768), (999, 1234)):
+        for M in (65, 1500, 4096):
+            abi = gated_config.get_kernel_config(sm, K, N, M).kernel_abi
+            assert abi == gated_config.get_kernel_abi(sm, K, N, M)
+            # SM120 and SM121 have no tensor memory; SM100 and SM103 may run the TMA source where a bucket says so.
+            assert abi in (("sm80", "sm100") if sm in (100, 103) else ("sm80",))
 
-    monkeypatch.setattr(gated_config, "resolve_implementation", reject_source)
+
+@pytest.mark.parametrize("sm", _BLACKWELL_SMS)
+def test_gated_sigmoid_blackwell_tiles_fit_with_and_without_residual(sm):
+    """Every tile a Blackwell SM can resolve fits its shared memory for both residual flags."""
+    cutlass = pytest.importorskip("cutlass")
+    cutlass_utils = pytest.importorskip("cutlass.utils")
+    source = pytest.importorskip("bionemo_ir._torch.custom_ops.gated_sigmoid._source")
+    for K, N in ((64, 64), (384, 768), (999, 1234)):
+        for M in (65, 1500, 4096):
+            tile = gated_config.get_tile_params(sm, K, N, M)
+            abi = gated_config.get_kernel_abi(sm, K, N, M)
+            kernel_cls = gated_config.resolve_implementation(source.source_implementation(abi))
+            limit = int(cutlass_utils.get_smem_capacity_in_bytes(f"sm_{sm}"))
+            for has_residual in (False, True):
+                smem = kernel_cls.dynamic_smem_bytes(
+                    cutlass.BFloat16,
+                    tile["m_block_size"],
+                    tile["n_block_size"],
+                    tile["k_block_size"],
+                    tile["num_stages"],
+                    has_residual=has_residual,
+                )
+                assert smem <= limit, f"SM{sm} K={K} N={N} M={M} residual={has_residual}: {tile} needs {smem} B"
+
+
+@pytest.mark.skipif(SM_VERSION not in _BLACKWELL_SMS, reason="Blackwell-only kernel")
+@pytest.mark.parametrize("mode", _CUTEDSL_MODES)
+@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16], ids=["fp16", "bf16"])
+@pytest.mark.parametrize("has_bias", [False, True], ids=["nobias", "bias"])
+@pytest.mark.parametrize("has_mask", [False, True], ids=["nomask", "mask"])
+@pytest.mark.parametrize("has_residual", [False, True], ids=["nores", "res"])
+def test_gated_sigmoid_blackwell_matches_pytorch(
+    mode, dtype, has_bias, has_mask, has_residual, no_fallback, monkeypatch
+):
+    """The shipped kernel of every operand flag matches PyTorch with a broadcast gate (``mult > 1``)."""
+    _skip_cubin_without_an_image(mode)
+    problem = _broadcast_problem(
+        dtype, 128, 256, 2, 3, 333, has_bias=has_bias, has_residual=has_residual, has_mask=has_mask, seed=5
+    )
+    result = run_cutedsl_test_mode(
+        mode, monkeypatch, GatedSigmoidCuTe, gated_cutedsl, lambda: GatedSigmoidCuTe()(**problem)
+    )
+    _assert_matches_pytorch(result, problem)
+
+    if has_residual:
+        # The residual add is compiled in, not skipped: the same call without it differs by exactly the residual.
+        without = GatedSigmoidCuTe()(**{**problem, "residual": None})
+        torch.testing.assert_close(result.float() - without.float(), problem["residual"].float(), atol=0.05, rtol=0.02)
+
+
+@pytest.mark.parametrize("sm", [90, 100, 120])
+def test_gated_sigmoid_disk_cache_key_follows_the_tile(sm, monkeypatch):
+    """A retuned schedule must not load a kernel cached under an older one."""
+    op = GatedSigmoidCuTe()
+    op._sm_version = sm
+    keys: list[tuple] = []
+    sentinel = object()
+
+    def load_from_cache(key):
+        keys.append(key)
+        return sentinel
+
+    monkeypatch.setattr(op, "load_from_cache", load_from_cache)
+    monkeypatch.setattr(GatedSigmoidCuTe, "_compiled_cache", {})
+    monkeypatch.setattr(op, "_resolve_source_kernel", lambda *_a: (None, None, "sm80"))
+
+    def run(tile):
+        # A cold process each time: only the disk cache can answer.
+        GatedSigmoidCuTe._compiled_cache.clear()
+        resolved = gated_config.ResolvedTile("sm80", tile, 0)
+        assert op._get_or_compile(torch.bfloat16, True, False, False, 128, 256, 64, resolved, False) is sentinel
+
+    base = {"m_block_size": 64, "n_block_size": 64, "k_block_size": 32, "num_stages": 3, "atom_layout_mnk": [2, 2, 1]}
+    run(base)
+    run(dict(base, n_block_size=128))
+    run(dict(base, atom_layout_mnk=[1, 2, 1]))
+    run(dict(base))
+    assert len({*keys}) == 3
+    assert keys[0] == keys[3]
+
+
+def test_gated_sigmoid_config_selection_is_source_free(source_free_selection):
     config = gated_config.get_kernel_config(90, 128, 256, 65)
     expected = gated_config.get_tile_params(90, 128, 256, 65)
     assert gated_config._params_from_json(config.tile_params) == expected
@@ -270,7 +391,7 @@ def test_gated_sigmoid_config_selection_is_source_free(monkeypatch):
 )
 def test_gated_sigmoid_cute_2d(sc: Scenario):
     """Test CuTeDSL kernel with 2-D [M, K] inputs across M-ranges."""
-    skip_if_no_cutedsl()
+    skip_if_no_cutedsl("gated_sigmoid")
     torch.manual_seed(42)
     cute_op = GatedSigmoidCuTe()
 
@@ -310,7 +431,7 @@ def test_gated_sigmoid_cute_2d(sc: Scenario):
 )
 def test_gated_sigmoid_cute_varied_kn(sc: Scenario):
     """Test with non-default K and N_out dimensions."""
-    skip_if_no_cutedsl()
+    skip_if_no_cutedsl("gated_sigmoid")
     torch.manual_seed(42)
     cute_op = GatedSigmoidCuTe()
 
@@ -342,7 +463,7 @@ def test_gated_sigmoid_cute_varied_kn(sc: Scenario):
 )
 def test_gated_sigmoid_cute_batched(shape, has_bias):
     """Test with batched (3-D/4-D) inputs; kernel flattens leading dims."""
-    skip_if_no_cutedsl()
+    skip_if_no_cutedsl("gated_sigmoid")
     torch.manual_seed(42)
     dtype = torch.bfloat16
     K = shape[-1]
@@ -382,7 +503,7 @@ def test_gated_sigmoid_cute_batched(shape, has_bias):
 )
 def test_gated_sigmoid_cute_broadcast(B, S, I, K, N_out, has_bias):
     """Gate `s` is [B, 1, I, K], shared across S samples of mha_out [B, S, I, N]."""
-    skip_if_no_cutedsl()
+    skip_if_no_cutedsl("gated_sigmoid")
     torch.manual_seed(42)
     dtype = torch.bfloat16
 
@@ -405,7 +526,7 @@ def test_gated_sigmoid_cute_broadcast(B, S, I, K, N_out, has_bias):
 @pytest.mark.parametrize("has_bias", [True, False], ids=["bias", "nobias"])
 def test_gated_sigmoid_cute_broadcast_3d(has_bias):
     """Broadcast with the multiplicity as the leading dim: s [1, I, K]."""
-    skip_if_no_cutedsl()
+    skip_if_no_cutedsl("gated_sigmoid")
     torch.manual_seed(0)
     dtype = torch.bfloat16
     K, N_out, S, I = 256, 128, 6, 257
@@ -426,7 +547,7 @@ def test_gated_sigmoid_cute_broadcast_3d(has_bias):
 
 def test_gated_sigmoid_broadcast_matches_nonbroadcast():
     """Broadcasting S samples == expanding `s` and running the dense kernel."""
-    skip_if_no_cutedsl()
+    skip_if_no_cutedsl("gated_sigmoid")
     torch.manual_seed(123)
     dtype = torch.bfloat16
     K, N_out, B, S, I = 128, 128, 2, 4, 70
@@ -481,7 +602,7 @@ def test_get_gated_sigmoid_op_selector():
     op_fp16 = get_gated_sigmoid_op(torch.float16, N=128, K=128)
     op_fp32 = get_gated_sigmoid_op(torch.float32, N=128, K=128)
 
-    if SM_VERSION in (80, 86, 89, 90):
+    if SM_VERSION in _SUPPORTED_SMS:
         assert isinstance(op_bf16, GatedSigmoidCuTe)
         assert isinstance(op_fp16, GatedSigmoidCuTe)
     else:
@@ -541,8 +662,12 @@ def test_sm80_cubin_adapter_selects_atom_layout():
 
 
 def test_classify_m_range():
-    assert _classify_m_range(1) == "short"
-    assert _classify_m_range(1024) == "short"
+    assert _classify_m_range(1) == "tiny"
+    assert _classify_m_range(256) == "tiny"
+    assert _classify_m_range(257) == "short"
+    assert _classify_m_range(768) == "short"
+    assert _classify_m_range(769) == "short_hi"
+    assert _classify_m_range(1024) == "short_hi"
     assert _classify_m_range(1025) == "medium"
     assert _classify_m_range(2048) == "medium"
     assert _classify_m_range(2049) == "long"
@@ -558,7 +683,7 @@ def test_classify_m_range():
 @pytest.mark.parametrize("M", [33, 127, 390, 1025, 2049])
 def test_gated_sigmoid_cute_inplace_2d(M, has_bias):
     """Verify in-place (output=mha_out) produces the same result as out-of-place."""
-    skip_if_no_cutedsl()
+    skip_if_no_cutedsl("gated_sigmoid")
     torch.manual_seed(42)
     K, N_out = 768, 768
     dtype = torch.bfloat16
@@ -589,7 +714,7 @@ def test_gated_sigmoid_cute_inplace_2d(M, has_bias):
 )
 def test_gated_sigmoid_cute_inplace_batched(shape_s, shape_mha, has_bias, monkeypatch):
     """In-place with a batched gate and flat output must stay on the fused path."""
-    skip_if_no_cutedsl()
+    skip_if_no_cutedsl("gated_sigmoid")
     torch.manual_seed(42)
     K = shape_s[-1]
     N_out = shape_mha[-1]
@@ -645,3 +770,240 @@ def test_gated_sigmoid_falls_back_for_unsupported_layout(noncontiguous, monkeypa
     if output is not None:
         assert result.data_ptr() == output.data_ptr()
     torch.testing.assert_close(result, expected, atol=0, rtol=0)
+
+
+# --- per-bucket kernel selection: the persistent TMA source ----------------------------------------------------------
+
+_MMA_SYNC_TILE = {
+    "m_block_size": 64,
+    "n_block_size": 128,
+    "k_block_size": 64,
+    "num_stages": 3,
+    "atom_layout_mnk": [2, 2, 1],
+    "raster_factor": 1,
+}
+_TMA_TILE = {
+    "kernel_abi": "sm100",
+    "m_block_size": 128,
+    "n_block_size": 64,
+    "k_block_size": 64,
+    "num_stages": 6,
+    "atom_layout_mnk": [1, 1, 1],
+    "raster_factor": 1,
+}
+
+
+def _drop_gated_sigmoid_mode_caches() -> None:
+    """Drop executables compiled against an earlier tile so a retuned config cannot reuse them."""
+    stale = [key for key in _CUTEDSL_MODE_CACHES if key[0] is GatedSigmoidCuTe]
+    for key in stale:
+        del _CUTEDSL_MODE_CACHES[key]
+
+
+@pytest.fixture
+def tuned_configs(tmp_path, request, monkeypatch):
+    """Point the config loader at ``tmp_path``; ``write(name, bundle)`` adds a file there."""
+    _drop_gated_sigmoid_mode_caches()
+    monkeypatch.setenv("BIOIR_TUNED_CONFIG_FOLDER", str(tmp_path))
+    load_kernel_configs.cache_clear()
+    request.addfinalizer(_drop_gated_sigmoid_mode_caches)
+    request.addfinalizer(load_kernel_configs.cache_clear)
+
+    def write(name: str, bundle: dict) -> None:
+        (tmp_path / name).write_text(json.dumps(bundle))
+
+    return write
+
+
+def test_gated_sigmoid_short_bucket_inherits_the_tiny_entry_of_an_older_file(tuned_configs):
+    """A file without a ``257`` key runs its ``0`` entry for every ``M <= 1024``, and CUBINs index that same key."""
+    tuned_configs(
+        "K384_N768_sm100.json",
+        {"kernel_abi": "sm80", "configs": {"0": _MMA_SYNC_TILE, "1025": _MMA_SYNC_TILE, "2049": _TMA_TILE}},
+    )
+    assert [gated_config.get_m_bucket(M, 100, 384, 768) for M in (64, 256, 257, 1024, 1025, 2049)] == [
+        0,
+        0,
+        0,
+        0,
+        1025,
+        2049,
+    ]
+    assert gated_config.get_tile_params(100, 384, 768, 300) == gated_config.get_tile_params(100, 384, 768, 64)
+
+
+def test_gated_sigmoid_tiny_and_short_buckets_can_differ(tuned_configs):
+    tuned_configs(
+        "K384_N768_sm100.json",
+        {
+            "kernel_abi": "sm80",
+            "configs": {"0": _MMA_SYNC_TILE, "257": _TMA_TILE, "1025": _TMA_TILE, "2049": _TMA_TILE},
+        },
+    )
+    assert [gated_config.get_kernel_abi(100, 384, 768, M) for M in (64, 256, 257, 1024)] == [
+        "sm80",
+        "sm80",
+        "sm100",
+        "sm100",
+    ]
+    assert [gated_config.get_m_bucket(M, 100, 384, 768) for M in (256, 257)] == [0, 257]
+
+
+def test_gated_sigmoid_short_hi_bucket_can_differ_from_short_and_inherits_it_otherwise(tuned_configs):
+    tuned_configs(
+        "K384_N768_sm100.json",
+        {
+            "kernel_abi": "sm80",
+            "configs": {"0": _MMA_SYNC_TILE, "257": _TMA_TILE, "769": _MMA_SYNC_TILE, "1025": _TMA_TILE},
+        },
+    )
+    tuned_configs(
+        "K256_N768_sm100.json",
+        {"kernel_abi": "sm80", "configs": {"0": _MMA_SYNC_TILE, "257": _TMA_TILE, "1025": _TMA_TILE}},
+    )
+    assert [gated_config.get_m_bucket(M, 100, 384, 768) for M in (768, 769, 1024, 1025)] == [257, 769, 769, 1025]
+    assert [gated_config.get_kernel_abi(100, 384, 768, M) for M in (768, 769)] == ["sm100", "sm80"]
+    # A file without a ``769`` key keeps running its ``257`` entry up to 1024 rows.
+    assert [gated_config.get_m_bucket(M, 100, 256, 768) for M in (768, 769, 1024)] == [257, 257, 257]
+
+
+def test_gated_sigmoid_bucket_names_its_own_kernel(tuned_configs, source_free_selection):
+    """The long bucket runs the TMA kernel while the others keep the file's mma.sync kernel."""
+
+    tuned_configs(
+        "K384_N768_sm100.json",
+        {"kernel_abi": "sm80", "configs": {"0": _MMA_SYNC_TILE, "1025": _MMA_SYNC_TILE, "2049": _TMA_TILE}},
+    )
+    assert gated_config.get_kernel_abi(100, 384, 768) == "sm80"
+    assert [gated_config.get_kernel_abi(100, 384, 768, M) for M in (65, 1024, 1025, 2048, 2049, 8192)] == [
+        "sm80",
+        "sm80",
+        "sm80",
+        "sm80",
+        "sm100",
+        "sm100",
+    ]
+
+    config = gated_config.get_kernel_config(100, 384, 768, 4096)
+    assert config.kernel_abi == "sm100"
+    expected = {key: value for key, value in _TMA_TILE.items() if key != "kernel_abi"}
+    assert config.tile_params == expected
+    # The tile the registry and the kernel factory see never carries the ABI selector.
+    assert gated_config.get_tile_params(100, 384, 768, 4096) == {**expected, "atom_layout_mnk": (1, 1, 1)}
+    assert gated_config.get_kernel_config(100, 384, 768, 1500).kernel_abi == "sm80"
+    assert gated_config.get_kernel_config(100, 384, 768, 1500).tile_params["atom_layout_mnk"] == [2, 2, 1]
+
+
+def test_gated_sigmoid_file_level_tma_leaves_unlisted_buckets_to_the_default_source(tuned_configs):
+    tuned_configs("K128_N256_sm103.json", {"kernel_abi": "sm100", "configs": {"0": _TMA_TILE}})
+    assert gated_config.get_kernel_abi(103, 128, 256, 64) == "sm100"
+    # A bucket the file does not list resolves to the heuristic tile, which belongs to the SM's default source.
+    assert gated_config.get_kernel_abi(103, 128, 256, 4096) == "sm80"
+    assert gated_config.get_kernel_config(103, 128, 256, 4096).tile_params["atom_layout_mnk"] == [2, 2, 1]
+
+
+def test_gated_sigmoid_unknown_bucket_kernel_is_refused(tuned_configs):
+    bucket = {**_MMA_SYNC_TILE, "kernel_abi": "x"}
+    tuned_configs("K384_N768_sm100.json", {"kernel_abi": "sm80", "configs": {"0": bucket}})
+    with pytest.raises(ValueError, match="Unsupported"):
+        gated_config.get_kernel_abi(100, 384, 768, 65)
+
+
+_TCGEN05_ONLY = pytest.mark.skipif(
+    SM_VERSION not in gated_config._TCGEN05_SMS, reason="tcgen05 needs tensor memory: SM100 or SM103"
+)
+_FROM_SOURCE = pytest.mark.skipif("source" not in _CUTEDSL_MODES, reason="compiles the kernel from source")
+
+
+# --- the persistent TMA source: file-level selection and numerics --------------------------------------------------
+
+
+def test_gated_sigmoid_file_level_tma_runs_every_bucket_it_lists(tuned_configs, source_free_selection):
+    short = {**_TMA_TILE, "n_block_size": 32, "k_block_size": 128, "num_stages": 4}
+    tuned_configs(
+        "K768_N768_sm100.json",
+        {"kernel_abi": "sm100", "configs": {"0": short, "1025": _TMA_TILE, "2049": _TMA_TILE}},
+    )
+    assert [gated_config.get_kernel_abi(100, 768, 768, M) for M in (65, 1024, 1025, 2048, 2049, 8192)] == ["sm100"] * 6
+    config = gated_config.get_kernel_config(100, 768, 768, 512)
+    assert config.kernel_abi == "sm100"
+    assert config.tile_params["n_block_size"] == 32 and config.tile_params["k_block_size"] == 128
+    assert gated_config.get_kernel_config(100, 768, 768, 4096).tile_params["n_block_size"] == 64
+
+
+@pytest.mark.parametrize("sm", [120, 121])
+def test_gated_sigmoid_tma_bucket_is_refused_without_tensor_memory(tuned_configs, sm):
+    tuned_configs(f"K768_N768_sm{sm}.json", {"kernel_abi": "sm80", "configs": {"0": _TMA_TILE}})
+    with pytest.raises(ValueError, match="runs on SM"):
+        gated_config.get_kernel_abi(sm, 768, 768, 65)
+
+
+def _run_tma(problem: dict, monkeypatch) -> None:
+    """Run ``problem`` from source, check that every call took the TMA kernel, and compare with PyTorch."""
+    op = GatedSigmoidCuTe()
+    result = run_cutedsl_test_mode("source", monkeypatch, GatedSigmoidCuTe, gated_cutedsl, lambda: op(**problem))
+    assert {abi for _, abi in op._launches.values()} == {"sm100"}
+    _assert_matches_pytorch(result, problem)
+
+
+def _check_tma_against_pytorch(
+    tile, dtype, has_bias, has_mask, has_residual, K, N, inner, outer, mult, tuned_configs, monkeypatch
+):
+    """Run the op with every bucket of ``K{K}_N{N}`` on a TMA ``tile`` and compare with PyTorch."""
+    n, k, stages = tile
+    bucket = {**_TMA_TILE, "n_block_size": n, "k_block_size": k, "num_stages": stages}
+    tuned_configs(
+        f"K{K}_N{N}_sm{SM_VERSION}.json",
+        {"kernel_abi": "sm100", "configs": {"0": bucket, "1025": bucket, "2049": bucket}},
+    )
+    problem = _broadcast_problem(
+        dtype, K, N, outer, mult, inner, has_bias=has_bias, has_residual=has_residual, has_mask=has_mask, seed=5
+    )
+    _run_tma(problem, monkeypatch)
+
+
+@_TCGEN05_ONLY
+@_FROM_SOURCE
+@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16], ids=["fp16", "bf16"])
+@pytest.mark.parametrize("has_bias", [False, True], ids=["nobias", "bias"])
+@pytest.mark.parametrize("has_mask", [False, True], ids=["nomask", "mask"])
+@pytest.mark.parametrize("has_residual", [False, True], ids=["nores", "res"])
+def test_gated_sigmoid_tma_matches_pytorch(
+    dtype, has_bias, has_mask, has_residual, tuned_configs, no_fallback, monkeypatch
+):
+    """Every operand flag, with a gate row count that is not a multiple of the 128-row tile and ``mult > 1``."""
+    _check_tma_against_pytorch(
+        (64, 64, 6), dtype, has_bias, has_mask, has_residual, 128, 256, 333, 2, 3, tuned_configs, monkeypatch
+    )
+
+
+@_TCGEN05_ONLY
+@_FROM_SOURCE
+@pytest.mark.parametrize("tile", [(32, 128, 4), (64, 128, 3), (128, 64, 4), (32, 32, 6)])
+@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16], ids=["fp16", "bf16"])
+def test_gated_sigmoid_tma_tile_shapes_match_pytorch(tile, dtype, tuned_configs, no_fallback, monkeypatch):
+    """Each tile width and K block, including one of two swizzle atoms, and a K that is not a multiple of the block."""
+    _check_tma_against_pytorch(tile, dtype, True, True, True, 192, 200, 65, 3, 2, tuned_configs, monkeypatch)
+
+
+@_TCGEN05_ONLY
+@_FROM_SOURCE
+def test_gated_sigmoid_tma_persistent_grid_covers_more_tiles_than_sms(tuned_configs, no_fallback, monkeypatch):
+    """More work items than SMs: each CTA loops, and the accumulator stages alternate."""
+    _check_tma_against_pytorch(
+        (64, 64, 6), torch.bfloat16, True, False, True, 256, 768, 1024, 2, 1, tuned_configs, monkeypatch
+    )
+
+
+@_TCGEN05_ONLY
+@_FROM_SOURCE
+@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16], ids=["fp16", "bf16"])
+@pytest.mark.parametrize("has_residual", [False, True], ids=["nores", "res"])
+@pytest.mark.parametrize(
+    "rows,mult", [(512, 1), (2048, 1), (4096, 1), (1024, 3)], ids=["short", "medium", "long", "mult3"]
+)
+def test_gated_sigmoid_shipped_768x768_config_runs_the_tma_kernel(
+    rows, mult, has_residual, dtype, no_fallback, monkeypatch
+):
+    """The 768x768 files ship the TMA kernel in every bucket: the op runs it and matches PyTorch."""
+    _run_tma(_broadcast_problem(dtype, 768, 768, 1, mult, rows, has_residual=has_residual, seed=9), monkeypatch)

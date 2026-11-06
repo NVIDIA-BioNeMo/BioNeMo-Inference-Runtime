@@ -43,6 +43,10 @@ struct CubinImage;
  *  - An absent bias, residual or mask REMOVES its slot rather than passing
  *    null, and the ordinals after it shift down. Each flag is an ABI axis.
  *  - SM80: `rasterization_factor` follows `output` and is computed on the host.
+ *  - SM100: the persistent tcgen05 kernel takes a tensor map and a coordinate tensor for each of `s` and `weight`
+ *    ahead of its pointer operands, and no host-computed grid state. It sizes its own work list from the operand
+ *    extents and the launch's grid.x, which the launcher sets to min(work items, SM count). Each image records the
+ *    boxes of its two tensor maps.
  *  - SM90: the WGMMA tiled MMA keeps a runtime `accumulate` flag, a 1-byte
  *    slot after `output` that starts false. The grid decomposition (`n_it`,
  *    `n_nt`, `n_chunks`), `N` and the K-block count follow `chunk` and are
@@ -56,6 +60,7 @@ namespace bioir::cutedsl::gated_sigmoid::abi
 
 inline constexpr std::size_t kSM80MaxParameterCount = 10;
 inline constexpr std::size_t kSM90MaxParameterCount = 16;
+inline constexpr std::size_t kSM100MaxParameterCount = 11;
 
 inline constexpr std::size_t optional_operand_count(bool has_bias, bool has_residual, bool has_mask)
 {
@@ -86,6 +91,27 @@ struct SM80Params
   std::int32_t mult;
   std::int32_t inner;
 };
+
+/* `s` and `weight` are tensor maps plus coordinate tensors holding their (rows, K) extents. */
+struct SM100Params
+{
+  CUtensorMap s_tma;
+  CoordTensorS2 s_coord;
+  CUtensorMap weight_tma;
+  CoordTensorS2 weight_coord;
+  cute_tensor_s1_d0_t bias;
+  cute_tensor_s2_d1_t mha_out;
+  cute_tensor_s2_d1_t residual;
+  cute_tensor_s1_d0_t mask;
+  cute_tensor_s2_d1_t output;
+  std::int32_t mult;
+  std::int32_t inner;
+};
+
+inline constexpr std::size_t sm100_parameter_count(bool has_bias, bool has_residual, bool has_mask)
+{
+  return 8 + optional_operand_count(has_bias, has_residual, has_mask);
+}
 
 struct SM90Params
 {
@@ -137,6 +163,27 @@ inline std::size_t pack_sm80_kernel_params(
   return index;
 }
 
+inline std::size_t pack_sm100_kernel_params(
+  SM100Params* params, void* kernel_params[kSM100MaxParameterCount], bool has_bias, bool has_residual, bool has_mask)
+{
+  std::size_t index = 0;
+  kernel_params[index++] = &params->s_tma;
+  kernel_params[index++] = &params->s_coord;
+  kernel_params[index++] = &params->weight_tma;
+  kernel_params[index++] = &params->weight_coord;
+  if (has_bias)
+    kernel_params[index++] = &params->bias;
+  kernel_params[index++] = &params->mha_out;
+  if (has_residual)
+    kernel_params[index++] = &params->residual;
+  if (has_mask)
+    kernel_params[index++] = &params->mask;
+  kernel_params[index++] = &params->output;
+  kernel_params[index++] = &params->mult;
+  kernel_params[index++] = &params->inner;
+  return index;
+}
+
 inline std::size_t pack_sm90_kernel_params(
   SM90Params* params, void* kernel_params[kSM90MaxParameterCount], bool has_bias, bool has_residual, bool has_mask)
 {
@@ -157,6 +204,10 @@ static_assert(sizeof(cute_tensor_s2_d1_t) == 24, "gated-sigmoid s2_d1 operand si
 static_assert(sizeof(cute_tensor_s1_d0_t) == 16, "gated-sigmoid s1_d0 operand size changed");
 static_assert(sizeof(SM80Params) == 168, "gated-sigmoid SM80 backing struct size changed");
 static_assert(sizeof(SM90Params) == 192, "gated-sigmoid SM90 backing struct size changed");
+static_assert(sm100_parameter_count(true, true, true) == kSM100MaxParameterCount);
+static_assert(sizeof(CUtensorMap) == 128, "a CUtensorMap is 128 bytes");
+static_assert(alignof(CUtensorMap) >= 64, "a CUtensorMap needs 64-byte alignment");
+static_assert(sizeof(CoordTensorS2) == 8, "gated-sigmoid TMA coordinate size changed");
 
 } // namespace bioir::cutedsl::gated_sigmoid::abi
 
@@ -181,6 +232,8 @@ enum class LaunchAbi : std::uint8_t
 {
   kSM80,
   kSM90,
+  /* Blackwell, SM100 and SM103: the persistent TMA + tcgen05 kernel. The other Blackwell targets run kSM80. */
+  kSM100,
 };
 
 struct KernelSpec

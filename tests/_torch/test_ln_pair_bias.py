@@ -59,6 +59,25 @@ def test_matches_pytorch(dtype, channels, heads, swap_ij, transposed, tokens, pa
     assert not bias[..., keys:].any()
 
 
+@pytest.mark.parametrize("swap_ij", [False, True], ids=["starting", "ending"])
+@pytest.mark.parametrize("pad_multiple", [-1, 8])
+def test_programs_loop_over_many_tiles(swap_ij, pad_multiple) -> None:
+    """A pair with more row tiles than resident programs matches PyTorch, padded keys included."""
+    torch.manual_seed(3)
+    tokens = 387
+    x = torch.randn(1, tokens, tokens, 256, device="cuda", dtype=torch.bfloat16)
+    ln_weight = torch.randn(256, device="cuda", dtype=torch.bfloat16) * 0.2 + 1
+    ln_bias = torch.randn(256, device="cuda", dtype=torch.bfloat16) * 0.2
+    weight = torch.randn(8, 256, device="cuda", dtype=torch.bfloat16) * 0.0625
+    op = LNPairBias(256, 8, swap_ij=swap_ij)
+    assert tokens * tokens > 32 * max(op._programs.values())
+    normed, bias = op(x, ln_weight, ln_bias, 1e-5, weight, pad_multiple=pad_multiple)
+    expected_normed, expected_bias = _reference(x, ln_weight, ln_bias, 1e-5, weight, swap_ij, False, pad_multiple)
+    torch.testing.assert_close(normed, expected_normed, atol=2e-2, rtol=2e-2)
+    torch.testing.assert_close(bias, expected_bias, atol=2e-2, rtol=2e-2)
+    assert not bias[..., tokens:].any()
+
+
 def test_non_contiguous_pair_reads_like_a_contiguous_one() -> None:
     """A strided pair gives its contiguous copy's output."""
     torch.manual_seed(1)

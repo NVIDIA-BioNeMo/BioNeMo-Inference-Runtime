@@ -48,45 +48,33 @@
       "target_arch": "sm_89",
       "target_sm": 89
     },
-    "9aa1c53562ef9d47a310ef8c0170ed22d45b4d48f5f05d6e0172d5bf12c9f91f": {
-      "dtype": "fp16",
-      "dynamic_smem_bytes": 217088,
-      "image_sha256": "7e788af5547fec80e0bf0b4d67205fdccac2c777251d537465e540ad7c1abc7a",
-      "image_size": 154776,
-      "kernel_sm": 100,
-      "kernel_symbol": "f9433fedee917273fe6a446a448399e738f9ab2389edff61edcec1286b1e34d9",
-      "launch_abi": "pairwise_attention_sm100_bias_mma_nullable_lse_v1",
-      "non_portable_cluster_size_allowed": true,
-      "target_arch": "sm_100a",
-      "target_sm": 100
-    },
-    "9ba54d8042548737800ca1b855af720b41d8bacf22c6e875c818a88f74ec7bbe": {
+    "9a0a61ff5af4ff2fbc774f172e942472646a9df4c146d0841e9d013f8d4bd7d9": {
       "dtype": "bf16",
       "dynamic_smem_bytes": 217088,
-      "image_sha256": "252940eb004d8e879acd0838d25158bad063e206d323f5ed41b2325a25467c47",
-      "image_size": 152888,
+      "image_sha256": "ec1a44b6d4404455cd36fac145c43a11be9fe62eca9bc1d6e4984483d40b6209",
+      "image_size": 158448,
       "kernel_sm": 100,
-      "kernel_symbol": "70605b5ff1a9f0cfccb3ed4e9d987ae145ab0c302563c466bc9aef1a9590ca60",
-      "launch_abi": "pairwise_attention_sm100_bias_mma_nullable_lse_v1",
+      "kernel_symbol": "fcb21b6d2365238f4f7fdefcaf5b2246032274d1dce80e32d23ce9c743739efd",
+      "launch_abi": "pairwise_attention_sm100_mult_inner_bias_mma_nullable_lse_v1",
       "non_portable_cluster_size_allowed": true,
       "target_arch": "sm_100a",
       "target_sm": 100
     },
-    "9eca1b19d2a52033c7b35a98f40e92e9af5918b8bd83faaacf5e21bf37e61ff3": {
-      "dtype": "fp16",
+    "9f92be058225e023e94dcd8fd9667c073060c95b9669980ba2b54c3864bd0da2": {
+      "dtype": "bf16",
       "dynamic_smem_bytes": 225280,
-      "image_sha256": "52d3e94c78fd971f53554954b4a117aca27f488aaace984a7a09761064f10870",
-      "image_size": 199872,
+      "image_sha256": "0529ee5491a517af5bfaeb31ace393112427cdd00c67d59fa0c444725068912c",
+      "image_size": 205272,
       "kernel_sm": 100,
-      "kernel_symbol": "922e22580037823e5bca07d58320443f6f38874e08538ff57017dab586154b80",
-      "launch_abi": "pairwise_attention_sm100_bias_mma_nullable_lse_v1",
+      "kernel_symbol": "5c0f6ce9c11296f3c1a2121bf314c77f146b6f0ac16a8e054c2654d121823ff7",
+      "launch_abi": "pairwise_attention_sm100_mult_inner_bias_mma_nullable_lse_v1",
       "non_portable_cluster_size_allowed": true,
       "target_arch": "sm_103a",
       "target_sm": 103
     }
   },
   "kernel_symbols": {
-    "922e22580037823e5bca07d58320443f6f38874e08538ff57017dab586154b80": "k2944586aa032fd14bd5190f0e285489ec42f91c9e0002280191e042548af7c61____________________________________________________________________________________________________________________________"
+    "9461231723ac0616cf5dd606ff5a9d415d664aba05a24a8882a1db5f0299ecb6": "k8b0daf23456e266b715b92bf3b2fea939b55983cb9a2ae8f3873f88de8a124f0____________________________________________________________________________________________________________________________"
   },
   "sm90_launches": {
     "9bc2b101a3de87700608110f5a88a6c6e5fbbd6ec8904cc693d26eaec2769c0d": {

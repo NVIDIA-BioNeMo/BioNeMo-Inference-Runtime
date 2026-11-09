@@ -11,6 +11,18 @@
       "target_arch": "sm_89",
       "target_sm": 89
     },
+    "11e353b48b8a9b20e064a3efa96de0fba4027f6164feb8bd3c9456fb9fe05f8f": {
+      "dtype": "fp16",
+      "dynamic_smem_bytes": 225280,
+      "image_sha256": "b9559ed5b520e3cec770e525229de304f158cde8d872582dff17d1a301d21861",
+      "image_size": 206496,
+      "kernel_sm": 100,
+      "kernel_symbol": "5c0f6ce9c11296f3c1a2121bf314c77f146b6f0ac16a8e054c2654d121823ff7",
+      "launch_abi": "pairwise_attention_sm100_mult_inner_bias_mma_nullable_lse_v1",
+      "non_portable_cluster_size_allowed": true,
+      "target_arch": "sm_100a",
+      "target_sm": 100
+    },
     "125fc0929d9ee28a7b6c69a10705dc1a292603ae3e4b2fc8e9dea783dca66914": {
       "dtype": "bf16",
       "dynamic_smem_bytes": 57344,

@@ -1,29 +1,5 @@
 {
   "executables": {
-    "0083db11fc2f628a00f6209e3e084eab38dcc1bd8fd4fc9eff54fe63bc6f8b96": {
-      "dtype": "bf16",
-      "dynamic_smem_bytes": 217088,
-      "image_sha256": "7d9dac0a33de71fc0c3a43cb11c63640afcc6fd55aaa33fb47408226d602dd8c",
-      "image_size": 154776,
-      "kernel_sm": 100,
-      "kernel_symbol": "f9433fedee917273fe6a446a448399e738f9ab2389edff61edcec1286b1e34d9",
-      "launch_abi": "pairwise_attention_sm100_bias_mma_nullable_lse_v1",
-      "non_portable_cluster_size_allowed": true,
-      "target_arch": "sm_100a",
-      "target_sm": 100
-    },
-    "04a73da005efa04801ca61e4ceac6e615db2a1379a34382c19215c3494fb1a1d": {
-      "dtype": "bf16",
-      "dynamic_smem_bytes": 225280,
-      "image_sha256": "b61a11b74ff60c3d45f197af7be6894dbc29858569a31559e94dcafffe04a304",
-      "image_size": 199880,
-      "kernel_sm": 100,
-      "kernel_symbol": "922e22580037823e5bca07d58320443f6f38874e08538ff57017dab586154b80",
-      "launch_abi": "pairwise_attention_sm100_bias_mma_nullable_lse_v1",
-      "non_portable_cluster_size_allowed": true,
-      "target_arch": "sm_103a",
-      "target_sm": 103
-    },
     "05a9871fbeca5ce99c203c4e6fd391f9742f0616bbd45791c3c74563868d57e6": {
       "dtype": "bf16",
       "dynamic_smem_bytes": 49152,
@@ -34,6 +10,18 @@
       "launch_abi": "pairwise_attention_sm80_nullable_lse_v1",
       "target_arch": "sm_89",
       "target_sm": 89
+    },
+    "0ca76dfe2e0309f2ed4db82307d8944d00066e00cd408a8a2791caba828ade68": {
+      "dtype": "fp16",
+      "dynamic_smem_bytes": 217088,
+      "image_sha256": "c26daed5a0911ff5d2f7c6ed64191941b8bd02500463fd85241fa530054dfd87",
+      "image_size": 159448,
+      "kernel_sm": 100,
+      "kernel_symbol": "fcb21b6d2365238f4f7fdefcaf5b2246032274d1dce80e32d23ce9c743739efd",
+      "launch_abi": "pairwise_attention_sm100_mult_inner_bias_mma_nullable_lse_v1",
+      "non_portable_cluster_size_allowed": true,
+      "target_arch": "sm_103a",
+      "target_sm": 103
     },
     "0f24faceb8d12cff7c863b4c6d7d9b319c89f52459928e8bc99feffcc9ff27bf": {
       "dtype": "fp16",

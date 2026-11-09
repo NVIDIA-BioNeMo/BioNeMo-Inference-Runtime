@@ -22,30 +22,6 @@
       "target_arch": "sm_103a",
       "target_sm": 103
     },
-    "49164dce5c3c9284b8cb27e670ff4647c1866b203075b15bba6e538c14f34e80": {
-      "dtype": "bf16",
-      "dynamic_smem_bytes": 217088,
-      "image_sha256": "24861870cdbe2cb1878f4ac814a782315e17bb17340eba41b9a4f8e4193a4ffe",
-      "image_size": 154016,
-      "kernel_sm": 100,
-      "kernel_symbol": "70605b5ff1a9f0cfccb3ed4e9d987ae145ab0c302563c466bc9aef1a9590ca60",
-      "launch_abi": "pairwise_attention_sm100_bias_mma_nullable_lse_v1",
-      "non_portable_cluster_size_allowed": true,
-      "target_arch": "sm_103a",
-      "target_sm": 103
-    },
-    "4c045624ad5c266aeeadaf89adab76571e176ed5f8ba23b2919160d40b4ad27e": {
-      "dtype": "fp16",
-      "dynamic_smem_bytes": 217088,
-      "image_sha256": "297f975a50c404500f10a1e76f2969ac41559355011968f54dc7673c7e920542",
-      "image_size": 153992,
-      "kernel_sm": 100,
-      "kernel_symbol": "70605b5ff1a9f0cfccb3ed4e9d987ae145ab0c302563c466bc9aef1a9590ca60",
-      "launch_abi": "pairwise_attention_sm100_bias_mma_nullable_lse_v1",
-      "non_portable_cluster_size_allowed": true,
-      "target_arch": "sm_103a",
-      "target_sm": 103
-    },
     "4de667d875fe3ff59f63251a4a8a34272e5c2f9efaf9c8cbf2d989e42a6d8271": {
       "dtype": "fp16",
       "dynamic_smem_bytes": 57344,

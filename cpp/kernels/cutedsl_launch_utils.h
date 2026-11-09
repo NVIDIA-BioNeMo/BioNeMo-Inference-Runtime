@@ -386,8 +386,10 @@ inline void encode_tma_descriptor(
 }
 
 /* A multicast load splits the tile across the cluster: every CTA fetches an
- * equal share of the outer box extent and multicasts it to its peers, so the
- * descriptor box is that much shorter than the tile the metadata records.
+ * equal share of the box and multicasts it to its peers, so the descriptor box
+ * is that much smaller than the tile the metadata records. As in CuTe, the
+ * split starts at the outermost box extent and carries inward past extents
+ * shorter than the multicast factor, such as a unit batch mode.
  */
 inline TmaDescriptorInfo multicast_tma_descriptor(TmaDescriptorInfo info, std::uint32_t num_multicast, char const* name)
 {
@@ -395,14 +397,24 @@ inline TmaDescriptorInfo multicast_tma_descriptor(TmaDescriptorInfo info, std::u
     return info;
   if (info.rank < 2)
     throw std::invalid_argument(std::string(name) + " TMA descriptor is too low-rank to multicast");
-  std::uint32_t& outer_box = info.box_dims[info.rank - 1];
-  if (outer_box % num_multicast != 0)
+  std::uint32_t multicast = num_multicast;
+  for (std::uint32_t index = info.rank; multicast > 1 && index-- > 0;)
   {
-    throw std::invalid_argument(
-      std::string(name) + " TMA box extent " + std::to_string(outer_box) + " does not divide across "
-      + std::to_string(num_multicast) + " multicasting CTAs");
+    std::uint32_t& box = info.box_dims[index];
+    if (box == 0)
+      throw std::invalid_argument(std::string(name) + " TMA box extent must be positive");
+    if (box % multicast != 0 && multicast % box != 0)
+    {
+      throw std::invalid_argument(
+        std::string(name) + " TMA box extent " + std::to_string(box) + " does not divide across the "
+        + std::to_string(multicast) + " multicasting CTAs left of " + std::to_string(num_multicast));
+    }
+    std::uint32_t const carried = (multicast + box - 1) / box;
+    box = (box + multicast - 1) / multicast;
+    multicast = carried;
   }
-  outer_box /= num_multicast;
+  if (multicast > 1)
+    throw std::invalid_argument(std::string(name) + " TMA box is smaller than its multicast factor");
   return info;
 }
 

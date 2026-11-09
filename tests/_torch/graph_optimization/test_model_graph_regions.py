@@ -87,12 +87,18 @@ def test_disable_cuda_graphs_builds_eager_regions(structural_model):
 
 def test_structural_model_preserves_dispatch(structural_model: Callable[..., nn.Module]) -> None:
     from bionemo_ir._torch.custom_ops.attn_epilogue.cutedsl import AttnEpilogueCuTe
+    from bionemo_ir.dsl_kernels.triton.opm_prologue import OpmPrologue
 
     cache = AttnEpilogueCuTe._compiled_cache
     contents = cache.copy()
+    # The outer-product-mean layer compiles its prologue at init; a placeholder left here fails later launches.
+    prologues = OpmPrologue._global_cache
+    prologue_contents = prologues.copy()
     mode = os.environ.get("CUTEDSL_FORCE_CUBIN")
     cls = get_model_class("openfold3")
     structural_model(cls, include_load_weights=False)
     assert AttnEpilogueCuTe._compiled_cache is cache
     assert cache == contents
+    assert OpmPrologue._global_cache is prologues
+    assert prologues == prologue_contents
     assert os.environ.get("CUTEDSL_FORCE_CUBIN") == mode

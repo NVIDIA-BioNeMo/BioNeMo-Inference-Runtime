@@ -89,8 +89,8 @@ _SM90_LAUNCH_SHAPES = {
     "trimul_kf_k3": (("prod", "x", "w_out", "w_gate", "output"), (3, 2, 2, 2, 2), False, 512),
 }
 # Operand names, TMA rank (per operand where they differ), whether cluster launch fields
-# are recorded, and threads per block, per native-SM100 family. Dual GEMM and the triangle
-# attention epilogue run 2-SM UMMA on a CTA-pair cluster.
+# are recorded, and threads per block, per native-SM100 family. Dual GEMM, the outer product
+# mean and the triangle attention epilogue run 2-SM UMMA on a CTA-pair cluster.
 _SM100_LAUNCH_SHAPES = {
     "attn_epilogue": (("o", "g", "w", "z", "d"), (3, 3, 2, 3, 3), True, 512),
     "conditioned_transition_mlp": (("x", "w1", "w2", "output"), (2, 4, 2, 2), True, 512),
@@ -99,6 +99,7 @@ _SM100_LAUNCH_SHAPES = {
     "gated_sigmoid": (("s", "weight"), 2, False, 576),
     "pairwise_attention": (("q", "k", "v", "bias", "output"), 4, False, 512),
     "transition_mlp": (("x", "w1", "w2"), (2, 4, 2), True, 512),
+    "outer_product_mean": (("a", "b", "w", "output"), (4, 3, 2, 4), True, 352),
     "triangle_attention": (("q", "k", "v", "bias", "output"), 4, False, 512),
 }
 
@@ -229,6 +230,17 @@ def _metadata(family: str, dtype: str, kernel_sm: int) -> dict[str, object]:
         if kernel_sm == 90:
             concrete.update(
                 num_threads=384, c_z=256, tile_s=32, ptile=2, csplit=2, sm90_launch=_sm90_launch(family, dtype)
+            )
+        elif kernel_sm == 100:
+            concrete.update(
+                num_threads=352,
+                tile_i=32,
+                tile_j=4,
+                c_z=128,
+                tile_s=64,
+                ptile=1,
+                csplit=1,
+                sm100_launch=_sm100_launch(family, dtype),
             )
     elif family == "pair_weighted_averaging":
         concrete = {
@@ -1242,6 +1254,35 @@ def test_dual_gemm_sm100_launch_requires_cluster_dims(tmp_path: Path, family: st
     )
 
     with pytest.raises(materializer.MaterializationError, match="missing=\\['cluster_dims'\\]"):
+        materializer.verify_packs([(family, index)])
+
+
+def test_outer_product_mean_sm100_registry_renders_per_operand_ranks(tmp_path: Path) -> None:
+    """The relaid a and the output store are rank 4, b rank 3 and W rank 2, on a CTA-pair cluster launch."""
+    family = "outer_product_mean"
+    index = _write_case(tmp_path / "source", family, kernel_sm=100)
+    result = materializer.materialize([(family, index)], tmp_path / "build")
+    header = (result.output_dir / f"{family}_registry.h").read_text()
+    source = (result.output_dir / f"{family}_registry.cpp").read_text()
+
+    assert "SM100LaunchInfo sm100;" in header and "bool is_sm100;" in header
+    assert all(f"  TmaDescriptorInfo {name};" in header for name in ("a", "b", "w", "output"))
+    assert "std::uint32_t cluster_dims[3];" in header
+    assert '"outer_product_mean_sm100"' in source
+    assert "CU_CLUSTER_SCHEDULING_POLICY_DEFAULT" in source
+    rendered = [int(line.strip().rstrip("U,")) for line in source.splitlines() if line.strip() in {"2U,", "3U,", "4U,"}]
+    assert rendered[-4:] == [4, 3, 2, 4]
+
+
+def test_outer_product_mean_sm100_rejects_an_operand_with_another_rank(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    family = "outer_product_mean"
+    names, _, clusters, threads = _SM100_LAUNCH_SHAPES[family]
+    monkeypatch.setitem(_SM100_LAUNCH_SHAPES, family, (names, (4, 3, 3, 4), clusters, threads))
+    index = _write_case(tmp_path / "source", family, kernel_sm=100)
+
+    with pytest.raises(materializer.MaterializationError, match=r"tma_descriptors\.w\.rank must be 2"):
         materializer.verify_packs([(family, index)])
 
 

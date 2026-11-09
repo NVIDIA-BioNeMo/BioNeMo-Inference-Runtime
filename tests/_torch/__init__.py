@@ -87,6 +87,8 @@ _CUTEDSL_SUPPORTED_SM = (80, 86, 89, 90)
 #                                 with ``sm100`` and ``sm103`` configs (the SM90
 #                                 ping-pong is just the kernel the ``sm90``
 #                                 configs resolve to, not a distinct op).
+#   * outer_product_mean        -- additionally ships a native tcgen05 kernel
+#                                 with ``sm100`` and ``sm103`` configs.
 #   * adaln_layernorm_sigmoid   -- runs on every SM (``sm < 90`` uses the
 #                                 default single-bucket schedule).
 #   * pairwise_attention        -- left-mask kernels ship Ampere (SM80) +
@@ -104,6 +106,7 @@ _CUTEDSL_OP_SUPPORTED_SM: "dict[str, tuple[int, ...]]" = {
     "gated_sigmoid": (80, 86, 89, 90, 100, 103, 120, 121),
     "dual_gemm_x0_x1": (80, 86, 89, 90, 100, 103),
     "dual_gemm_x_x": (80, 86, 89, 90, 100, 103),
+    "outer_product_mean": (80, 86, 89, 90, 100, 103),
     "pair_weighted_averaging": (80, 90, 100, 103),
     "pairwise_attention": (80, 86, 89, 90, 100, 103),
     "triangle_attention": (80, 86, 89, 90, 100, 103),

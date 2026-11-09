@@ -33,7 +33,12 @@ from ._config import (
     select_opm_config,
 )
 from .cutedsl import OuterProductMeanCuTe
-from .ops import _invoke_vanilla_opm, get_outer_product_mean_op
+from .ops import (
+    _invoke_vanilla_opm,
+    get_outer_product_mean_op,
+    outer_product_mean_a_chunk,
+    outer_product_mean_a_chunks,
+)
 
 __all__ = [
     "OuterProductMeanCuTe",
@@ -48,5 +53,7 @@ __all__ = [
     "config_identity",
     "default_config",
     "get_outer_product_mean_op",
+    "outer_product_mean_a_chunk",
+    "outer_product_mean_a_chunks",
     "select_opm_config",
 ]

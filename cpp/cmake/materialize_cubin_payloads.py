@@ -327,6 +327,8 @@ _FAMILY_SPECS: dict[str, _FamilySpec] = {
         ),
         runtime_key=("is_bfloat16", "has_bias", "norm_before", "config_identity"),
         sm90=_Sm90Spec("is_sm90", ("a", "a2", "b", "w"), ranks=((3, 4), (3, 4), 3, 2)),
+        # The CTA pair loads the relaid a and b, streams W and stores the output, all through TMA.
+        sm100=_Sm100Spec("is_sm100", ("a", "b", "w", "output"), clusters=True, ranks=(4, 3, 2, 4)),
     ),
     "pair_weighted_averaging": _FamilySpec(
         fields=(

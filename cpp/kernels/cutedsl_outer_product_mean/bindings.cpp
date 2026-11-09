@@ -55,6 +55,7 @@ std::vector<KernelSpec> all_kernel_specs()
         image.ptile,
         image.csplit,
         image.cubin.kernel_sm == 90,
+        image.cubin.kernel_sm == 100,
       };
     });
 }
@@ -90,6 +91,7 @@ void bind(nb::module_& parent)
     .def_ro("ptile", &KernelSpec::ptile)
     .def_ro("csplit", &KernelSpec::csplit)
     .def_ro("is_sm90", &KernelSpec::is_sm90)
+    .def_ro("is_sm100", &KernelSpec::is_sm100)
     .def_prop_ro("supports_direct_launch", [](KernelSpec const&) { return true; });
 
   nb::class_<KernelConfig>(module, "KernelConfig")

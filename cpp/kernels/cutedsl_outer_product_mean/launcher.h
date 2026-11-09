@@ -28,6 +28,7 @@
 #include <cstdint>
 #include <stdexcept>
 #include <string>
+#include <type_traits>
 
 namespace bioir::cutedsl::outer_product_mean::embedded
 {
@@ -173,6 +174,77 @@ pack_sm90_kernel_params(SM90Params* params, void* kernel_params[kSM90MaxParamete
 static_assert(sizeof(CUtensorMap) == 0x80, "outer-product-mean TMA atom slot size changed");
 static_assert(sizeof(CoordTensorS3) == 0x0c, "outer-product-mean coordinate tensor size changed");
 
+/* Blackwell device ABI from EIATTR_KPARAM_INFO (launch ABI outer_product_mean_sm100):
+ *
+ *   ord  0  0x000  0x03  mma_s       S-GEMM tiled-MMA flags, three i1 the host passes clear
+ *   ord  1  0x003  0x03  mma_o       O-GEMM tiled-MMA flags
+ *   ord  2  0x040  0x80  a_tma       2-SM load atom over the relaid a
+ *   ord  3  0x0c0  0x0c  a_coord     CoordTensorS3 {rows, S, B}
+ *   ord  4  0x100  0x80  b_tma       2-SM load atom
+ *   ord  5  0x180  0x0c  b_coord     CoordTensorS3 {J*D, S, B}
+ *   ord  6  0x1c0  0x80  w_tma       static extents: no coordinate tensor
+ *   ord  7  0x240  0x80  o_tma       store atom
+ *   ord  8  0x2c0  0x0c  o_coord     CoordTensorS3 {I, J, B}
+ *   ord  9  0x2d0  0x28  num_mask    cute_tensor_s3_d2_t
+ *   ord 10  0x2f8  0x08  bias        pointer; the slot is absent without a bias
+ *   ord 11  0x300  0x28  output      cute_tensor_s3_d2_t, at 0x2f8 without a bias
+ *
+ * The bank is the same for every tile, cluster shape and C_z. The 2-SM a and
+ * the W atoms multicast across the cluster's CTA pairs when it holds two.
+ */
+struct SM100Params
+{
+  std::uint8_t mma_s[3];
+  std::uint8_t mma_o[3];
+  CUtensorMap a_tma;
+  CoordTensorS3 a_coord;
+  CUtensorMap b_tma;
+  CoordTensorS3 b_coord;
+  CUtensorMap w_tma;
+  CUtensorMap o_tma;
+  CoordTensorS3 o_coord;
+  cute_tensor_s3_d2_t num_mask;
+  cute_tensor_s0_d0_t bias;
+  cute_tensor_s3_d2_t output;
+};
+
+inline constexpr std::size_t kSM100MaxParameterCount = 12;
+
+inline constexpr std::size_t sm100_parameter_count(bool has_bias)
+{
+  return has_bias ? kSM100MaxParameterCount : kSM100MaxParameterCount - 1;
+}
+
+/* Returns the number of packed parameters. */
+inline std::size_t
+pack_sm100_kernel_params(SM100Params* params, void* kernel_params[kSM100MaxParameterCount], bool has_bias)
+{
+  std::size_t index = 0;
+  kernel_params[index++] = &params->mma_s;
+  kernel_params[index++] = &params->mma_o;
+  kernel_params[index++] = &params->a_tma;
+  kernel_params[index++] = &params->a_coord;
+  kernel_params[index++] = &params->b_tma;
+  kernel_params[index++] = &params->b_coord;
+  kernel_params[index++] = &params->w_tma;
+  kernel_params[index++] = &params->o_tma;
+  kernel_params[index++] = &params->o_coord;
+  kernel_params[index++] = &params->num_mask;
+  if (has_bias)
+    kernel_params[index++] = &params->bias;
+  kernel_params[index++] = &params->output;
+  return index;
+}
+
+static_assert(std::is_standard_layout_v<SM100Params>);
+static_assert(sizeof(SM100Params::mma_s) == 0x03, "unexpected outer-product-mean SM100 tiled-MMA width");
+static_assert(sizeof(SM100Params::mma_o) == 0x03, "unexpected outer-product-mean SM100 tiled-MMA width");
+static_assert(sizeof(SM100Params::a_coord) == 0x0c, "unexpected outer-product-mean SM100 coordinate width");
+static_assert(sizeof(SM100Params::num_mask) == 0x28, "unexpected outer-product-mean SM100 num_mask width");
+static_assert(sizeof(SM100Params::bias) == 0x08, "unexpected outer-product-mean SM100 bias width");
+static_assert(sizeof(SM100Params::output) == 0x28, "unexpected outer-product-mean SM100 output width");
+static_assert(sm100_parameter_count(false) == 11U);
+
 } // namespace bioir::cutedsl::outer_product_mean::abi
 
 namespace bioir::cutedsl::outer_product_mean
@@ -211,6 +283,8 @@ struct KernelSpec
   std::int32_t ptile;
   std::int32_t csplit;
   bool is_sm90;
+  /* The SM100 kernel's CTA owns tile_i = 128 / cc rows i; its CTA pair owns tile_j = cc columns j. */
+  bool is_sm100;
 };
 
 struct KernelConfig
@@ -233,7 +307,9 @@ inline std::uint32_t dynamic_smem_bytes(KernelConfig const& config)
 struct LaunchParams
 {
   /* a is [B, S, I, C] and b is [B, S, J, D]; the descriptors keep the leading
-   * three extents and two strides because C and D are static.
+   * three extents and two strides because C and D are static. The SM100 kernel
+   * takes a relaid instead, as [B, C / cc, ceil(I / tile_i) * 128, S] with S
+   * contiguous: each row holds one channel of one token.
    */
   Tensor4View a;
   Tensor4View b;

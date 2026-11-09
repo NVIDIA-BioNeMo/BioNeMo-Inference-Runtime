@@ -29,7 +29,12 @@ from bionemo_ir._torch.utils.kernel import (
     tensor_s2_d1,
     tensor_s3_d2,
     tensor_s3_d2_static,
+    tensor_s4_d3,
 )
+
+
+class OuterProductMeanCubinMissing(CuTeDSLKernelVariantUnavailable):
+    """The kernel library carries no image for the requested SM, dtype and tile."""
 
 
 class OuterProductMeanCubinExecutable(CuTeDSLKernelLibraryExecutable):
@@ -54,13 +59,15 @@ class OuterProductMeanCubinExecutable(CuTeDSLKernelLibraryExecutable):
         except KeyError as error:
             raise CuTeDSLKernelVariantUnavailable(f"outer-product-mean CUBINs do not support {dtype}") from error
 
+        variant = (
+            f"SM{target_sm}, dtype={dtype}, has_bias={has_bias}, norm_before={norm_before}, config={config_identity}"
+        )
         try:
             config = launcher.make_kernel_config(target_sm, library_dtype, has_bias, norm_before, config_identity)
+        except IndexError as error:
+            raise OuterProductMeanCubinMissing(f"No outer-product-mean CUBIN for {variant}") from error
         except (RuntimeError, TypeError, ValueError) as error:
-            raise CuTeDSLKernelVariantUnavailable(
-                f"No outer-product-mean CUBIN for SM{target_sm}, dtype={dtype}, "
-                f"has_bias={has_bias}, norm_before={norm_before}, config={config_identity}"
-            ) from error
+            raise CuTeDSLKernelVariantUnavailable(f"Outer-product-mean CUBIN for {variant} cannot launch") from error
 
         self._kernel_library = kernel_library
         self._launcher = launcher
@@ -82,7 +89,12 @@ class OuterProductMeanCubinExecutable(CuTeDSLKernelLibraryExecutable):
                 f"but received bias={'a tensor' if bias is not None else 'None'}"
             )
         params = self._launcher.LaunchParams()
-        params.a = tensor_s3_d2_static(self._kernel_library, a)
+        if self._config.spec.is_sm100:
+            # a_t [B, C / cc, ceil(I / TI), cc, TI, S]: a chunk's token block is cc * TI consecutive pitched rows.
+            B, chunks, blocks, cc, tile_i, S = a.shape
+            params.a = tensor_s4_d3(self._kernel_library, a.view(B, chunks, blocks * cc * tile_i, S))
+        else:
+            params.a = tensor_s3_d2_static(self._kernel_library, a)
         params.b = tensor_s3_d2_static(self._kernel_library, b)
         params.num_mask = tensor_s3_d2(self._kernel_library, num_mask)
         # W_o and bias lower to bare pointers because C/D/C_z are static. The

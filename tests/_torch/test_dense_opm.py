@@ -25,13 +25,14 @@ from bionemo_ir._torch.custom_ops.outer_product_mean.ops import (
     get_outer_product_mean_op,
 )
 from bionemo_ir._torch.layers.outer_product_mean import OuterProductMean
+from bionemo_ir.dsl_kernels.cute_cache import FORCE_CUBIN_ENV
 from bionemo_ir.dsl_kernels.triton import dense_outer_product as triton_opm
 
 pytestmark = pytest.mark.skipif(
     not torch.cuda.is_available() or torch.cuda.get_device_capability() < (8, 0), reason="Triton OPM needs SM80"
 )
 
-# (I, J, S, B): tails on every tile axis, I != J, the 256-row chunk boundary, and the batch loop.
+# (I, J, S, B): tails on every tile axis, I != J, a chunk boundary, and the batch loop.
 SHAPES = [
     (1, 1, 1, 1),
     (17, 19, 31, 1),
@@ -90,6 +91,47 @@ def test_arithmetic(
     bias = bias if has_bias else None
     actual = _invoke_triton_opm(a, b, norm, weight, bias, before)
     assert_matches_reference(actual, a, b, norm, weight, bias, before)
+
+
+@pytest.mark.parametrize("batch", [1, 2])
+@pytest.mark.parametrize("sm", [80, 100, 103])
+@pytest.mark.parametrize("c_z", [128, 256])
+def test_chunk_boundary(batch: int, sm: int, c_z: int, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Each selected tuning crosses its chunk boundary in every batch, including SM103 on H100 CI."""
+    if sm in (100, 103) and torch.cuda.get_device_capability() < (9, 0):
+        pytest.skip("Forced Blackwell tiles need at least SM90 shared memory")
+    monkeypatch.setattr(triton_opm, "_sm_version", lambda _device: sm)
+    triton_opm._cached_kernels.cache_clear()
+    try:
+        tuning = triton_opm._tuning(sm)
+        a, b, norm, weight, bias = inputs(tuning.chunk + 3, 37, 45, batch=batch, c_z=c_z)
+        actual = _invoke_triton_opm(a, b, norm, weight, bias, False)
+        kernels = triton_opm._cached_kernels(a.device.index, a.dtype, c_z, True, False, False)
+        assert kernels.tuning is tuning
+        assert_matches_reference(actual, a, b, norm, weight, bias, False)
+    finally:
+        triton_opm._cached_kernels.cache_clear()
+
+
+@pytest.mark.parametrize("sm", [80, 86, 89, 90, 100, 103, 110, 120, 121])
+def test_tuning_selection(sm: int) -> None:
+    """SM100 and SM103 take the Blackwell tables (SM103: the SM100 tiles, larger chunks); every other SM keeps the
+    default tiles."""
+    tuning = triton_opm._tuning(sm)
+    expected = {100: triton_opm._SM100_TUNING, 103: triton_opm._SM103_TUNING}
+    assert tuning is expected.get(sm, triton_opm._DEFAULT_TUNING)
+    if sm == 103:
+        # B300: the SM100 tiles with 384-row chunks.
+        assert tuning.chunk == 384
+        assert tuning._replace(chunk=triton_opm._SM100_TUNING.chunk) == triton_opm._SM100_TUNING
+    # The projection grid tiles C_z exactly.
+    assert all(c_z % tuning.project(c_z).BN == 0 for c_z in (128, 256))
+
+
+def test_default_tuning_unchanged() -> None:
+    """Untuned SMs keep the original tiles and chunk, so a table edit cannot move them silently."""
+    tile = (128, 128, 64, 8, 3)
+    assert triton_opm._DEFAULT_TUNING == (tile, tile, tile, 256)
 
 
 def test_wide_indexing(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -200,21 +242,26 @@ def test_rejects_unsupported(kind: str) -> None:
         _invoke_triton_opm(a, b, norm, weight, bias)
 
 
-# Native CuTe kernels by SM. Every other SM80+ SKU, Blackwell included, runs Triton first.
+# Native CuTe kernels by SM. Every other SM80+ SKU runs Triton first.
 NATIVE_CUTE = {
     80: (torch.float16, torch.bfloat16),
     86: (torch.float16, torch.bfloat16),
     89: (torch.float16, torch.bfloat16),
     90: (torch.bfloat16,),
+    100: (torch.float16, torch.bfloat16),
+    103: (torch.float16, torch.bfloat16),
 }
 
 
+@pytest.mark.parametrize("force_cubin", [False, True], ids=["auto", "force_cubin"])
 @pytest.mark.parametrize("sm", [75, 80, 86, 87, 89, 90, 100, 103, 110, 120, 121])
 @pytest.mark.parametrize("c_z", [128, 256])
 @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16], ids=["bf16", "fp16"])
-def test_selector(monkeypatch: pytest.MonkeyPatch, sm: int, c_z: int, dtype: torch.dtype) -> None:
-    """CuTe runs where it has a native kernel; Triton goes first on every other SM80+ SKU."""
+def test_selector(monkeypatch: pytest.MonkeyPatch, sm: int, c_z: int, dtype: torch.dtype, force_cubin: bool) -> None:
+    """CuTe runs where it has a native kernel, from source or CUBINs alike; Triton goes first on every other
+    SM80+ SKU."""
     monkeypatch.setattr(ops, "get_sm_version", lambda: sm)
+    monkeypatch.setenv(FORCE_CUBIN_ENV, "1" if force_cubin else "0")
     if dtype in NATIVE_CUTE.get(sm, ()):
         expected = _invoke_cute_opm
     else:

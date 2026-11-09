@@ -16,10 +16,25 @@
 import torch
 import torch.nn as nn
 
-from bionemo_ir._torch.custom_ops.outer_product_mean import _invoke_vanilla_opm, get_outer_product_mean_op
+from bionemo_ir._torch.custom_ops.outer_product_mean import (
+    _invoke_vanilla_opm,
+    get_outer_product_mean_op,
+    outer_product_mean_a_chunk,
+    outer_product_mean_a_chunks,
+)
 from bionemo_ir._torch.utils import CHUNK_REGISTRY, OUTER_PRODUCT_MEAN, ChunkPolicy, chunk_apply
+from bionemo_ir.dsl_kernels.triton.opm_prologue import OpmPrologue
 
 from .linear import Linear, WeightMode, WeightsLoadingConfig
+
+_OPM_PROLOGUE: OpmPrologue | None = None
+
+
+def _opm_prologue() -> OpmPrologue:
+    global _OPM_PROLOGUE
+    if _OPM_PROLOGUE is None:
+        _OPM_PROLOGUE = OpmPrologue()
+    return _OPM_PROLOGUE
 
 
 class OuterProductMean(nn.Module):
@@ -67,13 +82,19 @@ class OuterProductMean(nn.Module):
         # The fused custom op handles the full OPM without materializing the
         # [B, N, N, c_hidden**2] intermediate. If it is unavailable, forward
         # falls through to the registry-driven eager row-chunking path.
-        self._opm_op = get_outer_product_mean_op(
-            dtype or torch.get_default_dtype(),
-            C=self.c_hidden,
-            D=self.c_hidden,
-            C_z=self.c_out,
-        )
+        op_dtype = dtype or torch.get_default_dtype()
+        self._opm_op = get_outer_product_mean_op(op_dtype, C=self.c_hidden, D=self.c_hidden, C_z=self.c_out)
         self._opm_eligible = self._opm_op is not _invoke_vanilla_opm
+        if self._opm_eligible:
+            # Each call's shape picks the layout of a (plain, or sequence-last per chunk); compile the prologue for
+            # all of them here, so a shape routed to a new one does not compile it mid-inference.
+            _opm_prologue().prepare(
+                op_dtype,
+                c_in,
+                self.c_hidden,
+                bias_flags["proj_a"] or bias_flags["proj_b"],
+                outer_product_mean_a_chunks(self.c_out, op_dtype),
+            )
         self.norm = nn.LayerNorm(c_in, eps=eps, dtype=dtype)
         self.fused_proj_a_b = Linear(
             c_in,
@@ -139,6 +160,30 @@ class OuterProductMean(nn.Module):
             z.div_(num_mask)
         return z
 
+    def _forward_fused(self, m: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+        """Fused path: one prologue kernel writes the masked ``a``/``b`` in the layout the fused op takes.
+
+        The prologue normalizes, projects, masks and splits in one pass over ``m``. On SM100/SM103 it writes
+        ``a`` sequence-last for the native kernel, which then needs no relayout of its own.
+        """
+        _, S, N, _ = m.shape
+        has_bias = self.proj_o.bias is not None
+        chunk = outer_product_mean_a_chunk(S, N, N, self.c_out, self.norm_before_output, has_bias, m.dtype)
+        a, b = _opm_prologue()(
+            m,
+            mask,
+            self.norm.weight,
+            self.norm.bias,
+            self.norm.eps,
+            self.fused_proj_a_b.weight,
+            self.fused_proj_a_b.bias,
+            chunk=chunk,
+        )
+        num_mask = self._compute_num_mask(mask.unsqueeze(-1), dtype=torch.float32)
+        return self._opm_op(
+            a, b, num_mask.squeeze(-1), self.proj_o.weight, self.proj_o.bias, norm_before=self.norm_before_output
+        )
+
     def forward(self, m: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
         """Forward pass.
         Args:
@@ -150,6 +195,8 @@ class OuterProductMean(nn.Module):
         if m.dtype != self.dtype:
             m = m.to(self.dtype)
             mask = mask.to(self.dtype)
+        if self._opm_eligible and OpmPrologue.supports(m, mask, self.c_hidden):
+            return self._forward_fused(m, mask)
         mask = mask.unsqueeze(-1)
         m = self.norm(m)
         ab = self.fused_proj_a_b(m)

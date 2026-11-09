@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import math
 from collections.abc import Callable
 from typing import TYPE_CHECKING
 
@@ -24,7 +25,7 @@ import torch
 from bionemo_ir.dsl_kernels.triton.dense_outer_product import dense_outer_product
 from bionemo_ir.utils import get_sm_version
 
-from ._config import _KERNEL_C, _KERNEL_D, _SUPPORTED_CZ
+from ._config import _KERNEL_C, _KERNEL_D, _SM100_FAMILY, _SUPPORTED_CZ, sm100_a_chunks
 
 if TYPE_CHECKING:
     from .cutedsl import OuterProductMeanCuTe
@@ -36,7 +37,16 @@ _CUTE_NATIVE = {
     86: (torch.float16, torch.bfloat16),
     89: (torch.float16, torch.bfloat16),
     90: (torch.bfloat16,),
+    100: (torch.float16, torch.bfloat16),
+    103: (torch.float16, torch.bfloat16),
 }
+# Deepest MSA the SM100 kernel serves; past it the Triton kernel is faster or unmeasured. On B200, with
+# sm100.json's cc = 8 streaming tiles and the prologue's sequence-last a, timed interleaved with Triton at either
+# C_z: 1.06-1.24x up to S = 16384 from a pair side sqrt(I * J) of 320, and 1.01-1.15x up to S = 8192 below it,
+# where N = 256 falls behind at S = 12288. SM103 keeps the depths per C_z it was measured at before those tiles;
+# this has not been remeasured on B300.
+_SM100_MAX_S_BY_SIDE = ((320, 16384), (0, 8192))
+_SM103_MAX_S = {128: 1536, 256: 1024}
 # Triton's BF16 dot needs SM80.
 _TRITON_MIN_SM = 80
 _TRITON_DTYPES = (torch.float16, torch.bfloat16)
@@ -99,8 +109,55 @@ def _invoke_cute_opm(
     bias: torch.Tensor | None = None,
     norm_before: bool = True,
 ) -> torch.Tensor:
-    """Run the source-or-CUBIN CuTe backend."""
+    """Run the source-or-CUBIN CuTe backend, or Triton for a call the SM100 kernel does not serve.
+
+    A layer picks its op once, at construction, so S is checked per call.
+    """
+    I = a.shape[2] if a.dim() == 4 else num_mask.shape[1]
+    if not _cute_serves_call(get_sm_version(), b.shape[1], W_o.shape[0], I, b.shape[2]):
+        return _invoke_triton_opm(a, b, num_mask, W_o, bias, norm_before)
     return _get_cute_opm()(a, b, num_mask, W_o, bias, norm_before)
+
+
+def _cute_runs_on(sm: int, dtype: torch.dtype) -> bool:
+    """Whether the CuTe backend serves ``dtype`` on ``sm``."""
+    return dtype in _CUTE_NATIVE.get(sm, ())
+
+
+def _cute_serves_call(sm: int, S: int, C_z: int, I: int, J: int) -> bool:
+    """Whether the CuTe backend serves one ``I x J`` call at MSA depth ``S`` (the SM100 kernel only up to its cap)."""
+    if sm not in _SM100_FAMILY:
+        return True
+    if C_z not in _SUPPORTED_CZ:
+        return False
+    if sm == 103:
+        return S <= _SM103_MAX_S[C_z]
+    side = math.sqrt(float(I) * float(J))
+    return S <= next(depth for min_side, depth in _SM100_MAX_S_BY_SIDE if side >= min_side)
+
+
+def outer_product_mean_a_chunk(
+    S: int, I: int, J: int, C_z: int, norm_before: bool, has_bias: bool, dtype: torch.dtype
+) -> int | None:
+    """Chunk ``cc`` when the selected backend takes ``a`` sequence-last (SM100/SM103 CuTe), else ``None``.
+
+    A producer of ``a`` can then write ``[B, 32 / cc, ceil(I / T), cc, T, S]`` (``T = 128 / cc``, row pitch a
+    multiple of 64) directly and hand it to the op from :func:`get_outer_product_mean_op`; every other
+    backend takes ``a`` as ``[B, S, I, 32]``.
+    """
+    sm = get_sm_version()
+    if not (_cute_runs_on(sm, dtype) and _cute_serves_call(sm, S, C_z, I, J)):
+        return None
+    return _get_cute_opm().a_chunk(S, I, J, C_z, norm_before, has_bias, dtype)
+
+
+def outer_product_mean_a_chunks(C_z: int, dtype: torch.dtype) -> tuple[int, ...]:
+    """Every chunk :func:`outer_product_mean_a_chunk` can return on this device for ``C_z`` and ``dtype``, at any
+    shape, so a producer of ``a`` can prepare each sequence-last layout before its first call."""
+    sm = get_sm_version()
+    if sm not in _SM100_FAMILY or not _cute_runs_on(sm, dtype) or C_z not in _SUPPORTED_CZ:
+        return ()
+    return sm100_a_chunks(sm, C_z)
 
 
 def get_outer_product_mean_op(dtype: torch.dtype, C: int, D: int, C_z: int) -> Callable:
@@ -114,7 +171,7 @@ def get_outer_product_mean_op(dtype: torch.dtype, C: int, D: int, C_z: int) -> C
         return _invoke_vanilla_opm
 
     sm = get_sm_version()
-    if dtype in _CUTE_NATIVE.get(sm, ()):
+    if _cute_runs_on(sm, dtype):
         return _invoke_cute_opm
     if sm >= _TRITON_MIN_SM and dtype in _TRITON_DTYPES:
         return _invoke_triton_opm

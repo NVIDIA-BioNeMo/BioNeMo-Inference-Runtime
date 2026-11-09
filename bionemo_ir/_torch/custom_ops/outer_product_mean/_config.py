@@ -121,11 +121,54 @@ class Sm90KernelConfig:
         return ("sm90", *self.__dict__.values())
 
 
+@dataclass(frozen=True)
+class Sm100KernelConfig:
+    """Tile of the SM100/SM103 kernel (2-SM tcgen05, persistent); shape-independent."""
+
+    ab_dtype: str = "bf16"
+    C: int = 32
+    D: int = 32
+    C_z: int = 128
+    cc: int = 4  # c values per chunk; a CTA owns 128 / cc rows i, the CTA pair cc columns j
+    tile_s: int = 64  # S per a/b ring stage
+    ab_stages: int = 3  # a/b ring depth
+    w_stages: int = 4  # W_o ring depth, 64 columns per stage
+    z_stages: int = 2  # relayout buffers, one chunk (or half of one) each
+    raster: int = 0  # j tiles per raster band; 0 walks whole rows of j tiles
+    epi_cols: int = 64  # output channels per TMA-store slice
+    b_res: int = 0  # 0 streams b per chunk; n > 0 keeps a tile's b resident, serving S <= n * tile_s
+    pairs: int = 1  # CTA pairs per cluster; 2 multicasts the shared a and W across two j tiles
+    z_split: int = 1  # parts of a chunk per relayout buffer; 2 halves the buffers
+
+    @property
+    def cz(self) -> int:
+        return self.C_z
+
+    def to_dict(self) -> dict:
+        # z_split postdates the shipped tables and CUBINs: whole-chunk buffers keep the identity they were
+        # built under.
+        return {k: v for k, v in self.__dict__.items() if k != "z_split" or v != 1}
+
+    @staticmethod
+    def from_dict(raw: dict) -> Sm100KernelConfig:
+        return Sm100KernelConfig(**raw)
+
+    def config_key(self) -> tuple:
+        return ("sm100", *self.to_dict().values())
+
+
 _KERNEL_C = 32
 _KERNEL_D = 32
 _KERNEL_CZ = 128
 # Output widths the fused op serves: Boltz/OpenFold (128) and Protenix-v2 (256).
 _SUPPORTED_CZ = (128, 256)
+
+# The SM100 kernel's family. SM103 runs the same machine code; its tiles (configs/sm103.json) were swept on a B300
+# (SM clock locked at 1500 MHz) at every pair N of the 17 benchmark samples and the four tuned depths. SM100's tiles
+# stay within 1.3% of the best from N = 768 up, but run up to 13% slower from N = 336 to 656, where one 2-SM pair
+# per cluster (C_z = 128) or rastered j tiles (S = 597, up to N = 640) win. The N = 640 and N = 656 buckets hold
+# those; N = 768 and up keep SM100's tiles.
+_SM100_FAMILY = (100, 103)
 
 _OPM_CONFIGS_DIR = os.path.join(os.path.dirname(__file__), "configs")
 
@@ -183,7 +226,41 @@ def sm90_default_config(dtype_str: str, C_z: int = _KERNEL_CZ) -> Sm90KernelConf
     return Sm90KernelConfig(ab_dtype=dtype_str, C_z=C_z, **_SM90_DEFAULT_TILES[C_z])
 
 
-def config_identity(config: KernelConfig | Sm90KernelConfig) -> str:
+# SM100/SM103 fallback tile per output width. It streams b, so it serves every S.
+_SM100_DEFAULT_TILES = {
+    128: {"cc": 4, "tile_s": 64, "ab_stages": 4, "w_stages": 4, "z_stages": 2, "epi_cols": 64},
+    256: {"cc": 4, "tile_s": 64, "ab_stages": 3, "w_stages": 4, "z_stages": 2, "epi_cols": 32},
+}
+
+
+def sm100_default_config(dtype_str: str, C_z: int = _KERNEL_CZ) -> Sm100KernelConfig:
+    """Return the SM100/SM103 fallback tile for ``C_z``."""
+    return Sm100KernelConfig(ab_dtype=dtype_str, C_z=C_z, **_SM100_DEFAULT_TILES[C_z])
+
+
+def sm100_holds(config: Sm100KernelConfig, S: int) -> bool:
+    """Whether ``config`` serves depth ``S``: it streams ``b``, or its resident ``b`` holds ``S``."""
+    return not config.b_res or -(-S // config.tile_s) <= config.b_res
+
+
+def sm100_fit(config: Sm100KernelConfig, S: int) -> Sm100KernelConfig:
+    """``config``, or the streaming fallback tile when its resident ``b`` cannot hold ``S``."""
+    return config if sm100_holds(config, S) else sm100_default_config(config.ab_dtype, config.C_z)
+
+
+def sm100_a_chunks(sm_version: int, C_z: int) -> tuple[int, ...]:
+    """The chunk width ``cc`` of every tile the SM100 selector can pick on ``sm_version`` for ``C_z``: the table's
+    and the default it falls back to."""
+    bundle = load_kernel_configs(_OPM_CONFIGS_DIR, get_config_file_name(sm_version))
+    raws = bundle.configs.values() if bundle is not None and bundle.kernel_abi == "sm100" else ()
+    chunks = {Sm100KernelConfig.from_dict(raw).cc for raw in raws if raw.get("C_z", _KERNEL_CZ) == C_z}
+    return tuple(sorted(chunks | {sm100_default_config("bf16", C_z).cc}))
+
+
+type OpmConfig = KernelConfig | Sm90KernelConfig | Sm100KernelConfig
+
+
+def config_identity(config: OpmConfig) -> str:
     """Return the CUBIN selection identity."""
     return "|".join(
         ",".join(str(item) for item in value) if isinstance(value, tuple) else str(value)
@@ -208,46 +285,55 @@ def _select_opm_config_bucket(
     C: int = _KERNEL_C,
     D: int = _KERNEL_D,
     C_z: int = _KERNEL_CZ,
-) -> tuple[KernelConfig | Sm90KernelConfig, tuple[KernelConfig | Sm90KernelConfig, ...]]:
+) -> tuple[OpmConfig, tuple[OpmConfig, ...]]:
     """Return the nearest-S config and unique configs in its nearest-N bucket."""
     bundle = load_kernel_configs(_OPM_CONFIGS_DIR, get_config_file_name(sm_version))
     sm90 = bundle is not None and bundle.kernel_abi == "sm90"
+    sm100 = bundle.kernel_abi == "sm100" if bundle is not None else sm_version in _SM100_FAMILY
     if sm90 and dtype_str != "bf16":
         # The SM90 kernel is bf16-only; other dtypes keep the SM80 kernel.
         default = default_config(dtype_str, C=C, D=D, C_z=C_z, sm=sm_version)
         return default, (default,)
-    config_cls = Sm90KernelConfig if sm90 else KernelConfig
+    config_cls = Sm100KernelConfig if sm100 else Sm90KernelConfig if sm90 else KernelConfig
+
+    def load(raw: dict) -> OpmConfig:
+        # SM100 tiles are tuned in bf16 and serve fp16 unchanged.
+        return config_cls.from_dict(dict(raw, ab_dtype=dtype_str) if sm100 else raw)
+
+    def fit(config: OpmConfig) -> OpmConfig:
+        return sm100_fit(config, S) if sm100 else config
+
     if bundle is not None:
         side = math.sqrt(float(I) * float(J))
         candidates = []
         for key in bundle.configs:
             kN, kS, knb, kbias, kdt = _parse_key(key)
             raw = bundle.configs[key]
-            if kdt != dtype_str or (raw.get("C", _KERNEL_C), raw.get("D", _KERNEL_D), raw.get("C_z", _KERNEL_CZ)) != (
-                C,
-                D,
-                C_z,
-            ):
+            if (kdt != dtype_str and not sm100) or (
+                raw.get("C", _KERNEL_C),
+                raw.get("D", _KERNEL_D),
+                raw.get("C_z", _KERNEL_CZ),
+            ) != (C, D, C_z):
                 continue
-            # SM90 tiles serve every flag combination; SM80 tiles are tuned per flag.
-            if not sm90 and (knb != norm_before or kbias != has_bias):
+            # SM90 and SM100 tiles serve every flag combination; SM80 tiles are tuned per flag.
+            if not (sm90 or sm100) and (knb != norm_before or kbias != has_bias):
                 continue
             candidates.append((kN, kS, key))
         if candidates:
             n_bucket = min({kN for kN, _, _ in candidates}, key=lambda kN: (abs(kN - side), kN))
-            _, _, best_key = min(
-                (candidate for candidate in candidates if candidate[0] == n_bucket),
-                key=lambda candidate: (abs(candidate[1] - S), candidate[1]),
-            )
-            selected = config_cls.from_dict(bundle.configs[best_key])
+            in_bucket = [candidate for candidate in candidates if candidate[0] == n_bucket]
+            # SM100: the nearest S among the tiles whose resident b holds S; fit() streams when none does.
+            holding = [c for c in in_bucket if not sm100 or sm100_holds(load(bundle.configs[c[2]]), S)]
+            _, _, best_key = min(holding or in_bucket, key=lambda candidate: (abs(candidate[1] - S), candidate[1]))
+            selected = fit(load(bundle.configs[best_key]))
             variants = {}
-            for _, _, key in sorted(
-                (candidate for candidate in candidates if candidate[0] == n_bucket), key=lambda candidate: candidate[1]
-            ):
-                config = config_cls.from_dict(bundle.configs[key])
+            for _, _, key in sorted(in_bucket, key=lambda candidate: candidate[1]):
+                config = fit(load(bundle.configs[key]))
                 variants.setdefault(config.config_key(), config)
             return selected, tuple(variants.values())
-    if sm90:
+    if sm100:
+        default = sm100_default_config(dtype_str, C_z=C_z)
+    elif sm90:
         default = sm90_default_config(dtype_str, C_z=C_z)
     else:
         default = default_config(dtype_str, C=C, D=D, C_z=C_z, sm=sm_version)
@@ -265,6 +351,6 @@ def select_opm_config(
     C: int = _KERNEL_C,
     D: int = _KERNEL_D,
     C_z: int = _KERNEL_CZ,
-) -> KernelConfig | Sm90KernelConfig:
+) -> OpmConfig:
     """Select the nearest-S config from the nearest tuned N bucket."""
     return _select_opm_config_bucket(sm_version, I, J, S, norm_before, has_bias, dtype_str, C=C, D=D, C_z=C_z)[0]

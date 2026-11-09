@@ -132,10 +132,6 @@ def of3_capture_inputs() -> "CaptureInputs":
 def structural_model() -> Callable[..., object]:
     """Construct structures without compiling unused kernels."""
     from bionemo_ir._torch.custom_ops.attn_epilogue.cutedsl import AttnEpilogueCuTe
-    from bionemo_ir.dsl_kernels.triton.fused_ln_proj_moveaxis_pad import FusedLNProjMoveaxisPad
-    from bionemo_ir.dsl_kernels.triton.fused_swiglu import FusedSwiGLU
-    from bionemo_ir.dsl_kernels.triton.ln_pair_bias import LNPairBias
-    from bionemo_ir.dsl_kernels.triton.moveaxis_pad import MoveaxisPad
     from bionemo_ir.dsl_kernels.triton_cache import CachedKernel, TritonKernelCache
 
     def skip_compile(
@@ -147,13 +143,21 @@ def structural_model() -> Callable[..., object]:
     ) -> dict[object, CachedKernel]:
         return dict.fromkeys(dtypes, CachedKernel(None, enable_driver=False))
 
+    def backends(cls: type) -> Iterator[type]:
+        for subclass in cls.__subclasses__():
+            yield subclass
+            yield from backends(subclass)
+
     def build[T](model_class: type[T], **kwargs: object) -> T:
         with pytest.MonkeyPatch.context() as patch:
             patch.setenv("CUTEDSL_FORCE_CUBIN", "1")
             patch.setattr(AttnEpilogueCuTe, "_compiled_cache", {})
             patch.setattr(TritonKernelCache, "compile_for_dtypes", skip_compile)
-            for backend in (FusedLNProjMoveaxisPad, FusedSwiGLU, LNPairBias, MoveaxisPad):
-                patch.setattr(backend, "_global_cache", {})
+            # A backend that compiles at init stores the placeholders in its process-wide cache, and every later
+            # launch from that cache in this process would get one. Each such cache is swapped for the build.
+            for backend in backends(TritonKernelCache):
+                if "_global_cache" in vars(backend):
+                    patch.setattr(backend, "_global_cache", {})
             return model_class(**kwargs)
 
     return build

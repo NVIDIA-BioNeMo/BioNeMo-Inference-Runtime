@@ -15,6 +15,7 @@
 """Bounded two-stage half-precision outer product projection."""
 
 from functools import cache
+from typing import NamedTuple
 
 import torch
 import triton
@@ -24,12 +25,76 @@ from bionemo_ir.dsl_kernels.triton_cache import CachedKernel, TritonKernelCache
 
 _SUPPORTED_DTYPES = (torch.float16, torch.bfloat16)
 _SUPPORTED_CZ = (128, 256)
-# Rows of ``a`` per contraction; bounds the intermediate to ``[_CHUNK, J, 1024]``.
-_CHUNK = 256
-_BLOCK = 128
-_BLOCK_K = 64
 # Sequence offsets at or past this many elements need 64-bit indexing.
 _INDEX_LIMIT = 2**31
+
+
+class _GemmTile(NamedTuple):
+    """Tile and pipeline of one of the two GEMM kernels."""
+
+    BM: int
+    BN: int
+    BK: int
+    num_warps: int
+    num_stages: int
+
+
+class _OpmTuning(NamedTuple):
+    """Kernel tiles and row chunking for one SM version."""
+
+    #: Contraction tile: rows ``(i, c)`` x columns ``(j, d)`` x sequences.
+    contract: _GemmTile
+    #: Projection tile for ``C_z`` 128.
+    project_128: _GemmTile
+    #: Projection tile for ``C_z`` 256.
+    project_256: _GemmTile
+    #: Rows of ``a`` per contraction; bounds the intermediate to ``[chunk, J, 1024]``.
+    chunk: int
+
+    def project(self, c_z: int) -> _GemmTile:
+        """Return the projection tile for output width ``c_z`` (128 or 256)."""
+        return self.project_256 if c_z == 256 else self.project_128
+
+
+_DEFAULT_TILE = _GemmTile(BM=128, BN=128, BK=64, num_warps=8, num_stages=3)
+#: SM versions without an entry in :data:`_TUNING`.
+_DEFAULT_TUNING = _OpmTuning(contract=_DEFAULT_TILE, project_128=_DEFAULT_TILE, project_256=_DEFAULT_TILE, chunk=256)
+_SM100_TUNING = _OpmTuning(
+    contract=_GemmTile(BM=128, BN=256, BK=32, num_warps=4, num_stages=4),
+    project_128=_GemmTile(BM=128, BN=128, BK=64, num_warps=4, num_stages=3),
+    project_256=_GemmTile(BM=256, BN=256, BK=32, num_warps=8, num_stages=5),
+    chunk=256,
+)
+# B300 (148 SMs) at the 17 benchmark samples' pair sizes (N=32-1736) and the four tuned depths, under CUDA-graph
+# replay with the SM clock locked at 1500 MHz: 384-row chunks run 1-14% faster from N=336 up, within 1.3% of
+# 512-row chunks for a quarter less transient intermediate. Calls of N <= 256 fit one chunk either way, so they
+# keep SM100's timing, and there the projection tiles stay 9-42% behind the best ones (128x256x64 at C_z=256,
+# 128x128x64 at C_z=128, 8 warps): chunking cannot change that, and the table holds one projection per C_z.
+_SM103_TUNING = _SM100_TUNING._replace(chunk=384)
+#: Tuned SM versions. Constants are per SM, so one entry serves every SM count of that version.
+_TUNING: dict[int, _OpmTuning] = {
+    # B200 (148 SMs), Protenix (C_z=256) and OpenFold3 (C_z=128) MSA-module shapes, N=384-1536 tokens,
+    # S=101-597 sequences, under CUDA-graph replay: 1.3-1.6x over the default in bf16 and fp16, same
+    # bits. The contraction's K loop is only S long, so it is latency bound; the 4-warp 128x256 tile
+    # keeps two CTAs per SM and, of every tile enumerated at S=64-1024, was the fastest from S=134 up
+    # and within 5% of it below. A projection tile spanning C_z reads the intermediate once instead of
+    # once per 128 output channels. The chunk stays at 256 rows: 384 rows ran 2-4% faster but need 1.5x
+    # the transient intermediate.
+    100: _SM100_TUNING,
+    103: _SM103_TUNING,
+}
+
+
+def _tuning(sm_version: int) -> _OpmTuning:
+    """Return the tuning for ``major * 10 + minor``; untuned versions keep the default."""
+    return _TUNING.get(sm_version, _DEFAULT_TUNING)
+
+
+@cache
+def _sm_version(device: int) -> int:
+    """Return ``major * 10 + minor`` for the CUDA device index."""
+    major, minor = torch.cuda.get_device_capability(device)
+    return major * 10 + minor
 
 
 @triton.jit(do_not_specialize=["OFFSET", "S", "I", "J", "ROWS"])
@@ -118,9 +183,29 @@ def opm_project(
 
 
 class FusedOPM(TritonKernelCache):
-    """Contraction and projection kernels for one dtype, output width, epilogue, and index width."""
+    """Contraction and projection kernels for one dtype, output width, epilogue, index width, and tuning."""
 
-    def __init__(self, dtype: torch.dtype, c_z: int, has_bias: bool, before: bool, wide: bool) -> None:
+    def __init__(
+        self,
+        dtype: torch.dtype,
+        c_z: int,
+        has_bias: bool,
+        before: bool,
+        wide: bool,
+        tuning: _OpmTuning,
+    ) -> None:
+        """Compile the contraction and projection for one launch configuration.
+
+        Args:
+            dtype: Operand and output dtype, either fp16 or bf16.
+            c_z: Output width, either 128 or 256.
+            has_bias: Whether the projection adds a bias.
+            before: Whether normalization precedes the projection.
+            wide: Whether sequence offsets need 64-bit indexing.
+            tuning: GEMM tiles and row chunk size for this device.
+        """
+        self.tuning = tuning
+        contract, project = tuning.contract, tuning.project(c_z)
         self.contract = self.compile_for_dtypes(
             opm_contract,
             dtypes=[dtype],
@@ -134,11 +219,11 @@ class FusedOPM(TritonKernelCache):
             ),
             grid=(0,),
             WIDE=wide,
-            BM=_BLOCK,
-            BN=_BLOCK,
-            BK=_BLOCK_K,
-            num_warps=8,
-            num_stages=3,
+            BM=contract.BM,
+            BN=contract.BN,
+            BK=contract.BK,
+            num_warps=contract.num_warps,
+            num_stages=contract.num_stages,
         )[dtype]
         self.project = self.compile_for_dtypes(
             opm_project,
@@ -157,19 +242,20 @@ class FusedOPM(TritonKernelCache):
             CZ=c_z,
             HAS_BIAS=has_bias,
             BEFORE=before,
-            BM=_BLOCK,
-            BN=_BLOCK,
-            BK=_BLOCK_K,
-            num_warps=8,
-            num_stages=3,
+            BM=project.BM,
+            BN=project.BN,
+            BK=project.BK,
+            num_warps=project.num_warps,
+            num_stages=project.num_stages,
             enable_fp_fusion=False,
         )[dtype]
 
 
 @cache
 def _cached_kernels(device: int, dtype: torch.dtype, c_z: int, has_bias: bool, before: bool, wide: bool) -> FusedOPM:
+    """Cache compiled kernels by device, dtype, output width, epilogue, and index width."""
     with torch.cuda.device(device):
-        return FusedOPM(dtype, c_z, has_bias, before, wide)
+        return FusedOPM(dtype, c_z, has_bias, before, wide, _tuning(_sm_version(device)))
 
 
 def _aligned(tensor: torch.Tensor) -> torch.Tensor:
@@ -242,10 +328,11 @@ def dense_outer_product(
     output = torch.empty((batch, rows_i, cols_j, c_z), device=a.device, dtype=a.dtype)
     if output.numel() == 0:
         return output
-    chunk = min(_CHUNK, rows_i)
     wide = sequences * max(rows_i, cols_j) * 32 >= _INDEX_LIMIT
     with torch.cuda.device(a.device):
         kernels = _cached_kernels(a.device.index, a.dtype, c_z, has_bias, norm_before, wide)
+        contract, project = kernels.tuning.contract, kernels.tuning.project(c_z)
+        chunk = min(kernels.tuning.chunk, rows_i)
         intermediate = torch.empty((chunk, cols_j, 1024), device=a.device, dtype=a.dtype)
         for index in range(batch):
             contract_args = (a[index], b[index], intermediate)
@@ -254,16 +341,16 @@ def dense_outer_product(
                 rows = min(chunk, rows_i - offset)
                 _launch(
                     kernels.contract,
-                    (triton.cdiv(rows * 32, _BLOCK), triton.cdiv(cols_j * 32, _BLOCK)),
+                    (triton.cdiv(rows * 32, contract.BM), triton.cdiv(cols_j * 32, contract.BN)),
                     contract_args,
                     (offset, sequences, rows_i, cols_j, rows),
-                    (wide, _BLOCK, _BLOCK, _BLOCK_K),
+                    (wide, contract.BM, contract.BN, contract.BK),
                 )
                 _launch(
                     kernels.project,
-                    (triton.cdiv(rows * cols_j, _BLOCK), c_z // _BLOCK),
+                    (triton.cdiv(rows * cols_j, project.BM), c_z // project.BN),
                     project_args,
                     (offset, cols_j, rows),
-                    (c_z, has_bias, norm_before, _BLOCK, _BLOCK, _BLOCK_K),
+                    (c_z, has_bias, norm_before, project.BM, project.BN, project.BK),
                 )
     return output

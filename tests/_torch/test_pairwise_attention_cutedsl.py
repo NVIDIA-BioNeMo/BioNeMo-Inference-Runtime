@@ -62,11 +62,15 @@ loud_on_missing_cubin = pytest.mark.skipif(
 
 @functools.cache
 def _library_misses_a_tuned_image() -> bool:
+    """Whether some anchor has no current image; an SM100 image from before the mult-inner ABI counts as missing."""
     launcher = require_cubin_library().pairwise_attention
     try:
         for head_dim in _tuned_head_dims():
             for anchor in _tuned_anchors(head_dim):
-                launcher.make_kernel_config(SM_VERSION, head_dim, anchor, launcher.DType.BFLOAT16, False)
+                config = launcher.make_kernel_config(SM_VERSION, head_dim, anchor, launcher.DType.BFLOAT16, False)
+                abi = config.cubin.launch_abi
+                if abi.startswith("pairwise_attention_sm100_") and "_mult_inner_" not in abi:
+                    return True
     except IndexError:
         return True
     return False
@@ -91,7 +95,13 @@ def _tuned_anchors(head_dim: int) -> tuple[int, ...]:
     path = Path(_PW_CONFIGS_DIR) / f"D{head_dim}_sm{SM_VERSION}.json"
     with path.open() as handle:
         configs = json.load(handle)["configs"]
-    return tuple(sorted(int(key.removeprefix("S=")) for key in configs))
+    return tuple(
+        sorted(
+            int(key.removeprefix("S="))
+            for key, params in configs.items()
+            if pw_config._general_tile(params) is not None
+        )
+    )
 
 
 def _anchor_seqlen(anchor: int) -> int:
@@ -270,6 +280,27 @@ def test_blackwell_anchors_name_their_kernel(sm: int, head_dim: int) -> None:
     assert pw_config.get_bucket_kernel_abi(sm, head_dim, long) == "sm100"
 
 
+@pytest.mark.skipif(not _BLACKWELL or "source" not in _MODES, reason="requires the Blackwell source kernel")
+@pytest.mark.parametrize("head_dim", _HEAD_DIMS)
+def test_blackwell_reuses_kernel_across_multiplicities(monkeypatch: pytest.MonkeyPatch, head_dim: int) -> None:
+    """Static and dynamic scheduling broadcast each batch's mask over all samples."""
+    monkeypatch.delenv(FORCE_CUBIN_ENV, raising=False)
+    PairwiseAttentionCuTeLeftMask._compiled_cache.clear()
+    num_heads, batch = 4, 2
+    backend = PairwiseAttentionCuTeLeftMask(0, num_heads, head_dim, num_kv_heads=num_heads)
+    metadata = PairwiseAttentionCuTeLeftMaskMetadata()
+    metadata.kv_packed = True
+    for mult in (5, 10, 20):
+        # Lengths past every Ampere anchor, so the Blackwell kernel runs.
+        for seqlen in (1537, 2049):
+            q, k, v, pair_bias, _ = _make_inputs(batch, mult, seqlen, seqlen, num_heads, head_dim, torch.bfloat16, True)
+            actual_s_kv = torch.tensor([seqlen, seqlen // 2 + 1], dtype=torch.int32, device="cuda")
+            actual = backend.forward(q, k, v, biases=[actual_s_kv, pair_bias], metadata=metadata)
+            assert backend._last_abi == "sm100"
+            expected = _reference(q, k, v, pair_bias, actual_s_kv, num_heads, head_dim, seqlen)
+            torch.testing.assert_close(actual.float(), expected.float(), atol=_ATOL[torch.bfloat16], rtol=1e-2)
+
+
 def test_blackwell_disk_cache_key_names_the_kernel_and_tile() -> None:
     """A retuned SM100 anchor must not reload the kernel an older tile compiled; SM80-SM90 keys keep their form."""
     backend = PairwiseAttentionCuTeLeftMask(0, 4, 48, num_kv_heads=4)
@@ -296,6 +327,44 @@ def test_anchor_kernel_abi_is_validated(monkeypatch: pytest.MonkeyPatch, tmp_pat
     monkeypatch.setattr(pw_config, "_PW_CONFIGS_DIR", str(tmp_path))
     with pytest.raises(ValueError, match="sm70"):
         pw_config.get_bucket_kernel_abi(100, 48, 0)
+
+
+def _tuned_calls(head_dim: int) -> dict[tuple, tuple[int, int, tuple]]:
+    """One (mult, seqlen, key) per measured kernel family and SplitN tile mode, from the shipped table."""
+    calls: dict[tuple, tuple[int, int, tuple]] = {}
+    for variant in pw_config._tuned_table(SM_VERSION, head_dim).variants:
+        mult = variant.mult_ranges[0][0]
+        # The anchor itself keeps full SplitN tiles; a nearby length masks the last one.
+        for seqlen in (variant.anchor, variant.anchor - 1):
+            key = pw_config.tuned_key(mult, head_dim, seqlen, SM_VERSION)
+            if key is not None:
+                calls.setdefault((key[0], key[0] == "splitn" and key[4]), (mult, seqlen, key))
+    return calls
+
+
+@pytest.mark.skipif(
+    not _BLACKWELL or "source" not in _MODES, reason="the measured kernels run from source on SM100/SM103"
+)
+@pytest.mark.parametrize("head_dim", pw_config.TUNED_HEAD_DIMS)
+def test_measured_kernels_match_the_reference(monkeypatch: pytest.MonkeyPatch, head_dim: int) -> None:
+    """16-head, batch-1, packed BF16 calls run the measured kernels: every family, padded keys included."""
+    monkeypatch.setattr(PairwiseAttentionCuTeLeftMask, "_compiled_cache", {})
+    calls = _tuned_calls(head_dim)
+    assert {family for family, _ in calls} == {
+        variant.key[0] for variant in pw_config._tuned_table(SM_VERSION, head_dim).variants
+    }
+    num_heads = 16
+    for mult, seqlen, key in calls.values():
+        q, k, v, pair_bias, actual_s_kv = _make_inputs(
+            1, mult, seqlen, seqlen, num_heads, head_dim, torch.bfloat16, True
+        )
+        backend = PairwiseAttentionCuTeLeftMask(0, num_heads, head_dim, num_kv_heads=num_heads)
+        metadata = PairwiseAttentionCuTeLeftMaskMetadata()
+        metadata.kv_packed = True
+        actual = backend.forward(q, k, v, biases=[actual_s_kv, pair_bias], metadata=metadata)
+        assert any(entry[0] == "tuned" and entry[5] == key for entry in PairwiseAttentionCuTeLeftMask._compiled_cache)
+        expected = _reference(q, k, v, pair_bias, actual_s_kv, num_heads, head_dim, seqlen)
+        torch.testing.assert_close(actual.float(), expected.float(), atol=_ATOL[torch.bfloat16], rtol=1e-2)
 
 
 @pytest.mark.skipif(not _BLACKWELL, reason="the Blackwell pairwise kernel runs on SM100 and SM103")
@@ -517,9 +586,9 @@ def test_force_cubin_takes_the_library_path_with_sources_present(monkeypatch):
 @pytest.mark.skipif(not source_module_available(_SOURCE_MODULE), reason="the CuTeDSL kernel sources are not installed")
 @pytest.mark.parametrize("library", ["installed", "without_this_sm"])
 def test_forcing_cubins_after_a_source_call_loads_the_cubin(monkeypatch: pytest.MonkeyPatch, library: str) -> None:
-    """Model tests set CUTEDSL_FORCE_CUBIN after their layers ran: the next call loads the CUBIN, or runs on SDPA
-    on SM100/SM103 from a library without their CUBINs, rather than reuse the source executable. Clearing the
-    switch, caches kept, runs the source executable again."""
+    """Model tests set CUTEDSL_FORCE_CUBIN after their layers ran: the next call loads the CUBIN, or on SM100/SM103
+    runs a pre-mult-inner CUBIN or SDPA from a library without current images, rather than reuse the source
+    executable. Clearing the switch, caches kept, runs the source executable again."""
     if library == "without_this_sm" and not _BLACKWELL:
         pytest.skip("only SM100 and SM103 fall back to SDPA on a library without their CUBINs")
     monkeypatch.delenv(FORCE_CUBIN_ENV, raising=False)
@@ -553,7 +622,10 @@ def test_forcing_cubins_after_a_source_call_loads_the_cubin(monkeypatch: pytest.
         assert isinstance(backend._last_executable, library_runtime.CuTeDSLKernelLibraryExecutable)
         assert torch.equal(forced, expected)
     else:
-        assert backend._last_executable is None
+        # A library without the image runs SDPA; one with an SM100 image from
+        # before the mult-inner ABI runs that earlier kernel. Neither matches bitwise.
+        if library == "without_this_sm":
+            assert backend._last_executable is None
         reference = _reference(q, k, v, pair_bias, actual_s_kv, 4, head_dim, q.shape[1])
         torch.testing.assert_close(forced.float(), reference.float(), atol=_ATOL[torch.bfloat16], rtol=1e-2)
     monkeypatch.delenv(FORCE_CUBIN_ENV)

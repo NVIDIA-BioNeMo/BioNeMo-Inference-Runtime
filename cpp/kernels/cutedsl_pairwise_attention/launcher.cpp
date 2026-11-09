@@ -43,11 +43,22 @@ constexpr char kSM90NullableLseLaunchAbi[] = "pairwise_attention_sm90_nullable_l
 constexpr char kSM100NullableLseLaunchAbi[] = "pairwise_attention_sm100_nullable_lse_v1";
 /* The SM100 bank plus the bias MMA of images that fold the bias on the tensor core. */
 constexpr char kSM100BiasMmaNullableLseLaunchAbi[] = "pairwise_attention_sm100_bias_mma_nullable_lse_v1";
+constexpr char kSM100MultInnerLaunchAbi[] = "pairwise_attention_sm100_mult_inner_nullable_lse_v1";
+constexpr char kSM100MultInnerBiasMmaLaunchAbi[] = "pairwise_attention_sm100_mult_inner_bias_mma_nullable_lse_v1";
+
+bool uses_mult_inner_scheduler(KernelConfig const& config)
+{
+  char const* abi = config.cubin.launch_abi;
+  return abi != nullptr
+    && (std::strcmp(abi, kSM100MultInnerLaunchAbi) == 0 || std::strcmp(abi, kSM100MultInnerBiasMmaLaunchAbi) == 0);
+}
 
 bool uses_sm100_bias_mma(KernelConfig const& config)
 {
-  return config.cubin.launch_abi != nullptr
-    && std::strcmp(config.cubin.launch_abi, kSM100BiasMmaNullableLseLaunchAbi) == 0;
+  char const* abi = config.cubin.launch_abi;
+  return abi != nullptr
+    && (std::strcmp(abi, kSM100BiasMmaNullableLseLaunchAbi) == 0
+        || std::strcmp(abi, kSM100MultInnerBiasMmaLaunchAbi) == 0);
 }
 
 bool accepts_null_lse(KernelConfig const& config)
@@ -55,7 +66,8 @@ bool accepts_null_lse(KernelConfig const& config)
   char const* abi = config.cubin.launch_abi;
   return abi != nullptr
     && (std::strcmp(abi, kSM80NullableLseLaunchAbi) == 0 || std::strcmp(abi, kSM90NullableLseLaunchAbi) == 0
-        || std::strcmp(abi, kSM100NullableLseLaunchAbi) == 0 || uses_sm100_bias_mma(config));
+        || std::strcmp(abi, kSM100NullableLseLaunchAbi) == 0 || uses_mult_inner_scheduler(config)
+        || uses_sm100_bias_mma(config));
 }
 
 /* Older images store LSE unconditionally, so they still need a buffer. */
@@ -83,7 +95,8 @@ void validate_launch(KernelConfig const& config, LaunchParams const& params)
   {
     if (is_sm100)
     {
-      known_abi = std::strcmp(config.cubin.launch_abi, kSM100NullableLseLaunchAbi) == 0 || uses_sm100_bias_mma(config);
+      known_abi = std::strcmp(config.cubin.launch_abi, kSM100NullableLseLaunchAbi) == 0
+        || uses_mult_inner_scheduler(config) || uses_sm100_bias_mma(config);
     }
     else
     {
@@ -409,6 +422,7 @@ void launch_sm100(
   embedded::SM100LaunchInfo const& metadata,
   DType dtype,
   bool bias_mma,
+  bool mult_inner,
   LaunchParams const& params,
   CUcontext context,
   std::uint32_t smem_bytes)
@@ -449,16 +463,18 @@ void launch_sm100(
     = ceil_div(static_cast<std::uint64_t>(params.q.shape[1]), static_cast<std::uint64_t>(spec.tile_m));
   if (scheduler_num_blocks_u64 > static_cast<std::uint64_t>(std::numeric_limits<std::int32_t>::max()))
     throw std::overflow_error("pairwise-attention SM100 scheduler M tile count overflow");
+  device_params.scheduler_mult_divmod = make_sm100_fast_divmod(params.mult);
   device_params.scheduler_num_blocks = make_sm100_fast_divmod(static_cast<std::int32_t>(scheduler_num_blocks_u64));
   device_params.scheduler_num_heads = make_sm100_fast_divmod(params.q.shape[2]);
+  device_params.scheduler_mult = params.mult;
   std::uint64_t const total_blocks = scheduler_num_blocks_u64 * static_cast<std::uint64_t>(params.q.shape[2])
     * static_cast<std::uint64_t>(params.q.shape[0]);
   if (total_blocks > static_cast<std::uint64_t>(std::numeric_limits<std::int32_t>::max()))
     throw std::overflow_error("pairwise-attention SM100 scheduler total block count overflow");
   device_params.scheduler_total_blocks = static_cast<std::int32_t>(total_blocks);
 
-  void* kernel_params[abi::kSM100BiasMmaParameterCount];
-  abi::pack_sm100_kernel_params(&device_params, bias_mma, kernel_params);
+  void* kernel_params[abi::kSM100MaxParameterCount];
+  abi::pack_sm100_kernel_params(&device_params, bias_mma, mult_inner, kernel_params);
   cubin_launch_config_t const launch_config
     = make_sm100_launch_config(metadata, params, context, total_blocks, smem_bytes);
   check_cuda_driver(
@@ -482,6 +498,19 @@ find_embedded_cubin(std::int32_t target_sm, std::int32_t head_dim, std::int32_t 
     if (
       !cubin_supports_sm(image.cubin, target_sm) || image.head_dim != head_dim || image.is_bfloat16 != is_bfloat16
       || image.packed_output != packed_output)
+      continue;
+
+    // An older library can contain anchors removed from the current config.
+    // Ignore them so a missing compatible image takes the normal fallback.
+    bool const has_spec = std::any_of(
+      kKernelSpecs.begin(),
+      kKernelSpecs.end(),
+      [&](KernelSpec const& spec)
+      {
+        return spec_target_sm(spec) == target_sm && spec_head_dim(spec) == head_dim
+          && spec_bucket(spec) == image.bucket;
+      });
+    if (!has_spec)
       continue;
 
     std::int64_t const delta = static_cast<std::int64_t>(image.bucket) - static_cast<std::int64_t>(S);
@@ -565,6 +594,7 @@ void launch(KernelConfig const& config, LaunchParams const& params)
       config.embedded_image->sm100,
       config.dtype,
       uses_sm100_bias_mma(config),
+      uses_mult_inner_scheduler(config),
       params,
       context,
       smem_bytes);

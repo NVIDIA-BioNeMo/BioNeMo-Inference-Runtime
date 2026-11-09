@@ -49,6 +49,7 @@ inline constexpr std::size_t kSM90ParameterCount = 21;
 inline constexpr std::size_t kSM100ParameterCount = 20;
 /* Images that fold the bias on the tensor core (D <= 64) also take its tiled MMA. */
 inline constexpr std::size_t kSM100BiasMmaParameterCount = kSM100ParameterCount + 1;
+inline constexpr std::size_t kSM100MaxParameterCount = kSM100BiasMmaParameterCount + 2;
 
 struct SM80Params
 {
@@ -200,13 +201,15 @@ struct SM100Params
   SM100TiledMmaDescriptor qk_tiled_mma;
   SM100TiledMmaDescriptor pv_tiled_mma;
   SM100TiledMmaDescriptor bias_tiled_mma;
+  SM100FastDivmod scheduler_mult_divmod;
   SM100FastDivmod scheduler_num_blocks;
   SM100FastDivmod scheduler_num_heads;
+  std::int32_t scheduler_mult;
   std::int32_t scheduler_total_blocks;
 };
 
-inline void
-pack_sm100_kernel_params(SM100Params* params, bool bias_mma, void* kernel_params[kSM100BiasMmaParameterCount])
+inline void pack_sm100_kernel_params(
+  SM100Params* params, bool bias_mma, bool mult_inner, void* kernel_params[kSM100MaxParameterCount])
 {
   kernel_params[0] = &params->q_coord;
   kernel_params[1] = &params->k_coord;
@@ -225,12 +228,16 @@ pack_sm100_kernel_params(SM100Params* params, bool bias_mma, void* kernel_params
   kernel_params[14] = &params->softmax_scale;
   kernel_params[15] = &params->qk_tiled_mma;
   kernel_params[16] = &params->pv_tiled_mma;
-  std::size_t const scheduler = bias_mma ? 18 : 17;
+  std::size_t scheduler = bias_mma ? 18 : 17;
   if (bias_mma)
     kernel_params[17] = &params->bias_tiled_mma;
-  kernel_params[scheduler] = &params->scheduler_num_blocks;
-  kernel_params[scheduler + 1] = &params->scheduler_num_heads;
-  kernel_params[scheduler + 2] = &params->scheduler_total_blocks;
+  if (mult_inner)
+    kernel_params[scheduler++] = &params->scheduler_mult_divmod;
+  kernel_params[scheduler++] = &params->scheduler_num_blocks;
+  kernel_params[scheduler++] = &params->scheduler_num_heads;
+  if (mult_inner)
+    kernel_params[scheduler++] = &params->scheduler_mult;
+  kernel_params[scheduler] = &params->scheduler_total_blocks;
 }
 
 static_assert(sizeof(CUtensorMap) == 128);

@@ -2,14 +2,349 @@
   "kernel_abi": "sm100",
   "note": "Copied from the SM100 anchors; not measured on SM103, where no Protenix or OpenFold3 call has D=64.",
   "configs": {
+    "S=32": {
+      "source_variants": {
+        "splitn_1_1_32_true_1": {"kernel": "splitn", "params": [1, 1, 32, true, 1], "mult_ranges": [[1, 7], [9, 9]]},
+        "splitn_2_1_32_true_2": {"kernel": "splitn", "params": [2, 1, 32, true, 2], "mult_ranges": [[8, 8], [10, 20]]}
+      }
+    },
+    "S=48": {
+      "source_variants": {
+        "splitn_1_1_48_true_1": {"kernel": "splitn", "params": [1, 1, 48, true, 1], "mult_ranges": [[1, 4], [8, 8], [16, 16]]},
+        "splitn_1_1_48_true_2": {"kernel": "splitn", "params": [1, 1, 48, true, 2], "mult_ranges": [[5, 7], [9, 15], [17, 20]]}
+      }
+    },
+    "S=64": {
+      "source_variants": {
+        "splitn_1_1_64_true_1": {"kernel": "splitn", "params": [1, 1, 64, true, 1], "mult_ranges": [[1, 2]]},
+        "splitn_2_1_64_true_1": {"kernel": "splitn", "params": [2, 1, 64, true, 1], "mult_ranges": [[3, 3]]},
+        "splitn_1_1_64_true_2": {"kernel": "splitn", "params": [1, 1, 64, true, 2], "mult_ranges": [[4, 8]]},
+        "splitn_2_1_64_true_2": {"kernel": "splitn", "params": [2, 1, 64, true, 2], "mult_ranges": [[9, 18], [20, 20]]},
+        "splitn_4_1_64_true_2": {"kernel": "splitn", "params": [4, 1, 64, true, 2], "mult_ranges": [[19, 19]]}
+      }
+    },
+    "S=80": {
+      "source_variants": {
+        "splitn_1_1_80_true_1": {"kernel": "splitn", "params": [1, 1, 80, true, 1], "mult_ranges": [[1, 2], [12, 15], [17, 20]]},
+        "splitn_1_1_80_true_2": {"kernel": "splitn", "params": [1, 1, 80, true, 2], "mult_ranges": [[3, 11]]},
+        "splitn_2_1_80_false_1": {"kernel": "splitn", "params": [2, 1, 80, false, 1], "mult_ranges": [[16, 16]]}
+      }
+    },
+    "S=96": {
+      "source_variants": {
+        "splitn_1_1_96_true_1": {"kernel": "splitn", "params": [1, 1, 96, true, 1], "mult_ranges": [[1, 1]]},
+        "splitn_2_1_96_true_1": {"kernel": "splitn", "params": [2, 1, 96, true, 1], "mult_ranges": [[2, 2]]},
+        "splitn_2_1_96_true_2": {"kernel": "splitn", "params": [2, 1, 96, true, 2], "mult_ranges": [[3, 20]]}
+      }
+    },
+    "S=112": {
+      "source_variants": {
+        "splitn_1_1_112_true_2": {"kernel": "splitn", "params": [1, 1, 112, true, 2], "mult_ranges": [[1, 1], [5, 5]]},
+        "splitn_1_1_112_true_2_exact": {"kernel": "splitn", "params": [1, 1, 112, true, 2], "mult_ranges": [[2, 4]], "min_sequence": 112},
+        "tensor_bias_true_below": {"kernel": "tensor_bias", "params": [true], "mult_ranges": [[2, 4], [6, 6], [10, 11], [20, 20]], "max_sequence": 111},
+        "splitn_1_1_112_true_1_exact": {"kernel": "splitn", "params": [1, 1, 112, true, 1], "mult_ranges": [[6, 6], [10, 11]], "min_sequence": 112},
+        "splitn_4_1_112_false_1": {"kernel": "splitn", "params": [4, 1, 112, false, 1], "mult_ranges": [[7, 7], [12, 19]]},
+        "splitn_4_1_112_false_2": {"kernel": "splitn", "params": [4, 1, 112, false, 2], "mult_ranges": [[8, 9]]},
+        "splitn_4_1_112_false_1_exact": {"kernel": "splitn", "params": [4, 1, 112, false, 1], "mult_ranges": [[20, 20]], "min_sequence": 112}
+      }
+    },
+    "S=128": {
+      "source_variants": {
+        "splitn_2_1_128_true_2": {"kernel": "splitn", "params": [2, 1, 128, true, 2], "mult_ranges": [[1, 1]]},
+        "splitn_2_1_128_true_2_exact": {"kernel": "splitn", "params": [2, 1, 128, true, 2], "mult_ranges": [[2, 7]], "min_sequence": 128},
+        "tensor_bias_true_below": {"kernel": "tensor_bias", "params": [true], "mult_ranges": [[2, 7], [10, 10], [15, 20]], "max_sequence": 127},
+        "splitn_4_1_128_true_2": {"kernel": "splitn", "params": [4, 1, 128, true, 2], "mult_ranges": [[8, 9]]},
+        "splitn_4_1_128_true_2_exact": {"kernel": "splitn", "params": [4, 1, 128, true, 2], "mult_ranges": [[10, 10]], "min_sequence": 128},
+        "splitn_4_1_128_true_1": {"kernel": "splitn", "params": [4, 1, 128, true, 1], "mult_ranges": [[11, 14]]},
+        "splitn_4_1_128_true_1_exact": {"kernel": "splitn", "params": [4, 1, 128, true, 1], "mult_ranges": [[15, 20]], "min_sequence": 128}
+      }
+    },
+    "S=144": {
+      "source_variants": {
+        "splitn_1_1_144_true_2_exact": {"kernel": "splitn", "params": [1, 1, 144, true, 2], "mult_ranges": [[1, 3]], "min_sequence": 144},
+        "native_true_2_below": {"kernel": "native", "params": [true, 2], "mult_ranges": [[1, 3]], "max_sequence": 143},
+        "splitn_1_1_144_true_1_exact": {"kernel": "splitn", "params": [1, 1, 144, true, 1], "mult_ranges": [[4, 4], [7, 8]], "min_sequence": 144},
+        "splitn_4_1_144_false_1_exact": {"kernel": "splitn", "params": [4, 1, 144, false, 1], "mult_ranges": [[5, 6], [10, 20]], "min_sequence": 144},
+        "splitn_4_1_144_false_2_exact": {"kernel": "splitn", "params": [4, 1, 144, false, 2], "mult_ranges": [[9, 9]], "min_sequence": 144}
+      }
+    },
+    "S=160": {
+      "source_variants": {
+        "splitn_2_1_160_true_2_exact": {"kernel": "splitn", "params": [2, 1, 160, true, 2], "mult_ranges": [[1, 4], [7, 14], [16, 20]], "min_sequence": 160},
+        "native_true_0_below": {"kernel": "native", "params": [true, 0], "mult_ranges": [[1, 3]], "max_sequence": 159},
+        "tensor_bias_true_below": {"kernel": "tensor_bias", "params": [true], "mult_ranges": [[4, 20]], "max_sequence": 159},
+        "splitn_2_1_160_true_1_exact": {"kernel": "splitn", "params": [2, 1, 160, true, 1], "mult_ranges": [[5, 5], [15, 15]], "min_sequence": 160},
+        "splitn_4_1_160_false_1_exact": {"kernel": "splitn", "params": [4, 1, 160, false, 1], "mult_ranges": [[6, 6]], "min_sequence": 160}
+      }
+    },
+    "S=176": {
+      "source_variants": {
+        "splitn_1_1_176_true_2_exact": {"kernel": "splitn", "params": [1, 1, 176, true, 2], "mult_ranges": [[1, 2]], "min_sequence": 176},
+        "splitn_4_1_176_false_2_exact": {"kernel": "splitn", "params": [4, 1, 176, false, 2], "mult_ranges": [[3, 3]], "min_sequence": 176},
+        "splitn_4_1_176_false_1_exact": {"kernel": "splitn", "params": [4, 1, 176, false, 1], "mult_ranges": [[4, 6], [8, 19]], "min_sequence": 176},
+        "splitn_1_1_176_true_1_exact": {"kernel": "splitn", "params": [1, 1, 176, true, 1], "mult_ranges": [[7, 7]], "min_sequence": 176},
+        "tensor_bias_true": {"kernel": "tensor_bias", "params": [true], "mult_ranges": [[20, 20]]}
+      }
+    },
+    "S=192": {
+      "source_variants": {
+        "splitn_2_1_192_true_2_exact": {"kernel": "splitn", "params": [2, 1, 192, true, 2], "mult_ranges": [[1, 1]], "min_sequence": 192},
+        "splitn_4_1_192_true_2_exact": {"kernel": "splitn", "params": [4, 1, 192, true, 2], "mult_ranges": [[2, 3]], "min_sequence": 192},
+        "splitn_2_1_192_true_1_exact": {"kernel": "splitn", "params": [2, 1, 192, true, 1], "mult_ranges": [[4, 4], [7, 8]], "min_sequence": 192},
+        "splitn_4_1_192_true_1_exact": {"kernel": "splitn", "params": [4, 1, 192, true, 1], "mult_ranges": [[5, 6], [9, 20]], "min_sequence": 192}
+      }
+    },
+    "S=208": {
+      "source_variants": {
+        "splitn_1_1_208_true_2_exact": {"kernel": "splitn", "params": [1, 1, 208, true, 2], "mult_ranges": [[1, 1]], "min_sequence": 208},
+        "native_true_2_below": {"kernel": "native", "params": [true, 2], "mult_ranges": [[1, 4]], "max_sequence": 207},
+        "splitn_1_1_208_true_1_exact": {"kernel": "splitn", "params": [1, 1, 208, true, 1], "mult_ranges": [[2, 2]], "min_sequence": 208},
+        "splitn_4_1_208_false_1_exact": {"kernel": "splitn", "params": [4, 1, 208, false, 1], "mult_ranges": [[3, 4]], "min_sequence": 208},
+        "tensor_bias_true": {"kernel": "tensor_bias", "params": [true], "mult_ranges": [[5, 20]]}
+      }
+    },
+    "S=224": {
+      "source_variants": {
+        "splitn_2_1_224_true_2_exact": {"kernel": "splitn", "params": [2, 1, 224, true, 2], "mult_ranges": [[1, 1]], "min_sequence": 224},
+        "native_true_0_below": {"kernel": "native", "params": [true, 0], "mult_ranges": [[1, 4]], "max_sequence": 223},
+        "splitn_2_1_224_true_1_exact": {"kernel": "splitn", "params": [2, 1, 224, true, 1], "mult_ranges": [[2, 2], [5, 5]], "min_sequence": 224},
+        "splitn_4_1_224_false_1_exact": {"kernel": "splitn", "params": [4, 1, 224, false, 1], "mult_ranges": [[3, 4]], "min_sequence": 224},
+        "tensor_bias_true": {"kernel": "tensor_bias", "params": [true], "mult_ranges": [[6, 20]]}
+      }
+    },
+    "S=240": {
+      "source_variants": {
+        "splitn_1_1_240_true_2_exact": {"kernel": "splitn", "params": [1, 1, 240, true, 2], "mult_ranges": [[1, 1]], "min_sequence": 240},
+        "native_true_2_below": {"kernel": "native", "params": [true, 2], "mult_ranges": [[1, 1]], "max_sequence": 239},
+        "splitn_4_1_240_false_1_exact": {"kernel": "splitn", "params": [4, 1, 240, false, 1], "mult_ranges": [[2, 2]], "min_sequence": 240},
+        "native_true_0": {"kernel": "native", "params": [true, 0], "mult_ranges": [[3, 3]]},
+        "native_true_2": {"kernel": "native", "params": [true, 2], "mult_ranges": [[4, 4]]},
+        "tensor_bias_true": {"kernel": "tensor_bias", "params": [true], "mult_ranges": [[5, 20]]}
+      }
+    },
+    "S=256": {
+      "source_variants": {
+        "splitn_2_1_256_true_2_exact": {"kernel": "splitn", "params": [2, 1, 256, true, 2], "mult_ranges": [[1, 1]], "min_sequence": 256},
+        "native_true_0_below": {"kernel": "native", "params": [true, 0], "mult_ranges": [[1, 2]], "max_sequence": 255},
+        "splitn_4_1_256_true_1_exact": {"kernel": "splitn", "params": [4, 1, 256, true, 1], "mult_ranges": [[2, 2]], "min_sequence": 256},
+        "native_true_0": {"kernel": "native", "params": [true, 0], "mult_ranges": [[3, 3]]},
+        "native_true_2": {"kernel": "native", "params": [true, 2], "mult_ranges": [[4, 4]]},
+        "tensor_bias_true": {"kernel": "tensor_bias", "params": [true], "mult_ranges": [[5, 20]]}
+      }
+    },
+    "S=272": {
+      "source_variants": {
+        "splitn_1_1_272_true_1_exact": {"kernel": "splitn", "params": [1, 1, 272, true, 1], "mult_ranges": [[1, 1]], "min_sequence": 272},
+        "splitn_2_1_272_false_1_exact": {"kernel": "splitn", "params": [2, 1, 272, false, 1], "mult_ranges": [[2, 2]], "min_sequence": 272},
+        "tensor_bias_true": {"kernel": "tensor_bias", "params": [true], "mult_ranges": [[3, 20]]}
+      }
+    },
+    "S=288": {
+      "source_variants": {
+        "splitn_2_1_288_true_2_exact": {"kernel": "splitn", "params": [2, 1, 288, true, 2], "mult_ranges": [[1, 1]], "min_sequence": 288},
+        "native_true_2_below": {"kernel": "native", "params": [true, 2], "mult_ranges": [[1, 2]], "max_sequence": 287},
+        "splitn_2_1_288_true_1_exact": {"kernel": "splitn", "params": [2, 1, 288, true, 1], "mult_ranges": [[2, 2]], "min_sequence": 288},
+        "tensor_bias_true": {"kernel": "tensor_bias", "params": [true], "mult_ranges": [[3, 18], [20, 20]]},
+        "tensor_bias_false": {"kernel": "tensor_bias", "params": [false], "mult_ranges": [[19, 19]]}
+      }
+    },
+    "S=304": {
+      "source_variants": {
+        "splitn_1_1_304_true_1_exact": {"kernel": "splitn", "params": [1, 1, 304, true, 1], "mult_ranges": [[1, 1]], "min_sequence": 304},
+        "native_true_0": {"kernel": "native", "params": [true, 0], "mult_ranges": [[2, 2]]},
+        "tensor_bias_true": {"kernel": "tensor_bias", "params": [true], "mult_ranges": [[3, 9], [11, 20]]},
+        "tensor_bias_false": {"kernel": "tensor_bias", "params": [false], "mult_ranges": [[10, 10]]}
+      }
+    },
+    "S=320": {
+      "source_variants": {
+        "splitn_4_1_320_true_2_exact": {"kernel": "splitn", "params": [4, 1, 320, true, 2], "mult_ranges": [[1, 1]], "min_sequence": 320},
+        "native_true_0": {"kernel": "native", "params": [true, 0], "mult_ranges": [[2, 2]]},
+        "tensor_bias_true": {"kernel": "tensor_bias", "params": [true], "mult_ranges": [[3, 20]]}
+      }
+    },
+    "S=352": {
+      "source_variants": {
+        "native_true_2": {"kernel": "native", "params": [true, 2], "mult_ranges": [[1, 1]]},
+        "native_true_0": {"kernel": "native", "params": [true, 0], "mult_ranges": [[2, 2]]},
+        "tensor_bias_true": {"kernel": "tensor_bias", "params": [true], "mult_ranges": [[3, 20]]}
+      }
+    },
+    "S=368": {
+      "source_variants": {
+        "native_true_2": {"kernel": "native", "params": [true, 2], "mult_ranges": [[1, 1]]},
+        "native_true_0": {"kernel": "native", "params": [true, 0], "mult_ranges": [[2, 2]]},
+        "tensor_bias_true": {"kernel": "tensor_bias", "params": [true], "mult_ranges": [[3, 19]]},
+        "tensor_bias_false": {"kernel": "tensor_bias", "params": [false], "mult_ranges": [[20, 20]]}
+      }
+    },
+    "S=384": {
+      "source_variants": {
+        "splitn_3_2_384_true_1": {"kernel": "splitn", "params": [3, 2, 384, true, 1], "mult_ranges": [[1, 1]]},
+        "native_true_0": {"kernel": "native", "params": [true, 0], "mult_ranges": [[2, 2]]},
+        "tensor_bias_true": {"kernel": "tensor_bias", "params": [true], "mult_ranges": [[3, 18]]},
+        "tensor_bias_false": {"kernel": "tensor_bias", "params": [false], "mult_ranges": [[19, 20]]}
+      }
+    },
+    "S=400": {
+      "source_variants": {
+        "native_true_2": {"kernel": "native", "params": [true, 2], "mult_ranges": [[1, 2]]},
+        "tensor_bias_true": {"kernel": "tensor_bias", "params": [true], "mult_ranges": [[3, 20]]}
+      }
+    },
+    "S=416": {
+      "source_variants": {
+        "native_true_2": {"kernel": "native", "params": [true, 2], "mult_ranges": [[1, 2]]},
+        "tensor_bias_true": {"kernel": "tensor_bias", "params": [true], "mult_ranges": [[3, 11], [13, 15]]},
+        "tensor_bias_false": {"kernel": "tensor_bias", "params": [false], "mult_ranges": [[12, 12], [16, 20]]}
+      }
+    },
+    "S=432": {
+      "source_variants": {
+        "native_true_2": {"kernel": "native", "params": [true, 2], "mult_ranges": [[1, 2]]},
+        "tensor_bias_true": {"kernel": "tensor_bias", "params": [true], "mult_ranges": [[3, 20]]}
+      }
+    },
+    "S=448": {
+      "source_variants": {
+        "native_true_2": {"kernel": "native", "params": [true, 2], "mult_ranges": [[1, 1]]},
+        "native_true_0": {"kernel": "native", "params": [true, 0], "mult_ranges": [[2, 2]]},
+        "tensor_bias_true": {"kernel": "tensor_bias", "params": [true], "mult_ranges": [[3, 18]]},
+        "tensor_bias_false": {"kernel": "tensor_bias", "params": [false], "mult_ranges": [[19, 20]]}
+      }
+    },
+    "S=464": {
+      "source_variants": {
+        "native_true_2": {"kernel": "native", "params": [true, 2], "mult_ranges": [[1, 2]]},
+        "tensor_bias_true": {"kernel": "tensor_bias", "params": [true], "mult_ranges": [[3, 20]]}
+      }
+    },
+    "S=480": {
+      "source_variants": {
+        "native_true_2": {"kernel": "native", "params": [true, 2], "mult_ranges": [[1, 2]]},
+        "tensor_bias_true": {"kernel": "tensor_bias", "params": [true], "mult_ranges": [[3, 17]]},
+        "tensor_bias_false": {"kernel": "tensor_bias", "params": [false], "mult_ranges": [[18, 20]]}
+      }
+    },
+    "S=496": {
+      "source_variants": {
+        "native_true_2": {"kernel": "native", "params": [true, 2], "mult_ranges": [[1, 2]]},
+        "tensor_bias_true": {"kernel": "tensor_bias", "params": [true], "mult_ranges": [[3, 14], [16, 16]]},
+        "tensor_bias_false": {"kernel": "tensor_bias", "params": [false], "mult_ranges": [[15, 15], [17, 20]]}
+      }
+    },
     "S=512": {
       "kernel_abi": "sm80",
       "m_block_size": 64,
       "n_block_size": 128,
       "num_threads": 128,
       "swizzle_b": 3,
-      "load_bias_before_gemm": true
+      "load_bias_before_gemm": true,
+      "source_variants": {
+        "native_true_2": {"kernel": "native", "params": [true, 2], "mult_ranges": [[1, 1]]},
+        "native_true_0": {"kernel": "native", "params": [true, 0], "mult_ranges": [[2, 2]]},
+        "tensor_bias_true": {"kernel": "tensor_bias", "params": [true], "mult_ranges": [[3, 14]]},
+        "tensor_bias_false": {"kernel": "tensor_bias", "params": [false], "mult_ranges": [[15, 20]]}
+      }
     },
-    "S=640": {}
+    "S=640": {
+      "kernel_abi": "sm100",
+      "source_variants": {
+        "native_true_0": {"kernel": "native", "params": [true, 0], "mult_ranges": [[1, 1]]},
+        "tensor_bias_true": {"kernel": "tensor_bias", "params": [true], "mult_ranges": [[2, 11], [15, 15]]},
+        "tensor_bias_false": {"kernel": "tensor_bias", "params": [false], "mult_ranges": [[12, 14], [16, 20]]}
+      }
+    },
+    "S=768": {
+      "source_variants": {
+        "native_true_0": {"kernel": "native", "params": [true, 0], "mult_ranges": [[1, 1]]},
+        "tensor_bias_true": {"kernel": "tensor_bias", "params": [true], "mult_ranges": [[2, 8], [20, 20]]},
+        "tensor_bias_false": {"kernel": "tensor_bias", "params": [false], "mult_ranges": [[9, 12], [14, 19]]},
+        "native_false_0_true": {"kernel": "native", "params": [false, 0, true], "mult_ranges": [[13, 13]]}
+      }
+    },
+    "S=896": {
+      "source_variants": {
+        "native_true_0": {"kernel": "native", "params": [true, 0], "mult_ranges": [[1, 1]]},
+        "tensor_bias_true": {"kernel": "tensor_bias", "params": [true], "mult_ranges": [[2, 6], [13, 20]]},
+        "tensor_bias_false": {"kernel": "tensor_bias", "params": [false], "mult_ranges": [[7, 12]]}
+      }
+    },
+    "S=1024": {
+      "source_variants": {
+        "native_true_0": {"kernel": "native", "params": [true, 0], "mult_ranges": [[1, 1]]},
+        "tensor_bias_true": {"kernel": "tensor_bias", "params": [true], "mult_ranges": [[2, 4], [10, 11], [15, 17]]},
+        "tensor_bias_false": {"kernel": "tensor_bias", "params": [false], "mult_ranges": [[5, 9], [12, 14], [18, 20]]}
+      }
+    },
+    "S=1152": {
+      "source_variants": {
+        "tensor_bias_true": {"kernel": "tensor_bias", "params": [true], "mult_ranges": [[1, 3], [5, 5], [8, 9]]},
+        "tensor_bias_false": {"kernel": "tensor_bias", "params": [false], "mult_ranges": [[4, 4], [7, 7], [10, 20]]},
+        "native_true_0": {"kernel": "native", "params": [true, 0], "mult_ranges": [[6, 6]]}
+      }
+    },
+    "S=1280": {
+      "source_variants": {
+        "tensor_bias_true": {"kernel": "tensor_bias", "params": [true], "mult_ranges": [[1, 3], [8, 10], [14, 15], [20, 20]]},
+        "tensor_bias_false": {"kernel": "tensor_bias", "params": [false], "mult_ranges": [[4, 7], [11, 13], [16, 19]]}
+      }
+    },
+    "S=1536": {
+      "source_variants": {
+        "tensor_bias_true": {"kernel": "tensor_bias", "params": [true], "mult_ranges": [[1, 7], [13, 19]]},
+        "tensor_bias_false": {"kernel": "tensor_bias", "params": [false], "mult_ranges": [[8, 12], [20, 20]]}
+      }
+    },
+    "S=1792": {
+      "source_variants": {
+        "tensor_bias_true": {"kernel": "tensor_bias", "params": [true], "mult_ranges": [[1, 1], [3, 10], [12, 20]]},
+        "native_true_0": {"kernel": "native", "params": [true, 0], "mult_ranges": [[2, 2]]},
+        "tensor_bias_false": {"kernel": "tensor_bias", "params": [false], "mult_ranges": [[11, 11]]}
+      }
+    },
+    "S=2048": {
+      "source_variants": {
+        "tensor_bias_true": {"kernel": "tensor_bias", "params": [true], "mult_ranges": [[1, 6], [8, 8], [11, 17], [20, 20]]},
+        "tensor_bias_false": {"kernel": "tensor_bias", "params": [false], "mult_ranges": [[7, 7], [9, 10], [18, 19]]}
+      }
+    },
+    "S=2304": {
+      "source_variants": {
+        "tensor_bias_true": {"kernel": "tensor_bias", "params": [true], "mult_ranges": [[1, 7], [9, 20]]},
+        "tensor_bias_false": {"kernel": "tensor_bias", "params": [false], "mult_ranges": [[8, 8]]}
+      }
+    },
+    "S=2560": {
+      "source_variants": {
+        "native_true_0": {"kernel": "native", "params": [true, 0], "mult_ranges": [[1, 1]]},
+        "tensor_bias_true": {"kernel": "tensor_bias", "params": [true], "mult_ranges": [[2, 19]]},
+        "tensor_bias_false": {"kernel": "tensor_bias", "params": [false], "mult_ranges": [[20, 20]]}
+      }
+    },
+    "S=2816": {
+      "source_variants": {
+        "tensor_bias_true": {"kernel": "tensor_bias", "params": [true], "mult_ranges": [[1, 2], [6, 6], [8, 20]]},
+        "tensor_bias_false": {"kernel": "tensor_bias", "params": [false], "mult_ranges": [[3, 5], [7, 7]]}
+      }
+    },
+    "S=3072": {
+      "source_variants": {
+        "tensor_bias_true": {"kernel": "tensor_bias", "params": [true], "mult_ranges": [[1, 1], [5, 6], [9, 20]]},
+        "tensor_bias_false": {"kernel": "tensor_bias", "params": [false], "mult_ranges": [[2, 4], [7, 8]]}
+      }
+    },
+    "S=3584": {
+      "source_variants": {
+        "tensor_bias_true": {"kernel": "tensor_bias", "params": [true], "mult_ranges": [[1, 1], [3, 3], [5, 20]]},
+        "tensor_bias_false": {"kernel": "tensor_bias", "params": [false], "mult_ranges": [[2, 2], [4, 4]]}
+      }
+    },
+    "S=4096": {
+      "source_variants": {
+        "tensor_bias_true": {"kernel": "tensor_bias", "params": [true], "mult_ranges": [[1, 2], [4, 18]]},
+        "tensor_bias_false": {"kernel": "tensor_bias", "params": [false], "mult_ranges": [[3, 3], [19, 20]]}
+      }
+    }
   }
 }

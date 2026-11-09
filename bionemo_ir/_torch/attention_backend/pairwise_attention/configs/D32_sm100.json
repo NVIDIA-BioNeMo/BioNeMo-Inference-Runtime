@@ -1,14 +1,95 @@
 {
   "kernel_abi": "sm100",
   "configs": {
+    "S=32": {
+      "source_variants": {
+        "splitn_2_1_32_true_1": {"kernel": "splitn", "params": [2, 1, 32, true, 1], "mult_ranges": [[1, 20]]}
+      }
+    },
+    "S=48": {
+      "source_variants": {
+        "splitn_2_2_64_false_1": {"kernel": "splitn", "params": [2, 2, 64, false, 1], "mult_ranges": [[1, 1]]},
+        "splitn_1_2_64_false_1": {"kernel": "splitn", "params": [1, 2, 64, false, 1], "mult_ranges": [[2, 9], [11, 19]]},
+        "splitn_2_2_64_false_2": {"kernel": "splitn", "params": [2, 2, 64, false, 2], "mult_ranges": [[10, 10], [20, 20]]}
+      }
+    },
+    "S=64": {
+      "source_variants": {
+        "splitn_2_1_64_true_1": {"kernel": "splitn", "params": [2, 1, 64, true, 1], "mult_ranges": [[1, 1]]},
+        "splitn_2_1_64_true_2": {"kernel": "splitn", "params": [2, 1, 64, true, 2], "mult_ranges": [[2, 20]]}
+      }
+    },
+    "S=96": {
+      "source_variants": {
+        "splitn_2_1_96_true_1": {"kernel": "splitn", "params": [2, 1, 96, true, 1], "mult_ranges": [[1, 1]]},
+        "splitn_2_1_96_true_2": {"kernel": "splitn", "params": [2, 1, 96, true, 2], "mult_ranges": [[2, 20]]}
+      }
+    },
+    "S=128": {
+      "source_variants": {
+        "splitn_2_1_128_true_2": {"kernel": "splitn", "params": [2, 1, 128, true, 2], "mult_ranges": [[1, 19]]},
+        "splitn_2_1_128_true_1": {"kernel": "splitn", "params": [2, 1, 128, true, 1], "mult_ranges": [[20, 20]]}
+      }
+    },
+    "S=192": {
+      "source_variants": {
+        "splitn_2_2_192_true_2": {"kernel": "splitn", "params": [2, 2, 192, true, 2], "mult_ranges": [[1, 1], [4, 4]]},
+        "splitn_2_1_192_true_2": {"kernel": "splitn", "params": [2, 1, 192, true, 2], "mult_ranges": [[2, 3], [5, 9], [11, 20]]},
+        "splitn_2_2_192_true_1": {"kernel": "splitn", "params": [2, 2, 192, true, 1], "mult_ranges": [[10, 10]]}
+      }
+    },
+    "S=256": {
+      "source_variants": {
+        "splitn_2_2_256_true_2": {"kernel": "splitn", "params": [2, 2, 256, true, 2], "mult_ranges": [[1, 1]]},
+        "splitn_2_2_256_true_1": {"kernel": "splitn", "params": [2, 2, 256, true, 1], "mult_ranges": [[2, 6], [10, 10]]},
+        "tensor_bias_true": {"kernel": "tensor_bias", "params": [true], "mult_ranges": [[7, 9], [11, 20]]}
+      }
+    },
+    "S=384": {
+      "source_variants": {
+        "splitn_3_2_384_true_1": {"kernel": "splitn", "params": [3, 2, 384, true, 1], "mult_ranges": [[1, 1]]},
+        "splitn_2_2_384_true_1": {"kernel": "splitn", "params": [2, 2, 384, true, 1], "mult_ranges": [[2, 3], [5, 5]]},
+        "tensor_bias_true": {"kernel": "tensor_bias", "params": [true], "mult_ranges": [[4, 4], [6, 20]]}
+      }
+    },
+    "S=512": {
+      "source_variants": {
+        "splitn_4_2_512_true_1": {"kernel": "splitn", "params": [4, 2, 512, true, 1], "mult_ranges": [[1, 1]]},
+        "tensor_bias_true": {"kernel": "tensor_bias", "params": [true], "mult_ranges": [[2, 20]]}
+      }
+    },
     "S=1024": {
       "kernel_abi": "sm80",
       "m_block_size": 64,
       "n_block_size": 128,
       "num_threads": 128,
       "swizzle_b": 3,
-      "load_bias_before_gemm": true
+      "load_bias_before_gemm": true,
+      "source_variants": {
+        "native_true": {"kernel": "native", "params": [true], "mult_ranges": [[1, 1]]},
+        "tensor_bias_true": {"kernel": "tensor_bias", "params": [true], "mult_ranges": [[2, 20]]}
+      }
     },
-    "S=1152": {}
+    "S=1152": {},
+    "S=1536": {
+      "source_variants": {
+        "tensor_bias_true": {"kernel": "tensor_bias", "params": [true], "mult_ranges": [[1, 20]]}
+      }
+    },
+    "S=2048": {
+      "source_variants": {
+        "native_false": {"kernel": "native", "params": [false], "mult_ranges": [[1, 1]]}
+      }
+    },
+    "S=3072": {
+      "source_variants": {
+        "native_true": {"kernel": "native", "params": [true], "mult_ranges": [[1, 1]]}
+      }
+    },
+    "S=4096": {
+      "source_variants": {
+        "tensor_bias_true": {"kernel": "tensor_bias", "params": [true], "mult_ranges": [[1, 20]]}
+      }
+    }
   }
 }

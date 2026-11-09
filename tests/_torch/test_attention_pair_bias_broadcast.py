@@ -685,6 +685,41 @@ def test_cutedsl_layer_matches_sdpa_under_force_cubin(token_dim: int, s_shape: t
     torch.testing.assert_close(actual, expected, atol=5e-2, rtol=5e-2)
 
 
+@pytest.mark.skipif(SM_VERSION not in (100, 103), reason="requires an SM100 or SM103 CUBIN")
+@pytest.mark.parametrize(("head_dim", "mult", "seqlen"), [(32, 4, 35), (48, 5, 129), (64, 5, 384)])
+def test_pairwise_cubin_mult_inner_scheduler(head_dim: int, mult: int, seqlen: int) -> None:
+    """The static CUBIN scheduler must decode multiplicity and its parameter bank correctly."""
+    from bionemo_ir._torch.attention_backend.pairwise_attention._cubin import PairwiseAttentionCubinExecutable
+    from bionemo_ir._torch.attention_backend.pairwise_attention.cutedsl import PairwiseAttentionCuTeLeftMask
+
+    skip_if_cutedsl("CuTeDSL", "pairwise_attention")
+    qkv = torch.randn(mult, seqlen, 3, 16, head_dim, device="cuda", dtype=torch.bfloat16)
+    q, k, v = (qkv[:, :, i] for i in range(3))
+    padded = (seqlen + 7) // 8 * 8
+    bias = torch.randn(1, 16, seqlen, padded, device="cuda", dtype=torch.bfloat16)
+    bias[..., seqlen:].fill_(10)
+    valid = torch.empty(1, device="cuda", dtype=torch.int32)
+    backend = PairwiseAttentionCuTeLeftMask(0, 16, head_dim)
+    with packaged_cubin_kernels():
+        for count in (0, seqlen // 2 + 1, seqlen):
+            valid.fill_(count)
+            actual = backend.forward(q, k, v, biases=[valid, bias])
+            if backend._last_executable is None:
+                pytest.skip("the installed kernel library does not include an SM100 pairwise CUBIN")
+            assert isinstance(backend._last_executable, PairwiseAttentionCubinExecutable)
+            expected = (
+                torch.zeros_like(actual, dtype=torch.float32)
+                if count == 0
+                else F.scaled_dot_product_attention(
+                    q.float().transpose(1, 2),
+                    k[:, :count].float().transpose(1, 2),
+                    v[:, :count].float().transpose(1, 2),
+                    attn_mask=bias[..., :count].float(),
+                ).transpose(1, 2)
+            )
+            torch.testing.assert_close(actual.float(), expected, atol=3e-2, rtol=1e-2)
+
+
 @pytest.mark.parametrize(
     "sc",
     [

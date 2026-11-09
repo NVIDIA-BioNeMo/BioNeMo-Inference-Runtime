@@ -87,7 +87,8 @@ Task-specific playbooks live in `.agents/skills/`
 - `make-data-pipeline` — porting an open-source data pipeline into the BioIR
   pipeline architecture. The procedure lives in
   `docs/advanced/port-data-pipeline.md` and
-  `docs/advanced/validate-data-pipeline.md`.
+  `docs/advanced/validate-data-pipeline.md`. Level 2 is one full
+  `build_processor` run of the manifest, serial and Ray.
 - `module-onboard` — moving a source model's module onto BioIR layers, with
   weight conversion and validation. The procedure lives in
   `docs/advanced/accelerate-custom-model.md`.

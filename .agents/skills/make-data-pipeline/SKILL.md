@@ -14,7 +14,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 name: make-data-pipeline
-description: Port an open-source bioinformatics data pipeline into the BioIR pipeline architecture. Use when the user asks to create, port, convert, or write a new data pipeline from OSS code, or add a new model's data processing to the BioIR system.
+description: Port an open-source bioinformatics data pipeline into the BioIR pipeline architecture. Use when the user asks to create, port, convert, or write a new data pipeline from OSS code, or add a new model's data processing to the BioIR system. Level 2 is one full build_processor run of the sample manifest, serial and Ray.
 license: Apache-2.0
 metadata:
   author: NVIDIA Corporation
@@ -32,10 +32,140 @@ second, starting a step only after the previous one passes:
 1. [Port a Data Pipeline][port]
 1. [Validate a Ported Data Pipeline][validate]
 
-This file lists only what an agent must do on top of them.
+This file lists only what an agent must do on top of them. Level 2 is one
+full `build_processor` run of the manifest, defined below. The port guide's
+`examples/folding/run_demo.py` command folds one bundled file and only shows
+that the stages connect. That command does not satisfy Level 2.
 
 [port]: ../../../docs/advanced/port-data-pipeline.md
 [validate]: ../../../docs/advanced/validate-data-pipeline.md
+
+## Full pipeline run
+
+Level 1 compares features and stops before the engine and the writer. Level 2
+is the full data pipeline: parser, tokenizer, feature generator, engine, and
+writer, on every id in `ref_data/sample_manifest.json`. Run that set once
+through the serial processor and once through Ray. One request, or one file
+under `examples/data/samples/`, is not this run.
+
+Start Level 2 only after Level 1 passes on the whole manifest, and only after
+`ref_data/upstream_config.json` and `NOTES.md` record the shared settings.
+`runtime_args` and the seed come from `NOTES.md`. Copy the numbers in the
+validation guide only when `NOTES.md` records those numbers.
+
+Write `$WORKDIR/run_pipeline.py` and execute it. The validation guide's
+snippet leaves `REPO`, `WORKDIR`, `load_requests`, and
+`assert_manifest_coverage` to earlier sections, so the script has to define
+them. Inside the development container, drop the `uv run --locked` prefix.
+
+```bash
+export WORKDIR="$HOME/workdir/<model_name>"
+uv run --locked python "$WORKDIR/run_pipeline.py"
+```
+
+```python
+import json
+import os
+import sys
+from pathlib import Path
+
+import ray
+
+import bionemo_ir
+from bionemo_ir.pipeline.processor.engine_proc import EngineProcessorConfig, build_processor
+from bionemo_ir.pipeline.stages.configs import FeatureGeneratorStageConfig, WriterStageConfig
+
+REPO = Path(bionemo_ir.__file__).resolve().parents[1]
+WORKDIR = Path(os.environ["WORKDIR"])
+sys.path.insert(0, str(REPO / "examples" / "folding"))
+from run_demo import load_requests  # noqa: E402
+
+MODEL_NAME = "<registered model name>"
+SEED = 0  # the seed recorded in NOTES.md
+RUNTIME_ARGS = {}  # the runtime_args recorded in NOTES.md
+
+
+def assert_manifest_coverage(processed_ids):
+    manifest_path = WORKDIR / "ref_data" / "sample_manifest.json"
+    with open(manifest_path) as handle:
+        expected = {sample["sample_id"] for sample in json.load(handle)["samples"]}
+    processed = list(processed_ids)
+    if len(processed) != len(set(processed)):
+        raise SystemExit("duplicate sample IDs")
+    missing, extra = expected - set(processed), set(processed) - expected
+    if missing or extra:
+        raise SystemExit(f"missing={sorted(missing)} extra={sorted(extra)}")
+
+
+def load_rows():
+    with open(WORKDIR / "ref_data" / "sample_manifest.json") as handle:
+        manifest = json.load(handle)
+    requests = [
+        request
+        for sample in manifest["samples"]
+        for request in load_requests(REPO / sample["input"])
+        if request["input_id"] == sample["sample_id"]
+    ]
+    return [{"record": request, "__record_id": request["input_id"], "random_seed": SEED} for request in requests]
+
+
+def processor_config(executor_backend, output_path):
+    return EngineProcessorConfig(
+        model_source=MODEL_NAME,
+        executor_backend=executor_backend,
+        runtime_args=RUNTIME_ARGS,
+        feature_generator_stage=FeatureGeneratorStageConfig(init_context={"random_seed": SEED}),
+        writer_stage=WriterStageConfig(output_path=output_path, format="cif"),
+    )
+
+
+def run(executor_backend, output_path):
+    rows = load_rows()
+    processor = build_processor(processor_config(executor_backend, str(output_path)))
+    if executor_backend == "ray":
+        results = list(processor(ray.data.from_items(rows)).materialize().iter_rows())
+    else:
+        results = processor(rows)
+    failed = [row["__record_id"] for row in results if (row.get("__inference_error__") or {}).get("error_msg")]
+    if failed:
+        raise SystemExit(f"inference failed: {failed}")
+    assert_manifest_coverage(row["__record_id"] for row in results)
+    print(f"{executor_backend or 'serial'}: {len(results)} structures in {output_path}")
+    del processor, results
+
+
+def release_serial_cuda():
+    import gc
+
+    import torch
+
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
+
+if __name__ == "__main__":
+    run(None, WORKDIR / "bioir" / "serial")
+    # The serial processor ran in this process. Return its cached CUDA blocks
+    # before Ray workers allocate.
+    release_serial_cuda()
+    run("ray", WORKDIR / "bioir" / "ray")
+```
+
+The two runs share the driver process. After the serial run returns, the
+script drops that processor and its outputs, collects garbage, and calls
+`torch.cuda.empty_cache()`. PyTorch otherwise keeps the unused CUDA blocks
+in the driver cache, and Ray workers cannot allocate that memory.
+
+If Level 1 used a modified configuration, pass the same object as
+`engine_kwargs={"config": config}` on both calls.
+
+A passing script exits 0, prints both lines, and leaves one structure per
+manifest id under `bioir/serial` and `bioir/ray`. Cite the command, the exit
+code, both directories, and the sample ids from the manifest. Then score
+every structure with the OpenStructure and DockQ commands in the validation
+guide, and apply that guide's 0.05 rule. Serial and Ray scores for a sample
+must match.
 
 ## Hard Gates
 
@@ -85,7 +215,9 @@ then print a summary:
 1. Model, upstream location and commit, and pipeline shape.
 1. The function inventory: upstream function to BioIR class.
 1. Files created or modified.
-1. Level 1 and Level 2 results, including serial and Ray.
+1. Level 1 results, then the full pipeline run: command, exit code, serial
+   and Ray artifact directories, and the manifest ids. Include the
+   OpenStructure and DockQ comparison.
 1. Limitations, and anything that needs human review.
 1. The WORKDIR, the path to `implementation-notes.md`, and every open
    question.

@@ -199,10 +199,7 @@ static_assert(sm90_parameter_count(false, false, false) == 9U);
  * One image serves masked and unmasked calls. The 2-way and 3-way SwiGLU share
  * the ABI; only W1's tensor map differs.
  */
-struct SM100TiledMmaDescriptor
-{
-  std::uint8_t fields[3]{};
-};
+using SM100TiledMmaDescriptor = bioir::cutedsl::SM100TiledMmaToken;
 
 struct SM100Params
 {
@@ -242,8 +239,8 @@ pack_sm100_kernel_params(SM100Params* params, bool has_residual, void* kernel_pa
 }
 
 static_assert(std::is_standard_layout_v<SM100Params>);
-static_assert(sizeof(SM100TiledMmaDescriptor) == 3 && alignof(SM100TiledMmaDescriptor) == 1);
-static_assert(offsetof(SM100Params, gemm2) == 3);
+static_assert(sizeof(SM100TiledMmaDescriptor) == 64 && alignof(SM100TiledMmaDescriptor) == 1);
+static_assert(offsetof(SM100Params, gemm2) == 64);
 static_assert(sizeof(SM100Params::x_tma) == 128 && sizeof(SM100Params::x_coord) == 4);
 static_assert(sizeof(SM100Params::residual) == 24 && sizeof(SM100Params::mask) == 8);
 static_assert(sizeof(SM100Params::output) == 24);

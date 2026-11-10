@@ -60,10 +60,7 @@ struct CubinImage;
 namespace bioir::cutedsl::conditioned_transition_mlp::abi
 {
 
-struct SM100TiledMmaDescriptor
-{
-  std::uint8_t fields[3]{};
-};
+using SM100TiledMmaDescriptor = bioir::cutedsl::SM100TiledMmaToken;
 
 struct SM100Params
 {
@@ -102,7 +99,7 @@ inline void pack_sm100_kernel_params(SM100Params* params, void* kernel_params[kS
  * match the CUBIN.
  */
 static_assert(std::is_standard_layout_v<SM100Params>);
-static_assert(sizeof(SM100TiledMmaDescriptor) == 3 && alignof(SM100TiledMmaDescriptor) == 1);
+static_assert(sizeof(SM100TiledMmaDescriptor) == 64 && alignof(SM100TiledMmaDescriptor) == 1);
 static_assert(sizeof(SM100Params::x_tma) == 128 && sizeof(SM100Params::output_tma) == 128);
 static_assert(sizeof(SM100Params::x_coord) == 4 && sizeof(SM100Params::output_coord) == 4);
 static_assert(sizeof(SM100Params::residual) == 24 && sizeof(SM100Params::output) == 24);

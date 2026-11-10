@@ -218,7 +218,7 @@ inline std::size_t pack_sm80_kernel_params(
  */
 struct SM100Params
 {
-  std::uint8_t tiled_mma[3];
+  SM100TiledMmaToken tiled_mma;
   CUtensorMap o_tma;
   CoordTensorS2 o_coord;
   CUtensorMap g_tma;
@@ -292,7 +292,7 @@ inline std::size_t pack_sm100_kernel_params(
  */
 struct SM100TokenParams
 {
-  std::uint8_t tiled_mma[3];
+  SM100TiledMmaToken tiled_mma;
   CUtensorMap o_tma;
   CoordTensorS1 o_coord;
   CUtensorMap g_tma;
@@ -340,7 +340,7 @@ inline std::size_t pack_sm100_token_kernel_params(
 
 static_assert(std::is_standard_layout_v<SM100Params>);
 static_assert(std::is_standard_layout_v<SM100TokenParams>);
-static_assert(sizeof(SM100Params::tiled_mma) == 0x03, "unexpected attention epilogue MMA token width");
+static_assert(sizeof(SM100Params::tiled_mma) == 64, "unexpected attention epilogue MMA token width");
 static_assert(sizeof(CoordTensorS1) == 0x04, "unexpected attention epilogue token coordinate width");
 static_assert(sizeof(SM100Params::o_coord) == 0x08, "unexpected attention epilogue coordinate width");
 static_assert(sizeof(SM100Params::y_coord) == 0x08, "unexpected attention epilogue output-gate coordinate width");

@@ -24,7 +24,7 @@ PROJECT_DIR ?= $(PWD)/..
 # triton are compatible with the project so uv can reuse both base packages.
 # Compatibility notes: docs/ref/docker-images.md.
 BASE_IMAGE ?= nvcr.io/nvidia/pytorch
-BASE_TAG ?= 26.05-py3
+BASE_TAG ?= 26.09-py3
 RUNTIME_IMAGE ?= nvidia/cuda
 RUNTIME_TAG ?= 13.0.2-base-ubuntu24.04
 

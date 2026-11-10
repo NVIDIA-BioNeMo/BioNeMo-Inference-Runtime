@@ -1081,7 +1081,7 @@ Required keys:
 - `clocks_applications_mhz` — `{graphics, memory}` or `null`s
 - `persistence_mode`
 - `executor_backend` — always `null` (serial). See below.
-- `container` — default `nvcr.io/nvidia/pytorch:26.05-py3`
+- `container` — default `nvcr.io/nvidia/pytorch:26.09-py3`
 - `bioir_install` — `editable` | `wheel` | `pip`
 - `cutedsl_force_cubin` — always `true`
 - `ost_cmd` — `$OST_ENV/bin/ost` (dedicated conda env)

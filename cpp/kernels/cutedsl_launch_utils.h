@@ -39,6 +39,22 @@
 namespace bioir::cutedsl
 {
 
+/* A tcgen05 tiled MMA passed as a kernel parameter. CuTeDSL 4.5 lowers it to
+ * three Booleans (negate A, negate B, accumulate). CuTeDSL 4.8 appends the
+ * disable-output-lane mask, four i32 for one CTA and eight for a CTA pair, so
+ * the CUBIN declares 32 or 64 bytes. The driver copies the declared size from
+ * the address the launcher passes, so the record must hold that many bytes:
+ * a shorter one hands the kernel whatever follows it as a lane mask, and the
+ * MMA then skips those output lanes. All zero is the atom's default state
+ * (no negation, every lane written); the kernels set accumulate themselves.
+ */
+struct SM100TiledMmaToken
+{
+  std::uint8_t bytes[64]{};
+};
+
+static_assert(sizeof(SM100TiledMmaToken) == 64 && alignof(SM100TiledMmaToken) == 1);
+
 inline void validate_pointer(std::uint64_t pointer, std::uint64_t alignment, char const* name)
 {
   if (pointer == 0)

@@ -29,7 +29,7 @@ pin. Do not `pip install` OSS pins into the BioIR interpreter.
 
 ## CUDA 12 packages → CUDA 13
 
-The default container (`nvcr.io/nvidia/pytorch:26.05-py3`) and BioIR
+The default container (`nvcr.io/nvidia/pytorch:26.09-py3`) and BioIR
 (`pyproject.toml`) are **CUDA 13** (`cuequivariance-ops-*-cu13`,
 `nvidia-cutlass-dsl[cu13]`, `cuda-python>=13`). OSS READMEs and
 extras often still pin CUDA 12.
@@ -46,7 +46,7 @@ image bump:
 
 ```bash
 CUDA_MAJOR=$("$BIOIR_PYTHON" -c "import torch;print(torch.version.cuda.split('.')[0])")
-echo "target CUDA major: $CUDA_MAJOR"   # 13 on pytorch:26.05-py3
+echo "target CUDA major: $CUDA_MAJOR"   # 13 on pytorch:26.09-py3
 ```
 
 **Check availability before you install**, so "cu13 is missing" is a
@@ -116,7 +116,7 @@ print('PASS torch.version.cuda =', torch.version.cuda)
 ## Container and BioIR install
 
 The prepared development container is built from
-`nvcr.io/nvidia/pytorch:26.05-py3`; start it with `docker/dev.sh` as described
+`nvcr.io/nvidia/pytorch:26.09-py3`; start it with `docker/dev.sh` as described
 in `docs/dev.md`. Ask whether the user is in **developer mode** (editable
 checkout) or **not** (released / wheel / pip).
 
@@ -1126,7 +1126,7 @@ complex.
 - `bioir_torch`, `oss_torch` (full `torch.__version__`, including `+cu`)
 - `isolation` — `two_venv` or `shared`
 - `conflicts` — list of hard conflicts, or `[]`
-- `container` — `nvcr.io/nvidia/pytorch:26.05-py3` (or override)
+- `container` — `nvcr.io/nvidia/pytorch:26.09-py3` (or override)
 - `bioir_install` — `editable` | `wheel` | `pip`
 - `cutedsl_force_cubin` — always `true`
 - `ost_cmd` — `$OST_ENV/bin/ost` (dedicated env, Step 7)

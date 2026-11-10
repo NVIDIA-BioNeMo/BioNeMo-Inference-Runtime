@@ -24,7 +24,7 @@
 # The default tag is digest-pinned because `devdeps` bakes that same digest in as
 # the compile identity of the tracked CUBIN packs; see the ENV below.
 ARG BASE_IMAGE=nvcr.io/nvidia/pytorch
-ARG BASE_TAG=26.05-py3@sha256:222d8b18e671be5c3ef91cb41727a2572a0b23f59ded6c39f373a96946f6f2ba
+ARG BASE_TAG=26.09-py3@sha256:6e8ccc607fc2a51e3741667b86316a0889418ba8b78ed0ba96e8d282b648a7a6
 ARG RUNTIME_IMAGE=nvidia/cuda
 ARG RUNTIME_TAG=13.0.2-base-ubuntu24.04
 
@@ -85,14 +85,18 @@ RUN mkdir -p /cache/ccache /cache/pip /cache/uv && chmod -R 1777 /cache
 FROM base AS deps
 WORKDIR /opt/bioir-deps
 # Install into the NGC Python environment so its tested framework and CUDA stack
-# remain in place. Pruning torch and Triton also removes their PyPI CUDA wheel
-# closure; every remaining runtime and build package comes from the lock export
-# with hashes. Reinstall PyYAML because the base's distro-owned copy has no pip
-# RECORD metadata and cannot be upgraded in place.
+# remain in place. Pruning torch and Triton removes their PyPI CUDA wheel
+# closure, but cuequivariance-ops still depends on nvidia-cublas 13.1. That
+# wheel's libcublasLt has no cublasLtGroupedMatrixLayoutCreate, and torch's
+# preload selects it over the image library, so the 26.09 torch cannot import.
+# Prune it too and let the image's CUDA 13.4 cublas satisfy the soname. Every
+# remaining runtime and build package comes from the lock export with hashes.
+# Reinstall PyYAML because the base's distro-owned copy has no pip RECORD
+# metadata and cannot be upgraded in place.
 COPY pyproject.toml uv.lock ./
 RUN --mount=type=cache,target=/cache/uv \
     uv export --quiet --locked --no-dev --no-emit-project \
-        --prune torch --prune triton \
+        --prune torch --prune triton --prune nvidia-cublas \
         --output-file /tmp/bioir-runtime.txt \
     && uv export --quiet --locked --only-group build --no-emit-project \
         --output-file /tmp/bioir-build.txt \
@@ -122,17 +126,14 @@ FROM deps AS devdeps
 # anonymously pullable base above. Regenerating a pack is only reproducible from
 # that exact base, so the digest is pinned here rather than derived at build
 # time.
-ENV BIOIR_CUBIN_COMPILE_ENVIRONMENT=sha256:222d8b18e671be5c3ef91cb41727a2572a0b23f59ded6c39f373a96946f6f2ba
-# The dev group carries the CuTeDSL compiler; CUDA 13 must own overlapping CuTe
-# files.
+ENV BIOIR_CUBIN_COMPILE_ENVIRONMENT=sha256:6e8ccc607fc2a51e3741667b86316a0889418ba8b78ed0ba96e8d282b648a7a6
+# The dev group carries the CuTeDSL compiler. pyproject.toml excludes the
+# CUDA 12 libraries wheel; 4.8.1 would otherwise install it next to cu13.
 RUN --mount=type=cache,target=/cache/uv \
     uv export --quiet --locked --only-group dev --no-emit-project \
         --prune torch --prune triton \
         --output-file /tmp/bioir-dev.txt \
     && uv pip install --system --no-deps --require-hashes \
-        --requirements /tmp/bioir-dev.txt \
-    && uv pip install --system --no-deps --require-hashes \
-        --reinstall-package nvidia-cutlass-dsl-libs-cu13 \
         --requirements /tmp/bioir-dev.txt \
     && rm -f /tmp/bioir-dev.txt
 # Set here so that CI's GPU jobs, which run in this stage, and the dev image get

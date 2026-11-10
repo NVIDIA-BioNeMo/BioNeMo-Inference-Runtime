@@ -137,12 +137,10 @@ static_assert(offsetof(SM90Params, tile_wgs) == 0x64);
 /* The pinned MmaF16BF16Op builds its atom from three Boolean(false) values.
  * PTX reads only the low bits of bytes 1 and 2 (operand negation). This
  * kernel overwrites ACCUMULATE before every MMA, so byte 0 is never read.
- * All-zero bytes therefore reproduce the source constructor's state.
+ * All-zero bytes therefore reproduce the source constructor's state. CuTeDSL
+ * 4.8 appends a lane mask whose default is also zero; see SM100TiledMmaToken.
  */
-struct SM100TiledMmaDescriptor
-{
-  std::uint8_t fields[3]{};
-};
+using SM100TiledMmaDescriptor = bioir::cutedsl::SM100TiledMmaToken;
 
 struct SM100Params
 {
@@ -200,10 +198,10 @@ inline void pack_sm100_output_kernel_params(
 }
 
 static_assert(std::is_standard_layout_v<SM100Params>);
-static_assert(sizeof(SM100TiledMmaDescriptor) == 3);
+static_assert(sizeof(SM100TiledMmaDescriptor) == 64);
 static_assert(sizeof(CoordTensorS1) == 4);
 static_assert(sizeof(cute_tensor_s1_d0_t) == 16);
-static_assert(offsetof(SM100Params, tiled_mma_g2) == 0x3);
+static_assert(offsetof(SM100Params, tiled_mma_g2) == 64);
 /* CUDA headers may align CUtensorMap more strictly than the device bank. The
  * Driver receives a pointer per argument, so each value's size, not this
  * aggregate's inter-field padding, is the ABI contract.

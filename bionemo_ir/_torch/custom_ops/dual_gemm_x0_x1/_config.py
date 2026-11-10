@@ -45,9 +45,9 @@ _FALLBACK_SM: int = 80
 
 def _smem_capacity(sm_version: int) -> int:
     """Shared-memory bytes per block, from the CuTeDSL compiler's tables."""
-    import cutlass.utils as utils
+    import cutlass.memory
 
-    return int(utils.get_smem_capacity_in_bytes(f"sm_{sm_version}"))
+    return int(cutlass.memory.get_smem_capacity_in_bytes(f"sm_{sm_version}"))
 
 
 @dataclass(frozen=True)

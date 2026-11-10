@@ -273,15 +273,16 @@ static_assert(sm90_parameter_count(false, false) == 12U);
  *
  * The streaming kernel continues with static_bias0 and static_bias1 (0x08
  * each: the pointer, the width is static), actual_seqlen (0x10), i_dim, and the
- * CLC scheduler's M and N tile counts. The resident kernel instead takes
- * bias0 and bias1 as cute_tensor_s1_d0_t (0x10 each), then actual_seqlen and
- * i_dim. Without bias both bias slots drop out. Every TMA slot carries the
- * byte-8-tagged atom finalize_sm100_tma_atom produces; K0 and K1 are static.
+ * CLC scheduler's M and N tile counts. CuTeDSL 4.8 extracts that scheduler and
+ * then its fallback. The fallback is the same object, so the two counts are
+ * kernel parameters twice; pass the same int32s again. A 4.5 cubin declares
+ * them once and the driver ignores the extra pointers. The resident kernel
+ * instead takes bias0 and bias1 as cute_tensor_s1_d0_t (0x10 each), then
+ * actual_seqlen and i_dim. Without bias both bias slots drop out. Every TMA
+ * slot carries the byte-8-tagged atom finalize_sm100_tma_atom produces; K0
+ * and K1 are static.
  */
-struct SM100TiledMmaDescriptor
-{
-  std::uint8_t fields[3]{};
-};
+using SM100TiledMmaDescriptor = bioir::cutedsl::SM100TiledMmaToken;
 
 struct SM100Params
 {
@@ -310,7 +311,7 @@ struct SM100Params
 
 constexpr std::size_t sm100_parameter_count(bool has_bias, bool resident)
 {
-  return (resident ? 15U : 17U) + (has_bias ? 2U : 0U);
+  return (resident ? 15U : 19U) + (has_bias ? 2U : 0U);
 }
 
 inline constexpr std::size_t kSM100MaxParameterCount = sm100_parameter_count(true, false);
@@ -343,17 +344,20 @@ inline std::size_t pack_sm100_kernel_params(
   {
     kernel_params[count++] = &params->scheduler_m_tiles;
     kernel_params[count++] = &params->scheduler_n_tiles;
+    kernel_params[count++] = &params->scheduler_m_tiles;
+    kernel_params[count++] = &params->scheduler_n_tiles;
   }
   return count;
 }
 
 static_assert(std::is_standard_layout_v<SM100Params>);
-static_assert(sizeof(SM100TiledMmaDescriptor) == 0x03, "unexpected dual-GEMM x0_x1 SM100 tiled-MMA width");
+static_assert(sizeof(SM100TiledMmaDescriptor) == 64, "unexpected dual-GEMM x0_x1 SM100 tiled-MMA width");
 static_assert(sizeof(CoordTensorS1) == 0x04, "dual-GEMM x0_x1 SM100 inputs carry one dynamic extent");
 static_assert(sizeof(SM100Params::static_bias0) == 0x08, "unexpected dual-GEMM x0_x1 SM100 static bias width");
 static_assert(sizeof(SM100Params::bias0) == 0x10, "unexpected dual-GEMM x0_x1 SM100 bias width");
 static_assert(sizeof(SM100Params::actual_seqlen) == 0x10, "unexpected dual-GEMM x0_x1 SM100 mask width");
-static_assert(sm100_parameter_count(true, false) == 19U);
+static_assert(sm100_parameter_count(false, false) == 19U);
+static_assert(sm100_parameter_count(true, false) == 21U);
 static_assert(sm100_parameter_count(false, true) == 15U);
 
 } // namespace bioir::cutedsl::dual_gemm_x0_x1::abi

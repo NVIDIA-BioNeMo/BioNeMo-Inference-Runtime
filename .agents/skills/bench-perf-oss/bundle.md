@@ -71,7 +71,7 @@ A host can:
 
 1. Build the dataset if it is missing.
 1. `docker pull` the default image
-   (`nvcr.io/nvidia/pytorch:26.05-py3` unless overridden).
+   (`nvcr.io/nvidia/pytorch:26.09-py3` unless overridden).
 1. Bind-mount BioIR (source directory or `.whl`), this pack, the
    dataset, a scratch workdir, and a checkpoint cache.
 1. Run in-container `bench.py`, which loops every requested model.
@@ -442,7 +442,7 @@ rediscovering the same failures.
 
 ### Shared runtime
 
-- Image: `nvcr.io/nvidia/pytorch:26.05-py3`. Run `bench.py` with
+- Image: `nvcr.io/nvidia/pytorch:26.09-py3`. Run `bench.py` with
   that interpreter, or `./bench.sh` from the host.
 - Every BioIR process: `CUTEDSL_FORCE_CUBIN=1`.
 - Never set `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True`.
@@ -671,7 +671,7 @@ From the package directory:
 ```bash
 ./bench.sh --smoke --compile
 ./bench.sh --models boltz2,of3 --smoke --compile
-./bench.sh --image nvcr.io/nvidia/pytorch:26.05-py3 --workdir /data/bioir_bench
+./bench.sh --image nvcr.io/nvidia/pytorch:26.09-py3 --workdir /data/bioir_bench
 ```
 
 Required results land under `$BENCH_WORKDIR/<model>/results/` as

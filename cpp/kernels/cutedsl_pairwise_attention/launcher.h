@@ -161,13 +161,10 @@ inline void pack_sm90_kernel_params(SM90Params* params, void* kernel_params[kSM9
   kernel_params[20] = &params->scheduler_batch_flat;
 }
 
-/* Blackwell passes each tiled MMA as a 3-byte record the kernel never reads
- * and its scheduler divisors as precomputed FastDivmod values.
+/* Blackwell passes each tiled MMA as an all-zero SM100TiledMmaToken and its
+ * scheduler divisors as precomputed FastDivmod values.
  */
-struct SM100TiledMmaDescriptor
-{
-  std::uint8_t fields[3]{};
-};
+using SM100TiledMmaDescriptor = bioir::cutedsl::SM100TiledMmaToken;
 
 struct SM100FastDivmod
 {
@@ -242,7 +239,7 @@ inline void pack_sm100_kernel_params(
 
 static_assert(sizeof(CUtensorMap) == 128);
 static_assert(alignof(CUtensorMap) >= 64);
-static_assert(sizeof(SM100TiledMmaDescriptor) == 3);
+static_assert(sizeof(SM100TiledMmaDescriptor) == 64);
 static_assert(alignof(SM100TiledMmaDescriptor) == 1);
 static_assert(sizeof(SM100FastDivmod) == 12);
 static_assert(alignof(SM100FastDivmod) == 4);

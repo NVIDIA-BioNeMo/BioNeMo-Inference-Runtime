@@ -41,7 +41,7 @@ stack without allowing the remaining dependencies to drift.
 Base images are overridable:
 
 ```bash
-make -C docker dev BASE_IMAGE=nvcr.io/nvidia/pytorch BASE_TAG=26.05-py3
+make -C docker dev BASE_IMAGE=nvcr.io/nvidia/pytorch BASE_TAG=26.09-py3
 ```
 
 `deps` deliberately is not. It builds from the Dockerfile's digest-pinned

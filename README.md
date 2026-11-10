@@ -44,17 +44,19 @@ downloaded dependencies, model checkpoints, and metadata.
 - **Linux, x86_64 or aarch64**, with an NVIDIA GPU. The wheels are
   `manylinux_2_34`, so the host needs glibc 2.34 or newer — Ubuntu 22.04, RHEL 9
   or later.
-- **Driver 580 or newer.** The dev image carries a CUDA 13.2 build of PyTorch.
+- **Driver 580 or newer.** The dev image carries a CUDA 13.4 build of PyTorch.
   An older driver runs it only through the forward-compatibility shim, which we
   have measured hanging and crashing part-way through a run rather than merely
   running slowly — results taken on one are discarded, not corrected.
+  Vera Rubin (SM107) needs the R615 driver; the CUDA 13.4 preview driver is
+  not enough.
 - **CPython 3.12, 3.13, or 3.14.** Each architecture's wheel uses the
   `cp312-abi3` stable ABI and supports all three versions.
 - **Docker** and the **NVIDIA Container Toolkit**, to build from source in the
   dev container. Installing the wheel needs neither.
 
 PyTorch and the CUDA math libraries arrive as wheel dependencies, or in
-`nvcr.io/nvidia/pytorch:26.05-py3` when you use the container. Building the
+`nvcr.io/nvidia/pytorch:26.09-py3` when you use the container. Building the
 extension from source outside a container needs a C++17 compiler and CUDA
 headers as well — [`docs/dev.md`][dev-prerequisites].
 

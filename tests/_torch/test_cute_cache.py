@@ -41,6 +41,20 @@ DiskCache = cute_cache.DiskCache
 requires_compiler = pytest.mark.skipif(importlib.util.find_spec("cutlass") is None, reason="CuTeDSL is not installed")
 
 
+def _require_location_helper() -> None:
+    """Skip when this compiler has no private source-location helper.
+
+    CuTeDSL 4.5 keeps it at ``cutlass.base_dsl._mlir_helpers``. 4.8 removed that module. The runtime
+    leaves an unvalidated compiler unchanged, so only tests of the helper itself need it installed.
+    """
+    try:
+        found = importlib.util.find_spec("cutlass.base_dsl._mlir_helpers.op") is not None
+    except ModuleNotFoundError:  # find_spec imports the parent package, which 4.8 removed
+        found = False
+    if not found:
+        pytest.skip("this CuTeDSL build has no private location helper")
+
+
 class _FakeArtifact:
     """Stand-in for a ``cute.compile`` result.
 
@@ -315,6 +329,7 @@ def test_miss_waits_for_a_peer_compile(cache_dir, monkeypatch):
 
 def _dsl_op_locations() -> tuple[list[str], object]:
     """Build locations the way a kernel does: the DSL's op wrapper tags each call with its caller's site."""
+    _require_location_helper()
     from cutlass._mlir import ir
     from cutlass.base_dsl._mlir_helpers import op as dsl_op
 
@@ -371,6 +386,7 @@ def test_memoized_frame_info_equals_inspect() -> None:
 @requires_compiler
 def test_memoized_op_locations_restore_on_exit() -> None:
     """Nested and failing compiles restore the DSL's ``inspect`` only when the outermost one ends."""
+    _require_location_helper()
     import inspect
 
     from cutlass.base_dsl._mlir_helpers import op as dsl_op
@@ -393,6 +409,7 @@ def test_memoized_op_locations_keep_each_file(tmp_path: Path) -> None:
     Args:
         tmp_path: Directory for the two generated source files.
     """
+    _require_location_helper()
     from cutlass._mlir import ir
     from cutlass.base_dsl._mlir_helpers import op as dsl_op
 
@@ -439,6 +456,7 @@ def _scope_restores() -> bool:
     """Check that a memo scope restores the upstream inspect module."""
     import inspect
 
+    _require_location_helper()
     from cutlass.base_dsl._mlir_helpers import op as dsl_op
 
     with cute_cache.memoized_op_locations():
@@ -450,6 +468,7 @@ def _scope_restores() -> bool:
 @pytest.mark.filterwarnings("ignore::DeprecationWarning")
 def test_fork_drops_other_threads_scopes() -> None:
     """A child forked while another thread compiles restores ``inspect`` after its own compile."""
+    _require_location_helper()
     import inspect
 
     from cutlass.base_dsl._mlir_helpers import op as dsl_op
@@ -478,6 +497,7 @@ def test_fork_drops_other_threads_scopes() -> None:
 @pytest.mark.filterwarnings("ignore::DeprecationWarning")
 def test_fork_while_another_thread_holds_the_lock() -> None:
     """A child forked while another thread holds the memo lock can still compile."""
+    _require_location_helper()
     locked, release = threading.Event(), threading.Event()
 
     def holding() -> None:
@@ -501,6 +521,7 @@ def test_fork_while_another_thread_holds_the_lock() -> None:
 @pytest.mark.filterwarnings("ignore::DeprecationWarning")
 def test_fork_inside_a_scope_keeps_it() -> None:
     """A child forked inside two memo scopes keeps the memo until it leaves both, then restores."""
+    _require_location_helper()
     import inspect
     import signal
 
@@ -536,6 +557,7 @@ def test_memoized_op_locations_leave_a_foreign_patch(monkeypatch: pytest.MonkeyP
     Args:
         monkeypatch: Fixture that restores the foreign inspect reference.
     """
+    _require_location_helper()
     from cutlass.base_dsl._mlir_helpers import op as dsl_op
 
     foreign = object()
@@ -557,6 +579,7 @@ def test_memoized_op_locations_validated_versions(
         caplog: Captured log records.
         version: Validated compiler version to exercise.
     """
+    _require_location_helper()
     import inspect
 
     import cutlass
@@ -571,7 +594,7 @@ def test_memoized_op_locations_validated_versions(
 
 
 @requires_compiler
-@pytest.mark.parametrize("version", ["4.6.0", "4.8.1", "999.0", "4.5.3.dev0", "unknown"])
+@pytest.mark.parametrize("version", ["4.6.0", "4.8.0", "999.0", "4.5.3.dev0", "unknown"])
 def test_unvalidated_version_compiles_unchanged_and_warns_once(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture, version: str
 ) -> None:
@@ -585,7 +608,11 @@ def test_unvalidated_version_compiles_unchanged_and_warns_once(
     import inspect
 
     import cutlass
-    from cutlass.base_dsl._mlir_helpers import op as dsl_op
+
+    try:
+        from cutlass.base_dsl._mlir_helpers import op as dsl_op
+    except ImportError:
+        dsl_op = None
 
     monkeypatch.setattr(cutlass, "__version__", version)
     monkeypatch.setattr(cute_cache, "_memo_warning_logged", False)
@@ -594,7 +621,8 @@ def test_unvalidated_version_compiles_unchanged_and_warns_once(
 
     def compile_kernel(*args: object, **kwargs: object) -> object:
         """Record forwarded arguments and simulate an upstream compiler failure."""
-        assert dsl_op.inspect is inspect
+        if dsl_op is not None:
+            assert dsl_op.inspect is inspect
         calls.append((args, kwargs))
         if len(calls) == 2:
             raise ValueError("upstream compiler error at kernel.py:42")
@@ -627,6 +655,7 @@ def test_changed_location_helper_falls_back_and_warns_once(
         caplog: Captured log records.
         change: Private helper incompatibility to simulate.
     """
+    _require_location_helper()
     import sys
 
     import cutlass
@@ -658,6 +687,7 @@ def test_changed_location_helper_falls_back_and_warns_once(
 def test_compile_memoizes_locations_and_restores_inspect(
     monkeypatch: pytest.MonkeyPatch, version: str, fails: bool
 ) -> None:
+    _require_location_helper()
     """The compile entry point scopes memoization around the upstream call.
 
     Args:

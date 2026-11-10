@@ -100,7 +100,7 @@ coverage = [
 # The CuTeDSL compiler and its TVM-FFI launcher. Only kernel source builds and
 # CUBIN generation use them; the package launches the embedded CUBINs without.
 cutedsl = [
-  "nvidia-cutlass-dsl[cu13]==4.5.2",
+  "nvidia-cutlass-dsl[cu13]==4.8.0",
   "apache-tvm-ffi>=0.1.6,<0.2",
 ]
 lint = [
@@ -157,9 +157,12 @@ dev = [
 [tool.uv]
 required-version = ">=0.13.0,<0.14"
 default-groups = ["dev"]
-# CUTLASS's base and CUDA 13 wheels contain overlapping paths. Install in
-# dependency order so the CUDA 13 wheel consistently supplies those files.
-concurrent-installs = 1
+# nvidia-cutlass-dsl always depends on the CUDA 12 compiler wheel. 4.8.0
+# installs that beside the cu13 extra as separate _cutlass_ir.cu12 and
+# _cutlass_ir.cu13 modules; the loader picks the newest flavor the driver
+# supports. Drop the CUDA 12 wheel so this CUDA 13.4 image cannot compile
+# with its embedded ptxas 12.9.
+exclude-dependencies = ["nvidia-cutlass-dsl-libs-cu12"]
 # Keep uv's isolated editable builds on the same internal toolchain as the
 # locked build group without narrowing the published PEP 517 compatibility
 # floors in build-system.requires.

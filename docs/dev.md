@@ -223,21 +223,19 @@ build does. Configurations without a shipped CUBIN use the operator's fallback
 where available, such as AdaLN's vanilla PyTorch implementation. Only functions
 that compile from source import the compiler.
 
-`nvidia-cutlass-dsl[cu13]` installs both `nvidia-cutlass-dsl-libs-base` and
-`nvidia-cutlass-dsl-libs-cu13`. The two wheels ship the same native compiler
-module, each embedding its own ptxas (CUDA 12.9 and 13.1), and whichever unpacks
-last compiles every kernel. The image reinstalls the CUDA 13 wheel last, and the
-published CUBIN packs come from it. After any `uv sync`, do the same:
+`nvidia-cutlass-dsl[cu13]` declares both `nvidia-cutlass-dsl-libs-cu12` and
+`nvidia-cutlass-dsl-libs-cu13`, plus `nvidia-cutlass-dsl-libs-base` and
+`nvidia-cutlass-dsl-libs-core`. The 4.8.0 toolkit wheels do not share paths:
+each installs its own `_cutlass_ir.cu12` or `_cutlass_ir.cu13` module, and the
+loader selects the newest flavor the CUDA driver supports. Installing the
+CUDA 13 wheel last therefore does not replace the CUDA 12 compiler. The CUDA
+12 wheel embeds ptxas 12.9; the CUDA 13 wheel embeds ptxas 13.4.
+`pyproject.toml` excludes `nvidia-cutlass-dsl-libs-cu12`, so a locked install
+on this image only has the CUDA 13 compiler.
 
-```bash
-uv pip install --no-deps --reinstall-package nvidia-cutlass-dsl-libs-cu13 \
-  'nvidia-cutlass-dsl-libs-cu13==4.5.2'
-```
-
-Use the `nvidia-cutlass-dsl` version `pyproject.toml` pins. Without this step,
-source mode and locally built packs run different machine code from the shipped
-packs, so their timings do not transfer. The CUBIN build tooling warns about a
-foreign compiler and refuses to publish packs from it.
+Use the `nvidia-cutlass-dsl` version `pyproject.toml` pins. The CUBIN build
+tooling refuses to publish packs when the imported compiler is not that
+wheel.
 
 uv's host project workflow builds in an isolated environment constrained by the
 `build` group in `uv.lock`. The image installs the same build and development

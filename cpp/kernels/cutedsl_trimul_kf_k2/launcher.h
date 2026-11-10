@@ -133,17 +133,16 @@ static_assert(sm90_parameter_count(0, true) == 12U && sm90_parameter_count(2, tr
  *   ord  6  0x240  0x0c  prod_coord     CoordTensorS3   (n, n, l)
  *
  * then K2_B0 (11 parameters): n, tiles_m and tiles_n as CuTe FastDivmodDivisors (12 bytes each),
- * work_units. K2_B1 (12): m_clusters, n_clusters, work_units, l, and its tile scheduler's problem shape,
- * whose one dynamic extent is the launch's grid.x (static and cluster-launch-control schedules alike). K2_B2 (22): n,
+ * work_units. K2_B1 (13): m_clusters, n_clusters, work_units, l, and its tile scheduler's problem shape,
+ * whose one dynamic extent is the launch's grid.x (static and cluster-launch-control schedules alike). CuTeDSL 4.8
+ * extracts that scheduler and then its fallback, which is the same object, so grid.x is a kernel parameter twice;
+ * pass it again. A 4.5 cubin declares it once (12 parameters) and the driver ignores the extra pointer. K2_B2 (22): n,
  * main_m, work_units, the atoms and coordinates of b's narrow tail (b_tail), a's narrow tail (a_tail), b loaded as an A
  * operand (b_as_a) and the transposed product store (prod_t), then use, km, jm and the narrow tiled MMA's token. Every
  * TMA slot carries CuTe DSL 4.5.2's tagged Blackwell atom (finalize_sm100_tma_atom); the MMA tokens are runtime state
- * the kernel initializes itself, passed as zeros.
+ * passed as zeros (SM100TiledMmaToken).
  */
-struct SM100TiledMma
-{
-  std::uint8_t fields[3]{};
-};
+using SM100TiledMma = bioir::cutedsl::SM100TiledMmaToken;
 
 /* CuTe's FastDivmodDivisor: the quotient is
  * (umulhi(n, multiplier) + ((n - umulhi(n, multiplier)) >> shift_right_1)) >> shift_right_2.
@@ -185,7 +184,7 @@ struct SM100Params
 
 constexpr std::size_t sm100_parameter_count(std::int32_t kernel_variant)
 {
-  return kernel_variant == 0 ? 11U : kernel_variant == 1 ? 12U : 22U;
+  return kernel_variant == 0 ? 11U : kernel_variant == 1 ? 13U : 22U;
 }
 
 inline constexpr std::size_t kSM100MaxParameterCount = 22;
@@ -218,6 +217,7 @@ pack_sm100_kernel_params(SM100Params* params, std::int32_t kernel_variant, void*
     kernel_params[count++] = &params->work_units;
     kernel_params[count++] = &params->l;
     kernel_params[count++] = &params->grid_x;
+    kernel_params[count++] = &params->grid_x;
   }
   else
   {
@@ -241,11 +241,11 @@ pack_sm100_kernel_params(SM100Params* params, std::int32_t kernel_variant, void*
 }
 
 static_assert(std::is_standard_layout_v<SM100Params>);
-static_assert(sizeof(SM100TiledMma) == 0x03 && alignof(SM100TiledMma) == 1);
+static_assert(sizeof(SM100TiledMma) == 64 && alignof(SM100TiledMma) == 1);
 static_assert(sizeof(SM100FastDivmod) == 0x0c && alignof(SM100FastDivmod) == 4);
 static_assert(sizeof(CoordTensorS3) == 0x0c);
 static_assert(
-  sm100_parameter_count(0) == 11U && sm100_parameter_count(1) == 12U
+  sm100_parameter_count(0) == 11U && sm100_parameter_count(1) == 13U
   && sm100_parameter_count(2) == kSM100MaxParameterCount);
 
 } // namespace bioir::cutedsl::trimul_kf_k2::abi

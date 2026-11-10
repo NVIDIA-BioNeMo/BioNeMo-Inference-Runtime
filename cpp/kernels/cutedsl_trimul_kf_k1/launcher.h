@@ -185,13 +185,10 @@ static_assert(sm90_parameter_count(0) == 17U && sm90_parameter_count(1) == 17U &
  *   vec, n, nb, tiles_per_batch, num_tiles, eps
  *
  * The weights have static shapes, so their coordinate tensors lower to no parameter. Every TMA slot
- * carries CuTe DSL 4.5.2's tagged Blackwell atom (finalize_sm100_tma_atom). The tiled MMA's three bytes
- * are runtime state the kernel initializes itself; the launch passes zeros.
+ * carries CuTe DSL 4.5.2's tagged Blackwell atom (finalize_sm100_tma_atom). The tiled MMA token is
+ * runtime state passed as zeros (SM100TiledMmaToken).
  */
-struct SM100TiledMma
-{
-  std::uint8_t fields[3]{};
-};
+using SM100TiledMma = bioir::cutedsl::SM100TiledMmaToken;
 
 struct SM100Params
 {
@@ -265,7 +262,7 @@ inline std::size_t pack_sm100_kernel_params(
 }
 
 static_assert(std::is_standard_layout_v<SM100Params>);
-static_assert(sizeof(SM100TiledMma) == 0x03 && alignof(SM100TiledMma) == 1);
+static_assert(sizeof(SM100TiledMma) == 64 && alignof(SM100TiledMma) == 1);
 static_assert(sizeof(CoordTensorS2) == 0x08 && sizeof(CoordTensorS3) == 0x0c);
 static_assert(sizeof(cute_tensor_s1_d0_t) == 0x10 && sizeof(cute_tensor_s0_d0_t) == 0x08);
 static_assert(sm100_parameter_count(0) == 14U && sm100_parameter_count(1) == kSM100MaxParameterCount);

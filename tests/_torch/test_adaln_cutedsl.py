@@ -221,6 +221,12 @@ def test_adaln_source_and_cubin(mode, rms_norm, dtype, M, N, monkeypatch):
     scale = torch.randn(M, N, device="cuda", dtype=dtype)
     bias = torch.randn(M, N, device="cuda", dtype=dtype)
 
+    # Compute the torch reference before entering the CUBIN test mode: in
+    # cubin mode run_cutedsl_test_mode nulls out the cutlass compiler modules
+    # in sys.modules, and the new PyTorch rms_norm dispatches to a native op
+    # that imports cutlass.cute.runtime, which would fail with those entries
+    # set to None.
+    reference = _invoke_vanilla_adaln_layernorm_sigmoid(x.clone(), scale, bias, rms_norm=rms_norm)
     result = run_cutedsl_test_mode(
         mode,
         monkeypatch,
@@ -228,7 +234,6 @@ def test_adaln_source_and_cubin(mode, rms_norm, dtype, M, N, monkeypatch):
         adaln_cutedsl,
         lambda: AdaLNLayerNormSigmoidCuTe(rms_norm=rms_norm)(x.clone(), scale, bias),
     )
-    reference = _invoke_vanilla_adaln_layernorm_sigmoid(x.clone(), scale, bias, rms_norm=rms_norm)
     torch.testing.assert_close(result, reference, atol=0.05, rtol=0.02)
 
 
@@ -917,7 +922,15 @@ def test_launch_requests_enough_smem_no_cuda_error(dtype: torch.dtype, N: int, r
         out = op(x, s_scale, s_bias, torch.empty_like(x))
         torch.cuda.synchronize()  # surface an illegal access here, not in a later test
 
-    undersized = [str(w.message) for w in caught if "smem" in str(w.message).lower()]
+    # ``smem_allocator`` in the CuTeDSL 4.8 deprecation of ``SmemAllocator``
+    # matches a bare "smem" substring. That warning is not an under-subscribed launch.
+    undersized = [
+        str(w.message)
+        for w in caught
+        if "smem" in str(w.message).lower()
+        and not issubclass(w.category, DeprecationWarning)
+        and "deprecated" not in str(w.message).lower()
+    ]
     assert not undersized, f"CuTe reports the launch under-requests smem: {undersized}"
 
     tol = 1e-4 if dtype == torch.float32 else 0.05

@@ -139,21 +139,19 @@ inline std::size_t pack_sm90_kernel_params(
   return count;
 }
 
-inline constexpr std::size_t kSM100MaxParameterCount = 15;
+inline constexpr std::size_t kSM100MaxParameterCount = 17;
 
-/* The tcgen05 tiled MMA's runtime state, lowered as three bytes the kernel
- * initializes itself; the launch passes zeros.
- */
-struct SM100TiledMmaDescriptor
-{
-  std::uint8_t fields[3]{};
-};
+/* The tcgen05 tiled MMA's runtime state, passed as zeros (SM100TiledMmaToken). */
+using SM100TiledMmaDescriptor = bioir::cutedsl::SM100TiledMmaToken;
 
 /* Blackwell lowers every TMA operand to a tagged non-executable atom plus its
  * coordinate extents: {M} for x, {N} for each weight, {M, N} for the output.
  * The streaming kernel passes each bias as a bare pointer (a static SMEM-sized
- * view) and ends with the CLC scheduler's unrounded tile counts; the resident
- * kernel passes each bias with its extent N and has no scheduler state.
+ * view) and ends with the CLC scheduler's unrounded tile counts. CuTeDSL 4.8
+ * extracts that scheduler and then its fallback, which is the same object, so
+ * the two counts are kernel parameters twice; pass the same int32s again. A 4.5
+ * cubin declares them once and the driver ignores the extra pointers. The
+ * resident kernel passes each bias with its extent N and has no scheduler state.
  */
 struct SM100Params
 {
@@ -178,7 +176,7 @@ struct SM100Params
 
 constexpr std::size_t sm100_parameter_count(bool has_bias, bool resident)
 {
-  return (resident ? 11U : 13U) + (has_bias ? 2U : 0U);
+  return (resident ? 11U : 15U) + (has_bias ? 2U : 0U);
 }
 
 inline std::size_t pack_sm100_kernel_params(
@@ -205,6 +203,8 @@ inline std::size_t pack_sm100_kernel_params(
   {
     kernel_params[count++] = &params->scheduler_m_tiles;
     kernel_params[count++] = &params->scheduler_n_tiles;
+    kernel_params[count++] = &params->scheduler_m_tiles;
+    kernel_params[count++] = &params->scheduler_n_tiles;
   }
   return count;
 }
@@ -213,7 +213,7 @@ static_assert(sm80_parameter_count(true, true) == kSM80MaxParameterCount);
 static_assert(sm90_parameter_count(true, true) == kSM90MaxParameterCount);
 static_assert(sm100_parameter_count(true, false) == kSM100MaxParameterCount);
 static_assert(std::is_standard_layout_v<SM100Params>);
-static_assert(sizeof(SM100TiledMmaDescriptor) == 3);
+static_assert(sizeof(SM100TiledMmaDescriptor) == 64);
 static_assert(alignof(SM100TiledMmaDescriptor) == 1);
 static_assert(sizeof(cute_tensor_s0_d0_t) == 8);
 static_assert(sizeof(cute_tensor_s1_d0_t) == 16);

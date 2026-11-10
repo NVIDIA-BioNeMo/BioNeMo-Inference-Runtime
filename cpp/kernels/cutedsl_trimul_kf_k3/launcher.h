@@ -262,13 +262,10 @@ static_assert(sm90_resident_parameter_count(false) == 15U && sm90_resident_param
  * MMA tokens, x and the product, and the gate and output folds (mma_x, mma_p, x, product, w_gate, w_out), and
  * passes N * N before n. K3_B1 and K3_B2 count 256-row tiles of CTA pairs. The weights have static shapes, so
  * their coordinate tensors lower to no parameter. Every TMA slot carries CuTe DSL 4.5.2's tagged Blackwell
- * atom (finalize_sm100_tma_atom); the MMA tokens are runtime state the kernel initializes itself, passed as
- * zeros.
+ * atom (finalize_sm100_tma_atom); the MMA tokens are runtime state passed as
+ * zeros (SM100TiledMmaToken).
  */
-struct SM100TiledMma
-{
-  std::uint8_t fields[3]{};
-};
+using SM100TiledMma = bioir::cutedsl::SM100TiledMmaToken;
 
 struct SM100Params
 {
@@ -327,7 +324,7 @@ inline std::size_t pack_sm100_kernel_params(
 }
 
 static_assert(std::is_standard_layout_v<SM100Params>);
-static_assert(sizeof(SM100TiledMma) == 0x03 && alignof(SM100TiledMma) == 1);
+static_assert(sizeof(SM100TiledMma) == 64 && alignof(SM100TiledMma) == 1);
 static_assert(sizeof(SM100Params::coord) == 0x08 && sizeof(SM100Params::seqlen) == 0x10);
 static_assert(sm100_parameter_count(0, true) == 16U && sm100_parameter_count(1, true) == 17U);
 

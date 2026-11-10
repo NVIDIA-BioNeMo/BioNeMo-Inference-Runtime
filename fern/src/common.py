@@ -38,6 +38,7 @@ PAGE_ROUTES = {
     Path("advanced/accelerate-custom-model.md"): "references/accelerate-custom-model",
     Path("advanced/design-with-rfproteina.md"): "references/design-with-rfproteina",
     Path("advanced/port-data-pipeline.md"): "references/port-data-pipeline",
+    Path("advanced/port-model.md"): "references/port-model",
     Path("advanced/validate-data-pipeline.md"): "references/validate-data-pipeline",
     Path("release-notes/index.md"): "release-notes/overview",
     Path("coding.md"): "references/coding",
@@ -90,7 +91,7 @@ EXTERNAL_RE = re.compile(r"^(?:https?:|mailto:|tel:|ftp:)")
 INTERNAL_GITHUB_RE = re.compile(rf"^https://{re.escape(GITHUB_REPOSITORY)}/(?:blob|tree)/main/")
 ALLOWED_INTERNAL_GITHUB_LINKS = frozenset(
     {
-        f"https://{GITHUB_REPOSITORY}/blob/main/.agents/skills/module-onboard/SKILL.md",
+        f"https://{GITHUB_REPOSITORY}/blob/main/.agents/skills/model-onboard/SKILL.md",
     }
 )
 GITHUB_CONTENT_RE = re.compile(rf"^https://{re.escape(GITHUB_REPOSITORY)}/(?:blob|tree)/[^/]+/(?P<relative>[^?#]+)")

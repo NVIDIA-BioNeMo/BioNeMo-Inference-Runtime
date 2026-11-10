@@ -461,7 +461,8 @@ must redefine is in
   (see [samples.md](samples.md#templates-are-in))
 - The demo tree `examples/data/samples/` as a substitute dataset
 - DockQ / feature-tensor equivalence (`make-data-pipeline`)
-- Isolated same-features microbench of a single stack (`module-onboard`)
+- Isolated same-features microbench of a single stack (Benchmark the Swap
+  in `docs/advanced/accelerate-custom-model.md`)
   — the OSS feature path is e2e `model.forward` on OSS features, not a
   layer bench
 - Non-folding heads (`boltz-2-affinity`, embeddings, design, …)

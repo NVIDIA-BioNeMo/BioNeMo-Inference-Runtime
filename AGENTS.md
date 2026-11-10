@@ -89,9 +89,10 @@ Task-specific playbooks live in `.agents/skills/`
   `docs/advanced/port-data-pipeline.md` and
   `docs/advanced/validate-data-pipeline.md`. Level 2 is one full
   `build_processor` run of the manifest, serial and Ray.
-- `module-onboard` — moving a source model's module onto BioIR layers, with
-  weight conversion and validation. The procedure lives in
-  `docs/advanced/accelerate-custom-model.md`.
+- `model-onboard` — implementing an upstream pretrained model natively in
+  BioIR, with checkpoint conversion, numerical validation, and data pipeline
+  integration when requested. The procedure lives in
+  `docs/advanced/port-model.md`.
 - `scan-mem-opt-patterns` — cutting activation memory or diagnosing large-`N`
   OOM in a pairwise-representation model.
 - `bench-perf-oss` — benchmark BioIR vs OSS **folding** `model.forward()`

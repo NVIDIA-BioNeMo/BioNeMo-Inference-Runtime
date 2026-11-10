@@ -62,6 +62,9 @@ navigation:
         skip-slug: true
         collapsed: true
         contents:
+          - page: Port a Model to BioIR
+            path: ../docs/advanced/port-model.md
+            slug: port-model
           - page: Accelerate a Custom Model
             path: ../docs/advanced/accelerate-custom-model.md
             slug: accelerate-custom-model

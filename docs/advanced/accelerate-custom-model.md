@@ -14,10 +14,11 @@ your trained PyTorch model with its BioIR equivalent and convert the
 checkpoint weights. Then you verify that the swapped model computes the same
 function as the original.
 
-The result is still your model: the same `nn.Module`, data loading, and
-calling code, with one faster submodule. This workflow does not use
-`build_processor` or the BioIR data pipeline. To run a complete model through
-the BioIR pipeline instead, refer to [Port a Data Pipeline][port].
+The result is still your model: the same `nn.Module`, data loading, and calling
+code, with one faster submodule. This workflow does not use `build_processor` or
+the BioIR data pipeline. To run a complete model through the BioIR pipeline
+instead, refer to [Port a Data Pipeline][port]. To implement the network
+natively in BioIR, follow [Port a Model to BioIR][model-port].
 
 The running example swaps the Pairformer stack of RoseTTAFold3 (RF3), an
 open-source all-atom structure model under the BSD-3-Clause license. The
@@ -25,6 +26,7 @@ complete code for the RF3 Pairformer swap is in the
 [module onboarding example][examples] under `examples/module_onboarding/`.
 
 [port]: port-data-pipeline.md
+[model-port]: port-model.md
 [examples]: ../../examples/module_onboarding/
 
 ## How a Swap Fits Together

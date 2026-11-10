@@ -47,6 +47,10 @@ data path in `bionemo_ir/pipeline/` with the compute path in
 `bionemo_ir/models/<family>/`. Workflow 2 uses the compute path and shared
 layers in `bionemo_ir/_torch/` without the pipeline.
 
+To add a native model implementation, follow [Port a Model to
+BioIR](../advanced/port-model.md). That contributor workflow builds the
+network from BioIR components and connects a data pipeline when requested.
+
 ## How BioIR Accelerates
 
 BioIR accelerates three levels of computation. The remaining acceleration

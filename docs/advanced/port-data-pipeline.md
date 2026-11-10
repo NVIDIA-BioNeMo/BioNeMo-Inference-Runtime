@@ -13,8 +13,9 @@ pipeline*. This guide ports the data pipeline of an open-source model into
 BioIR and registers it, so `build_processor` can run the model.
 
 Port a data pipeline when BioIR already has the network for your model, or
-when you are building it, and you want the full pipeline. The full pipeline
-covers parsing, featurization, inference, and PDB or mmCIF output, run
+when you are building it with [Port a Model to BioIR][model-port], and you
+want the full pipeline. The full pipeline covers parsing, featurization,
+inference, and PDB or mmCIF output, run
 serially or across GPUs with Ray. If you only need BioIR's optimized layers
 inside your own model, [Accelerate a Custom Model][custom-model] is shorter.
 
@@ -35,6 +36,7 @@ In this guide, the *upstream* model is the open-source model you port from,
 and the *upstream pipeline* is its code.
 
 [custom-model]: accelerate-custom-model.md
+[model-port]: port-model.md
 [dev]: ../dev.md
 [validate]: validate-data-pipeline.md
 

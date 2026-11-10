@@ -1,0 +1,91 @@
+{
+  "skill_name": "model-onboard",
+  "evals": [
+    {
+      "id": "model-onboard-001",
+      "prompt": "I want to add a structure-prediction model to BioIR. It is a fork of Protenix v2: the trunk is Protenix v2's with the pair widened from 256 to 384 channels, a 4-block Pairformer refiner runs after the trunk, and the diffusion module conditions on the trunk pair compressed from 384 to 128 channels. I want full build_processor support. This host has no GPU. Plan the port: write the feasibility report and the validation plan, and tell me what you can and cannot check here. Do not implement the model yet.",
+      "expected_output": "A feasibility report that maps each upstream component to a BioIR component or a gap, a validation plan with GPU comparisons marked pending, and a clear statement of the checks a CPU-only host can run.",
+      "assertions": [
+        "The agent checks for a GPU (for example with nvidia-smi or torch.cuda.is_available) and states that GPU checks cannot run on this host.",
+        "The report maps the trunk, MSA and template modules, refiner, diffusion module, and heads to BioIR's Protenix components or names a gap, and treats the refiner as BioIR's Pairformer with a different config, extended by an option whose default keeps existing models unchanged if needed.",
+        "The report plans to subclass or reuse the Protenix model, configs, converters, and pipeline instead of copying them.",
+        "The report notes that new channel widths must be checked against the fused kernels' supported shapes before a kernel is enabled.",
+        "The validation plan compares captured upstream intermediate tensors module by module before relying on end-to-end structure scores, and it marks every GPU comparison and benchmark as PENDING with the command to run.",
+        "The agent asks for, or records as missing, the upstream revision and the checkpoint identity instead of inventing them.",
+        "The agent does not claim that any numerical or performance check passed."
+      ],
+      "expected_skill": "model-onboard"
+    },
+    {
+      "id": "model-onboard-002",
+      "prompt": "An upstream model saves training checkpoints as a dict with 'model', 'optimizer' and 'scheduler' entries; the 'model' state dict keys carry a DDP 'module.' prefix. Write a CPU-only Python module for a BioIR port that loads such a checkpoint and runs a list of converter functions over the state dict. Each converter reads keys with weights[key] and returns BioIR tensors. Make the conversion fail if any checkpoint tensor is never read or is read more than once. Test it with small synthetic checkpoints and run the tests.",
+      "expected_output": "A loader and conversion wrapper with read accounting, plus executed CPU tests that cover a clean conversion, an unread tensor, and a tensor read twice.",
+      "assertions": [
+        "The loader calls torch.load with weights_only=True and map_location set to the CPU.",
+        "The loader reads the 'model' entry and strips the 'module.' prefix from its keys.",
+        "The wrapper records each key a converter reads, including reads made inside reused converters, and raises an error that names unread and twice-read keys.",
+        "The agent runs the tests on CPU and shows that a clean conversion passes and both failure cases raise.",
+        "The agent states that synthetic weights test the accounting and layout only, not the accuracy of a pretrained port."
+      ],
+      "expected_skill": "model-onboard"
+    },
+    {
+      "id": "model-onboard-003",
+      "prompt": "My BioIR port's checkpoint has confidence_head.lower_bins and confidence_head.upper_bins. BioIR's confidence head builds these distance-bin edges with torch.arange from its config, so I skip the two keys when converting. Is that fine?",
+      "expected_output": "An answer that the two tensors must be accounted for: compare the checkpoint's values with the recomputed ones and load the checkpoint's values when they differ.",
+      "assertions": [
+        "The answer says that skipping the keys silently is not acceptable, because every checkpoint tensor, buffers included, must be accounted for.",
+        "The answer recommends comparing the checkpoint's bin edges with the values BioIR recomputes.",
+        "The answer recommends loading the checkpoint's values when they differ, and explains that values computed on another device or in another dtype can differ.",
+        "The answer does not recommend non-strict loading to hide the keys."
+      ],
+      "expected_skill": "model-onboard"
+    },
+    {
+      "id": "model-onboard-004",
+      "prompt": "I ported a folding model to BioIR. On seven complexes the top-ranked sample's lDDT is within 0.003 of the original model's, but I never ran module-by-module comparisons. Can I report the port as numerically validated? Draft the validation section of my report.",
+      "expected_output": "A report section that does not claim module parity, lists the module comparisons as pending or failed checks, and explains why a matching structure score is insufficient.",
+      "assertions": [
+        "The answer says that a matching final structure score does not establish module parity, because a changed recycle or conditioning computation can still predict a similar structure.",
+        "The report lists module-by-module comparisons on captured upstream inputs as PENDING, with what must be captured and compared.",
+        "The answer recommends confirming that the quality gate rejects deliberately wrong edits of the upstream before relying on it.",
+        "The answer recommends comparing whole-model outputs with the upstream's own spread between repeated runs on the same input.",
+        "The report records the revisions, checkpoint identity, settings, and inputs behind the lDDT result."
+      ],
+      "expected_skill": "model-onboard"
+    },
+    {
+      "id": "model-onboard-005",
+      "prompt": "The model I am porting to BioIR runs triangle multiplication at pair widths 448 and 320. BioIR has a fused triangle-multiplication kernel whose shipped shape tables cover narrower widths. Should my port turn that kernel on, and what do I need to check?",
+      "expected_output": "Advice to check the kernel's supported shapes, to make backend selection fall back for unsupported widths, to verify the fallback numerically, and to report its performance separately.",
+      "assertions": [
+        "The answer says the kernel should be enabled only for widths it supports, and that matching math does not imply a supported shape.",
+        "The answer warns that a kernel may not reject an unsupported shape and can produce wrong results instead of an error.",
+        "The answer requires a numerical comparison of the fallback path against the upstream module, marked pending when no GPU is available.",
+        "The answer reports the fallback's performance separately from a kernel optimization that has not been implemented."
+      ],
+      "expected_skill": "model-onboard"
+    },
+    {
+      "id": "model-onboard-006",
+      "prompt": "I only need my new BioIR model as a compute module, not through build_processor. Constructing it fails with KeyError: 'myfork' raised from bionemo_ir/hubs/local.py. What is missing, and what may I claim about pipeline support?",
+      "expected_output": "An explanation that the constructor's hub lookup needs the model's support-matrix name and checkpoint entry even for a compute-only port, and that build_processor support must not be claimed.",
+      "assertions": [
+        "The answer identifies the missing LOCAL_CHECKPOINTS entry in bionemo_ir/hubs/local.py, with the model's checkpoint environment variable, weights_only=True, and the state-dict key.",
+        "The answer adds the model name to the support matrix in bionemo_ir/hubs/support_matrix.py.",
+        "The answer states that a compute-only port must not claim build_processor support until the data path, registry, and writer have run."
+      ],
+      "expected_skill": "model-onboard"
+    },
+    {
+      "id": "model-onboard-007",
+      "prompt": "I have my own RoseTTAFold3 training and inference code. I only want to replace its Pairformer stack with BioIR's faster Pairformer, keep my data loading and calling code, and check that the outputs match. How should I do this?",
+      "expected_output": "Guidance for a module swap inside the user's model, following BioIR's Accelerate a Custom Model guide, without a native model port.",
+      "assertions": [
+        "The answer treats the task as a single-module swap and points to BioIR's Accelerate a Custom Model guide or its RF3 module onboarding example.",
+        "The answer does not create a native model under bionemo_ir/models, register a factory, or port a data pipeline."
+      ],
+      "expected_skill": null
+    }
+  ]
+}

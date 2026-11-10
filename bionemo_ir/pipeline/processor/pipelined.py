@@ -16,13 +16,13 @@
 """Serial executor that overlaps the CPU stages of neighbouring requests with the device stage."""
 
 import asyncio
-import contextlib
 import multiprocessing
 import os
 import pickle
 import queue
 import threading
 import traceback
+import weakref
 from collections.abc import Sequence
 from typing import Any, Literal
 
@@ -194,6 +194,35 @@ def _drain(requests: Any) -> None:
             return
 
 
+# Workers stop through weakref.finalize when they are collected, and process
+# workers also from atexit, while module globals are still intact. A __del__ run
+# during module teardown finds those globals cleared and fails before stopping
+# anything. The finalizer holds the thread or process, never the worker.
+
+
+def _stop_thread(requests: queue.Queue[Any], thread: threading.Thread) -> None:
+    _drain(requests)
+    requests.put(None)
+    thread.join()
+
+
+def _stop_process(process: Any, requests: Any, results: Any, abort: bool, owner_pid: int) -> None:
+    if os.getpid() != owner_pid:
+        # A raw os.fork() child inherits the finalizer but does not own the process.
+        return
+    if process.is_alive():
+        if abort:
+            process.terminate()
+        else:
+            requests.put(None)
+        process.join(timeout=60.0)
+        if process.is_alive():
+            process.kill()
+            process.join()
+    requests.close()
+    results.close()
+
+
 class _ThreadWorker(_StageGroupWorker):
     def __init__(self, stages: StageGroup) -> None:
         self._requests: queue.Queue[tuple[int, dict[str, Any]] | None] = queue.Queue()
@@ -206,6 +235,10 @@ class _ThreadWorker(_StageGroupWorker):
             daemon=True,
         )
         self._thread.start()
+        self._finalizer = weakref.finalize(self, _stop_thread, self._requests, self._thread)
+        # Joining at exit would wait for a busy stage while the interpreter shuts down;
+        # the thread is a daemon, so exit abandons it.
+        self._finalizer.atexit = False
 
     def submit(self, index: int, batch: dict[str, Any]) -> None:
         self._requests.put((index, batch))
@@ -220,9 +253,10 @@ class _ThreadWorker(_StageGroupWorker):
         self._prepared.wait()
 
     def close(self, abort: bool = False) -> None:
-        _drain(self._requests)
-        self._requests.put(None)
-        self._thread.join()
+        # Detach only after stopping, so a close interrupted by KeyboardInterrupt can be retried.
+        if self._finalizer.alive:
+            _stop_thread(self._requests, self._thread)
+            self._finalizer.detach()
 
 
 class _ProcessWorker(_StageGroupWorker):
@@ -238,6 +272,10 @@ class _ProcessWorker(_StageGroupWorker):
             daemon=True,
         )
         self._process.start()
+        self._owner_pid = os.getpid()
+        self._finalizer = weakref.finalize(
+            self, _stop_process, self._process, self._requests, self._results, abort=True, owner_pid=self._owner_pid
+        )
 
     def submit(self, index: int, batch: dict[str, Any]) -> None:
         self._requests.put((index, _pack_batch(batch)))
@@ -260,17 +298,10 @@ class _ProcessWorker(_StageGroupWorker):
                 return
 
     def close(self, abort: bool = False) -> None:
-        if self._process.is_alive():
-            if abort:
-                self._process.terminate()
-            else:
-                self._requests.put(None)
-            self._process.join(timeout=60.0)
-            if self._process.is_alive():
-                self._process.kill()
-                self._process.join()
-        self._requests.close()
-        self._results.close()
+        # Detach only after stopping, so a close interrupted by KeyboardInterrupt can be retried.
+        if self._finalizer.alive:
+            _stop_process(self._process, self._requests, self._results, abort, self._owner_pid)
+            self._finalizer.detach()
 
 
 class PipelinedSerialProcessor(SerialProcessor):
@@ -286,7 +317,10 @@ class PipelinedSerialProcessor(SerialProcessor):
     the constructor waits for their stages to prepare. Process workers start
     on the first call so module-level construction is safe when a spawned
     child imports the application. Workers persist across calls;
-    :meth:`close` stops them and the next call restarts them.
+    :meth:`close` stops them and the next call restarts them. Workers
+    still running when the processor is collected stop as if closed with
+    ``abort=True``; at interpreter exit, process workers stop the same way
+    and thread workers, which are daemons, are abandoned.
 
     Output rows keep the order of the input records and the per-row error
     semantics of :class:`SerialProcessor`; an engine exception still aborts the
@@ -443,7 +477,3 @@ class PipelinedSerialProcessor(SerialProcessor):
 
     def __exit__(self, *exc_info: object) -> None:
         self.close()
-
-    def __del__(self) -> None:
-        with contextlib.suppress(Exception):
-            self.close(abort=True)

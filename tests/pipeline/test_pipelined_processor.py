@@ -29,7 +29,13 @@ import torch
 
 from bionemo_ir.pipeline.processor.base import ProcessorConfig, SerialProcessor
 from bionemo_ir.pipeline.processor.engine_proc import EngineProcessorConfig, build_processor
-from bionemo_ir.pipeline.processor.pipelined import PipelinedSerialProcessor, _pack_batch, _ThreadWorker, _unpack_batch
+from bionemo_ir.pipeline.processor.pipelined import (
+    PipelinedSerialProcessor,
+    _pack_batch,
+    _ProcessWorker,
+    _ThreadWorker,
+    _unpack_batch,
+)
 from bionemo_ir.pipeline.stages.base import StatefulStage, StatefulStageUDF
 
 WORKERS = ["thread", "process"]
@@ -468,6 +474,133 @@ if __name__ == "__main__":
     )
     assert proc.returncode == 0, proc.stderr
     assert proc.stdout.strip() == "processed"
+
+
+_PROLOGUE = [("prologue", StatefulStage(fn=_PrologueUDF))]
+
+
+def test_dropped_thread_worker_stops_its_thread() -> None:
+    worker = _ThreadWorker(_PROLOGUE)
+    thread = worker._thread
+    del worker
+    assert not thread.is_alive()
+
+
+@pytest.mark.parametrize("workers", WORKERS)
+def test_interrupted_close_can_be_retried(workers: str) -> None:
+    worker = _ThreadWorker(_PROLOGUE) if workers == "thread" else _ProcessWorker(_PROLOGUE)
+    stop = "_stop_thread" if workers == "thread" else "_stop_process"
+    with patch(f"bionemo_ir.pipeline.processor.pipelined.{stop}", side_effect=KeyboardInterrupt):
+        with pytest.raises(KeyboardInterrupt):
+            worker.close()
+    worker.close()
+    handle = worker._thread if isinstance(worker, _ThreadWorker) else worker._process
+    assert not handle.is_alive()
+
+
+# Shared header for the exit scripts. The module-level reference to the pipelined
+# module keeps it alive into shutdown, where Python clears its globals before
+# __main__ releases the processor. _stop_* print once they finish, so a script
+# shows which workers stopped at exit.
+_EXIT_HEADER = """
+import os, sys, threading
+sys.path.insert(0, sys.argv[1])
+sys.path.insert(0, sys.argv[2])
+import test_pipelined_processor as fakes
+from bionemo_ir.pipeline.processor import pipelined
+from bionemo_ir.pipeline.processor.base import ProcessorConfig
+from bionemo_ir.pipeline.stages.base import StatefulStage
+
+
+def _logged(stop, name):
+    def run(*args, **kwargs):
+        stop(*args, **kwargs)
+        print(name, flush=True)
+    return run
+
+
+pipelined._stop_thread = _logged(pipelined._stop_thread, "stopped thread")
+pipelined._stop_process = _logged(pipelined._stop_process, "stopped process")
+"""
+
+
+def _run_exit_script(tmp_path: Path, body: str, *args: str) -> subprocess.CompletedProcess[str]:
+    script = tmp_path / "exit_processor.py"
+    script.write_text(_EXIT_HEADER + body)
+    return subprocess.run(
+        [sys.executable, str(script), str(Path(__file__).parent), str(Path(__file__).resolve().parents[2]), *args],
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+
+
+@pytest.mark.parametrize("workers", WORKERS)
+def test_processor_alive_at_exit_closes_quietly(workers: str, tmp_path: Path) -> None:
+    proc = _run_exit_script(
+        tmp_path,
+        """
+processor = pipelined.PipelinedSerialProcessor(ProcessorConfig(model_source="test"), fakes._stages(), workers=sys.argv[3])
+
+if __name__ == "__main__":
+    rows = processor(fakes._records(2))
+    assert [row["value"] for row in rows] == [1, 2]
+    print("processed", flush=True)
+""",
+        workers,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert "Exception ignored" not in proc.stderr, proc.stderr
+    # Process workers stop at exit; daemon thread workers are abandoned.
+    stopped = ["stopped process"] * 2 if workers == "process" else []
+    assert proc.stdout.split("\n")[:-1] == ["processed", *stopped]
+
+
+def test_exit_does_not_wait_for_a_busy_thread_worker(tmp_path: Path) -> None:
+    proc = _run_exit_script(
+        tmp_path,
+        """
+started = threading.Event()
+
+
+class _Blocked(fakes._PrologueUDF):
+    async def udf_for_item(self, row):
+        started.set()
+        threading.Event().wait()
+
+
+if __name__ == "__main__":
+    stages = fakes._stages()
+    stages[0] = StatefulStage(fn=_Blocked)
+    processor = pipelined.PipelinedSerialProcessor(ProcessorConfig(model_source="test"), stages)
+    threading.Thread(target=processor, args=(fakes._records(1),), daemon=True).start()
+    assert started.wait(timeout=60)
+    print("exiting", flush=True)
+""",
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout.split("\n")[:-1] == ["exiting"]
+
+
+@pytest.mark.skipif(not hasattr(os, "fork"), reason="requires os.fork")
+def test_forked_child_leaves_parent_process_workers_alone(tmp_path: Path) -> None:
+    proc = _run_exit_script(
+        tmp_path,
+        """
+if __name__ == "__main__":
+    processor = pipelined.PipelinedSerialProcessor(ProcessorConfig(model_source="test"), fakes._stages(), workers="process")
+    processor(fakes._records(1))
+    if os.fork() == 0:
+        sys.exit(0)
+    os.wait()
+    print("child exited", flush=True)
+""",
+    )
+    assert proc.returncode == 0, proc.stderr
+    # The child runs the inherited finalizers at exit; they must return without touching
+    # the parent's workers, which would raise "can only test a child process".
+    assert "_stop_process" not in proc.stderr, proc.stderr
+    assert "child exited" in proc.stdout.split("\n")
 
 
 _ORPHAN_SCRIPT = """

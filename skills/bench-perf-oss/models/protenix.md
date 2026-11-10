@@ -30,7 +30,7 @@ dataset spec -> pinned OSS runner/inference featurizer   -> OSS forward
 
 The native pipeline passed Level 1 feature equivalence against the
 upstream v2.0.0 featurizer
-([`docs/advanced/validate-data-pipeline.md`](../../../../docs/advanced/validate-data-pipeline.md)),
+([`docs/advanced/validate-data-pipeline.md`](../../../docs/advanced/validate-data-pipeline.md)),
 so Processor path needs no shared OSS feature dump.
 
 ## Source and checkpoint lock

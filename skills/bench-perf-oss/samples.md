@@ -61,7 +61,7 @@ not the spec's `assembly` field, is what decides which RCSB URL is right
 ## Build
 
 ```bash
-SKILL_DATASET=.agents/skills/bench-perf-oss/dataset
+SKILL_DATASET=skills/bench-perf-oss/dataset
 DATASET_ROOT=benchmarks/dataset
 mkdir -p "$DATASET_ROOT" && cp "$SKILL_DATASET"/*.json "$DATASET_ROOT/"
 

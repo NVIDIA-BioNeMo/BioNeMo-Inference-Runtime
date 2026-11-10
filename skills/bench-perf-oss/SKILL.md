@@ -114,10 +114,10 @@ Authorities:
   [Protenix-v2](models/protenix.md)
 - Portable SKU package (optional) — [bundle.md](bundle.md)
 
-[api]: ../../../docs/ref/api.md
-[arch]: ../../../docs/ref/architecture.md
-[sm]: ../../../docs/ref/support-matrix.md
-[weights]: ../../../docs/ref/model-weights.md
+[api]: ../../docs/ref/api.md
+[arch]: ../../docs/ref/architecture.md
+[sm]: ../../docs/ref/support-matrix.md
+[weights]: ../../docs/ref/model-weights.md
 
 ## Mandatory gates
 

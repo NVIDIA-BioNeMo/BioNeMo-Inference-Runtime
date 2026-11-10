@@ -76,7 +76,7 @@ checkpoint with the user; routine implementation choices can proceed.
   upstream.
 - Benchmark only after correctness checks pass. For supported folding
   models, use the `bench-perf-oss` skill at
-  `$BIOIR/.agents/skills/bench-perf-oss/SKILL.md`; retain its scope and
+  `$BIOIR/skills/bench-perf-oss/SKILL.md`; retain its scope and
   applicability rules.
 
 ## Report

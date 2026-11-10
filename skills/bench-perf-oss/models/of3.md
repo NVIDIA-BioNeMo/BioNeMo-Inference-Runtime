@@ -227,7 +227,7 @@ Tag 0.4.3 needs two input-only fixes:
 Apply them only to a disposable 0.4.3 benchmark checkout:
 
 ```bash
-PATCH_DIR="$REPO/.agents/skills/bench-perf-oss/models/misc"
+PATCH_DIR="$REPO/skills/bench-perf-oss/models/misc"
 git -C "$OSS_ROOT" apply --check \
   "$PATCH_DIR/of3-p2-template-cache-dir.patch" \
   "$PATCH_DIR/of3-p2-template-gap-rows.patch"

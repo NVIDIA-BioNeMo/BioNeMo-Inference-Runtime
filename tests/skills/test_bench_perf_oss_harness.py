@@ -24,7 +24,7 @@ from pathlib import Path
 
 import pytest
 
-HARNESS = Path(__file__).resolve().parents[2] / ".agents" / "skills" / "bench-perf-oss" / "harness"
+HARNESS = Path(__file__).resolve().parents[2] / "skills" / "bench-perf-oss" / "harness"
 
 
 def _load(name):

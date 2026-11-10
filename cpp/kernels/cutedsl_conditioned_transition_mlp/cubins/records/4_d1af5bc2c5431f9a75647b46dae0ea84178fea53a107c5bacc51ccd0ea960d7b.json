@@ -1,0 +1,19 @@
+{
+  "executables": {
+    "4f8cec235486341a52329266336afa4d611b6c7839c4d4c402fe1260fae4e500": {
+      "dtype": "bf16",
+      "dynamic_smem_bytes": 230400,
+      "image_sha256": "88654eafb698297a5c38368bc49d709bc2552750924766bbb3f046ead58c08c7",
+      "image_size": 211328,
+      "kernel_sm": 100,
+      "kernel_symbol": "8d45277b8d8efed798b22037c19cdfe6af745627fb3c00d7c630e50d87c93f6b",
+      "launch_abi": "conditioned_transition_mlp_sm100_v1",
+      "non_portable_cluster_size_allowed": true,
+      "target_arch": "sm_100a",
+      "target_sm": 100
+    }
+  },
+  "kernel_symbols": {},
+  "sm90_launches": {},
+  "variants": []
+}

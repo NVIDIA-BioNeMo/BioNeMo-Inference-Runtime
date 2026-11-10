@@ -1,0 +1,27 @@
+{
+  "executables": {},
+  "kernel_symbols": {},
+  "sm90_launches": {},
+  "variants": [
+    {
+      "executable": "3c78170651087ea1da64c8e975286de2116b9c4a3ae6d917d88c78d419951d50",
+      "runtime_metadata": {
+        "head_dim": 32,
+        "n_keys": 128,
+        "n_queries": 32,
+        "num_threads": 64
+      },
+      "variant_id": "68458b5d306a9433db3e"
+    },
+    {
+      "executable": "c3ee0b9ee32b8eee346f8ac0b3adc824c94b11ef182945808bfc02d117a387ba",
+      "runtime_metadata": {
+        "head_dim": 32,
+        "n_keys": 128,
+        "n_queries": 32,
+        "num_threads": 64
+      },
+      "variant_id": "6f00c2d934cbbf5ce369"
+    }
+  ]
+}

@@ -1,0 +1,63 @@
+{
+  "executables": {
+    "c3ee0b9ee32b8eee346f8ac0b3adc824c94b11ef182945808bfc02d117a387ba": {
+      "dtype": "bf16",
+      "dynamic_smem_bytes": 26624,
+      "image_sha256": "0e33beceb15cf1390a7b17dbfd92db8757efc35ead8b70a6ed277dafd59713b5",
+      "image_size": 30832,
+      "kernel_sm": 80,
+      "kernel_symbol": "4a5718e3d4cbb5af277631f868c323b0b33646162f6c849151cb393b82f27b63",
+      "launch_abi": "window_attention_sm80_v1",
+      "target_arch": "sm_103a",
+      "target_sm": 103
+    },
+    "c98154876b014738264b40d29bc7614571d3d6dc84516c162da6518020fa3bf0": {
+      "dtype": "bf16",
+      "dynamic_smem_bytes": 26624,
+      "image_sha256": "9b37b082042bb8140739d636375422beccab3818a92525010109483cabcda085",
+      "image_size": 30840,
+      "kernel_sm": 80,
+      "kernel_symbol": "4a5718e3d4cbb5af277631f868c323b0b33646162f6c849151cb393b82f27b63",
+      "launch_abi": "window_attention_sm80_v1",
+      "target_arch": "sm_100a",
+      "target_sm": 100
+    },
+    "cce6614ecd48e166835bd34feccfc7d152878d082462a3c652975b2f66d65986": {
+      "dtype": "fp16",
+      "dynamic_smem_bytes": 26624,
+      "image_sha256": "d6943948adabd10b3c61adeff7482f678075bce9f2ba85ce38cbfac21a1db55e",
+      "image_size": 22688,
+      "kernel_sm": 80,
+      "kernel_symbol": "5d11df7357e2ddbf8446284a81e25f883e0bef8f63e61093bdaf3289a83f06aa",
+      "launch_abi": "window_attention_sm80_v1",
+      "target_arch": "sm_80",
+      "target_sm": 80
+    }
+  },
+  "kernel_symbols": {
+    "cc42d6e7b5c4ed0c15c159cb969d7aa3d74f144f21c26b49f4bbc4c6ffa99acb": "k5ebd7c6ac0aca3062f3c9f8d0c8ab50104105456d78531c2bad62ddbbbaa973b____________________________________________________________________________________________________________________________"
+  },
+  "sm90_launches": {},
+  "variants": [
+    {
+      "executable": "e2fdc6e0b9e74066018bf5ebaa6f4f9d73850d9350c40faddb7eb21108d5ac99",
+      "runtime_metadata": {
+        "head_dim": 32,
+        "n_keys": 128,
+        "n_queries": 32,
+        "num_threads": 128
+      },
+      "variant_id": "c54c89604dd6a05c3035"
+    },
+    {
+      "executable": "ad77c54c12fbeeaa746ea48b394fdeccfe9781e09d7c0cb008577c083f272ed0",
+      "runtime_metadata": {
+        "head_dim": 32,
+        "n_keys": 128,
+        "n_queries": 32,
+        "num_threads": 64
+      },
+      "variant_id": "cc191f12871cb006bf0f"
+    }
+  ]
+}

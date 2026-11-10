@@ -1,0 +1,40 @@
+{
+  "executables": {
+    "e2fdc6e0b9e74066018bf5ebaa6f4f9d73850d9350c40faddb7eb21108d5ac99": {
+      "dtype": "fp16",
+      "dynamic_smem_bytes": 34816,
+      "image_sha256": "53f829fb67561af43fe981539af8716dca79a4d5425e8f740abdbd5b67f3ee37",
+      "image_size": 21512,
+      "kernel_sm": 90,
+      "kernel_symbol": "cc42d6e7b5c4ed0c15c159cb969d7aa3d74f144f21c26b49f4bbc4c6ffa99acb",
+      "launch_abi": "window_attention_sm90_v1",
+      "target_arch": "sm_90a",
+      "target_sm": 90
+    },
+    "efa8f8790654aa000baa6a60c3ea92f47b06549c0024f2865639a3f76a49c6ad": {
+      "dtype": "bf16",
+      "dynamic_smem_bytes": 34816,
+      "image_sha256": "68b643d1798dfbb814b579f4870da377377b3e45d170417625b2a4a1c00c961c",
+      "image_size": 22536,
+      "kernel_sm": 90,
+      "kernel_symbol": "3f59ae011b783f91f94f81ed7eb1a57c93aec77a43c2a4bee82239911cb33912",
+      "launch_abi": "window_attention_sm90_v1",
+      "target_arch": "sm_90a",
+      "target_sm": 90
+    }
+  },
+  "kernel_symbols": {},
+  "sm90_launches": {},
+  "variants": [
+    {
+      "executable": "05690837eb5c3f9a76a4f8156ac44a6553f3765bb2f5b22ecc008bd3cc0d75e4",
+      "runtime_metadata": {
+        "head_dim": 32,
+        "n_keys": 128,
+        "n_queries": 32,
+        "num_threads": 64
+      },
+      "variant_id": "ee332fa227707c0fc4ab"
+    }
+  ]
+}

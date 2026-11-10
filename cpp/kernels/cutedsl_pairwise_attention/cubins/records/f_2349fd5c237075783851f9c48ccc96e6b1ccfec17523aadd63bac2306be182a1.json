@@ -1,0 +1,159 @@
+{
+  "executables": {
+    "f2ba69efd788e4a6095556af609690493bad65d9983131a9f468e72e53b5103e": {
+      "dtype": "bf16",
+      "dynamic_smem_bytes": 47104,
+      "image_sha256": "8dc2a6eabb72f84476fc34d5874e3324d327b86dd83ddcf349deba5f6092feb8",
+      "image_size": 43168,
+      "kernel_sm": 80,
+      "kernel_symbol": "dc76db2bd0c38eee5af5446deb15459c295358fa81871ddf1c0aa353b8d6cc5f",
+      "launch_abi": "pairwise_attention_sm80_nullable_lse_v1",
+      "target_arch": "sm_86",
+      "target_sm": 86
+    },
+    "f5a0d17b8f5826b929e6450fd49ed2aece37ea927e95d30bb5d3ddadcde3ea3c": {
+      "dtype": "fp16",
+      "dynamic_smem_bytes": 217088,
+      "image_sha256": "e9867440b96a6f3d15e59442822abb9f7a3475a35a1bd10f5751d867392e8a89",
+      "image_size": 158312,
+      "kernel_sm": 100,
+      "kernel_symbol": "fcb21b6d2365238f4f7fdefcaf5b2246032274d1dce80e32d23ce9c743739efd",
+      "launch_abi": "pairwise_attention_sm100_mult_inner_bias_mma_nullable_lse_v1",
+      "non_portable_cluster_size_allowed": true,
+      "target_arch": "sm_100a",
+      "target_sm": 100
+    },
+    "f77372c1b1610bf548f14b7a8b19c79e7be2b233bbbaa5ca860252cfe8120d77": {
+      "dtype": "bf16",
+      "dynamic_smem_bytes": 225280,
+      "image_sha256": "5f375a4156300ecc6f872d4b1c5b3828fadf9ae89aff438d4f9c4e30901f2ee6",
+      "image_size": 209168,
+      "kernel_sm": 100,
+      "kernel_symbol": "5c0f6ce9c11296f3c1a2121bf314c77f146b6f0ac16a8e054c2654d121823ff7",
+      "launch_abi": "pairwise_attention_sm100_mult_inner_bias_mma_nullable_lse_v1",
+      "non_portable_cluster_size_allowed": true,
+      "target_arch": "sm_103a",
+      "target_sm": 103
+    },
+    "fae0c3382a6bb384bb85adbe817dac7767ef04767e7345464911e4ff23c86c42": {
+      "dtype": "fp16",
+      "dynamic_smem_bytes": 32768,
+      "image_sha256": "8b26e9a6fa43411f821af9bc64b7e25a7d93a62c639730b9edd5b8fd92bf427f",
+      "image_size": 44192,
+      "kernel_sm": 80,
+      "kernel_symbol": "37a99e078a2ae10f9a88e237186107b9983efb19aec8712e9d2d5f64c5f3ac2c",
+      "launch_abi": "pairwise_attention_sm80_nullable_lse_v1",
+      "target_arch": "sm_89",
+      "target_sm": 89
+    },
+    "fd97a6c85baebfe4c35a8e6b39dffca06cb8294b0f87015e7b0372dd36efa486": {
+      "dtype": "fp16",
+      "dynamic_smem_bytes": 47104,
+      "image_sha256": "d029e14859705a3fa03ce757109411d7bfbef55eccde4be796186b9b000cb46d",
+      "image_size": 68408,
+      "kernel_sm": 80,
+      "kernel_symbol": "cb79b4247922e6017c8701eb95aa40a5b039a4ad5629e35e0fc2b7027102120e",
+      "launch_abi": "pairwise_attention_sm80_nullable_lse_v1",
+      "target_arch": "sm_103a",
+      "target_sm": 103
+    },
+    "fff42d22e3558931c80ee3986127bff5d29befc032a464c3fdae0cab97e37206": {
+      "dtype": "bf16",
+      "dynamic_smem_bytes": 81920,
+      "image_sha256": "a6729dfedafe522e5357d5041e5a86b5564132990a34aa889bb00e15ded83b76",
+      "image_size": 49312,
+      "kernel_sm": 80,
+      "kernel_symbol": "2633baa2b0a71946ecb74c6c7c31d0ba4ed82aaeabf4f7e66dd340ed59727d2a",
+      "launch_abi": "pairwise_attention_sm80_nullable_lse_v1",
+      "target_arch": "sm_86",
+      "target_sm": 86
+    }
+  },
+  "kernel_symbols": {
+    "f2815d718eede462c311b48d9e1b666b3ca9a0b5c2eb237f264e1bf75fef14c7": "k7464f2e04e6021c73491519083b11d75cd677e7a0972500a72475b0cbc9d26fe____________________________________________________________________________________________________________________________",
+    "fcb21b6d2365238f4f7fdefcaf5b2246032274d1dce80e32d23ce9c743739efd": "k9e738c1e681259b450875228c472a47c1cdfe4e1842d582a285d4ee818dcda40____________________________________________________________________________________________________________________________"
+  },
+  "sm90_launches": {},
+  "variants": [
+    {
+      "executable": "6e323251331ab8d193ba6f4420631a90641de9f536532141de5f67ac7caefef5",
+      "runtime_metadata": {
+        "bucket": 512,
+        "head_dim": 64,
+        "packed_output": false,
+        "sm100_launch": null
+      },
+      "variant_id": "f303a0339c9b77f4bcf7"
+    },
+    {
+      "executable": "5c9bd1a8cfdd986e3c0a938d4d936f428751f3ac61d5dfc173fcca0ec7d085ac",
+      "runtime_metadata": {
+        "bucket": 1024,
+        "head_dim": 32,
+        "packed_output": false,
+        "sm100_launch": null
+      },
+      "variant_id": "f31030ad9cd97d7599d0"
+    },
+    {
+      "executable": "dff9b682b946449e49fe6b9ddd1184c121f78bbfd86bbbf011a32df815c5ab7a",
+      "runtime_metadata": {
+        "bucket": 0,
+        "head_dim": 32,
+        "packed_output": false,
+        "sm100_launch": null
+      },
+      "variant_id": "f496506d78f88c1233df"
+    },
+    {
+      "executable": "260e48da085cde04b1467b309d0a010caf3594b62641a24961a74c2ef20adfea",
+      "runtime_metadata": {
+        "bucket": 0,
+        "head_dim": 48,
+        "packed_output": true,
+        "sm100_launch": null
+      },
+      "variant_id": "f6c876b08cdb3900a1a5"
+    },
+    {
+      "executable": "d2aae6f0eef9afa258938a3a0ecd831a50143114ba0f4d5092db4ec0ec70fa08",
+      "runtime_metadata": {
+        "bucket": 0,
+        "head_dim": 32,
+        "packed_output": false,
+        "sm100_launch": null
+      },
+      "variant_id": "f82903b57617950b18af"
+    },
+    {
+      "executable": "1848536e6b8715689a2114a6f206f85cc956b1488e9c4e1592688cf46f7dc054",
+      "runtime_metadata": {
+        "bucket": 0,
+        "head_dim": 64,
+        "packed_output": false,
+        "sm100_launch": null
+      },
+      "variant_id": "f99342c41c937259c1a0"
+    },
+    {
+      "executable": "853bef0410ba8b1aa3f3f286c94892768c08df08e2acfcd3ade9ac1964e35832",
+      "runtime_metadata": {
+        "bucket": 0,
+        "head_dim": 64,
+        "packed_output": false,
+        "sm100_launch": null
+      },
+      "variant_id": "fbf1246bac2ac6e4fe34"
+    },
+    {
+      "executable": "8b99face3fec399316e2ef7d0d48766f2dc04daabeeffc159c509520069ad1d9",
+      "runtime_metadata": {
+        "bucket": 320,
+        "head_dim": 48,
+        "packed_output": true,
+        "sm100_launch": null
+      },
+      "variant_id": "fe1f0008a102adba6224"
+    }
+  ]
+}

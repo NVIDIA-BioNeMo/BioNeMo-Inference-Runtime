@@ -1,0 +1,38 @@
+{
+  "executables": {
+    "213fc8f185606b8f4d9f29bf0763220bc1071b2d09ef969262f78906fd357077": {
+      "dtype": "bf16",
+      "dynamic_smem_bytes": 49152,
+      "image_sha256": "0b42efa0ee79b0f4138571f9955b89792a99f380c5d73344a2771ff57e56c73d",
+      "image_size": 29744,
+      "kernel_sm": 80,
+      "kernel_symbol": "71362215944766be51e8b225b8a728b61bf8a968739edb8cb6afc4ff0c18ae25",
+      "launch_abi": "pair_weighted_averaging_sm80",
+      "target_arch": "sm_90a",
+      "target_sm": 90
+    }
+  },
+  "kernel_symbols": {},
+  "sm90_launches": {},
+  "variants": [
+    {
+      "executable": "000fa7afe5cb6c663eb1eb3d5ca838e660e7aaeba393200bad139c8604d9ebdc",
+      "runtime_metadata": {
+        "D": 8,
+        "H": 8,
+        "c_m": 64,
+        "num_threads": 64,
+        "runtime_aliases": [
+          {
+            "n_anchor": 512,
+            "s_anchor": 512
+          }
+        ],
+        "tile_i": 64,
+        "tile_j": 64,
+        "tile_s": 4
+      },
+      "variant_id": "2fcbbf5fb11838213e50"
+    }
+  ]
+}

@@ -52,6 +52,72 @@ def _grade(number: int, root: Path) -> dict:
     return grader.assess(_entry(number), root, SKILL / "evals" / "files")
 
 
+def test_evaluator_seals_paired_plan_with_declared_grader_metrics(tmp_path: Path) -> None:
+    """Exercise CI's pre-execution contract when its evaluator is available."""
+    native = pytest.importorskip("skillevaluator.tier3.harbor.native_contract")
+    from skillevaluator.tier3.evals_config import load_evals_config
+    from skillevaluator.tier3.harbor import ENV_MODE_ASTRA_SANDBOX
+    from skillevaluator.tier3.harbor.adapter import generate_harbor_tasks
+    from skillevaluator.tier3.output_provenance import GENERATED_OUTPUT_MARKER
+
+    config, _ = load_evals_config(SKILL)
+    mode = config["grading"]["mode"]
+    roots = {arm: tmp_path / "staged" / arm for arm in ("with_skill", "baseline")}
+    tasks = {}
+    for arm, root in roots.items():
+        tasks[arm] = generate_harbor_tasks(
+            SKILL, root, with_skill=arm == "with_skill", grading_mode=mode, env_mode=ENV_MODE_ASTRA_SANDBOX
+        )
+        # The runner removes generator control files before sealing the plan.
+        for name in ("dataset.toml", "metric.py", GENERATED_OUTPUT_MARKER):
+            (root / name).unlink(missing_ok=True)
+    agents = [
+        {
+            "agent": agent,
+            "result_agent": agent,
+            "occurrence": 1,
+            "model": model,
+            "model_source": source,
+        }
+        for agent, model, source in (
+            ("claude-code", "aws/anthropic/bedrock-claude-opus-5-5", "ANTHROPIC_MODEL"),
+            ("codex", "openai/openai/gpt-6.1-sol", "CODEX_MODEL"),
+        )
+    ]
+    plan_arguments = {
+        "run_dir": tmp_path,
+        "run_id": "bench-perf-oss-cpu-contract",
+        "skill_path": SKILL,
+        "task_source": "evals_json",
+        "evals_file": SKILL / "evals" / "evals.json",
+        "native_harbor_dir": SKILL / "evals" / "harbor",
+        "evals_config": config,
+        "grading_mode": mode,
+        "agent_entries": agents,
+        "task_paths": tasks["with_skill"],
+        "with_skill_root": roots["with_skill"],
+        "baseline_root": roots["baseline"],
+        "skip_baseline": False,
+        "n_attempts": 1,
+        "stop_on_pass": False,
+        "pass_threshold": 0.5,
+        "agent_validity_policy": "any-valid",
+        "min_valid_agents": 1,
+        "required_agents": [],
+        "contract_requests": ["agent-coverage/1", "tier3-result/3"],
+    }
+    undeclared = copy.deepcopy(config)
+    undeclared["grading"].pop("custom_metrics")
+    with pytest.raises(native.ContractError, match="requires declared metrics and a schema digest"):
+        native.seal_plan(**{**plan_arguments, "evals_config": undeclared})
+    sealed = native.seal_plan(**plan_arguments)
+    reward_contract = sealed.plan["reward_contract"]
+    metrics = {item["name"] for item in reward_contract["custom_metrics"]}
+    assert metrics == set(grader.assess({}, tmp_path, tmp_path)["custom_metrics"])
+    assert reward_contract["custom_grader_schema_digest"].startswith("sha256:")
+    assert len(tasks["with_skill"]) == len(tasks["baseline"]) == len(ENTRIES)
+
+
 def test_aggregation_fixture_is_valid_and_has_independent_numeric_oracle(tmp_path: Path) -> None:
     """Use the real helper on the fixture, including both bin boundaries."""
     source = SKILL / "evals" / "files" / "aggregation" / "results"

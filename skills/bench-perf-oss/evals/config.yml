@@ -9,3 +9,6 @@ skill_workspace:
   include: []
 grading:
   mode: aces_plus_custom
+  custom_metrics:
+    - domain_correctness
+    - domain_check_fraction

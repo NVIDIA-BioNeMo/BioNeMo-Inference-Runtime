@@ -58,7 +58,9 @@ threshold.
 `aces_plus_custom` preserves the standard evaluator's score and pass decision.
 The `domain_correctness` metric is 1 only when every artifact check and input
 hash passes; `domain_check_fraction` helps diagnose failures. Both are
-additional report metrics, not a replacement CI gate. Review their results
+declared in `grading.custom_metrics`; the evaluator binds those names and the
+grader source digest when sealing its evidence plan. Both are additional
+report metrics, not a replacement CI gate. Review their results
 alongside the standard scores before treating a run as evidence of a correct
 benchmark workflow. Enforcing those metrics as publication gates would require
 an explicit downstream policy change.
@@ -68,6 +70,13 @@ Validate structure and task contracts before running paid agent trials:
 ```bash
 skillevaluator tier3 validate skills/bench-perf-oss --strict --harbor-contract
 ```
+
+The optional evaluator integration test in
+`tests/skills/test_bench_perf_oss_evals.py` stages both arms and seals the same
+pre-execution plan as CI. Run it with the CI-pinned SkillEvaluator installed;
+it skips when that integration is unavailable. This test reproduces the
+missing-metric declaration failure before checking the corrected plan.
+Schema validation alone does not exercise plan sealing.
 
 After live evaluation, inspect both agents and both arms, invalid/timeout
 counts, each case's assertions, domain checks, and trajectories. Keep failures

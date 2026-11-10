@@ -90,6 +90,11 @@ Credentials are **not** uniform across the two halves, and the split matters:
   a machine with no credentials at all and produces 35 of the 83 files.
 - **alignments need `NGC_API_KEY`** for the MSA NIM.
   Get one at [build.nvidia.com](https://build.nvidia.com/).
+  The builder sends this token in the Authorization header to the HTTPS
+  MSA service at `health.api.nvidia.com`, including its asynchronous status
+  endpoint. Set `--msa-url` only to a service the user explicitly trusts to
+  receive that token and the requested protein sequences. HTTP URLs and
+  redirects are rejected; configure the final HTTPS endpoint directly.
 
 Never write a token into the skill, a harness, notes, or a repo file.
 

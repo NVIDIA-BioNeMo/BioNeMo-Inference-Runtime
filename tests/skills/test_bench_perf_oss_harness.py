@@ -41,6 +41,20 @@ speedup = _load("summarize_speedup")
 check = _load("check_results")
 
 
+def test_scorer_does_not_inherit_credentials_or_oss_imports(monkeypatch):
+    monkeypatch.setenv("NGC_API_KEY", "test-key")
+    monkeypatch.setenv("PYTHONPATH", "/unrelated/oss")
+    monkeypatch.setenv("UNRELATED_SERVICE_TOKEN", "test-token")
+    monkeypatch.setenv("LANG", "C.UTF-8")
+    env = scoring._scorer_env()
+    assert env["LANG"] == "C.UTF-8"
+    assert env["PYTHONNOUSERSITE"] == "1"
+    assert "NGC_API_KEY" not in env
+    assert "UNRELATED_SERVICE_TOKEN" not in env
+    assert "PYTHONPATH" not in env
+    assert scoring.os.environ["PYTHONPATH"] == "/unrelated/oss"
+
+
 def _row(residues, forward_s, **extra):
     row = {
         "residues": residues,

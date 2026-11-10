@@ -382,9 +382,13 @@ previous exit check passes. Harnesses live in `$WORKDIR`; do not modify
 ### Phase 3 — Write the harnesses
 
 - **Read:** [workflow.md](workflow.md#phase-3--write-the-harnesses) and
-  [measurement.md](measurement.md). Copy the shared helpers from
-  [`harness/`](harness/) into `bench/`; do not rewrite them. The OSS feature
-  path also needs [no-pipeline.md](no-pipeline.md).
+  [measurement.md](measurement.md). Copy the shared helpers into `bench/`:
+  [timing.py](harness/timing.py), [gpu_telemetry.py](harness/gpu_telemetry.py),
+  [scoring.py](harness/scoring.py),
+  [check_results.py](harness/check_results.py),
+  [summarize_speedup.py](harness/summarize_speedup.py), and
+  [plot_latency.py](harness/plot_latency.py). Do not rewrite them. The OSS
+  feature path also needs [no-pipeline.md](no-pipeline.md).
 - **Produce:** on the processor path, `bench/run_bioir.py` and
   `bench/run_oss.py`; on the OSS feature path, `bench/dump_oss_features.py`
   plus both runners. Every loop shows a progress

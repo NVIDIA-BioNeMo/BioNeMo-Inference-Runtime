@@ -147,7 +147,10 @@ Expect **~5–10 minutes wall clock** for a single arch with
 - A **re-run after a completed compile links in seconds** —
   setuptools reuses those objects. Fast is normal on a second
   attempt and does not mean the kernel was skipped; a fast *first*
-  attempt does. For a true cold rebuild, `rm -rf oss/deepspeed/build`.
+  attempt does. For a true cold rebuild, move the build directory
+  under `$WORKDIR/oss/deepspeed` into a fresh backup directory under
+  `$WORKDIR/debug`, after checking the resolved source and destination.
+  Keep the backup until the rebuilt kernel passes verification.
 - Build in **Phase 0 / environment setup**, never lazily. Leaving the
   op to JIT puts this same compile on the first timed forward, or
   worse, inside the measured window.
@@ -218,12 +221,15 @@ set in `bench_config.json`.
 ## Recovery
 
 - Interrupted install leaves `~eepspeed` stubs that make pip warn
-  `Ignoring invalid distribution`:
-  `rm -rf "$OSS_VENV"/lib/python3.*/site-packages/~eepspeed*`.
+  `Ignoring invalid distribution`. Inspect the affected interpreter's
+  site-packages directory and move only the identified stubs into a fresh
+  backup directory under `$WORKDIR/debug`. Do not use a wildcard cleanup or
+  modify an interpreter outside the benchmark workspace.
 - A poisoned editable attempt leaves a bad
   `deepspeed/git_version_info_installed.py` **in the source tree**,
-  where an editable import will keep reading it. Delete it before
-  rebuilding: `rm -f oss/deepspeed/deepspeed/git_version_info_installed.py`.
+  where an editable import will keep reading it. Move that exact file from
+  the benchmark-owned OSS checkout into a fresh backup directory under
+  `$WORKDIR/debug` before rebuilding.
 - `is_compatible()` is a useful pre-flight and is independent of the
   build path:
 

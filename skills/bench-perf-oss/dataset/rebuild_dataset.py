@@ -73,6 +73,7 @@ import os
 import re
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from collections.abc import Iterable
 from pathlib import Path
@@ -149,10 +150,37 @@ def sha256(path: Path) -> str:
     return h.hexdigest()
 
 
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        """Never forward a service credential or download to a redirected host."""
+        raise urllib.error.HTTPError(req.full_url, code, "Redirect refused", headers, fp)
+
+
+def _https_url(url: str) -> str:
+    """Require TLS and reject embedded credentials and ambiguous request targets."""
+    parsed = urllib.parse.urlsplit(url)
+    if (
+        parsed.scheme != "https"
+        or not parsed.hostname
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.fragment
+        or any(c.isspace() or ord(c) < 32 for c in url)
+    ):
+        raise ValueError("Expected an HTTPS service URL without userinfo, fragments, or whitespace")
+    return url
+
+
+def _open_https(request: str | urllib.request.Request, timeout: int):
+    """Open only validated HTTPS URLs, with certificate checks and no redirects."""
+    _https_url(request if isinstance(request, str) else request.full_url)
+    return urllib.request.build_opener(_NoRedirect()).open(request, timeout=timeout)
+
+
 def http_get(url: str, timeout: int = 180, tries: int = 4) -> bytes:
     for attempt in range(tries):
         try:
-            with urllib.request.urlopen(url, timeout=timeout) as r:
+            with _open_https(url, timeout=timeout) as r:
                 return r.read()
         except (urllib.error.URLError, TimeoutError) as e:  # noqa: PERF203
             code = getattr(e, "code", None)
@@ -274,7 +302,7 @@ class MsaClient:
     """
 
     def __init__(self, key: str, base: str = MSA_BASE, timeout: int = 900, max_sequences: int | None = None):
-        self.key, self.base, self.timeout = key, base.rstrip("/"), timeout
+        self.key, self.base, self.timeout = key, _https_url(base).rstrip("/"), timeout
         self.max_sequences = max_sequences
 
     def _post(self, path: str, payload: dict) -> dict:
@@ -290,7 +318,7 @@ class MsaClient:
         )
         for attempt in range(RETRIES):
             try:
-                with urllib.request.urlopen(req, timeout=self.timeout) as r:
+                with _open_https(req, timeout=self.timeout) as r:
                     if r.status == 202:
                         return self._poll(r.headers["nvcf-reqid"])
                     return json.loads(r.read())
@@ -308,12 +336,14 @@ class MsaClient:
         raise AssertionError("unreachable")
 
     def _poll(self, reqid: str) -> dict:
+        if not re.fullmatch(r"[A-Za-z0-9_-]+", reqid):
+            raise ValueError("Invalid NVCF request ID")
         deadline = time.time() + self.timeout
         while time.time() < deadline:
             req = urllib.request.Request(
                 NVCF_STATUS.format(reqid=reqid), headers={"Authorization": f"Bearer {self.key}"}
             )
-            with urllib.request.urlopen(req, timeout=120) as r:
+            with _open_https(req, timeout=120) as r:
                 if r.status == 200:
                     return json.loads(r.read())
             time.sleep(5)

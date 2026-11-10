@@ -22,9 +22,7 @@ from pathlib import Path
 
 import pytest
 
-SCRIPT = (
-    Path(__file__).resolve().parents[2] / "skills" / "bench-perf-oss" / "dataset" / "rebuild_dataset.py"
-)
+SCRIPT = Path(__file__).resolve().parents[2] / "skills" / "bench-perf-oss" / "dataset" / "rebuild_dataset.py"
 _spec = importlib.util.spec_from_file_location("bench_perf_oss_rebuild_dataset", SCRIPT)
 rebuild = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(rebuild)

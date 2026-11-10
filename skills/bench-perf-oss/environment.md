@@ -256,8 +256,8 @@ Resolve the tree from this table, then probe it (Step 2).
 
 | BioIR key                                      | OSS tree                                                                               | How to get it                                                                      |
 | ---------------------------------------------- | -------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------- |
-| `openfold3`                                    | [`3rdparty/openfold-3`](../../3rdparty/openfold-3)                                  | checkpoint-compatible commit from its registry; see [models/of3.md](models/of3.md) |
-| `protenix-v2`                                  | [`3rdparty/protenix`](../../3rdparty/protenix)                                      | gitlink SHA from `git ls-tree HEAD 3rdparty/protenix`                              |
+| `openfold3`                                    | [`3rdparty/openfold-3`](../../3rdparty/openfold-3)                                     | checkpoint-compatible commit from its registry; see [models/of3.md](models/of3.md) |
+| `protenix-v2`                                  | [`3rdparty/protenix`](../../3rdparty/protenix)                                         | gitlink SHA from `git ls-tree HEAD 3rdparty/protenix`                              |
 | `boltz-1`, `boltz-2`                           | [jwohlwend/boltz](https://github.com/jwohlwend/boltz) **`v2.2.1`**                     | clone that tag into `$WORKDIR/oss/boltz`                                           |
 | `openfold2_*` (and AF2 e2e that uses OpenFold) | [aqlaboratory/openfold `v2.2.0`](https://github.com/aqlaboratory/openfold/tree/v2.2.0) | clone that tag into `$WORKDIR/oss/openfold`                                        |
 

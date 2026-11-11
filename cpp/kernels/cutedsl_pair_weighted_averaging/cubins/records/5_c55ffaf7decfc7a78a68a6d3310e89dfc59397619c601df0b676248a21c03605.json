@@ -1,0 +1,831 @@
+{
+  "executables": {
+    "50b6439658e5f215afe5c45a1ed9149ed3d19780f9b25c060b3f9c83f848e47b": {
+      "dtype": "fp16",
+      "dynamic_smem_bytes": 205824,
+      "image_sha256": "148055835dc9c0dfc857c0b5d7125b8b191c551611eb60c06b7f29b83c097e55",
+      "image_size": 47848,
+      "kernel_sm": 90,
+      "kernel_symbol": "052b04b203dbf50bf3446debbb6a3295210bb8ba6c1b241ef813c9492bd84eab",
+      "launch_abi": "pair_weighted_averaging_sm90",
+      "sm90_launch": "7f54335b59a53c5d3f39c2b362b18a035e77b7180ebf9935a874adbcbb1d4a6d",
+      "target_arch": "sm_90a",
+      "target_sm": 90
+    },
+    "52de54ce4f6a6b4022ccb0ef7ea11cd408b3772f294d36dafe89a8158541ada5": {
+      "dtype": "bf16",
+      "dynamic_smem_bytes": 218112,
+      "image_sha256": "6da60abe83045d62fbd34b88f1cf35d9036b37f090b62749a7ac98c1562c2efe",
+      "image_size": 64960,
+      "kernel_sm": 100,
+      "kernel_symbol": "c17973f5c2cd8878fc5f67daa91606ef3c325ce33f237cb3add320a57d4ec781",
+      "launch_abi": "pair_weighted_averaging_sm100",
+      "non_portable_cluster_size_allowed": true,
+      "target_arch": "sm_103a",
+      "target_sm": 103
+    },
+    "54487f5a87475624c8abb65352aa14810edd1f0c5000fbc268159e7837617cd8": {
+      "dtype": "bf16",
+      "dynamic_smem_bytes": 49152,
+      "image_sha256": "33a7fa4a709ef79b306667cec3cc5d8dc562ca8e16a3b83179ae5a3f69cacb5a",
+      "image_size": 56720,
+      "kernel_sm": 80,
+      "kernel_symbol": "71362215944766be51e8b225b8a728b61bf8a968739edb8cb6afc4ff0c18ae25",
+      "launch_abi": "pair_weighted_averaging_sm80",
+      "target_arch": "sm_120a",
+      "target_sm": 120
+    },
+    "555a1f0335c3d19c10104ee19cb523a0527d727356c0908a94436cd7dafb11f1": {
+      "dtype": "bf16",
+      "dynamic_smem_bytes": 227328,
+      "image_sha256": "da9595ef34f3bcb7bbcb7d59a7c8b4c321aae3489df6738f2471985ef8d477e7",
+      "image_size": 175968,
+      "kernel_sm": 100,
+      "kernel_symbol": "854dec6336d6f64ae59507fa31b0e8d578c99c09d51e9233f3d6e3efdae5cc9f",
+      "launch_abi": "pair_weighted_averaging_sm100",
+      "non_portable_cluster_size_allowed": true,
+      "target_arch": "sm_103a",
+      "target_sm": 103
+    },
+    "5582e0f1561ab19de50fa0dc7416b9a5a8004244dbc539207fd596721f4da7ea": {
+      "dtype": "bf16",
+      "dynamic_smem_bytes": 231424,
+      "image_sha256": "a4cec27d4db5f8c00a599fcec1d2fe9b4a9ec2b377b5005ad7e75ad30abb86cc",
+      "image_size": 47008,
+      "kernel_sm": 100,
+      "kernel_symbol": "c89eb0e78e8a8cb7d5ec5cb975540ab6b494489fe930e2d1c7ac9c26272943b5",
+      "launch_abi": "pair_weighted_averaging_sm100",
+      "non_portable_cluster_size_allowed": true,
+      "target_arch": "sm_100a",
+      "target_sm": 100
+    },
+    "588b4318a265f6226649dfc580a2314af4a86ac1cf3eb99b7c4588d0f7bb2139": {
+      "dtype": "bf16",
+      "dynamic_smem_bytes": 49152,
+      "image_sha256": "5ce31caa857e71a392c7105342c2b59288b1c7a0037fa0a66395cd9d3708f344",
+      "image_size": 46216,
+      "kernel_sm": 80,
+      "kernel_symbol": "71362215944766be51e8b225b8a728b61bf8a968739edb8cb6afc4ff0c18ae25",
+      "launch_abi": "pair_weighted_averaging_sm80",
+      "target_arch": "sm_120a",
+      "target_sm": 120
+    },
+    "595da75fc077b6d99b9e966487b150b885e7ef461276e1ae6be364123bee5b0d": {
+      "dtype": "fp16",
+      "dynamic_smem_bytes": 225280,
+      "image_sha256": "868e387d63cd4e253f21b56d0838e60fe887718b7018273faca703aa82443ac6",
+      "image_size": 62216,
+      "kernel_sm": 100,
+      "kernel_symbol": "0d164bc68165e86208dbbf983002c862d855363c67abb3a0f96823f92c1086d8",
+      "launch_abi": "pair_weighted_averaging_sm100",
+      "non_portable_cluster_size_allowed": true,
+      "target_arch": "sm_103a",
+      "target_sm": 103
+    },
+    "5a4059d9e1b0d3b4e328061b1427b9255586b3ffb52c7d348313fbf6a57aa964": {
+      "dtype": "fp16",
+      "dynamic_smem_bytes": 73728,
+      "image_sha256": "f664b8bb1b09fd86415ee9757ff33814d215309f61317422f4e142e1bcdabf9b",
+      "image_size": 53408,
+      "kernel_sm": 80,
+      "kernel_symbol": "7e21375ad99c648e03dbefbf6a0733ce79015e4b09bfb0df8d574e9c4acf046c",
+      "launch_abi": "pair_weighted_averaging_sm80",
+      "target_arch": "sm_80",
+      "target_sm": 80
+    },
+    "5b1cee179c3f65b51a5cd788f0d19c7174fc0ad479ece6e6c6ef3ac78a475594": {
+      "dtype": "fp16",
+      "dynamic_smem_bytes": 231424,
+      "image_sha256": "43cd3c105ae8afcccf9b5808d03366662c3aa3137820861455ba07c234c55f2b",
+      "image_size": 54344,
+      "kernel_sm": 100,
+      "kernel_symbol": "8ebc8c7ea8296693b0de7e177d96923e4844b53ff021ed83ba5752ebc9fe90e0",
+      "launch_abi": "pair_weighted_averaging_sm100",
+      "non_portable_cluster_size_allowed": true,
+      "target_arch": "sm_103a",
+      "target_sm": 103
+    },
+    "5b85563611bcaf1378d766cfbe6dede9aaa192c2eb985f1dc1f43c6bce466a31": {
+      "dtype": "bf16",
+      "dynamic_smem_bytes": 98304,
+      "image_sha256": "8c0721df85a05ae7bfe64937cb1cf7dc1ab80ed933b306f4c6fb7aa35fbd1a94",
+      "image_size": 74792,
+      "kernel_sm": 80,
+      "kernel_symbol": "71362215944766be51e8b225b8a728b61bf8a968739edb8cb6afc4ff0c18ae25",
+      "launch_abi": "pair_weighted_averaging_sm80",
+      "target_arch": "sm_121a",
+      "target_sm": 121
+    },
+    "5c70a0a6847ad240019199dace14cae1e29f6fb1b52074c4d765264ee80038b5": {
+      "dtype": "bf16",
+      "dynamic_smem_bytes": 225280,
+      "image_sha256": "7fbcb035582daadfa4071f850a511dd4651ea2bff69220e36a1b252d046d496b",
+      "image_size": 62256,
+      "kernel_sm": 100,
+      "kernel_symbol": "0d164bc68165e86208dbbf983002c862d855363c67abb3a0f96823f92c1086d8",
+      "launch_abi": "pair_weighted_averaging_sm100",
+      "non_portable_cluster_size_allowed": true,
+      "target_arch": "sm_103a",
+      "target_sm": 103
+    },
+    "5ce5f49fc2b20dc30cad52d155918dfe33c1f41d6903d970ea8b30c1a7301086": {
+      "dtype": "fp16",
+      "dynamic_smem_bytes": 218112,
+      "image_sha256": "cfc424a548e1da3eae16dfd409a247a5408f07e0dcc242fd766d107aeda536fc",
+      "image_size": 64960,
+      "kernel_sm": 100,
+      "kernel_symbol": "c17973f5c2cd8878fc5f67daa91606ef3c325ce33f237cb3add320a57d4ec781",
+      "launch_abi": "pair_weighted_averaging_sm100",
+      "non_portable_cluster_size_allowed": true,
+      "target_arch": "sm_103a",
+      "target_sm": 103
+    },
+    "5febc4041a54ea5e7fc37d60ba547d6eea039c62b6f87c7d62adda07a0676407": {
+      "dtype": "bf16",
+      "dynamic_smem_bytes": 227328,
+      "image_sha256": "523cda8bd72c3cf1c793e6a1a8ca9c645b709ac86f8ade4cd17d541de84279b4",
+      "image_size": 182336,
+      "kernel_sm": 100,
+      "kernel_symbol": "854dec6336d6f64ae59507fa31b0e8d578c99c09d51e9233f3d6e3efdae5cc9f",
+      "launch_abi": "pair_weighted_averaging_sm100",
+      "non_portable_cluster_size_allowed": true,
+      "target_arch": "sm_103a",
+      "target_sm": 103
+    }
+  },
+  "kernel_symbols": {},
+  "sm90_launches": {
+    "525b252d41551a75109c2f0799b6151b36669d7584a125db6c5985a6b420af08": {
+      "block_dims": [
+        384,
+        1,
+        1
+      ],
+      "cluster_dims": [
+        4,
+        1,
+        1
+      ],
+      "cluster_scheduling_policy": "default",
+      "tma_descriptors": {
+        "g": {
+          "box_dims": [
+            64,
+            128,
+            1,
+            1
+          ],
+          "data_type": "float16",
+          "element_strides": [
+            1,
+            1,
+            1,
+            1
+          ],
+          "global_dim_order": [
+            3,
+            2,
+            1,
+            0
+          ],
+          "interleave": "none",
+          "l2_promotion": "128b",
+          "oob_fill": "none",
+          "rank": 4,
+          "swizzle": "128b"
+        },
+        "output": {
+          "box_dims": [
+            64,
+            64,
+            1,
+            1
+          ],
+          "data_type": "float16",
+          "element_strides": [
+            1,
+            1,
+            1,
+            1
+          ],
+          "global_dim_order": [
+            3,
+            2,
+            1,
+            0
+          ],
+          "interleave": "none",
+          "l2_promotion": "128b",
+          "oob_fill": "none",
+          "rank": 4,
+          "swizzle": "128b"
+        },
+        "v": {
+          "box_dims": [
+            16,
+            64,
+            8,
+            1
+          ],
+          "data_type": "float16",
+          "element_strides": [
+            1,
+            1,
+            1,
+            1
+          ],
+          "global_dim_order": [
+            3,
+            2,
+            1,
+            0
+          ],
+          "interleave": "none",
+          "l2_promotion": "128b",
+          "oob_fill": "none",
+          "rank": 4,
+          "swizzle": "32b"
+        },
+        "w": {
+          "box_dims": [
+            64,
+            128,
+            1,
+            1
+          ],
+          "data_type": "float16",
+          "element_strides": [
+            1,
+            1,
+            1,
+            1
+          ],
+          "global_dim_order": [
+            3,
+            2,
+            1,
+            0
+          ],
+          "interleave": "none",
+          "l2_promotion": "128b",
+          "oob_fill": "none",
+          "rank": 4,
+          "swizzle": "128b"
+        },
+        "wo": {
+          "box_dims": [
+            64,
+            128
+          ],
+          "data_type": "float16",
+          "element_strides": [
+            1,
+            1
+          ],
+          "global_dim_order": [
+            1,
+            0
+          ],
+          "interleave": "none",
+          "l2_promotion": "128b",
+          "oob_fill": "none",
+          "rank": 2,
+          "swizzle": "128b"
+        }
+      }
+    }
+  },
+  "variants": [
+    {
+      "executable": "4df3ca0c00cbd0346ce189c207d6ecf7144f70b8717a7c68c8cb56d7ce90567e",
+      "runtime_metadata": {
+        "D": 8,
+        "H": 8,
+        "c_m": 64,
+        "cluster_i": 2,
+        "cluster_s": 1,
+        "kernel_variant": 1,
+        "num_threads": 512,
+        "runtime_aliases": [
+          {
+            "n_anchor": 1536,
+            "s_anchor": 512
+          },
+          {
+            "n_anchor": 3072,
+            "s_anchor": 128
+          }
+        ],
+        "sm100_launch": {
+          "block_dims": [
+            512,
+            1,
+            1
+          ],
+          "cluster_dims": [
+            4,
+            1,
+            1
+          ],
+          "cluster_scheduling_policy": "default",
+          "tma_descriptors": {
+            "g": {
+              "box_dims": [
+                64,
+                128,
+                1,
+                1
+              ],
+              "data_type": "bfloat16",
+              "element_strides": [
+                1,
+                1,
+                1,
+                1
+              ],
+              "global_dim_order": [
+                3,
+                2,
+                1,
+                0
+              ],
+              "interleave": "none",
+              "l2_promotion": "128b",
+              "oob_fill": "none",
+              "rank": 4,
+              "swizzle": "128b"
+            },
+            "v": {
+              "box_dims": [
+                64,
+                8,
+                6,
+                1,
+                1
+              ],
+              "data_type": "bfloat16",
+              "element_strides": [
+                1,
+                1,
+                1,
+                1,
+                1
+              ],
+              "global_dim_order": [
+                4,
+                3,
+                1,
+                2,
+                0
+              ],
+              "interleave": "none",
+              "l2_promotion": "128b",
+              "oob_fill": "none",
+              "rank": 5,
+              "swizzle": "128b"
+            },
+            "w": {
+              "box_dims": [
+                64,
+                128,
+                1,
+                1
+              ],
+              "data_type": "bfloat16",
+              "element_strides": [
+                1,
+                1,
+                1,
+                1
+              ],
+              "global_dim_order": [
+                3,
+                2,
+                1,
+                0
+              ],
+              "interleave": "none",
+              "l2_promotion": "128b",
+              "oob_fill": "none",
+              "rank": 4,
+              "swizzle": "128b"
+            },
+            "wo": {
+              "box_dims": [
+                64,
+                32
+              ],
+              "data_type": "bfloat16",
+              "element_strides": [
+                1,
+                1
+              ],
+              "global_dim_order": [
+                1,
+                0
+              ],
+              "interleave": "none",
+              "l2_promotion": "128b",
+              "oob_fill": "none",
+              "rank": 2,
+              "swizzle": "128b"
+            }
+          }
+        },
+        "tile_i": 256,
+        "tile_j": 64,
+        "tile_s": 12
+      },
+      "variant_id": "503627a3caf267c241a0"
+    },
+    {
+      "executable": "bdea23368294d0709ca1ed0a2810333d51150315e89900b880b9e7b74a6a578e",
+      "runtime_metadata": {
+        "D": 8,
+        "H": 8,
+        "c_m": 128,
+        "cluster_i": 1,
+        "cluster_s": 1,
+        "kernel_variant": 0,
+        "num_threads": 64,
+        "runtime_aliases": [
+          {
+            "n_anchor": 256,
+            "s_anchor": 512
+          },
+          {
+            "n_anchor": 384,
+            "s_anchor": 512
+          },
+          {
+            "n_anchor": 512,
+            "s_anchor": 512
+          },
+          {
+            "n_anchor": 1024,
+            "s_anchor": 512
+          },
+          {
+            "n_anchor": 1024,
+            "s_anchor": 2048
+          },
+          {
+            "n_anchor": 2048,
+            "s_anchor": 512
+          },
+          {
+            "n_anchor": 2048,
+            "s_anchor": 2048
+          }
+        ],
+        "sm100_launch": null,
+        "tile_i": 64,
+        "tile_j": 64,
+        "tile_s": 4
+      },
+      "variant_id": "50d7a359310c2b50367d"
+    },
+    {
+      "executable": "73e75d03fdfa62eb52e6f8fff7668df3b3a29c08b6ed6b0355545d8bcadc46cb",
+      "runtime_metadata": {
+        "D": 8,
+        "H": 8,
+        "c_m": 64,
+        "cluster_i": 1,
+        "cluster_s": 1,
+        "kernel_variant": 0,
+        "num_threads": 64,
+        "runtime_aliases": [
+          {
+            "n_anchor": 256,
+            "s_anchor": 512
+          },
+          {
+            "n_anchor": 384,
+            "s_anchor": 512
+          },
+          {
+            "n_anchor": 512,
+            "s_anchor": 512
+          }
+        ],
+        "sm100_launch": null,
+        "tile_i": 64,
+        "tile_j": 64,
+        "tile_s": 4
+      },
+      "variant_id": "52ad0ce8f3979eca8b91"
+    },
+    {
+      "executable": "0d44231e12540291ee3be920b04eb4b3c6ac5364a8b2349cc4929ec664a7da0a",
+      "runtime_metadata": {
+        "D": 8,
+        "H": 8,
+        "c_m": 128,
+        "cluster_i": 1,
+        "cluster_s": 4,
+        "kernel_variant": 1,
+        "num_threads": 384,
+        "runtime_aliases": [
+          {
+            "n_anchor": 768,
+            "s_anchor": 1024
+          },
+          {
+            "n_anchor": 1536,
+            "s_anchor": 1024
+          },
+          {
+            "n_anchor": 2048,
+            "s_anchor": 512
+          }
+        ],
+        "sm100_launch": null,
+        "tile_i": 128,
+        "tile_j": 64,
+        "tile_s": 8
+      },
+      "variant_id": "56bfd8c7050483c1d2dc"
+    },
+    {
+      "executable": "3afb45be0cea1fb3d66f7c1d422b09e80a2571535e0399e2e75890964e691e7e",
+      "runtime_metadata": {
+        "D": 8,
+        "H": 8,
+        "c_m": 64,
+        "cluster_i": 1,
+        "cluster_s": 1,
+        "kernel_variant": 0,
+        "num_threads": 64,
+        "runtime_aliases": [
+          {
+            "n_anchor": 256,
+            "s_anchor": 512
+          },
+          {
+            "n_anchor": 384,
+            "s_anchor": 512
+          }
+        ],
+        "sm100_launch": null,
+        "tile_i": 64,
+        "tile_j": 64,
+        "tile_s": 2
+      },
+      "variant_id": "5ae14e45b4b325da5761"
+    },
+    {
+      "executable": "3dcb936ab66efb9e7fc4e61049bfbae774342a761c24db336163c3460a33d540",
+      "runtime_metadata": {
+        "D": 8,
+        "H": 8,
+        "c_m": 64,
+        "cluster_i": 2,
+        "cluster_s": 1,
+        "kernel_variant": 1,
+        "num_threads": 512,
+        "runtime_aliases": [
+          {
+            "n_anchor": 512,
+            "s_anchor": 512
+          }
+        ],
+        "sm100_launch": {
+          "block_dims": [
+            512,
+            1,
+            1
+          ],
+          "cluster_dims": [
+            4,
+            1,
+            1
+          ],
+          "cluster_scheduling_policy": "default",
+          "tma_descriptors": {
+            "g": {
+              "box_dims": [
+                64,
+                128,
+                1,
+                1
+              ],
+              "data_type": "float16",
+              "element_strides": [
+                1,
+                1,
+                1,
+                1
+              ],
+              "global_dim_order": [
+                3,
+                2,
+                1,
+                0
+              ],
+              "interleave": "none",
+              "l2_promotion": "128b",
+              "oob_fill": "none",
+              "rank": 4,
+              "swizzle": "128b"
+            },
+            "v": {
+              "box_dims": [
+                64,
+                8,
+                8,
+                1,
+                1
+              ],
+              "data_type": "float16",
+              "element_strides": [
+                1,
+                1,
+                1,
+                1,
+                1
+              ],
+              "global_dim_order": [
+                4,
+                3,
+                1,
+                2,
+                0
+              ],
+              "interleave": "none",
+              "l2_promotion": "128b",
+              "oob_fill": "none",
+              "rank": 5,
+              "swizzle": "128b"
+            },
+            "w": {
+              "box_dims": [
+                64,
+                128,
+                1,
+                1
+              ],
+              "data_type": "float16",
+              "element_strides": [
+                1,
+                1,
+                1,
+                1
+              ],
+              "global_dim_order": [
+                3,
+                2,
+                1,
+                0
+              ],
+              "interleave": "none",
+              "l2_promotion": "128b",
+              "oob_fill": "none",
+              "rank": 4,
+              "swizzle": "128b"
+            },
+            "wo": {
+              "box_dims": [
+                64,
+                32
+              ],
+              "data_type": "float16",
+              "element_strides": [
+                1,
+                1
+              ],
+              "global_dim_order": [
+                1,
+                0
+              ],
+              "interleave": "none",
+              "l2_promotion": "128b",
+              "oob_fill": "none",
+              "rank": 2,
+              "swizzle": "128b"
+            }
+          }
+        },
+        "tile_i": 256,
+        "tile_j": 64,
+        "tile_s": 16
+      },
+      "variant_id": "5bb83d5b15c409f105fb"
+    },
+    {
+      "executable": "e7ff6f260dbf2d84719b3cb317a3c738baa0d937891cd92a2f68c79a96cd3aa3",
+      "runtime_metadata": {
+        "D": 32,
+        "H": 8,
+        "c_m": 64,
+        "cluster_i": 1,
+        "cluster_s": 1,
+        "kernel_variant": 0,
+        "num_threads": 384,
+        "runtime_aliases": [
+          {
+            "n_anchor": 256,
+            "s_anchor": 512
+          }
+        ],
+        "sm100_launch": null,
+        "tile_i": 128,
+        "tile_j": 128,
+        "tile_s": 2
+      },
+      "variant_id": "5f6cda65c67c2a706b62"
+    },
+    {
+      "executable": "b5c4ee72835001043e9042b63def1aefe6090c4e031df7edb0316e4261a8b6c4",
+      "runtime_metadata": {
+        "D": 32,
+        "H": 8,
+        "c_m": 64,
+        "cluster_i": 1,
+        "cluster_s": 1,
+        "kernel_variant": 0,
+        "num_threads": 192,
+        "runtime_aliases": [
+          {
+            "n_anchor": 6144,
+            "s_anchor": 128
+          }
+        ],
+        "sm100_launch": {
+          "block_dims": [
+            192,
+            1,
+            1
+          ],
+          "cluster_dims": [
+            1,
+            1,
+            1
+          ],
+          "cluster_scheduling_policy": "default",
+          "tma_descriptors": {
+            "v": {
+              "box_dims": [
+                32,
+                64,
+                1,
+                1,
+                1
+              ],
+              "data_type": "float16",
+              "element_strides": [
+                1,
+                1,
+                1,
+                1,
+                1
+              ],
+              "global_dim_order": [
+                4,
+                2,
+                1,
+                3,
+                0
+              ],
+              "interleave": "none",
+              "l2_promotion": "128b",
+              "oob_fill": "none",
+              "rank": 5,
+              "swizzle": "64b"
+            },
+            "w": {
+              "box_dims": [
+                64,
+                128,
+                1,
+                1
+              ],
+              "data_type": "float16",
+              "element_strides": [
+                1,
+                1,
+                1,
+                1
+              ],
+              "global_dim_order": [
+                3,
+                2,
+                1,
+                0
+              ],
+              "interleave": "none",
+              "l2_promotion": "128b",
+              "oob_fill": "none",
+              "rank": 4,
+              "swizzle": "128b"
+            }
+          }
+        },
+        "tile_i": 128,
+        "tile_j": 64,
+        "tile_s": 8
+      },
+      "variant_id": "5f70e76d79776f5d17ea"
+    }
+  ]
+}

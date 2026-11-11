@@ -200,34 +200,54 @@ OpenFold3 and Protenix use:
 Their differences remain in denoiser signatures, conditioning, schedule
 termination, and optional caches.
 
-### Frame-aware prediction reuse (Protenix, opt-in)
+### Frame-aware prediction reuse (Protenix and OpenFold3, opt-in)
 
-Protenix can skip some denoiser calls near the end of the rollout. This is an
-**approximation of the denoiser**, not of the integration: every EDM update,
-rigid augmentation and churn draw still happens, so the random streams are
-unchanged. It is **off by default**, and its window (steps 160 to 197) is fixed
-and was **only evaluated with the 200-step schedule** used in production.
+Protenix and OpenFold3 can skip some denoiser calls near the end of the
+rollout. This is an **approximation of the denoiser**, not of the integration:
+every EDM update, rigid augmentation and churn draw still happens, so the
+random streams are unchanged. It is **off by default**.
+
+The window is derived from the rollout plan, not configured. It starts at the
+first step whose churn rate is zero, because a reused step must not inject
+churn noise (step $0.8\,n$ with the default schedule), and it ends two steps
+before the last, so the final two steps always evaluate the network. It was
+**only evaluated with 100, 150, 200 and 400 sampling steps**; any other count
+is rejected. 50 steps is rejected on purpose: OpenFold3 lost 0.003 lDDT there.
+For 200 steps the window is steps 160 to 197.
 
 Turn it on with the config field, and only there:
 
 ```python
 config = Protenix.get_pretrained_config("protenix-v2")
-config.edm_sampling_config.frame_reuse_period = 4  # 0 (default) is off; 1 is invalid
+config.edm_sampling_config.frame_reuse_period = 4  # 0 (default) is off; 4 is the only other value
 model = Protenix(model_name="protenix-v2", config=config, include_load_weights=True)
 ```
 
-With `frame_reuse_period = p`, steps $160 \le i \le 197$ evaluate the network
-when $(i - 160) \bmod p = 0$ and reuse the previous prediction otherwise. For
-$p = 4$ that is 172 network calls and 28 reused predictions out of 200. Steps
-before 160 (where churn injects noise) and the last two steps always evaluate
-the network. Any other step count raises
-`frame_reuse_period was only evaluated with 200 sampling steps; got N` before
-the rollout starts, and so does a plan with coordinate augmentation off.
+For OpenFold3 the field is the same name on its `EDMSamplingConfig`
+(`models/openfold3/config.py`), with the same values.
+
+With `frame_reuse_period = p` and a window $[s, e]$, steps $s \le i \le e$
+evaluate the network when $(i - s) \bmod p = 0$ and reuse the previous
+prediction otherwise. Only $p = 4$ was evaluated, so `frame_reuse_period`
+accepts 0 or 4 and raises a `ValueError` for any other value. At 200 steps that
+is 172 network calls and 28 reused predictions. Any other step count raises a
+`ValueError` ("frame_reuse_period was only evaluated with (100, 150, 200, 400)
+sampling steps; got N") before the rollout starts, and so does a plan with
+coordinate augmentation off.
+
+Both models were compared with the exact rollout on 99 PDB entries, 5 samples
+each. Every sample's rms displacement stayed below the bound computed from the
+reused steps, and the mean lDDT and DockQ change was within 0.002 and 0.005.
+An atom moved by more than 1 Å in 24 to 35 percent of the Protenix samples and
+33 to 51 percent of the OpenFold3 samples. For comparison, two exact rollouts
+whose inputs differ by 0.0005 Å differ that much in 0 to 3 percent. Both models
+were run at 100, 150, 200 and 400 steps.
 
 Ending the window at step 198 instead of 197 gave the same accuracy on 99 PDB
-entries (median rms 0.0293 against 0.0292 Å versus the exact rollout), so
-step 198 stays fresh only by convention; step 199, whose next noise level is 0,
-has an error gain six times larger than its neighbours and stays fresh.
+entries with Protenix at 200 steps (median rms 0.0293 against 0.0292 Å versus
+the exact rollout), so step 198 stays fresh only by convention. Step 199
+differs: its next noise level is 0 for Protenix, which gives it an error gain
+six times larger than its neighbours, so it stays fresh.
 
 **What is reused.** Each step first applies a fresh rigid augmentation
 $T_i(\boldsymbol{x}) = R_i(\boldsymbol{x} - \boldsymbol{c}_i) + \boldsymbol{t}_i$
@@ -274,10 +294,11 @@ every sample. It bounds the rms displacement; it says nothing about single
 atoms, a few of which can move by more than 1 Å (noise alone does this
 for a fraction of samples too).
 
-**Expected effect.** About 3 to 12 percent faster `model.forward` on the
-benchmark inputs, less on large inputs (the saving is a fixed 28 denoiser
-calls). Output is approximate: it is judged on paired lDDT / DockQ against
-the exact rollout, not on bit equality
+**Expected effect.** At 200 steps, Protenix `model.forward` is 3 to 12 percent
+faster on the benchmark inputs, less on large inputs, because 28 denoiser calls
+are saved whatever the input size. The OpenFold3 diffusion sampler is 15 to 18
+percent faster at 200 and 400 steps. Output is approximate: it is judged on
+paired lDDT / DockQ against the exact rollout, not on bit equality
 ([oracles.md](oracles.md#approximate-options)). With the option off the output
 is bit-identical to the exact sampler.
 
@@ -408,7 +429,7 @@ bionemo_ir/_torch/sampling/
   denoise_integrator.py    invariant denoiser-step ordering
   hooks.py                 ordered before/after-denoise hooks
   edm.py                   EDM schedule, math, and tensor integrator
-  frame_reuse.py           opt-in frame-aware prediction reuse for Protenix
+  frame_reuse.py           opt-in frame-aware prediction reuse
   flow_matching.py         flow schedule, math, and product-space integrator
 ```
 

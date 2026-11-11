@@ -22,13 +22,22 @@ import torch
 from bionemo_ir._torch.layers.random_augmentation import centre_random_augmentation
 from bionemo_ir._torch.sampling import AF3EDMIntegrator, EDMIntegratorConfig, EDMRolloutPlan, GenerativeRunner
 from bionemo_ir._torch.sampling.contracts import SamplingContext
-from bionemo_ir._torch.sampling.frame_reuse import FrameReuseEDMIntegrator, FrameReuseSchedule
+from bionemo_ir._torch.sampling.edm import EDMScheduleConfig
+from bionemo_ir._torch.sampling.frame_reuse import (
+    FRAME_REUSE_EVALUATED_STEPS,
+    FrameReuseEDMIntegrator,
+    FrameReuseSchedule,
+    wrap_for_frame_reuse,
+)
 
 _STEPS = 200
+_FINALS = ("zero", "keep")  # Protenix ends the schedule at 0; OpenFold3 keeps its last level
 
 
-def _plan(device: str, atoms: int = 17) -> EDMRolloutPlan:
-    schedule = torch.cat([torch.logspace(2.2, -3.4, _STEPS, device=device), torch.zeros(1, device=device)])
+def _plan(device: str, atoms: int = 17, steps: int = _STEPS, final: str = "zero") -> EDMRolloutPlan:
+    schedule = EDMScheduleConfig(sigma_data=16.0, s_max=160.0, s_min=4e-4, rho=7.0, final=final).build(
+        num_steps=steps, dtype=torch.float32, device=torch.device(device)
+    )
     return EDMRolloutPlan(
         schedule, (1, 5, atoms, 3), schedule.device, torch.float32, integrator_config=EDMIntegratorConfig()
     )
@@ -40,41 +49,65 @@ def _denoiser(x_noisy: torch.Tensor, sigma_hat: torch.Tensor) -> torch.Tensor:
 
 
 def test_schedule_counts_and_steps() -> None:
-    schedule = FrameReuseSchedule(period=4)
+    schedule = FrameReuseSchedule.for_plan(4, _plan("cpu"))
+    assert (schedule.start, schedule.end) == (160, 197)
     reused = [step for step in range(_STEPS) if schedule.reuses(step)]
     assert len(reused) == 28 and _STEPS - len(reused) == 172
     assert not any(schedule.reuses(step) for step in (*range(160), 160, 164, 196, 198, 199))
     assert all(step % 4 != 0 for step in reused) and min(reused) == 161 and max(reused) == 197
 
 
-@pytest.mark.parametrize("period, start, end", [(1, 160, 197), (4, 200, 199)])
+@pytest.mark.parametrize("final", _FINALS)
+@pytest.mark.parametrize("steps", FRAME_REUSE_EVALUATED_STEPS)
+def test_window_is_derived_from_the_plan(steps: int, final: str) -> None:
+    plan = _plan("cpu", steps=steps, final=final)
+    schedule = FrameReuseSchedule.for_plan(4, plan)
+    # The first churn-free step is where the next noise level drops to the churn gate, at 80% of the steps.
+    assert schedule.start == steps * 4 // 5 and schedule.end == steps - 3
+    assert (
+        float(plan.churn_levels.gamma_host[schedule.start - 1]) > 0
+        and float(plan.churn_levels.gamma_host[schedule.start]) == 0
+    )
+    schedule.validate(plan)
+    window = schedule.end - schedule.start + 1
+    fresh_in_window = -(-window // 4)
+    assert sum(schedule.reuses(step) for step in range(steps)) == window - fresh_in_window
+
+
+@pytest.mark.parametrize("period, start, end", [(1, 160, 197), (4, 200, 199), (4, -1, 197)])
 def test_schedule_rejects_degenerate_policies(period: int, start: int, end: int) -> None:
     with pytest.raises(ValueError):
         FrameReuseSchedule(period=period, start=start, end=end)
 
 
-def test_other_step_counts_are_rejected_up_front() -> None:
-    plan = EDMRolloutPlan(
-        torch.cat([torch.logspace(2.2, -3.4, 100), torch.zeros(1)]),
-        (1, 5, 17, 3),
-        torch.device("cpu"),
-        torch.float32,
-        integrator_config=EDMIntegratorConfig(),
-    )
-    with pytest.raises(ValueError, match="only evaluated with 200 sampling steps; got 100"):
-        FrameReuseSchedule(period=4).validate(plan)
+@pytest.mark.parametrize("period", [2, 3, 5, 6, 8])
+def test_unevaluated_periods_are_rejected_up_front(period: int) -> None:
+    with pytest.raises(ValueError, match=rf"evaluated periods; got {period}"):
+        FrameReuseSchedule.for_plan(period, _plan("cpu"))
+    with torch.inference_mode(), pytest.raises(ValueError, match=rf"evaluated periods; got {period}"):
+        wrap_for_frame_reuse(AF3EDMIntegrator(EDMIntegratorConfig()), period, _plan("cpu"), _denoiser, training=False)
+
+
+@pytest.mark.parametrize("steps", [49, 50, 75, 200 + 1, 300])
+def test_other_step_counts_are_rejected_up_front(steps: int) -> None:
+    plan = _plan("cpu", steps=steps)
+    with pytest.raises(ValueError, match=rf"only evaluated with .*100, 150, 200, 400.*; got {steps}"):
+        FrameReuseSchedule.for_plan(4, plan)
+    with pytest.raises(ValueError, match=rf"got {steps}"):
+        FrameReuseSchedule(period=4, start=steps * 4 // 5, end=steps - 3).validate(plan)
 
 
 def test_reuse_needs_coordinate_augmentation() -> None:
+    schedule = FrameReuseSchedule.for_plan(4, _plan("cpu"))
     plan = dataclasses.replace(_plan("cpu"), augment_coordinates=False)
     with pytest.raises(ValueError, match="augmentation"):
-        FrameReuseSchedule(period=4).validate(plan)
+        schedule.validate(plan)
 
 
 def test_plan_levels_must_match_the_integrator_config() -> None:
     plan = _plan("cpu")
     other = AF3EDMIntegrator(EDMIntegratorConfig(gamma0=0.0))
-    reuse = FrameReuseEDMIntegrator(other, FrameReuseSchedule(period=4))
+    reuse = FrameReuseEDMIntegrator(other, FrameReuseSchedule.for_plan(4, plan))
     with SamplingContext.graph_safe(torch.device("cpu"), 7) as context, pytest.raises(ValueError, match="config"):
         reuse.initialize(plan, context)
 
@@ -88,7 +121,7 @@ def test_churn_steps_cannot_reuse() -> None:
 def test_rollout_counts_random_streams_and_mapped_prediction() -> None:
     plan = _plan("cpu")
     base = AF3EDMIntegrator(EDMIntegratorConfig())
-    reuse = FrameReuseEDMIntegrator(base, FrameReuseSchedule(period=4))
+    reuse = FrameReuseEDMIntegrator(base, FrameReuseSchedule.for_plan(4, plan))
     runner = GenerativeRunner()
     with SamplingContext.graph_safe(torch.device("cpu"), 7) as context:
         runner.run(base, plan, _denoiser, context)
@@ -139,9 +172,36 @@ def test_frame_reuse_period_follows_the_sampling_config() -> None:
 
     assert EDMSamplingConfig().frame_reuse_period == 0
     assert EDMSamplingConfig(frame_reuse_period=4).frame_reuse_period == 4
-    for period in (-1, 1):
-        with pytest.raises(ValueError):
+    with pytest.raises(ValueError):
+        EDMSamplingConfig(frame_reuse_period=-1)
+    for period in (1, 2, 3, 5, 6, 8):
+        with pytest.raises(ValueError, match=r"0 \(off\) or one of \(4,\).*; got "):
             EDMSamplingConfig(frame_reuse_period=period)
-    with pytest.raises(ValueError, match="only evaluated with 200 sampling steps; got 50"):
-        EDMSamplingConfig(frame_reuse_period=4, n_step=50)
-    assert EDMSamplingConfig(n_step=50).frame_reuse_period == 0
+    with pytest.raises(ValueError, match="only evaluated with .*; got 75"):
+        EDMSamplingConfig(frame_reuse_period=4, n_step=75)
+    assert EDMSamplingConfig(frame_reuse_period=4, n_step=100).frame_reuse_period == 4
+    assert EDMSamplingConfig(n_step=75).frame_reuse_period == 0
+
+
+def test_openfold3_config_takes_the_same_period_values() -> None:
+    from bionemo_ir.models.openfold3.config import EDMSamplingConfig as OpenFold3EDMSamplingConfig
+
+    assert OpenFold3EDMSamplingConfig().frame_reuse_period == 0
+    assert OpenFold3EDMSamplingConfig(frame_reuse_period=4).frame_reuse_period == 4
+    with pytest.raises(ValueError):
+        OpenFold3EDMSamplingConfig(frame_reuse_period=-1)
+    for period in (1, 2, 3, 5, 6, 8):
+        with pytest.raises(ValueError, match=r"0 \(off\) or one of \(4,\).*; got "):
+            OpenFold3EDMSamplingConfig(frame_reuse_period=period)
+
+
+def test_wrapper_is_inference_only() -> None:
+    plan = _plan("cpu")
+    parent = AF3EDMIntegrator(EDMIntegratorConfig())
+    with torch.inference_mode():
+        integrator, predict = wrap_for_frame_reuse(parent, 4, plan, _denoiser, training=False)
+        assert integrator.schedule == FrameReuseSchedule.for_plan(4, plan) and callable(predict)
+        with pytest.raises(ValueError, match="inference-only"):
+            wrap_for_frame_reuse(parent, 4, plan, _denoiser, training=True)
+    with pytest.raises(ValueError, match="inference-only"):
+        wrap_for_frame_reuse(parent, 4, plan, _denoiser, training=False)

@@ -13,7 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from pydantic import Field
+from pydantic import Field, field_validator
 
 from bionemo_ir._torch.graph_optimization.config import CUDAGraphOptimizationConfig, NamedDimTies
 from bionemo_ir._torch.graph_optimization.graph_policy import (
@@ -22,6 +22,7 @@ from bionemo_ir._torch.graph_optimization.graph_policy import (
     pairformer_graph_config,
     trunk_graph_config,
 )
+from bionemo_ir._torch.sampling.frame_reuse import require_evaluated_period
 from bionemo_ir.configs import (
     BaseConfig,
     DiffusionTransformerConfig,
@@ -246,6 +247,20 @@ class EDMSamplingConfig(BaseConfig):
     noise_scale: float = 1.003
     step_scale: float = 1.5
     use_conditioning: bool = True
+    frame_reuse_period: int = Field(
+        default=0,
+        ge=0,
+        description=(
+            "Opt-in approximation: in the churn-free tail of the rollout, run the denoiser every this many steps and"
+            " map the previous prediction through each step's augmentation in between; 0 is off. Only evaluated with"
+            " period 4 and 100, 150, 200 or 400 rollout steps; other values are rejected."
+        ),
+    )
+
+    @field_validator("frame_reuse_period")
+    @classmethod
+    def _frame_reuse_period_is_off_or_at_least_two(cls, period: int) -> int:
+        return require_evaluated_period(period)
 
 
 class AuxiliaryHeadsConfig(BaseConfig):

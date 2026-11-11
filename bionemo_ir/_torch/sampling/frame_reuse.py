@@ -31,17 +31,40 @@ from bionemo_ir._torch.layers.random_augmentation import RigidFrame, centre_rand
 from bionemo_ir._torch.sampling.contracts import SamplingContext
 from bionemo_ir._torch.sampling.edm import AF3EDMIntegrator, EDMRolloutPlan
 
-__all__ = ["FRAME_REUSE_EVALUATED_STEPS", "FrameReuseEDMIntegrator", "FrameReuseSchedule", "require_evaluated_steps"]
+__all__ = [
+    "FRAME_REUSE_EVALUATED_PERIODS",
+    "FRAME_REUSE_EVALUATED_STEPS",
+    "FRESH_TAIL_STEPS",
+    "FrameReuseEDMIntegrator",
+    "FrameReuseSchedule",
+    "require_evaluated_period",
+    "require_evaluated_steps",
+    "wrap_for_frame_reuse",
+]
 
-FRAME_REUSE_EVALUATED_STEPS = 200
+# Step counts the derived window was evaluated with; others are rejected before any rollout work.
+FRAME_REUSE_EVALUATED_STEPS = (100, 150, 200, 400)
+# Periods the option was evaluated with; others are rejected. 0 (off) is always allowed.
+FRAME_REUSE_EVALUATED_PERIODS = (4,)
+# The last steps of a rollout always run the network.
+FRESH_TAIL_STEPS = 2
 
 
 def require_evaluated_steps(num_steps: int) -> None:
-    """Reject a step count the fixed window was not evaluated with, before any rollout work starts."""
-    if num_steps != FRAME_REUSE_EVALUATED_STEPS:
+    """Reject a step count the derived window was not evaluated with, before any rollout work starts."""
+    if num_steps not in FRAME_REUSE_EVALUATED_STEPS:
         raise ValueError(
             f"frame_reuse_period was only evaluated with {FRAME_REUSE_EVALUATED_STEPS} sampling steps; got {num_steps}"
         )
+
+
+def require_evaluated_period(period: int) -> int:
+    """Return ``period`` when it is 0 (off) or one the option was evaluated with, else raise."""
+    if period != 0 and period not in FRAME_REUSE_EVALUATED_PERIODS:
+        raise ValueError(
+            f"frame_reuse_period must be 0 (off) or one of {FRAME_REUSE_EVALUATED_PERIODS}, the evaluated periods; got {period}"
+        )
+    return period
 
 
 @dataclass(frozen=True)
@@ -49,17 +72,37 @@ class FrameReuseSchedule:
     """Which steps consume a frame-mapped prediction instead of a network evaluation.
 
     From ``start`` through ``end`` a step evaluates the network when it is a multiple of ``period``
-    after ``start`` and reuses the previous prediction otherwise; the steps outside stay fresh. With
-    the defaults and 200 steps, 172 steps evaluate the network and 28 reuse.
+    after ``start`` and reuses the previous prediction otherwise; the steps outside stay fresh.
+    :meth:`for_plan` derives the window from a rollout plan: it starts at the first step without
+    churn noise and leaves the last ``FRESH_TAIL_STEPS`` steps fresh. With 200 steps that is steps
+    160 through 197, so 172 steps evaluate the network and 28 reuse.
     """
 
     period: int
-    start: int = 160
-    end: int = 197
+    start: int
+    end: int
 
     def __post_init__(self) -> None:
         if self.period < 2 or not 0 <= self.start <= self.end:
             raise ValueError("Frame reuse needs period >= 2 and 0 <= start <= end")
+
+    @classmethod
+    def for_plan(cls, period: int, plan: EDMRolloutPlan) -> FrameReuseSchedule:
+        """Derive the window from the plan's noise schedule and churn gate.
+
+        The start is the first step whose churn rate is zero (a reused step must not inject churn noise);
+        the end leaves ``FRESH_TAIL_STEPS`` fresh steps. Step counts and periods the option was not
+        evaluated with are rejected here, before any rollout work.
+        """
+        require_evaluated_steps(plan.num_steps)
+        require_evaluated_period(period)
+        levels = plan.churn_levels
+        if levels is None:
+            raise ValueError("Frame reuse needs the prepared EDM levels of the plan")
+        churn_free = (levels.gamma_host == 0).nonzero()
+        if churn_free.numel() == 0:
+            raise ValueError("Frame reuse needs churn-free steps; every step of this plan injects noise")
+        return cls(period, int(churn_free[0]), plan.num_steps - 1 - FRESH_TAIL_STEPS)
 
     def reuses(self, step: int) -> bool:
         """Whether ``step`` takes a mapped prediction."""
@@ -152,3 +195,26 @@ class FrameReuseEDMIntegrator(AF3EDMIntegrator):
     def receipt(self) -> dict[str, object]:
         """Counts of the last rollout: network evaluations, mapped predictions and the fresh steps."""
         return {"fresh": self.fresh_calls, "reused": self.reused_calls, "fresh_steps": list(self.fresh_steps)}
+
+
+def wrap_for_frame_reuse(
+    parent: AF3EDMIntegrator,
+    period: int,
+    plan: EDMRolloutPlan,
+    evaluate: Callable[[torch.Tensor, torch.Tensor], torch.Tensor],
+    *,
+    training: bool,
+) -> tuple[FrameReuseEDMIntegrator, Callable[..., torch.Tensor]]:
+    """The frame-reuse integrator of one rollout and its ``predict`` closure, for any AF3-style sampler.
+
+    Args:
+        parent: The sampler's integrator.
+        period: ``frame_reuse_period`` of the sampling config (4, the evaluated period).
+        plan: The rollout plan; the window is derived from it.
+        evaluate: The sampler's network call, ``evaluate(x_noisy, sigma_hat)``.
+        training: Whether the sampler is in training mode; reuse is inference-only.
+    """
+    if training or torch.is_grad_enabled():
+        raise ValueError("Frame prediction reuse is inference-only")
+    integrator = FrameReuseEDMIntegrator(parent, FrameReuseSchedule.for_plan(period, plan))
+    return integrator, integrator.bind(evaluate)

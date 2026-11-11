@@ -125,6 +125,36 @@ Reference kernel validation on H100 (sm_90), torch
 - `installed_ops["evoformer_attn"] == 1`
 - functional maximum error `7.07e-3`
 
+## Approximate option: frame-aware prediction reuse (default on)
+
+The 200-step lock above is a schedule `frame_reuse_period` was evaluated
+with, so the BioIR column runs with `edm_sampling_config.frame_reuse_period = 4`
+by default. The option skips 28 of the 200 denoiser calls in the churn-free
+tail. `docs/ref/sampling.md` reports the diffusion sampler 15 to 18 percent
+faster at 200 steps; the forward gain is smaller, because the trunk and the
+confidence head do not change. A second, exact BioIR column
+(`frame_reuse_period = 0`) runs for the paired comparison.
+
+Follow [Approximate options](../SKILL.md#approximate-options). Take the
+config from the processor config, change only that field, and pass it as
+the engine config:
+
+```python
+model_config = processor_config.get_model_pretrained_config()
+model_config.edm_sampling_config.frame_reuse_period = 4
+processor_config.engine_kwargs["config"] = model_config
+```
+
+- Give both BioIR columns the same `random_seed`, set in the tokenizer and
+  feature-generator `init_context`. The processor seeds the sampling
+  rollout from it, so the exact and reuse rollouts share their random draws
+  and the paired difference comes from the option, not from sampling noise.
+- Record `frame_reuse_period` and the 200 steps in `bench_config.json`. The
+  harness's `--exact` switch leaves the pretrained config unchanged.
+- The rank-1 sample (the best mean pLDDT of the five) can change between
+  the two columns. Score both on the same rule and report the paired lDDT
+  and DockQ difference.
+
 ## Map the dataset into `oss_data`
 
 The mapping script owns both MSA and template staging and writes one

@@ -247,18 +247,20 @@ claim a complete bench.
 ## Approximate options
 
 Some BioIR options are approximate: they change the sampled coordinates
-instead of reproducing the exact path bit for bit. Protenix-v2
-`edm_sampling_config.frame_reuse_period` is one. A profile marks each
-such option as **default on** when the locked config is the one the option
-was evaluated with. Rules:
+instead of reproducing the exact path bit for bit. Frame-aware prediction
+reuse, `edm_sampling_config.frame_reuse_period`, is one; Protenix-v2 and
+OpenFold3 P2 have it. A profile marks each such option as **default on**
+when the locked config is the one the option was evaluated with. Rules:
 
-1. **Default on for Protenix-v2.** The profile locks 200 diffusion steps,
-   the schedule the option was evaluated with, so the BioIR arm runs with
-   `frame_reuse_period = 4`. Build it from `Protenix.get_pretrained_config`,
-   change only that field, and record the exception and the value in
-   `bench_config.json`. The harness written in Phase 3 takes an `--exact`
-   switch that leaves the pretrained config unchanged. Any other step count
-   must run exact: the option rejects it.
+1. **Default on for Protenix-v2 and OpenFold3 P2.** Both profiles lock 200
+   diffusion steps, a schedule the option was evaluated with, so the BioIR
+   arm runs with `frame_reuse_period = 4`. Build the config from the model's
+   pretrained config (the profile shows how), change only that field, pass
+   it as the engine config (`engine_kwargs["config"]`), and record the
+   exception and the value in `bench_config.json`. The harness written in
+   Phase 3 takes an `--exact` switch that leaves the pretrained config
+   unchanged. Step counts other than 100, 150, 200 and 400 must run exact:
+   the option rejects them.
 1. **Run the exact arm as well.** Add one BioIR column with the option off
    (same seed, same inputs, same GPU), time it like every other column, and
    report the approximate column's speedup against it and against OSS.

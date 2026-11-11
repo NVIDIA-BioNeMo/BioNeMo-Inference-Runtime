@@ -42,6 +42,7 @@ from bionemo_ir._torch.sampling import (
     GenerativeRunner,
     SamplingContext,
 )
+from bionemo_ir._torch.sampling.frame_reuse import wrap_for_frame_reuse
 from bionemo_ir._torch.utils import recursive_calling_load_weights
 from bionemo_ir.configs import BaseConfig
 
@@ -319,7 +320,8 @@ class OpenFold3DiffusionSampler(nn.Module):
             config:
                 Diffusion sampling configuration. This initializer reads
                 `gamma_0`, `gamma_min`, `noise_scale`, `step_scale`, and
-                `use_conditioning` from this config.
+                `use_conditioning` from this config, and `frame_reuse_period`
+                when it has one.
             diffusion_module:
                 Instantiated denoising diffusion module used at each sampling
                 step.
@@ -337,6 +339,9 @@ class OpenFold3DiffusionSampler(nn.Module):
             )
         )
         self.runner = GenerativeRunner()
+        # Opt-in approximation: in the churn-free tail, evaluate the denoiser every ``frame_reuse_period``
+        # steps and map the previous prediction through each step's augmentation in between (0: off).
+        self._frame_reuse_period = getattr(config, "frame_reuse_period", 0)
 
     def denoise(
         self,
@@ -515,5 +520,10 @@ class OpenFold3DiffusionSampler(nn.Module):
                 prepared_token_pair_biases=prepared_token_pair_biases,
             )
 
+        integrator = self.integrator
+        if self._frame_reuse_period:
+            integrator, predict = wrap_for_frame_reuse(
+                self.integrator, self._frame_reuse_period, plan, predict, training=self.training
+            )
         with SamplingContext.graph_safe(atom_mask.device, seed) as context:
-            return self.runner.run(self.integrator, plan, predict, context).final_state
+            return self.runner.run(integrator, plan, predict, context).final_state

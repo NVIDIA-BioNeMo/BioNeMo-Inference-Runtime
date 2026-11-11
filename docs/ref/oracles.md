@@ -332,7 +332,8 @@ molecular schema.
 
 ## Approximate options
 
-Approximate speed options, such as Protenix [frame-aware
-prediction reuse](sampling.md#frame-aware-prediction-reuse-protenix-opt-in),
+Approximate speed options, such as Protenix and OpenFold3
+[frame-aware prediction
+reuse](sampling.md#frame-aware-prediction-reuse-protenix-and-openfold3-opt-in),
 are judged on paired lDDT and DockQ against the exact rollout of the same
 input and seed, not on bit equality.

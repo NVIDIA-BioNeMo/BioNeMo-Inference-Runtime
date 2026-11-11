@@ -167,8 +167,8 @@ processor's stages up to `FoldingEngineStage` and reading `__data__`.
 
 ## Approximate option: frame-aware prediction reuse (default on)
 
-The 200-step lock above is the only schedule `frame_reuse_period` was
-evaluated with, so the BioIR column runs with
+The option was evaluated with 100, 200 and 400 steps on Protenix; the
+200-step lock above is the one this profile uses, so the BioIR column runs with
 `edm_sampling_config.frame_reuse_period = 4` by default (about 3-12 percent
 faster, less on large inputs), and a second, exact BioIR column
 (`frame_reuse_period = 0`) runs for the paired comparison.

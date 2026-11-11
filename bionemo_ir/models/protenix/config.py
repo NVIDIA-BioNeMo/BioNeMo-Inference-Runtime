@@ -27,7 +27,7 @@ from bionemo_ir._torch.graph_optimization.graph_policy import (
     pairformer_graph_config,
     trunk_graph_config,
 )
-from bionemo_ir._torch.sampling.frame_reuse import require_evaluated_steps
+from bionemo_ir._torch.sampling.frame_reuse import require_evaluated_period, require_evaluated_steps
 from bionemo_ir.configs import (
     BaseConfig,
     DiffusionTransformerConfig,
@@ -274,17 +274,16 @@ class EDMSamplingConfig(BaseConfig):
         default=0,
         ge=0,
         description=(
-            "Opt-in approximation: from step 160 on, run the denoiser every this many steps and map the previous"
-            " prediction through each step's augmentation in between (4: 172 fresh + 28 mapped calls of 200); 0 is off."
+            "Opt-in approximation: in the churn-free tail of the rollout, run the denoiser every this many steps and"
+            " map the previous prediction through each step's augmentation in between; 0 is off. Only evaluated with"
+            " period 4 and 100, 150, 200 or 400 rollout steps; other values are rejected."
         ),
     )
 
     @field_validator("frame_reuse_period")
     @classmethod
     def _frame_reuse_period_is_off_or_at_least_two(cls, period: int) -> int:
-        if period == 1:
-            raise ValueError("frame_reuse_period must be 0 (off) or at least 2")
-        return period
+        return require_evaluated_period(period)
 
     @model_validator(mode="after")
     def _frame_reuse_window_needs_the_evaluated_step_count(self) -> "EDMSamplingConfig":

@@ -40,7 +40,7 @@ from bionemo_ir._torch.sampling.edm import (
     EDMRolloutPlan,
     EDMScheduleConfig,
 )
-from bionemo_ir._torch.sampling.frame_reuse import FrameReuseEDMIntegrator, FrameReuseSchedule
+from bionemo_ir._torch.sampling.frame_reuse import wrap_for_frame_reuse
 from bionemo_ir._torch.sampling.runner import GenerativeRunner
 from bionemo_ir._torch.utils import CHUNK_REGISTRY, DIFFUSION_PAIR_TRANSITION
 from bionemo_ir.configs import BaseConfig
@@ -500,9 +500,9 @@ class ProtenixDiffusionSampler(nn.Module):
         # OSS enable_diffusion_shared_vars_cache: precompute step-invariant
         # conditioning / reference base once per rollout.
         self.use_cache = use_cache
-        # Opt-in approximation: from step 160 on, evaluate the denoiser every ``frame_reuse_period``
+        # Opt-in approximation: in the churn-free tail, evaluate the denoiser every ``frame_reuse_period``
         # steps and map the previous prediction through each step's augmentation in between (0: off).
-        self._frame_reuse = FrameReuseSchedule(frame_reuse_period) if frame_reuse_period else None
+        self._frame_reuse_period = frame_reuse_period
 
     def denoise(
         self,
@@ -623,15 +623,14 @@ class ProtenixDiffusionSampler(nn.Module):
             )
 
         integrator, predict = self.integrator, evaluate
-        if self._frame_reuse is not None:
-            if self.training or torch.is_grad_enabled():
-                raise ValueError("Frame prediction reuse is inference-only")
-            integrator = FrameReuseEDMIntegrator(self.integrator, self._frame_reuse)
-            predict = integrator.bind(evaluate)
+        if self._frame_reuse_period:
+            integrator, predict = wrap_for_frame_reuse(
+                self.integrator, self._frame_reuse_period, plan, evaluate, training=self.training
+            )
 
         with SamplingContext.graph_safe(device, seed) as context:
             coords = self.runner.run(integrator, plan, predict, context).final_state
-        if self._frame_reuse is not None:
+        if self._frame_reuse_period:
             logger.debug("Frame reuse rollout: %s", integrator.receipt)
         # Uncached rollout reads relp every step — free only after the loop.
         if not self.use_cache:

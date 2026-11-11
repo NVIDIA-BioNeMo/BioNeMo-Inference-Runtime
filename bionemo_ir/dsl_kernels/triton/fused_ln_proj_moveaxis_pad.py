@@ -118,7 +118,8 @@ def _fused_ln_proj_moveaxis_pad_kernel(
     # ``pid_i`` and ``batch_idx`` are i64 above because at OF3 token-transformer
     # scale (I=J=4832, D=128) the per-row offset pid_i * z_stride_i reaches 2.99e9
     # and overflows i32; ``batch_idx * z_stride_b`` does the same for B>1 or more
-    # heads. Offsets along J/D/H stay i32 -- they never exceed ~5k.
+    # heads. Offsets along J/D stay i32 -- they never exceed ~5k. The head offset
+    # is scaled by ``out_stride_h = I * J_padded`` and is widened at the store.
 
     mask_j = offs_j < J
     mask_d = offs_d < DIM_D
@@ -197,7 +198,7 @@ def _fused_ln_proj_moveaxis_pad_kernel(
     # acc is [TILE_J, HEADS_PER_BLK]
     # Output location: out[batch_idx, offs_h, pid_i, offs_j]
     out_base = out_ptr + batch_idx * out_stride_b + pid_i * out_stride_i
-    out_ptrs = out_base + offs_h[None, :] * out_stride_h + offs_j[:, None]
+    out_ptrs = out_base + offs_h[None, :].to(tl.int64) * out_stride_h + offs_j[:, None]
 
     store_mask = (offs_j[:, None] < J_padded) & mask_h[None, :]
     out = tl.where(mask_j[:, None], acc, 0.0)
@@ -366,7 +367,11 @@ def _fused_ln_proj_moveaxis_pad_streaming_kernel(
             out = rstd[:, None] * (acc - mean[:, None] * col_sum[None, :]) + shift[None, :]
         out = tl.where(mask_j[:, None], out, 0.0)
         out_ptrs = (
-            out_ptr + batch_idx * out_stride_b + pid_i * out_stride_i + offs_h[None, :] * out_stride_h + offs_j[:, None]
+            out_ptr
+            + batch_idx * out_stride_b
+            + pid_i * out_stride_i
+            + offs_h[None, :].to(tl.int64) * out_stride_h
+            + offs_j[:, None]
         )
         tl.store(out_ptrs, out, mask=(offs_j[:, None] < J_padded) & mask_h[None, :])
 
@@ -409,6 +414,9 @@ class _StreamingTuning(NamedTuple):
     pipeline_min_rows_per_sm: int = 0
     #: Feature widths qualified for the pipelined variant; ``None`` allows every streamed width.
     pipeline_dims: tuple[int, ...] | None = None
+    #: ``(TILE_J, num_warps)`` that LayerNorm calls at the widths in ``layernorm_dims`` take instead of ``tiles``.
+    layernorm_tile: tuple[int, int] | None = None
+    layernorm_dims: tuple[int, ...] = ()
 
 
 #: SM versions without an entry in :data:`_STREAMING_TUNING`.
@@ -436,11 +444,19 @@ _STREAMING_TUNING: dict[int, _StreamingTuning] = {
     ),
     # B200 and B300, D256/D384: keep the 64-wide reduction and stage the RMSNorm slice loop once each
     # SM has at least one 64-row tile. D128 regresses at N400; it, smaller calls and LayerNorm stay unrolled.
-    100: _StreamingTuning(
-        tiles=((64, 4),), programs_per_sm=4, pipelined=(64, 4, 3), pipeline_min_rows_per_sm=64, pipeline_dims=(256, 384)
-    ),
-    103: _StreamingTuning(
-        tiles=((64, 4),), programs_per_sm=4, pipelined=(64, 4, 3), pipeline_min_rows_per_sm=64, pipeline_dims=(256, 384)
+    # LayerNorm at D128, H8 (the pair-weighted-averaging pair bias), N 512-12288: on B200 the 4-warp 128-row tile is
+    # 1.33x the 64-row one at N=512 and 1.46-1.49x from N=2048, bit for bit. B300 takes the same tile, unmeasured.
+    **dict.fromkeys(
+        (100, 103),
+        _StreamingTuning(
+            tiles=((64, 4),),
+            programs_per_sm=4,
+            pipelined=(64, 4, 3),
+            pipeline_min_rows_per_sm=64,
+            pipeline_dims=(256, 384),
+            layernorm_tile=(128, 4),
+            layernorm_dims=(128,),
+        ),
     ),
 }
 #: Device index -> ``(sm_version, sm_count)``.
@@ -482,7 +498,14 @@ def _streaming_chunk(D: int, tuning: _StreamingTuning) -> int:
 
 def _streaming_tile(J_padded: int, tiles: tuple[tuple[int, int], ...]) -> tuple[int, int]:
     """Pick the ``(TILE_J, num_warps)`` variant that pads ``J`` least, the wider on a tie."""
-    return min(tiles, key=lambda tile: (triton.cdiv(J_padded, tile[0]) * tile[0], -tile[0]))
+    return min(tiles, key=lambda tile: (-(-J_padded // tile[0]) * tile[0], -tile[0]))
+
+
+def _layernorm_tile(tuning: _StreamingTuning, rms_norm: bool, dim_d: int | None) -> tuple[int, int, int] | None:
+    """The ``(TILE_J, num_warps, stages)`` every LayerNorm call at ``dim_d`` takes, or ``None`` to use ``tiles``."""
+    if rms_norm or tuning.layernorm_tile is None or dim_d not in tuning.layernorm_dims:
+        return None
+    return (*tuning.layernorm_tile, 1)
 
 
 def _streaming_variant(
@@ -494,6 +517,9 @@ def _streaming_variant(
     dim_d: int | None = None,
 ) -> tuple[int, int, int]:
     """``(TILE_J, num_warps, stages)`` for a call over ``rows`` rows of ``z``."""
+    layernorm = _layernorm_tile(tuning, rms_norm, dim_d)
+    if layernorm is not None:
+        return layernorm
     qualified_dim = tuning.pipeline_dims is None or dim_d in tuning.pipeline_dims
     pipelined = tuning.pipelined if rms_norm and qualified_dim else None
     if pipelined is not None and rows >= tuning.pipeline_min_rows_per_sm * _device_info(device)[1]:
@@ -650,7 +676,9 @@ class FusedLNProjMoveaxisPad(TritonKernelCache):
             self._streaming_kernels = cached
             return
         result = {}
-        variants = [(tile_j, num_warps, 1) for tile_j, num_warps in tuning.tiles]
+        layernorm = _layernorm_tile(tuning, self._rms_norm, self._dim_d)
+        # A LayerNorm width with its own tile never launches the others.
+        variants = [layernorm] if layernorm is not None else [(*tile, 1) for tile in tuning.tiles]
         qualified_dim = tuning.pipeline_dims is None or self._dim_d in tuning.pipeline_dims
         if tuning.pipelined is not None and self._rms_norm and qualified_dim:
             variants.append(tuning.pipelined)
@@ -772,20 +800,15 @@ class FusedLNProjMoveaxisPad(TritonKernelCache):
         row_sumsq: torch.Tensor | None = None,
     ) -> None:
         B, I = z3.shape[0], z3.shape[1]
-        num_j_tiles = triton.cdiv(J_padded, tile_j)
+        num_j_tiles = -(-J_padded // tile_j)
         num_tiles = B * I * num_j_tiles
         if num_tiles == 0:
             return
         grid = _streaming_grid(
             z3.device, num_tiles, self._streaming_tuning.programs_per_sm, _resident_programs(kernel, num_warps)
         )
-        args = (
-            z3,
-            w_ln,
-            b_ln,
-            w_proj,
-            out,
-            _no_row_sumsq(z3.device) if row_sumsq is None else row_sumsq,
+        sumsq = _no_row_sumsq(z3.device) if row_sumsq is None else row_sumsq
+        scalars = (
             I,
             J,
             J_padded,
@@ -798,12 +821,18 @@ class FusedLNProjMoveaxisPad(TritonKernelCache):
         )
         # The driver's scalar slots are i32 (compiled from small dummy values); the JIT launch
         # re-types scalars from their runtime values.
-        if kernel.driver is not None and all(isinstance(value, torch.Tensor) or value < 2**31 for value in args):
-            values = tuple(value.data_ptr() if isinstance(value, torch.Tensor) else value for value in args)
-            kernel.driver.launch_with(values, grid)
+        if kernel.driver is not None and max(scalars) < 2**31:
+            pointers = (z3.data_ptr(), w_ln.data_ptr(), b_ln.data_ptr(), w_proj.data_ptr(), out.data_ptr())
+            kernel.driver.launch_with((*pointers, sumsq.data_ptr(), *scalars), grid)
             return
         _fused_ln_proj_moveaxis_pad_streaming_kernel[(grid,)](
-            *args,
+            z3,
+            w_ln,
+            b_ln,
+            w_proj,
+            out,
+            sumsq,
+            *scalars,
             TILE_J=tile_j,
             CHUNK=_streaming_chunk(self._dim_d, self._streaming_tuning),
             DIM_D=self._dim_d,
@@ -875,8 +904,8 @@ class FusedLNProjMoveaxisPad(TritonKernelCache):
 
         out = torch.empty(B, H, I, J_padded, device=z.device, dtype=z.dtype)
 
-        grid_j = triton.cdiv(J_padded, self._tile_j)
-        num_head_blks = triton.cdiv(H, self._heads_per_blk)
+        grid_j = -(-J_padded // self._tile_j)
+        num_head_blks = -(-H // self._heads_per_blk)
 
         # RMSNorm never reads b_ln; pass w_ln as a valid placeholder pointer.
         # Resolve it before the signature so the mixed-dtype lookup below does
@@ -906,7 +935,7 @@ class FusedLNProjMoveaxisPad(TritonKernelCache):
             self._launch_streaming(
                 streaming, tile_j, num_warps, stages, z3, w_ln, b_ln_ptr_src, w_proj, out, J, J_padded, row_sumsq
             )
-        elif kernel is not None and kernel.driver is not None:
+        elif kernel is not None and kernel.driver is not None and max(J_padded, *z3.stride(), *out.stride()) < 2**31:
             values = (
                 z3.data_ptr(),
                 w_ln.data_ptr(),
@@ -1001,7 +1030,7 @@ def fused_ln_proj_moveaxis_pad(
         stream_tile_j, stream_warps, stream_stages = _streaming_variant(
             B * I * J, J_padded, z3.device, tuning, rms_norm=False, dim_d=D
         )
-        num_j_tiles = triton.cdiv(J_padded, stream_tile_j)
+        num_j_tiles = -(-J_padded // stream_tile_j)
         num_tiles = B * I * num_j_tiles
         if num_tiles:
             _fused_ln_proj_moveaxis_pad_streaming_kernel[
@@ -1035,8 +1064,8 @@ def fused_ln_proj_moveaxis_pad(
             )
         return out.view(out_shape)
 
-    grid_j = triton.cdiv(J_padded, tile_j)
-    num_head_blks = triton.cdiv(H, heads_per_blk)
+    grid_j = -(-J_padded // tile_j)
+    num_head_blks = -(-H // heads_per_blk)
 
     _fused_ln_proj_moveaxis_pad_kernel[(grid_j, I, num_head_blks * B)](
         z3,

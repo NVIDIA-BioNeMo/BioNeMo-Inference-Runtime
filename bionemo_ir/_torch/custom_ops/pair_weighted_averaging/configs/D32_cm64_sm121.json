@@ -1,0 +1,341 @@
+{
+  "kernel_abi": "sm80",
+  "max_fused_tokens": 2048,
+  "dims": {
+    "H": 8,
+    "D": 32,
+    "c_m": 64
+  },
+  "configs": {
+    "N=256|S=512|dt=bf16": {
+      "label": "TS1 TI32 TJ64 ns3 nsw3 KO32",
+      "tf_s": 20.4,
+      "speedup_vs_eager": 8.551,
+      "pseudo_seqlen": 362.0,
+      "params": {
+        "ab_dtype": "bf16",
+        "D": 32,
+        "H": 8,
+        "KO_TILE": 32,
+        "TILE_I": 32,
+        "TILE_J": 64,
+        "TILE_S": 1,
+        "atom_p": [
+          1,
+          2,
+          1
+        ],
+        "atom_v": [
+          2,
+          1,
+          1
+        ],
+        "c_m": 64,
+        "num_stages": 3,
+        "num_stages_w": 3,
+        "num_threads": 64,
+        "swizzle": true
+      }
+    },
+    "N=384|S=512|dt=bf16": {
+      "label": "TS1 TI32 TJ64 ns3 nsw4 KO32",
+      "tf_s": 23.4,
+      "speedup_vs_eager": 7.316,
+      "pseudo_seqlen": 443.4,
+      "params": {
+        "ab_dtype": "bf16",
+        "D": 32,
+        "H": 8,
+        "KO_TILE": 32,
+        "TILE_I": 32,
+        "TILE_J": 64,
+        "TILE_S": 1,
+        "atom_p": [
+          1,
+          2,
+          1
+        ],
+        "atom_v": [
+          2,
+          1,
+          1
+        ],
+        "c_m": 64,
+        "num_stages": 3,
+        "num_stages_w": 4,
+        "num_threads": 64,
+        "swizzle": true
+      }
+    },
+    "N=512|S=512|dt=bf16": {
+      "label": "TS1 TI32 TJ64 ns3 nsw4 KO32",
+      "tf_s": 25.2,
+      "speedup_vs_eager": 6.071,
+      "pseudo_seqlen": 512.0,
+      "params": {
+        "ab_dtype": "bf16",
+        "D": 32,
+        "H": 8,
+        "KO_TILE": 32,
+        "TILE_I": 32,
+        "TILE_J": 64,
+        "TILE_S": 1,
+        "atom_p": [
+          1,
+          2,
+          1
+        ],
+        "atom_v": [
+          2,
+          1,
+          1
+        ],
+        "c_m": 64,
+        "num_stages": 3,
+        "num_stages_w": 4,
+        "num_threads": 64,
+        "swizzle": true
+      }
+    },
+    "N=1024|S=512|dt=bf16": {
+      "label": "TS2 TI32 TJ64 ns3 nsw3 KO64 nt128 av22 ap14",
+      "tf_s": 30.0,
+      "speedup_vs_eager": 4.315,
+      "pseudo_seqlen": 724.1,
+      "params": {
+        "ab_dtype": "bf16",
+        "D": 32,
+        "H": 8,
+        "KO_TILE": 64,
+        "TILE_I": 32,
+        "TILE_J": 64,
+        "TILE_S": 2,
+        "atom_p": [
+          1,
+          4,
+          1
+        ],
+        "atom_v": [
+          2,
+          2,
+          1
+        ],
+        "c_m": 64,
+        "num_stages": 3,
+        "num_stages_w": 3,
+        "num_threads": 128,
+        "swizzle": true
+      }
+    },
+    "N=1024|S=1024|dt=bf16": {
+      "label": "TS2 TI32 TJ64 ns3 nsw3 KO64 nt128 av22 ap14",
+      "tf_s": 29.8,
+      "speedup_vs_eager": 4.246,
+      "pseudo_seqlen": 1024.0,
+      "params": {
+        "ab_dtype": "bf16",
+        "D": 32,
+        "H": 8,
+        "KO_TILE": 64,
+        "TILE_I": 32,
+        "TILE_J": 64,
+        "TILE_S": 2,
+        "atom_p": [
+          1,
+          4,
+          1
+        ],
+        "atom_v": [
+          2,
+          2,
+          1
+        ],
+        "c_m": 64,
+        "num_stages": 3,
+        "num_stages_w": 3,
+        "num_threads": 128,
+        "swizzle": true
+      }
+    },
+    "N=1536|S=1024|dt=bf16": {
+      "label": "TS1 TI32 TJ64 ns3 nsw2 KO128",
+      "tf_s": 13.4,
+      "speedup_vs_eager": 1.392,
+      "pseudo_seqlen": 1254.1,
+      "params": {
+        "ab_dtype": "bf16",
+        "D": 32,
+        "H": 8,
+        "KO_TILE": 128,
+        "TILE_I": 32,
+        "TILE_J": 64,
+        "TILE_S": 1,
+        "atom_p": [
+          1,
+          2,
+          1
+        ],
+        "atom_v": [
+          2,
+          1,
+          1
+        ],
+        "c_m": 64,
+        "num_stages": 3,
+        "num_stages_w": 2,
+        "num_threads": 64,
+        "swizzle": true
+      }
+    },
+    "N=1024|S=2048|dt=bf16": {
+      "label": "TS2 TI32 TJ64 ns3 nsw3 KO64 nt128 av22 ap14",
+      "tf_s": 29.6,
+      "speedup_vs_eager": 4.195,
+      "pseudo_seqlen": 1448.2,
+      "params": {
+        "ab_dtype": "bf16",
+        "D": 32,
+        "H": 8,
+        "KO_TILE": 64,
+        "TILE_I": 32,
+        "TILE_J": 64,
+        "TILE_S": 2,
+        "atom_p": [
+          1,
+          4,
+          1
+        ],
+        "atom_v": [
+          2,
+          2,
+          1
+        ],
+        "c_m": 64,
+        "num_stages": 3,
+        "num_stages_w": 3,
+        "num_threads": 128,
+        "swizzle": true
+      }
+    },
+    "N=1536|S=1536|dt=bf16": {
+      "label": "TS1 TI32 TJ64 ns3 nsw3 KO64",
+      "tf_s": 13.6,
+      "speedup_vs_eager": 1.435,
+      "pseudo_seqlen": 1536.0,
+      "params": {
+        "ab_dtype": "bf16",
+        "D": 32,
+        "H": 8,
+        "KO_TILE": 64,
+        "TILE_I": 32,
+        "TILE_J": 64,
+        "TILE_S": 1,
+        "atom_p": [
+          1,
+          2,
+          1
+        ],
+        "atom_v": [
+          2,
+          1,
+          1
+        ],
+        "c_m": 64,
+        "num_stages": 3,
+        "num_stages_w": 3,
+        "num_threads": 64,
+        "swizzle": true
+      }
+    },
+    "N=1536|S=2048|dt=bf16": {
+      "label": "TS1 TI32 TJ64 ns3 nsw2 KO128",
+      "tf_s": 13.3,
+      "speedup_vs_eager": 1.395,
+      "pseudo_seqlen": 1773.6,
+      "params": {
+        "ab_dtype": "bf16",
+        "D": 32,
+        "H": 8,
+        "KO_TILE": 128,
+        "TILE_I": 32,
+        "TILE_J": 64,
+        "TILE_S": 1,
+        "atom_p": [
+          1,
+          2,
+          1
+        ],
+        "atom_v": [
+          2,
+          1,
+          1
+        ],
+        "c_m": 64,
+        "num_stages": 3,
+        "num_stages_w": 2,
+        "num_threads": 64,
+        "swizzle": true
+      }
+    },
+    "N=2048|S=2048|dt=bf16": {
+      "label": "TS2 TI32 TJ64 ns3 nsw4 KO64 nt128 av22 ap14",
+      "tf_s": 13.2,
+      "speedup_vs_eager": 1.163,
+      "pseudo_seqlen": 2048.0,
+      "params": {
+        "ab_dtype": "bf16",
+        "D": 32,
+        "H": 8,
+        "KO_TILE": 64,
+        "TILE_I": 32,
+        "TILE_J": 64,
+        "TILE_S": 2,
+        "atom_p": [
+          1,
+          4,
+          1
+        ],
+        "atom_v": [
+          2,
+          2,
+          1
+        ],
+        "c_m": 64,
+        "num_stages": 3,
+        "num_stages_w": 4,
+        "num_threads": 128,
+        "swizzle": true
+      }
+    },
+    "N=2048|S=8162|dt=bf16": {
+      "label": "TS2 TI32 TJ64 ns3 nsw4 KO64 nt128 av22 ap14",
+      "tf_s": 12.6,
+      "speedup_vs_eager": 1.125,
+      "pseudo_seqlen": 4088.5,
+      "params": {
+        "ab_dtype": "bf16",
+        "D": 32,
+        "H": 8,
+        "KO_TILE": 64,
+        "TILE_I": 32,
+        "TILE_J": 64,
+        "TILE_S": 2,
+        "atom_p": [
+          1,
+          4,
+          1
+        ],
+        "atom_v": [
+          2,
+          2,
+          1
+        ],
+        "c_m": 64,
+        "num_stages": 3,
+        "num_stages_w": 4,
+        "num_threads": 128,
+        "swizzle": true
+      }
+    }
+  }
+}

@@ -198,8 +198,8 @@ TmaTensorSource matrices_source(
   return TmaTensorSource{
     view.data,
     {extent, extent, static_cast<std::uint64_t>(l), 0},
-    rows_contiguous ? std::array<std::uint64_t, 4>{1, row_stride, plane_stride, 0}
-                    : std::array<std::uint64_t, 4>{row_stride, 1, plane_stride, 0},
+    rows_contiguous ? std::array<std::uint64_t, kTmaMaxRank>{1, row_stride, plane_stride}
+                    : std::array<std::uint64_t, kTmaMaxRank>{row_stride, 1, plane_stride},
   };
 }
 

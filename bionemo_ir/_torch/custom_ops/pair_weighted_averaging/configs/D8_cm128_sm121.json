@@ -1,0 +1,221 @@
+{
+  "kernel_abi": "sm80",
+  "max_fused_tokens": 2048,
+  "dims": {
+    "H": 8,
+    "D": 8,
+    "c_m": 128
+  },
+  "configs": {
+    "N=256|S=512|dt=bf16": {
+      "label": "TS2 TI64 TJ64 ns3 nsw4 KO32 nt64 av21 ap12",
+      "tf_s": 14.1,
+      "speedup_vs_eager": 6.736,
+      "pseudo_seqlen": 362.0,
+      "params": {
+        "ab_dtype": "bf16",
+        "D": 8,
+        "H": 8,
+        "KO_TILE": 32,
+        "TILE_I": 64,
+        "TILE_J": 64,
+        "TILE_S": 2,
+        "atom_p": [
+          1,
+          2,
+          1
+        ],
+        "atom_v": [
+          2,
+          1,
+          1
+        ],
+        "c_m": 128,
+        "num_stages": 3,
+        "num_stages_w": 4,
+        "num_threads": 64,
+        "swizzle": true
+      }
+    },
+    "N=384|S=512|dt=bf16": {
+      "label": "TS2 TI64 TJ64 ns3 nsw2 KO32 nt64 av21 ap12",
+      "tf_s": 16.7,
+      "speedup_vs_eager": 6.426,
+      "pseudo_seqlen": 443.4,
+      "params": {
+        "ab_dtype": "bf16",
+        "D": 8,
+        "H": 8,
+        "KO_TILE": 32,
+        "TILE_I": 64,
+        "TILE_J": 64,
+        "TILE_S": 2,
+        "atom_p": [
+          1,
+          2,
+          1
+        ],
+        "atom_v": [
+          2,
+          1,
+          1
+        ],
+        "c_m": 128,
+        "num_stages": 3,
+        "num_stages_w": 2,
+        "num_threads": 64,
+        "swizzle": true
+      }
+    },
+    "N=512|S=512|dt=bf16": {
+      "label": "TS2 TI64 TJ64 ns3 nsw3 KO32 nt64 av21 ap12",
+      "tf_s": 18.2,
+      "speedup_vs_eager": 5.703,
+      "pseudo_seqlen": 512.0,
+      "params": {
+        "ab_dtype": "bf16",
+        "D": 8,
+        "H": 8,
+        "KO_TILE": 32,
+        "TILE_I": 64,
+        "TILE_J": 64,
+        "TILE_S": 2,
+        "atom_p": [
+          1,
+          2,
+          1
+        ],
+        "atom_v": [
+          2,
+          1,
+          1
+        ],
+        "c_m": 128,
+        "num_stages": 3,
+        "num_stages_w": 3,
+        "num_threads": 64,
+        "swizzle": true
+      }
+    },
+    "N=1024|S=512|dt=bf16": {
+      "label": "TS4 TI64 TJ64 ns5 nsw3 KO32 nt64 av21 ap21",
+      "tf_s": 18.1,
+      "speedup_vs_eager": 3.338,
+      "pseudo_seqlen": 724.1,
+      "params": {
+        "ab_dtype": "bf16",
+        "D": 8,
+        "H": 8,
+        "KO_TILE": 32,
+        "TILE_I": 64,
+        "TILE_J": 64,
+        "TILE_S": 4,
+        "atom_p": [
+          2,
+          1,
+          1
+        ],
+        "atom_v": [
+          2,
+          1,
+          1
+        ],
+        "c_m": 128,
+        "num_stages": 5,
+        "num_stages_w": 3,
+        "num_threads": 64,
+        "swizzle": true
+      }
+    },
+    "N=1024|S=2048|dt=bf16": {
+      "label": "TS4 TI64 TJ64 ns5 nsw4 KO32 nt64 av21 ap21",
+      "tf_s": 17.6,
+      "speedup_vs_eager": 3.247,
+      "pseudo_seqlen": 1448.2,
+      "params": {
+        "ab_dtype": "bf16",
+        "D": 8,
+        "H": 8,
+        "KO_TILE": 32,
+        "TILE_I": 64,
+        "TILE_J": 64,
+        "TILE_S": 4,
+        "atom_p": [
+          2,
+          1,
+          1
+        ],
+        "atom_v": [
+          2,
+          1,
+          1
+        ],
+        "c_m": 128,
+        "num_stages": 5,
+        "num_stages_w": 4,
+        "num_threads": 64,
+        "swizzle": true
+      }
+    },
+    "N=2048|S=512|dt=bf16": {
+      "label": "TS4 TI64 TJ64 ns5 nsw4 KO32 nt64 av21 ap12",
+      "tf_s": 10.2,
+      "speedup_vs_eager": 1.166,
+      "pseudo_seqlen": 1024.0,
+      "params": {
+        "ab_dtype": "bf16",
+        "D": 8,
+        "H": 8,
+        "KO_TILE": 32,
+        "TILE_I": 64,
+        "TILE_J": 64,
+        "TILE_S": 4,
+        "atom_p": [
+          1,
+          2,
+          1
+        ],
+        "atom_v": [
+          2,
+          1,
+          1
+        ],
+        "c_m": 128,
+        "num_stages": 5,
+        "num_stages_w": 4,
+        "num_threads": 64,
+        "swizzle": true
+      }
+    },
+    "N=2048|S=2048|dt=bf16": {
+      "label": "TS4 TI64 TJ64 ns5 nsw3 KO32 nt64 av21 ap21",
+      "tf_s": 10.1,
+      "speedup_vs_eager": 1.108,
+      "pseudo_seqlen": 2048.0,
+      "params": {
+        "ab_dtype": "bf16",
+        "D": 8,
+        "H": 8,
+        "KO_TILE": 32,
+        "TILE_I": 64,
+        "TILE_J": 64,
+        "TILE_S": 4,
+        "atom_p": [
+          2,
+          1,
+          1
+        ],
+        "atom_v": [
+          2,
+          1,
+          1
+        ],
+        "c_m": 128,
+        "num_stages": 5,
+        "num_stages_w": 3,
+        "num_threads": 64,
+        "swizzle": true
+      }
+    }
+  }
+}

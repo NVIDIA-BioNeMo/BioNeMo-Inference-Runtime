@@ -64,6 +64,9 @@ from .cutedsl import (
 from .cutedsl import (
     pwa_cute as pwa_cute,
 )
+from .cutedsl import (
+    transposed_value_buffer as transposed_value_buffer,
+)
 from .ops import (
     _invoke_vanilla_pwa as _invoke_vanilla_pwa,
 )
@@ -89,4 +92,5 @@ __all__ = [
     "is_supported_pwa_dims",
     "pwa_cute",
     "select_pwa_config",
+    "transposed_value_buffer",
 ]

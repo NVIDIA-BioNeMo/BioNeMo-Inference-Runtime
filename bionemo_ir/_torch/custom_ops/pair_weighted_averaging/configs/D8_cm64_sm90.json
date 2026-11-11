@@ -1,5 +1,10 @@
 {
-  "kernel_abi": "sm80",
+  "kernel_abi": "sm90",
+  "kernel_variant": "d8",
+  "max_fused_tokens": {
+    "bf16": null,
+    "fp16": null
+  },
   "dims": {
     "H": 8,
     "D": 8,
@@ -7,93 +12,375 @@
   },
   "configs": {
     "N=256|S=512|dt=bf16": {
-      "label": "TS2 TI64 TJ64 ns3 nsw2 KO32 nt64 av21 ap21",
-      "tf_s": 35.2,
-      "speedup_vs_eager": 2.581,
-      "pseudo_seqlen": 362.0,
+      "label": "wgmma v^T w^T TI128 TS8 TJ64 ns4 nt384 cluster 1x1",
       "params": {
         "ab_dtype": "bf16",
-        "H": 8,
         "D": 8,
-        "c_m": 64,
-        "TILE_I": 64,
-        "TILE_S": 2,
-        "TILE_J": 64,
+        "H": 8,
         "KO_TILE": 32,
-        "num_threads": 64,
-        "atom_v": [
-          2,
-          1,
-          1
-        ],
+        "TILE_I": 128,
+        "TILE_J": 64,
+        "TILE_S": 8,
         "atom_p": [
           2,
           1,
           1
         ],
-        "num_stages": 3,
-        "num_stages_w": 2,
-        "swizzle": true
+        "atom_v": [
+          2,
+          1,
+          1
+        ],
+        "c_m": 64,
+        "num_stages": 4,
+        "num_stages_w": 1,
+        "num_threads": 384,
+        "swizzle": true,
+        "cluster": [
+          1,
+          1
+        ]
       }
     },
-    "N=384|S=512|dt=bf16": {
-      "label": "TS2 TI64 TJ64 ns3 nsw2 KO32 nt64 av21 ap21",
-      "tf_s": 44.4,
-      "speedup_vs_eager": 1.955,
-      "pseudo_seqlen": 443.4,
+    "N=768|S=1024|dt=bf16": {
+      "label": "wgmma v^T w^T TI128 TS8 TJ64 ns4 nt384 cluster 1x4",
       "params": {
         "ab_dtype": "bf16",
-        "H": 8,
         "D": 8,
-        "c_m": 64,
-        "TILE_I": 64,
-        "TILE_S": 2,
-        "TILE_J": 64,
+        "H": 8,
         "KO_TILE": 32,
-        "num_threads": 64,
-        "atom_v": [
-          2,
-          1,
-          1
-        ],
+        "TILE_I": 128,
+        "TILE_J": 64,
+        "TILE_S": 8,
         "atom_p": [
           2,
           1,
           1
         ],
-        "num_stages": 3,
-        "num_stages_w": 2,
-        "swizzle": true
+        "atom_v": [
+          2,
+          1,
+          1
+        ],
+        "c_m": 64,
+        "num_stages": 4,
+        "num_stages_w": 1,
+        "num_threads": 384,
+        "swizzle": true,
+        "cluster": [
+          1,
+          4
+        ]
       }
     },
-    "N=512|S=512|dt=bf16": {
-      "label": "TS4 TI64 TJ64 ns3 nsw2 KO32 nt64 av21 ap21",
-      "tf_s": 51.1,
-      "speedup_vs_eager": 1.8,
-      "pseudo_seqlen": 512.0,
+    "N=1536|S=1024|dt=bf16": {
+      "label": "wgmma v^T w^T TI128 TS8 TJ64 ns4 nt384 cluster 1x4",
       "params": {
         "ab_dtype": "bf16",
-        "H": 8,
         "D": 8,
-        "c_m": 64,
-        "TILE_I": 64,
-        "TILE_S": 4,
-        "TILE_J": 64,
+        "H": 8,
         "KO_TILE": 32,
-        "num_threads": 64,
-        "atom_v": [
-          2,
-          1,
-          1
-        ],
+        "TILE_I": 128,
+        "TILE_J": 64,
+        "TILE_S": 8,
         "atom_p": [
           2,
           1,
           1
         ],
-        "num_stages": 3,
-        "num_stages_w": 2,
-        "swizzle": true
+        "atom_v": [
+          2,
+          1,
+          1
+        ],
+        "c_m": 64,
+        "num_stages": 4,
+        "num_stages_w": 1,
+        "num_threads": 384,
+        "swizzle": true,
+        "cluster": [
+          1,
+          4
+        ]
+      }
+    },
+    "N=2048|S=512|dt=bf16": {
+      "label": "wgmma v^T w^T TI128 TS8 TJ64 ns4 nt384 cluster 1x4",
+      "params": {
+        "ab_dtype": "bf16",
+        "D": 8,
+        "H": 8,
+        "KO_TILE": 32,
+        "TILE_I": 128,
+        "TILE_J": 64,
+        "TILE_S": 8,
+        "atom_p": [
+          2,
+          1,
+          1
+        ],
+        "atom_v": [
+          2,
+          1,
+          1
+        ],
+        "c_m": 64,
+        "num_stages": 4,
+        "num_stages_w": 1,
+        "num_threads": 384,
+        "swizzle": true,
+        "cluster": [
+          1,
+          4
+        ]
+      }
+    },
+    "N=2048|S=2048|dt=bf16": {
+      "label": "wgmma v^T w^T TI128 TS8 TJ64 ns4 nt384 cluster 2x4",
+      "params": {
+        "ab_dtype": "bf16",
+        "D": 8,
+        "H": 8,
+        "KO_TILE": 32,
+        "TILE_I": 128,
+        "TILE_J": 64,
+        "TILE_S": 8,
+        "atom_p": [
+          2,
+          1,
+          1
+        ],
+        "atom_v": [
+          2,
+          1,
+          1
+        ],
+        "c_m": 64,
+        "num_stages": 4,
+        "num_stages_w": 1,
+        "num_threads": 384,
+        "swizzle": true,
+        "cluster": [
+          2,
+          4
+        ]
+      }
+    },
+    "N=3072|S=1024|dt=bf16": {
+      "label": "wgmma v^T w^T TI128 TS8 TJ64 ns4 nt384 cluster 2x4",
+      "params": {
+        "ab_dtype": "bf16",
+        "D": 8,
+        "H": 8,
+        "KO_TILE": 32,
+        "TILE_I": 128,
+        "TILE_J": 64,
+        "TILE_S": 8,
+        "atom_p": [
+          2,
+          1,
+          1
+        ],
+        "atom_v": [
+          2,
+          1,
+          1
+        ],
+        "c_m": 64,
+        "num_stages": 4,
+        "num_stages_w": 1,
+        "num_threads": 384,
+        "swizzle": true,
+        "cluster": [
+          2,
+          4
+        ]
+      }
+    },
+    "N=256|S=512|dt=fp16": {
+      "label": "wgmma v^T w^T TI128 TS8 TJ64 ns4 nt384 cluster 1x1",
+      "params": {
+        "ab_dtype": "fp16",
+        "D": 8,
+        "H": 8,
+        "KO_TILE": 32,
+        "TILE_I": 128,
+        "TILE_J": 64,
+        "TILE_S": 8,
+        "atom_p": [
+          2,
+          1,
+          1
+        ],
+        "atom_v": [
+          2,
+          1,
+          1
+        ],
+        "c_m": 64,
+        "num_stages": 4,
+        "num_stages_w": 1,
+        "num_threads": 384,
+        "swizzle": true,
+        "cluster": [
+          1,
+          1
+        ]
+      }
+    },
+    "N=768|S=1024|dt=fp16": {
+      "label": "wgmma v^T w^T TI128 TS8 TJ64 ns4 nt384 cluster 1x4",
+      "params": {
+        "ab_dtype": "fp16",
+        "D": 8,
+        "H": 8,
+        "KO_TILE": 32,
+        "TILE_I": 128,
+        "TILE_J": 64,
+        "TILE_S": 8,
+        "atom_p": [
+          2,
+          1,
+          1
+        ],
+        "atom_v": [
+          2,
+          1,
+          1
+        ],
+        "c_m": 64,
+        "num_stages": 4,
+        "num_stages_w": 1,
+        "num_threads": 384,
+        "swizzle": true,
+        "cluster": [
+          1,
+          4
+        ]
+      }
+    },
+    "N=1536|S=1024|dt=fp16": {
+      "label": "wgmma v^T w^T TI128 TS8 TJ64 ns4 nt384 cluster 1x4",
+      "params": {
+        "ab_dtype": "fp16",
+        "D": 8,
+        "H": 8,
+        "KO_TILE": 32,
+        "TILE_I": 128,
+        "TILE_J": 64,
+        "TILE_S": 8,
+        "atom_p": [
+          2,
+          1,
+          1
+        ],
+        "atom_v": [
+          2,
+          1,
+          1
+        ],
+        "c_m": 64,
+        "num_stages": 4,
+        "num_stages_w": 1,
+        "num_threads": 384,
+        "swizzle": true,
+        "cluster": [
+          1,
+          4
+        ]
+      }
+    },
+    "N=2048|S=512|dt=fp16": {
+      "label": "wgmma v^T w^T TI128 TS8 TJ64 ns4 nt384 cluster 1x4",
+      "params": {
+        "ab_dtype": "fp16",
+        "D": 8,
+        "H": 8,
+        "KO_TILE": 32,
+        "TILE_I": 128,
+        "TILE_J": 64,
+        "TILE_S": 8,
+        "atom_p": [
+          2,
+          1,
+          1
+        ],
+        "atom_v": [
+          2,
+          1,
+          1
+        ],
+        "c_m": 64,
+        "num_stages": 4,
+        "num_stages_w": 1,
+        "num_threads": 384,
+        "swizzle": true,
+        "cluster": [
+          1,
+          4
+        ]
+      }
+    },
+    "N=2048|S=2048|dt=fp16": {
+      "label": "wgmma v^T w^T TI128 TS8 TJ64 ns4 nt384 cluster 2x4",
+      "params": {
+        "ab_dtype": "fp16",
+        "D": 8,
+        "H": 8,
+        "KO_TILE": 32,
+        "TILE_I": 128,
+        "TILE_J": 64,
+        "TILE_S": 8,
+        "atom_p": [
+          2,
+          1,
+          1
+        ],
+        "atom_v": [
+          2,
+          1,
+          1
+        ],
+        "c_m": 64,
+        "num_stages": 4,
+        "num_stages_w": 1,
+        "num_threads": 384,
+        "swizzle": true,
+        "cluster": [
+          2,
+          4
+        ]
+      }
+    },
+    "N=3072|S=1024|dt=fp16": {
+      "label": "wgmma v^T w^T TI128 TS8 TJ64 ns4 nt384 cluster 2x4",
+      "params": {
+        "ab_dtype": "fp16",
+        "D": 8,
+        "H": 8,
+        "KO_TILE": 32,
+        "TILE_I": 128,
+        "TILE_J": 64,
+        "TILE_S": 8,
+        "atom_p": [
+          2,
+          1,
+          1
+        ],
+        "atom_v": [
+          2,
+          1,
+          1
+        ],
+        "c_m": 64,
+        "num_stages": 4,
+        "num_stages_w": 1,
+        "num_threads": 384,
+        "swizzle": true,
+        "cluster": [
+          2,
+          4
+        ]
       }
     }
   }

@@ -1,5 +1,6 @@
 {
   "kernel_abi": "sm80",
+  "max_fused_tokens": 2048,
   "dims": {
     "H": 8,
     "D": 8,

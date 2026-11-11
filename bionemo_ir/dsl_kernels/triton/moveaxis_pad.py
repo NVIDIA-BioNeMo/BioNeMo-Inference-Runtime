@@ -98,7 +98,8 @@ def _moveaxis_pad_kernel(
     vals = tl.load(inp_ptrs, mask=load_mask, other=0.0)  # [BLOCK_J, BLOCK_H]
 
     out_base = out_ptr + b_idx * out_stride_b + i_idx * out_stride_i
-    out_ptrs = out_base + h_off[:, None] * out_stride_h + j_off[None, :]
+    # out_stride_h = I * J_padded, so the head offset needs i64 as well.
+    out_ptrs = out_base + h_off[:, None].to(tl.int64) * out_stride_h + j_off[None, :]
 
     store_mask = (j_off[None, :] < J_padded) & h_mask[:, None]  # [BLOCK_H, BLOCK_J]
     tl.store(out_ptrs, tl.trans(vals), mask=store_mask)

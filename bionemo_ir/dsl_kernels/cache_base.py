@@ -404,7 +404,7 @@ class DriverLauncher:
         import torch
 
         self._bind_context()
-        cur = torch.cuda.current_stream().cuda_stream
+        cur = torch._C._cuda_getCurrentRawStream(torch.cuda.current_device())
         if cur != self._stream_handle:
             self._stream = _drv.CUstream(cur)
             self._stream_handle = cur

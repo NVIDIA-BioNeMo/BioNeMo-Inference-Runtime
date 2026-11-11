@@ -1,100 +1,360 @@
 {
-  "kernel_abi": "sm80",
-  "dims": {
-    "H": 8,
-    "D": 8,
-    "c_m": 64
-  },
+  "kernel_abi": "sm100",
+  "kernel_variant": "d8",
+  "max_fused_tokens": {"bf16": null, "fp16": null},
+  "dims": {"H": 8, "D": 8, "c_m": 64},
   "configs": {
-    "N=256|S=512|dt=bf16": {
-      "label": "TS2 TI64 TJ64 ns3 nsw2 KO32 nt64 av21 ap21",
-      "tf_s": 35.2,
-      "speedup_vs_eager": 2.581,
-      "pseudo_seqlen": 362.0,
-      "params": {
-        "ab_dtype": "bf16",
-        "H": 8,
-        "D": 8,
-        "c_m": 64,
-        "TILE_I": 64,
-        "TILE_S": 2,
-        "TILE_J": 64,
-        "KO_TILE": 32,
-        "num_threads": 64,
-        "atom_v": [
-          2,
-          1,
-          1
-        ],
-        "atom_p": [
-          2,
-          1,
-          1
-        ],
-        "num_stages": 3,
-        "num_stages_w": 2,
-        "swizzle": true
-      }
+    "N=128|S=16|dt=bf16": {
+      "label": "tcgen05 1-SM TI128 TS1 TJ64 ns11 nt512 cluster 1x1 g per head",
+      "params": {"ab_dtype": "bf16", "D": 8, "H": 8, "KO_TILE": 64, "TILE_I": 128, "TILE_J": 64, "TILE_S": 1, "atom_p": [1, 2, 1], "atom_v": [2, 1, 1], "c_m": 64, "num_stages": 11, "num_stages_w": 2, "num_threads": 512, "swizzle": true, "cluster": [1, 1]}
     },
-    "N=384|S=512|dt=bf16": {
-      "label": "TS2 TI64 TJ64 ns3 nsw2 KO32 nt64 av21 ap21",
-      "tf_s": 44.4,
-      "speedup_vs_eager": 1.955,
-      "pseudo_seqlen": 443.4,
-      "params": {
-        "ab_dtype": "bf16",
-        "H": 8,
-        "D": 8,
-        "c_m": 64,
-        "TILE_I": 64,
-        "TILE_S": 2,
-        "TILE_J": 64,
-        "KO_TILE": 32,
-        "num_threads": 64,
-        "atom_v": [
-          2,
-          1,
-          1
-        ],
-        "atom_p": [
-          2,
-          1,
-          1
-        ],
-        "num_stages": 3,
-        "num_stages_w": 2,
-        "swizzle": true
-      }
+    "N=128|S=128|dt=bf16": {
+      "label": "tcgen05 1-SM TI128 TS2 TJ64 ns9 nt512 cluster 1x1 g staged",
+      "params": {"ab_dtype": "bf16", "D": 8, "H": 8, "KO_TILE": 64, "TILE_I": 128, "TILE_J": 64, "TILE_S": 2, "atom_p": [1, 2, 1], "atom_v": [2, 1, 1], "c_m": 64, "num_stages": 9, "num_stages_w": 1, "num_threads": 512, "swizzle": true, "cluster": [1, 1]}
+    },
+    "N=128|S=512|dt=bf16": {
+      "label": "tcgen05 1-SM TI128 TS2 TJ64 ns9 nt512 cluster 1x1 g staged",
+      "params": {"ab_dtype": "bf16", "D": 8, "H": 8, "KO_TILE": 64, "TILE_I": 128, "TILE_J": 64, "TILE_S": 2, "atom_p": [1, 2, 1], "atom_v": [2, 1, 1], "c_m": 64, "num_stages": 9, "num_stages_w": 1, "num_threads": 512, "swizzle": true, "cluster": [1, 1]}
+    },
+    "N=128|S=1024|dt=bf16": {
+      "label": "tcgen05 1-SM TI128 TS4 TJ64 ns6 nt512 cluster 1x2 g staged",
+      "params": {"ab_dtype": "bf16", "D": 8, "H": 8, "KO_TILE": 64, "TILE_I": 128, "TILE_J": 64, "TILE_S": 4, "atom_p": [1, 2, 1], "atom_v": [2, 1, 1], "c_m": 64, "num_stages": 6, "num_stages_w": 1, "num_threads": 512, "swizzle": true, "cluster": [1, 2]}
+    },
+    "N=256|S=16|dt=bf16": {
+      "label": "tcgen05 1-SM TI128 TS1 TJ64 ns11 nt512 cluster 1x1 g per head",
+      "params": {"ab_dtype": "bf16", "D": 8, "H": 8, "KO_TILE": 64, "TILE_I": 128, "TILE_J": 64, "TILE_S": 1, "atom_p": [1, 2, 1], "atom_v": [2, 1, 1], "c_m": 64, "num_stages": 11, "num_stages_w": 2, "num_threads": 512, "swizzle": true, "cluster": [1, 1]}
+    },
+    "N=256|S=128|dt=bf16": {
+      "label": "tcgen05 1-SM TI128 TS2 TJ64 ns9 nt512 cluster 1x1 g staged",
+      "params": {"ab_dtype": "bf16", "D": 8, "H": 8, "KO_TILE": 64, "TILE_I": 128, "TILE_J": 64, "TILE_S": 2, "atom_p": [1, 2, 1], "atom_v": [2, 1, 1], "c_m": 64, "num_stages": 9, "num_stages_w": 1, "num_threads": 512, "swizzle": true, "cluster": [1, 1]}
+    },
+    "N=256|S=512|dt=bf16": {
+      "label": "tcgen05 1-SM TI128 TS4 TJ64 ns6 nt512 cluster 1x2 g staged",
+      "params": {"ab_dtype": "bf16", "D": 8, "H": 8, "KO_TILE": 64, "TILE_I": 128, "TILE_J": 64, "TILE_S": 4, "atom_p": [1, 2, 1], "atom_v": [2, 1, 1], "c_m": 64, "num_stages": 6, "num_stages_w": 1, "num_threads": 512, "swizzle": true, "cluster": [1, 2]}
+    },
+    "N=384|S=16|dt=bf16": {
+      "label": "tcgen05 1-SM TI128 TS1 TJ64 ns11 nt512 cluster 1x1 g per head",
+      "params": {"ab_dtype": "bf16", "D": 8, "H": 8, "KO_TILE": 64, "TILE_I": 128, "TILE_J": 64, "TILE_S": 1, "atom_p": [1, 2, 1], "atom_v": [2, 1, 1], "c_m": 64, "num_stages": 11, "num_stages_w": 2, "num_threads": 512, "swizzle": true, "cluster": [1, 1]}
+    },
+    "N=384|S=128|dt=bf16": {
+      "label": "tcgen05 1-SM TI128 TS4 TJ64 ns6 nt512 cluster 1x2 g staged",
+      "params": {"ab_dtype": "bf16", "D": 8, "H": 8, "KO_TILE": 64, "TILE_I": 128, "TILE_J": 64, "TILE_S": 4, "atom_p": [1, 2, 1], "atom_v": [2, 1, 1], "c_m": 64, "num_stages": 6, "num_stages_w": 1, "num_threads": 512, "swizzle": true, "cluster": [1, 2]}
+    },
+    "N=512|S=16|dt=bf16": {
+      "label": "tcgen05 1-SM TI128 TS1 TJ64 ns11 nt512 cluster 1x1 g per head",
+      "params": {"ab_dtype": "bf16", "D": 8, "H": 8, "KO_TILE": 64, "TILE_I": 128, "TILE_J": 64, "TILE_S": 1, "atom_p": [1, 2, 1], "atom_v": [2, 1, 1], "c_m": 64, "num_stages": 11, "num_stages_w": 2, "num_threads": 512, "swizzle": true, "cluster": [1, 1]}
+    },
+    "N=512|S=128|dt=bf16": {
+      "label": "tcgen05 1-SM TI128 TS4 TJ64 ns6 nt512 cluster 1x2 g staged",
+      "params": {"ab_dtype": "bf16", "D": 8, "H": 8, "KO_TILE": 64, "TILE_I": 128, "TILE_J": 64, "TILE_S": 4, "atom_p": [1, 2, 1], "atom_v": [2, 1, 1], "c_m": 64, "num_stages": 6, "num_stages_w": 1, "num_threads": 512, "swizzle": true, "cluster": [1, 2]}
     },
     "N=512|S=512|dt=bf16": {
-      "label": "TS4 TI64 TJ64 ns3 nsw2 KO32 nt64 av21 ap21",
-      "tf_s": 51.1,
-      "speedup_vs_eager": 1.8,
-      "pseudo_seqlen": 512.0,
-      "params": {
-        "ab_dtype": "bf16",
-        "H": 8,
-        "D": 8,
-        "c_m": 64,
-        "TILE_I": 64,
-        "TILE_S": 4,
-        "TILE_J": 64,
-        "KO_TILE": 32,
-        "num_threads": 64,
-        "atom_v": [
-          2,
-          1,
-          1
-        ],
-        "atom_p": [
-          2,
-          1,
-          1
-        ],
-        "num_stages": 3,
-        "num_stages_w": 2,
-        "swizzle": true
-      }
+      "label": "tcgen05 2-SM TI256 TS16 TJ64 ns5 nt512 cluster 2x1 g per head",
+      "params": {"ab_dtype": "bf16", "D": 8, "H": 8, "KO_TILE": 64, "TILE_I": 256, "TILE_J": 64, "TILE_S": 16, "atom_p": [1, 2, 1], "atom_v": [2, 1, 1], "c_m": 64, "num_stages": 5, "num_stages_w": 2, "num_threads": 512, "swizzle": true, "cluster": [2, 1]}
+    },
+    "N=512|S=1024|dt=bf16": {
+      "label": "tcgen05 2-SM TI256 TS8 TJ64 ns10 nt512 cluster 2x1 g per head",
+      "params": {"ab_dtype": "bf16", "D": 8, "H": 8, "KO_TILE": 64, "TILE_I": 256, "TILE_J": 64, "TILE_S": 8, "atom_p": [1, 2, 1], "atom_v": [2, 1, 1], "c_m": 64, "num_stages": 10, "num_stages_w": 2, "num_threads": 512, "swizzle": true, "cluster": [2, 1]}
+    },
+    "N=768|S=1|dt=bf16": {
+      "label": "tcgen05 1-SM TI128 TS1 TJ64 ns11 nt512 cluster 1x1 g per head",
+      "params": {"ab_dtype": "bf16", "D": 8, "H": 8, "KO_TILE": 64, "TILE_I": 128, "TILE_J": 64, "TILE_S": 1, "atom_p": [1, 2, 1], "atom_v": [2, 1, 1], "c_m": 64, "num_stages": 11, "num_stages_w": 2, "num_threads": 512, "swizzle": true, "cluster": [1, 1]}
+    },
+    "N=768|S=16|dt=bf16": {
+      "label": "tcgen05 2-SM TI256 TS2 TJ64 ns12 nt512 cluster 1x1 g per head",
+      "params": {"ab_dtype": "bf16", "D": 8, "H": 8, "KO_TILE": 64, "TILE_I": 256, "TILE_J": 64, "TILE_S": 2, "atom_p": [1, 2, 1], "atom_v": [2, 1, 1], "c_m": 64, "num_stages": 12, "num_stages_w": 2, "num_threads": 512, "swizzle": true, "cluster": [1, 1]}
+    },
+    "N=768|S=128|dt=bf16": {
+      "label": "tcgen05 2-SM TI256 TS8 TJ64 ns10 nt512 cluster 1x1 g per head",
+      "params": {"ab_dtype": "bf16", "D": 8, "H": 8, "KO_TILE": 64, "TILE_I": 256, "TILE_J": 64, "TILE_S": 8, "atom_p": [1, 2, 1], "atom_v": [2, 1, 1], "c_m": 64, "num_stages": 10, "num_stages_w": 2, "num_threads": 512, "swizzle": true, "cluster": [1, 1]}
+    },
+    "N=768|S=512|dt=bf16": {
+      "label": "tcgen05 2-SM TI256 TS8 TJ64 ns10 nt512 cluster 1x2 g per head",
+      "params": {"ab_dtype": "bf16", "D": 8, "H": 8, "KO_TILE": 64, "TILE_I": 256, "TILE_J": 64, "TILE_S": 8, "atom_p": [1, 2, 1], "atom_v": [2, 1, 1], "c_m": 64, "num_stages": 10, "num_stages_w": 2, "num_threads": 512, "swizzle": true, "cluster": [1, 2]}
+    },
+    "N=1024|S=1|dt=bf16": {
+      "label": "tcgen05 1-SM TI128 TS1 TJ64 ns11 nt512 cluster 1x1 g per head",
+      "params": {"ab_dtype": "bf16", "D": 8, "H": 8, "KO_TILE": 64, "TILE_I": 128, "TILE_J": 64, "TILE_S": 1, "atom_p": [1, 2, 1], "atom_v": [2, 1, 1], "c_m": 64, "num_stages": 11, "num_stages_w": 2, "num_threads": 512, "swizzle": true, "cluster": [1, 1]}
+    },
+    "N=1024|S=16|dt=bf16": {
+      "label": "tcgen05 2-SM TI256 TS2 TJ64 ns12 nt512 cluster 1x1 g per head",
+      "params": {"ab_dtype": "bf16", "D": 8, "H": 8, "KO_TILE": 64, "TILE_I": 256, "TILE_J": 64, "TILE_S": 2, "atom_p": [1, 2, 1], "atom_v": [2, 1, 1], "c_m": 64, "num_stages": 12, "num_stages_w": 2, "num_threads": 512, "swizzle": true, "cluster": [1, 1]}
+    },
+    "N=1024|S=128|dt=bf16": {
+      "label": "tcgen05 2-SM TI256 TS8 TJ64 ns10 nt512 cluster 1x2 g per head",
+      "params": {"ab_dtype": "bf16", "D": 8, "H": 8, "KO_TILE": 64, "TILE_I": 256, "TILE_J": 64, "TILE_S": 8, "atom_p": [1, 2, 1], "atom_v": [2, 1, 1], "c_m": 64, "num_stages": 10, "num_stages_w": 2, "num_threads": 512, "swizzle": true, "cluster": [1, 2]}
+    },
+    "N=1536|S=1|dt=bf16": {
+      "label": "tcgen05 1-SM TI128 TS1 TJ64 ns11 nt512 cluster 1x1 g per head",
+      "params": {"ab_dtype": "bf16", "D": 8, "H": 8, "KO_TILE": 64, "TILE_I": 128, "TILE_J": 64, "TILE_S": 1, "atom_p": [1, 2, 1], "atom_v": [2, 1, 1], "c_m": 64, "num_stages": 11, "num_stages_w": 2, "num_threads": 512, "swizzle": true, "cluster": [1, 1]}
+    },
+    "N=1536|S=16|dt=bf16": {
+      "label": "tcgen05 2-SM TI256 TS2 TJ64 ns12 nt512 cluster 1x1 g per head",
+      "params": {"ab_dtype": "bf16", "D": 8, "H": 8, "KO_TILE": 64, "TILE_I": 256, "TILE_J": 64, "TILE_S": 2, "atom_p": [1, 2, 1], "atom_v": [2, 1, 1], "c_m": 64, "num_stages": 12, "num_stages_w": 2, "num_threads": 512, "swizzle": true, "cluster": [1, 1]}
+    },
+    "N=1536|S=128|dt=bf16": {
+      "label": "tcgen05 2-SM TI256 TS8 TJ64 ns10 nt512 cluster 1x2 g per head",
+      "params": {"ab_dtype": "bf16", "D": 8, "H": 8, "KO_TILE": 64, "TILE_I": 256, "TILE_J": 64, "TILE_S": 8, "atom_p": [1, 2, 1], "atom_v": [2, 1, 1], "c_m": 64, "num_stages": 10, "num_stages_w": 2, "num_threads": 512, "swizzle": true, "cluster": [1, 2]}
+    },
+    "N=1536|S=512|dt=bf16": {
+      "label": "tcgen05 2-SM TI256 TS12 TJ64 ns9 nt512 cluster 2x1 g per head",
+      "params": {"ab_dtype": "bf16", "D": 8, "H": 8, "KO_TILE": 64, "TILE_I": 256, "TILE_J": 64, "TILE_S": 12, "atom_p": [1, 2, 1], "atom_v": [2, 1, 1], "c_m": 64, "num_stages": 9, "num_stages_w": 2, "num_threads": 512, "swizzle": true, "cluster": [2, 1]}
+    },
+    "N=1536|S=1024|dt=bf16": {
+      "label": "tcgen05 2-SM TI256 TS12 TJ64 ns9 nt512 cluster 1x2 g per head",
+      "params": {"ab_dtype": "bf16", "D": 8, "H": 8, "KO_TILE": 64, "TILE_I": 256, "TILE_J": 64, "TILE_S": 12, "atom_p": [1, 2, 1], "atom_v": [2, 1, 1], "c_m": 64, "num_stages": 9, "num_stages_w": 2, "num_threads": 512, "swizzle": true, "cluster": [1, 2]}
+    },
+    "N=2048|S=1|dt=bf16": {
+      "label": "tcgen05 1-SM TI128 TS1 TJ64 ns11 nt512 cluster 1x1 g per head",
+      "params": {"ab_dtype": "bf16", "D": 8, "H": 8, "KO_TILE": 64, "TILE_I": 128, "TILE_J": 64, "TILE_S": 1, "atom_p": [1, 2, 1], "atom_v": [2, 1, 1], "c_m": 64, "num_stages": 11, "num_stages_w": 2, "num_threads": 512, "swizzle": true, "cluster": [1, 1]}
+    },
+    "N=2048|S=16|dt=bf16": {
+      "label": "tcgen05 2-SM TI256 TS2 TJ64 ns12 nt512 cluster 1x1 g per head",
+      "params": {"ab_dtype": "bf16", "D": 8, "H": 8, "KO_TILE": 64, "TILE_I": 256, "TILE_J": 64, "TILE_S": 2, "atom_p": [1, 2, 1], "atom_v": [2, 1, 1], "c_m": 64, "num_stages": 12, "num_stages_w": 2, "num_threads": 512, "swizzle": true, "cluster": [1, 1]}
+    },
+    "N=2048|S=128|dt=bf16": {
+      "label": "tcgen05 2-SM TI256 TS16 TJ64 ns5 nt512 cluster 1x2 g per head",
+      "params": {"ab_dtype": "bf16", "D": 8, "H": 8, "KO_TILE": 64, "TILE_I": 256, "TILE_J": 64, "TILE_S": 16, "atom_p": [1, 2, 1], "atom_v": [2, 1, 1], "c_m": 64, "num_stages": 5, "num_stages_w": 2, "num_threads": 512, "swizzle": true, "cluster": [1, 2]}
+    },
+    "N=2048|S=512|dt=bf16": {
+      "label": "tcgen05 2-SM TI256 TS12 TJ64 ns9 nt512 cluster 2x2 g per head",
+      "params": {"ab_dtype": "bf16", "D": 8, "H": 8, "KO_TILE": 64, "TILE_I": 256, "TILE_J": 64, "TILE_S": 12, "atom_p": [1, 2, 1], "atom_v": [2, 1, 1], "c_m": 64, "num_stages": 9, "num_stages_w": 2, "num_threads": 512, "swizzle": true, "cluster": [2, 2]}
+    },
+    "N=3072|S=1|dt=bf16": {
+      "label": "tcgen05 1-SM TI128 TS1 TJ64 ns11 nt512 cluster 1x1 g per head",
+      "params": {"ab_dtype": "bf16", "D": 8, "H": 8, "KO_TILE": 64, "TILE_I": 128, "TILE_J": 64, "TILE_S": 1, "atom_p": [1, 2, 1], "atom_v": [2, 1, 1], "c_m": 64, "num_stages": 11, "num_stages_w": 2, "num_threads": 512, "swizzle": true, "cluster": [1, 1]}
+    },
+    "N=3072|S=16|dt=bf16": {
+      "label": "tcgen05 2-SM TI256 TS8 TJ64 ns10 nt512 cluster 1x1 g per head",
+      "params": {"ab_dtype": "bf16", "D": 8, "H": 8, "KO_TILE": 64, "TILE_I": 256, "TILE_J": 64, "TILE_S": 8, "atom_p": [1, 2, 1], "atom_v": [2, 1, 1], "c_m": 64, "num_stages": 10, "num_stages_w": 2, "num_threads": 512, "swizzle": true, "cluster": [1, 1]}
+    },
+    "N=3072|S=128|dt=bf16": {
+      "label": "tcgen05 2-SM TI256 TS12 TJ64 ns9 nt512 cluster 2x1 g per head",
+      "params": {"ab_dtype": "bf16", "D": 8, "H": 8, "KO_TILE": 64, "TILE_I": 256, "TILE_J": 64, "TILE_S": 12, "atom_p": [1, 2, 1], "atom_v": [2, 1, 1], "c_m": 64, "num_stages": 9, "num_stages_w": 2, "num_threads": 512, "swizzle": true, "cluster": [2, 1]}
+    },
+    "N=3072|S=512|dt=bf16": {
+      "label": "tcgen05 2-SM TI256 TS12 TJ64 ns9 nt512 cluster 2x2 g per head",
+      "params": {"ab_dtype": "bf16", "D": 8, "H": 8, "KO_TILE": 64, "TILE_I": 256, "TILE_J": 64, "TILE_S": 12, "atom_p": [1, 2, 1], "atom_v": [2, 1, 1], "c_m": 64, "num_stages": 9, "num_stages_w": 2, "num_threads": 512, "swizzle": true, "cluster": [2, 2]}
+    },
+    "N=4096|S=1|dt=bf16": {
+      "label": "tcgen05 1-SM TI128 TS1 TJ64 ns11 nt512 cluster 1x1 g per head",
+      "params": {"ab_dtype": "bf16", "D": 8, "H": 8, "KO_TILE": 64, "TILE_I": 128, "TILE_J": 64, "TILE_S": 1, "atom_p": [1, 2, 1], "atom_v": [2, 1, 1], "c_m": 64, "num_stages": 11, "num_stages_w": 2, "num_threads": 512, "swizzle": true, "cluster": [1, 1]}
+    },
+    "N=4096|S=16|dt=bf16": {
+      "label": "tcgen05 2-SM TI256 TS8 TJ64 ns10 nt512 cluster 1x1 g per head",
+      "params": {"ab_dtype": "bf16", "D": 8, "H": 8, "KO_TILE": 64, "TILE_I": 256, "TILE_J": 64, "TILE_S": 8, "atom_p": [1, 2, 1], "atom_v": [2, 1, 1], "c_m": 64, "num_stages": 10, "num_stages_w": 2, "num_threads": 512, "swizzle": true, "cluster": [1, 1]}
+    },
+    "N=4096|S=128|dt=bf16": {
+      "label": "tcgen05 2-SM TI256 TS16 TJ64 ns5 nt512 cluster 1x2 g per head",
+      "params": {"ab_dtype": "bf16", "D": 8, "H": 8, "KO_TILE": 64, "TILE_I": 256, "TILE_J": 64, "TILE_S": 16, "atom_p": [1, 2, 1], "atom_v": [2, 1, 1], "c_m": 64, "num_stages": 5, "num_stages_w": 2, "num_threads": 512, "swizzle": true, "cluster": [1, 2]}
+    },
+    "N=4096|S=512|dt=bf16": {
+      "label": "tcgen05 2-SM TI256 TS12 TJ64 ns9 nt512 cluster 2x2 g per head",
+      "params": {"ab_dtype": "bf16", "D": 8, "H": 8, "KO_TILE": 64, "TILE_I": 256, "TILE_J": 64, "TILE_S": 12, "atom_p": [1, 2, 1], "atom_v": [2, 1, 1], "c_m": 64, "num_stages": 9, "num_stages_w": 2, "num_threads": 512, "swizzle": true, "cluster": [2, 2]}
+    },
+    "N=8192|S=1|dt=bf16": {
+      "label": "tcgen05 1-SM TI128 TS1 TJ64 ns11 nt512 cluster 1x1 g per head",
+      "params": {"ab_dtype": "bf16", "D": 8, "H": 8, "KO_TILE": 64, "TILE_I": 128, "TILE_J": 64, "TILE_S": 1, "atom_p": [1, 2, 1], "atom_v": [2, 1, 1], "c_m": 64, "num_stages": 11, "num_stages_w": 2, "num_threads": 512, "swizzle": true, "cluster": [1, 1]}
+    },
+    "N=8192|S=16|dt=bf16": {
+      "label": "tcgen05 2-SM TI256 TS8 TJ64 ns10 nt512 cluster 1x1 g per head",
+      "params": {"ab_dtype": "bf16", "D": 8, "H": 8, "KO_TILE": 64, "TILE_I": 256, "TILE_J": 64, "TILE_S": 8, "atom_p": [1, 2, 1], "atom_v": [2, 1, 1], "c_m": 64, "num_stages": 10, "num_stages_w": 2, "num_threads": 512, "swizzle": true, "cluster": [1, 1]}
+    },
+    "N=8192|S=128|dt=bf16": {
+      "label": "tcgen05 2-SM TI256 TS16 TJ64 ns5 nt512 cluster 1x2 g per head",
+      "params": {"ab_dtype": "bf16", "D": 8, "H": 8, "KO_TILE": 64, "TILE_I": 256, "TILE_J": 64, "TILE_S": 16, "atom_p": [1, 2, 1], "atom_v": [2, 1, 1], "c_m": 64, "num_stages": 5, "num_stages_w": 2, "num_threads": 512, "swizzle": true, "cluster": [1, 2]}
+    },
+    "N=8192|S=512|dt=bf16": {
+      "label": "tcgen05 2-SM TI256 TS12 TJ64 ns9 nt512 cluster 2x2 g per head",
+      "params": {"ab_dtype": "bf16", "D": 8, "H": 8, "KO_TILE": 64, "TILE_I": 256, "TILE_J": 64, "TILE_S": 12, "atom_p": [1, 2, 1], "atom_v": [2, 1, 1], "c_m": 64, "num_stages": 9, "num_stages_w": 2, "num_threads": 512, "swizzle": true, "cluster": [2, 2]}
+    },
+    "N=12288|S=1|dt=bf16": {
+      "label": "tcgen05 1-SM TI128 TS1 TJ64 ns11 nt512 cluster 1x1 g per head",
+      "params": {"ab_dtype": "bf16", "D": 8, "H": 8, "KO_TILE": 64, "TILE_I": 128, "TILE_J": 64, "TILE_S": 1, "atom_p": [1, 2, 1], "atom_v": [2, 1, 1], "c_m": 64, "num_stages": 11, "num_stages_w": 2, "num_threads": 512, "swizzle": true, "cluster": [1, 1]}
+    },
+    "N=12288|S=16|dt=bf16": {
+      "label": "tcgen05 2-SM TI256 TS8 TJ64 ns10 nt512 cluster 1x1 g per head",
+      "params": {"ab_dtype": "bf16", "D": 8, "H": 8, "KO_TILE": 64, "TILE_I": 256, "TILE_J": 64, "TILE_S": 8, "atom_p": [1, 2, 1], "atom_v": [2, 1, 1], "c_m": 64, "num_stages": 10, "num_stages_w": 2, "num_threads": 512, "swizzle": true, "cluster": [1, 1]}
+    },
+    "N=12288|S=128|dt=bf16": {
+      "label": "tcgen05 2-SM TI256 TS12 TJ64 ns9 nt512 cluster 2x2 g per head",
+      "params": {"ab_dtype": "bf16", "D": 8, "H": 8, "KO_TILE": 64, "TILE_I": 256, "TILE_J": 64, "TILE_S": 12, "atom_p": [1, 2, 1], "atom_v": [2, 1, 1], "c_m": 64, "num_stages": 9, "num_stages_w": 2, "num_threads": 512, "swizzle": true, "cluster": [2, 2]}
+    },
+    "N=128|S=16|dt=fp16": {
+      "label": "tcgen05 1-SM TI128 TS1 TJ64 ns11 nt512 cluster 1x1 g per head",
+      "params": {"ab_dtype": "fp16", "D": 8, "H": 8, "KO_TILE": 64, "TILE_I": 128, "TILE_J": 64, "TILE_S": 1, "atom_p": [1, 2, 1], "atom_v": [2, 1, 1], "c_m": 64, "num_stages": 11, "num_stages_w": 2, "num_threads": 512, "swizzle": true, "cluster": [1, 1]}
+    },
+    "N=128|S=128|dt=fp16": {
+      "label": "tcgen05 1-SM TI128 TS2 TJ64 ns9 nt512 cluster 1x1 g staged",
+      "params": {"ab_dtype": "fp16", "D": 8, "H": 8, "KO_TILE": 64, "TILE_I": 128, "TILE_J": 64, "TILE_S": 2, "atom_p": [1, 2, 1], "atom_v": [2, 1, 1], "c_m": 64, "num_stages": 9, "num_stages_w": 1, "num_threads": 512, "swizzle": true, "cluster": [1, 1]}
+    },
+    "N=128|S=512|dt=fp16": {
+      "label": "tcgen05 1-SM TI128 TS2 TJ64 ns9 nt512 cluster 1x1 g staged",
+      "params": {"ab_dtype": "fp16", "D": 8, "H": 8, "KO_TILE": 64, "TILE_I": 128, "TILE_J": 64, "TILE_S": 2, "atom_p": [1, 2, 1], "atom_v": [2, 1, 1], "c_m": 64, "num_stages": 9, "num_stages_w": 1, "num_threads": 512, "swizzle": true, "cluster": [1, 1]}
+    },
+    "N=128|S=1024|dt=fp16": {
+      "label": "tcgen05 1-SM TI128 TS4 TJ64 ns6 nt512 cluster 1x2 g staged",
+      "params": {"ab_dtype": "fp16", "D": 8, "H": 8, "KO_TILE": 64, "TILE_I": 128, "TILE_J": 64, "TILE_S": 4, "atom_p": [1, 2, 1], "atom_v": [2, 1, 1], "c_m": 64, "num_stages": 6, "num_stages_w": 1, "num_threads": 512, "swizzle": true, "cluster": [1, 2]}
+    },
+    "N=256|S=16|dt=fp16": {
+      "label": "tcgen05 1-SM TI128 TS1 TJ64 ns11 nt512 cluster 1x1 g per head",
+      "params": {"ab_dtype": "fp16", "D": 8, "H": 8, "KO_TILE": 64, "TILE_I": 128, "TILE_J": 64, "TILE_S": 1, "atom_p": [1, 2, 1], "atom_v": [2, 1, 1], "c_m": 64, "num_stages": 11, "num_stages_w": 2, "num_threads": 512, "swizzle": true, "cluster": [1, 1]}
+    },
+    "N=256|S=128|dt=fp16": {
+      "label": "tcgen05 1-SM TI128 TS2 TJ64 ns9 nt512 cluster 1x1 g staged",
+      "params": {"ab_dtype": "fp16", "D": 8, "H": 8, "KO_TILE": 64, "TILE_I": 128, "TILE_J": 64, "TILE_S": 2, "atom_p": [1, 2, 1], "atom_v": [2, 1, 1], "c_m": 64, "num_stages": 9, "num_stages_w": 1, "num_threads": 512, "swizzle": true, "cluster": [1, 1]}
+    },
+    "N=256|S=512|dt=fp16": {
+      "label": "tcgen05 1-SM TI128 TS4 TJ64 ns6 nt512 cluster 1x2 g staged",
+      "params": {"ab_dtype": "fp16", "D": 8, "H": 8, "KO_TILE": 64, "TILE_I": 128, "TILE_J": 64, "TILE_S": 4, "atom_p": [1, 2, 1], "atom_v": [2, 1, 1], "c_m": 64, "num_stages": 6, "num_stages_w": 1, "num_threads": 512, "swizzle": true, "cluster": [1, 2]}
+    },
+    "N=384|S=16|dt=fp16": {
+      "label": "tcgen05 1-SM TI128 TS1 TJ64 ns11 nt512 cluster 1x1 g per head",
+      "params": {"ab_dtype": "fp16", "D": 8, "H": 8, "KO_TILE": 64, "TILE_I": 128, "TILE_J": 64, "TILE_S": 1, "atom_p": [1, 2, 1], "atom_v": [2, 1, 1], "c_m": 64, "num_stages": 11, "num_stages_w": 2, "num_threads": 512, "swizzle": true, "cluster": [1, 1]}
+    },
+    "N=384|S=128|dt=fp16": {
+      "label": "tcgen05 1-SM TI128 TS4 TJ64 ns6 nt512 cluster 1x2 g staged",
+      "params": {"ab_dtype": "fp16", "D": 8, "H": 8, "KO_TILE": 64, "TILE_I": 128, "TILE_J": 64, "TILE_S": 4, "atom_p": [1, 2, 1], "atom_v": [2, 1, 1], "c_m": 64, "num_stages": 6, "num_stages_w": 1, "num_threads": 512, "swizzle": true, "cluster": [1, 2]}
+    },
+    "N=512|S=16|dt=fp16": {
+      "label": "tcgen05 1-SM TI128 TS1 TJ64 ns11 nt512 cluster 1x1 g per head",
+      "params": {"ab_dtype": "fp16", "D": 8, "H": 8, "KO_TILE": 64, "TILE_I": 128, "TILE_J": 64, "TILE_S": 1, "atom_p": [1, 2, 1], "atom_v": [2, 1, 1], "c_m": 64, "num_stages": 11, "num_stages_w": 2, "num_threads": 512, "swizzle": true, "cluster": [1, 1]}
+    },
+    "N=512|S=128|dt=fp16": {
+      "label": "tcgen05 1-SM TI128 TS4 TJ64 ns6 nt512 cluster 1x2 g staged",
+      "params": {"ab_dtype": "fp16", "D": 8, "H": 8, "KO_TILE": 64, "TILE_I": 128, "TILE_J": 64, "TILE_S": 4, "atom_p": [1, 2, 1], "atom_v": [2, 1, 1], "c_m": 64, "num_stages": 6, "num_stages_w": 1, "num_threads": 512, "swizzle": true, "cluster": [1, 2]}
+    },
+    "N=512|S=512|dt=fp16": {
+      "label": "tcgen05 2-SM TI256 TS16 TJ64 ns5 nt512 cluster 2x1 g per head",
+      "params": {"ab_dtype": "fp16", "D": 8, "H": 8, "KO_TILE": 64, "TILE_I": 256, "TILE_J": 64, "TILE_S": 16, "atom_p": [1, 2, 1], "atom_v": [2, 1, 1], "c_m": 64, "num_stages": 5, "num_stages_w": 2, "num_threads": 512, "swizzle": true, "cluster": [2, 1]}
+    },
+    "N=512|S=1024|dt=fp16": {
+      "label": "tcgen05 2-SM TI256 TS8 TJ64 ns10 nt512 cluster 2x1 g per head",
+      "params": {"ab_dtype": "fp16", "D": 8, "H": 8, "KO_TILE": 64, "TILE_I": 256, "TILE_J": 64, "TILE_S": 8, "atom_p": [1, 2, 1], "atom_v": [2, 1, 1], "c_m": 64, "num_stages": 10, "num_stages_w": 2, "num_threads": 512, "swizzle": true, "cluster": [2, 1]}
+    },
+    "N=768|S=1|dt=fp16": {
+      "label": "tcgen05 1-SM TI128 TS1 TJ64 ns11 nt512 cluster 1x1 g per head",
+      "params": {"ab_dtype": "fp16", "D": 8, "H": 8, "KO_TILE": 64, "TILE_I": 128, "TILE_J": 64, "TILE_S": 1, "atom_p": [1, 2, 1], "atom_v": [2, 1, 1], "c_m": 64, "num_stages": 11, "num_stages_w": 2, "num_threads": 512, "swizzle": true, "cluster": [1, 1]}
+    },
+    "N=768|S=16|dt=fp16": {
+      "label": "tcgen05 2-SM TI256 TS2 TJ64 ns12 nt512 cluster 1x1 g per head",
+      "params": {"ab_dtype": "fp16", "D": 8, "H": 8, "KO_TILE": 64, "TILE_I": 256, "TILE_J": 64, "TILE_S": 2, "atom_p": [1, 2, 1], "atom_v": [2, 1, 1], "c_m": 64, "num_stages": 12, "num_stages_w": 2, "num_threads": 512, "swizzle": true, "cluster": [1, 1]}
+    },
+    "N=768|S=128|dt=fp16": {
+      "label": "tcgen05 2-SM TI256 TS8 TJ64 ns10 nt512 cluster 1x1 g per head",
+      "params": {"ab_dtype": "fp16", "D": 8, "H": 8, "KO_TILE": 64, "TILE_I": 256, "TILE_J": 64, "TILE_S": 8, "atom_p": [1, 2, 1], "atom_v": [2, 1, 1], "c_m": 64, "num_stages": 10, "num_stages_w": 2, "num_threads": 512, "swizzle": true, "cluster": [1, 1]}
+    },
+    "N=768|S=512|dt=fp16": {
+      "label": "tcgen05 2-SM TI256 TS8 TJ64 ns10 nt512 cluster 1x2 g per head",
+      "params": {"ab_dtype": "fp16", "D": 8, "H": 8, "KO_TILE": 64, "TILE_I": 256, "TILE_J": 64, "TILE_S": 8, "atom_p": [1, 2, 1], "atom_v": [2, 1, 1], "c_m": 64, "num_stages": 10, "num_stages_w": 2, "num_threads": 512, "swizzle": true, "cluster": [1, 2]}
+    },
+    "N=1024|S=1|dt=fp16": {
+      "label": "tcgen05 1-SM TI128 TS1 TJ64 ns11 nt512 cluster 1x1 g per head",
+      "params": {"ab_dtype": "fp16", "D": 8, "H": 8, "KO_TILE": 64, "TILE_I": 128, "TILE_J": 64, "TILE_S": 1, "atom_p": [1, 2, 1], "atom_v": [2, 1, 1], "c_m": 64, "num_stages": 11, "num_stages_w": 2, "num_threads": 512, "swizzle": true, "cluster": [1, 1]}
+    },
+    "N=1024|S=16|dt=fp16": {
+      "label": "tcgen05 2-SM TI256 TS2 TJ64 ns12 nt512 cluster 1x1 g per head",
+      "params": {"ab_dtype": "fp16", "D": 8, "H": 8, "KO_TILE": 64, "TILE_I": 256, "TILE_J": 64, "TILE_S": 2, "atom_p": [1, 2, 1], "atom_v": [2, 1, 1], "c_m": 64, "num_stages": 12, "num_stages_w": 2, "num_threads": 512, "swizzle": true, "cluster": [1, 1]}
+    },
+    "N=1024|S=128|dt=fp16": {
+      "label": "tcgen05 2-SM TI256 TS8 TJ64 ns10 nt512 cluster 1x2 g per head",
+      "params": {"ab_dtype": "fp16", "D": 8, "H": 8, "KO_TILE": 64, "TILE_I": 256, "TILE_J": 64, "TILE_S": 8, "atom_p": [1, 2, 1], "atom_v": [2, 1, 1], "c_m": 64, "num_stages": 10, "num_stages_w": 2, "num_threads": 512, "swizzle": true, "cluster": [1, 2]}
+    },
+    "N=1536|S=1|dt=fp16": {
+      "label": "tcgen05 1-SM TI128 TS1 TJ64 ns11 nt512 cluster 1x1 g per head",
+      "params": {"ab_dtype": "fp16", "D": 8, "H": 8, "KO_TILE": 64, "TILE_I": 128, "TILE_J": 64, "TILE_S": 1, "atom_p": [1, 2, 1], "atom_v": [2, 1, 1], "c_m": 64, "num_stages": 11, "num_stages_w": 2, "num_threads": 512, "swizzle": true, "cluster": [1, 1]}
+    },
+    "N=1536|S=16|dt=fp16": {
+      "label": "tcgen05 2-SM TI256 TS2 TJ64 ns12 nt512 cluster 1x1 g per head",
+      "params": {"ab_dtype": "fp16", "D": 8, "H": 8, "KO_TILE": 64, "TILE_I": 256, "TILE_J": 64, "TILE_S": 2, "atom_p": [1, 2, 1], "atom_v": [2, 1, 1], "c_m": 64, "num_stages": 12, "num_stages_w": 2, "num_threads": 512, "swizzle": true, "cluster": [1, 1]}
+    },
+    "N=1536|S=128|dt=fp16": {
+      "label": "tcgen05 2-SM TI256 TS8 TJ64 ns10 nt512 cluster 1x2 g per head",
+      "params": {"ab_dtype": "fp16", "D": 8, "H": 8, "KO_TILE": 64, "TILE_I": 256, "TILE_J": 64, "TILE_S": 8, "atom_p": [1, 2, 1], "atom_v": [2, 1, 1], "c_m": 64, "num_stages": 10, "num_stages_w": 2, "num_threads": 512, "swizzle": true, "cluster": [1, 2]}
+    },
+    "N=1536|S=512|dt=fp16": {
+      "label": "tcgen05 2-SM TI256 TS12 TJ64 ns9 nt512 cluster 2x1 g per head",
+      "params": {"ab_dtype": "fp16", "D": 8, "H": 8, "KO_TILE": 64, "TILE_I": 256, "TILE_J": 64, "TILE_S": 12, "atom_p": [1, 2, 1], "atom_v": [2, 1, 1], "c_m": 64, "num_stages": 9, "num_stages_w": 2, "num_threads": 512, "swizzle": true, "cluster": [2, 1]}
+    },
+    "N=1536|S=1024|dt=fp16": {
+      "label": "tcgen05 2-SM TI256 TS12 TJ64 ns9 nt512 cluster 1x2 g per head",
+      "params": {"ab_dtype": "fp16", "D": 8, "H": 8, "KO_TILE": 64, "TILE_I": 256, "TILE_J": 64, "TILE_S": 12, "atom_p": [1, 2, 1], "atom_v": [2, 1, 1], "c_m": 64, "num_stages": 9, "num_stages_w": 2, "num_threads": 512, "swizzle": true, "cluster": [1, 2]}
+    },
+    "N=2048|S=1|dt=fp16": {
+      "label": "tcgen05 1-SM TI128 TS1 TJ64 ns11 nt512 cluster 1x1 g per head",
+      "params": {"ab_dtype": "fp16", "D": 8, "H": 8, "KO_TILE": 64, "TILE_I": 128, "TILE_J": 64, "TILE_S": 1, "atom_p": [1, 2, 1], "atom_v": [2, 1, 1], "c_m": 64, "num_stages": 11, "num_stages_w": 2, "num_threads": 512, "swizzle": true, "cluster": [1, 1]}
+    },
+    "N=2048|S=16|dt=fp16": {
+      "label": "tcgen05 2-SM TI256 TS2 TJ64 ns12 nt512 cluster 1x1 g per head",
+      "params": {"ab_dtype": "fp16", "D": 8, "H": 8, "KO_TILE": 64, "TILE_I": 256, "TILE_J": 64, "TILE_S": 2, "atom_p": [1, 2, 1], "atom_v": [2, 1, 1], "c_m": 64, "num_stages": 12, "num_stages_w": 2, "num_threads": 512, "swizzle": true, "cluster": [1, 1]}
+    },
+    "N=2048|S=128|dt=fp16": {
+      "label": "tcgen05 2-SM TI256 TS16 TJ64 ns5 nt512 cluster 1x2 g per head",
+      "params": {"ab_dtype": "fp16", "D": 8, "H": 8, "KO_TILE": 64, "TILE_I": 256, "TILE_J": 64, "TILE_S": 16, "atom_p": [1, 2, 1], "atom_v": [2, 1, 1], "c_m": 64, "num_stages": 5, "num_stages_w": 2, "num_threads": 512, "swizzle": true, "cluster": [1, 2]}
+    },
+    "N=2048|S=512|dt=fp16": {
+      "label": "tcgen05 2-SM TI256 TS12 TJ64 ns9 nt512 cluster 2x2 g per head",
+      "params": {"ab_dtype": "fp16", "D": 8, "H": 8, "KO_TILE": 64, "TILE_I": 256, "TILE_J": 64, "TILE_S": 12, "atom_p": [1, 2, 1], "atom_v": [2, 1, 1], "c_m": 64, "num_stages": 9, "num_stages_w": 2, "num_threads": 512, "swizzle": true, "cluster": [2, 2]}
+    },
+    "N=3072|S=1|dt=fp16": {
+      "label": "tcgen05 1-SM TI128 TS1 TJ64 ns11 nt512 cluster 1x1 g per head",
+      "params": {"ab_dtype": "fp16", "D": 8, "H": 8, "KO_TILE": 64, "TILE_I": 128, "TILE_J": 64, "TILE_S": 1, "atom_p": [1, 2, 1], "atom_v": [2, 1, 1], "c_m": 64, "num_stages": 11, "num_stages_w": 2, "num_threads": 512, "swizzle": true, "cluster": [1, 1]}
+    },
+    "N=3072|S=16|dt=fp16": {
+      "label": "tcgen05 2-SM TI256 TS8 TJ64 ns10 nt512 cluster 1x1 g per head",
+      "params": {"ab_dtype": "fp16", "D": 8, "H": 8, "KO_TILE": 64, "TILE_I": 256, "TILE_J": 64, "TILE_S": 8, "atom_p": [1, 2, 1], "atom_v": [2, 1, 1], "c_m": 64, "num_stages": 10, "num_stages_w": 2, "num_threads": 512, "swizzle": true, "cluster": [1, 1]}
+    },
+    "N=3072|S=128|dt=fp16": {
+      "label": "tcgen05 2-SM TI256 TS12 TJ64 ns9 nt512 cluster 2x1 g per head",
+      "params": {"ab_dtype": "fp16", "D": 8, "H": 8, "KO_TILE": 64, "TILE_I": 256, "TILE_J": 64, "TILE_S": 12, "atom_p": [1, 2, 1], "atom_v": [2, 1, 1], "c_m": 64, "num_stages": 9, "num_stages_w": 2, "num_threads": 512, "swizzle": true, "cluster": [2, 1]}
+    },
+    "N=3072|S=512|dt=fp16": {
+      "label": "tcgen05 2-SM TI256 TS12 TJ64 ns9 nt512 cluster 2x2 g per head",
+      "params": {"ab_dtype": "fp16", "D": 8, "H": 8, "KO_TILE": 64, "TILE_I": 256, "TILE_J": 64, "TILE_S": 12, "atom_p": [1, 2, 1], "atom_v": [2, 1, 1], "c_m": 64, "num_stages": 9, "num_stages_w": 2, "num_threads": 512, "swizzle": true, "cluster": [2, 2]}
+    },
+    "N=4096|S=1|dt=fp16": {
+      "label": "tcgen05 1-SM TI128 TS1 TJ64 ns11 nt512 cluster 1x1 g per head",
+      "params": {"ab_dtype": "fp16", "D": 8, "H": 8, "KO_TILE": 64, "TILE_I": 128, "TILE_J": 64, "TILE_S": 1, "atom_p": [1, 2, 1], "atom_v": [2, 1, 1], "c_m": 64, "num_stages": 11, "num_stages_w": 2, "num_threads": 512, "swizzle": true, "cluster": [1, 1]}
+    },
+    "N=4096|S=16|dt=fp16": {
+      "label": "tcgen05 2-SM TI256 TS8 TJ64 ns10 nt512 cluster 1x1 g per head",
+      "params": {"ab_dtype": "fp16", "D": 8, "H": 8, "KO_TILE": 64, "TILE_I": 256, "TILE_J": 64, "TILE_S": 8, "atom_p": [1, 2, 1], "atom_v": [2, 1, 1], "c_m": 64, "num_stages": 10, "num_stages_w": 2, "num_threads": 512, "swizzle": true, "cluster": [1, 1]}
+    },
+    "N=4096|S=128|dt=fp16": {
+      "label": "tcgen05 2-SM TI256 TS16 TJ64 ns5 nt512 cluster 1x2 g per head",
+      "params": {"ab_dtype": "fp16", "D": 8, "H": 8, "KO_TILE": 64, "TILE_I": 256, "TILE_J": 64, "TILE_S": 16, "atom_p": [1, 2, 1], "atom_v": [2, 1, 1], "c_m": 64, "num_stages": 5, "num_stages_w": 2, "num_threads": 512, "swizzle": true, "cluster": [1, 2]}
+    },
+    "N=4096|S=512|dt=fp16": {
+      "label": "tcgen05 2-SM TI256 TS12 TJ64 ns9 nt512 cluster 2x2 g per head",
+      "params": {"ab_dtype": "fp16", "D": 8, "H": 8, "KO_TILE": 64, "TILE_I": 256, "TILE_J": 64, "TILE_S": 12, "atom_p": [1, 2, 1], "atom_v": [2, 1, 1], "c_m": 64, "num_stages": 9, "num_stages_w": 2, "num_threads": 512, "swizzle": true, "cluster": [2, 2]}
+    },
+    "N=8192|S=1|dt=fp16": {
+      "label": "tcgen05 1-SM TI128 TS1 TJ64 ns11 nt512 cluster 1x1 g per head",
+      "params": {"ab_dtype": "fp16", "D": 8, "H": 8, "KO_TILE": 64, "TILE_I": 128, "TILE_J": 64, "TILE_S": 1, "atom_p": [1, 2, 1], "atom_v": [2, 1, 1], "c_m": 64, "num_stages": 11, "num_stages_w": 2, "num_threads": 512, "swizzle": true, "cluster": [1, 1]}
+    },
+    "N=8192|S=16|dt=fp16": {
+      "label": "tcgen05 2-SM TI256 TS8 TJ64 ns10 nt512 cluster 1x1 g per head",
+      "params": {"ab_dtype": "fp16", "D": 8, "H": 8, "KO_TILE": 64, "TILE_I": 256, "TILE_J": 64, "TILE_S": 8, "atom_p": [1, 2, 1], "atom_v": [2, 1, 1], "c_m": 64, "num_stages": 10, "num_stages_w": 2, "num_threads": 512, "swizzle": true, "cluster": [1, 1]}
+    },
+    "N=8192|S=128|dt=fp16": {
+      "label": "tcgen05 2-SM TI256 TS16 TJ64 ns5 nt512 cluster 1x2 g per head",
+      "params": {"ab_dtype": "fp16", "D": 8, "H": 8, "KO_TILE": 64, "TILE_I": 256, "TILE_J": 64, "TILE_S": 16, "atom_p": [1, 2, 1], "atom_v": [2, 1, 1], "c_m": 64, "num_stages": 5, "num_stages_w": 2, "num_threads": 512, "swizzle": true, "cluster": [1, 2]}
+    },
+    "N=8192|S=512|dt=fp16": {
+      "label": "tcgen05 2-SM TI256 TS12 TJ64 ns9 nt512 cluster 2x2 g per head",
+      "params": {"ab_dtype": "fp16", "D": 8, "H": 8, "KO_TILE": 64, "TILE_I": 256, "TILE_J": 64, "TILE_S": 12, "atom_p": [1, 2, 1], "atom_v": [2, 1, 1], "c_m": 64, "num_stages": 9, "num_stages_w": 2, "num_threads": 512, "swizzle": true, "cluster": [2, 2]}
+    },
+    "N=12288|S=1|dt=fp16": {
+      "label": "tcgen05 1-SM TI128 TS1 TJ64 ns11 nt512 cluster 1x1 g per head",
+      "params": {"ab_dtype": "fp16", "D": 8, "H": 8, "KO_TILE": 64, "TILE_I": 128, "TILE_J": 64, "TILE_S": 1, "atom_p": [1, 2, 1], "atom_v": [2, 1, 1], "c_m": 64, "num_stages": 11, "num_stages_w": 2, "num_threads": 512, "swizzle": true, "cluster": [1, 1]}
+    },
+    "N=12288|S=16|dt=fp16": {
+      "label": "tcgen05 2-SM TI256 TS8 TJ64 ns10 nt512 cluster 1x1 g per head",
+      "params": {"ab_dtype": "fp16", "D": 8, "H": 8, "KO_TILE": 64, "TILE_I": 256, "TILE_J": 64, "TILE_S": 8, "atom_p": [1, 2, 1], "atom_v": [2, 1, 1], "c_m": 64, "num_stages": 10, "num_stages_w": 2, "num_threads": 512, "swizzle": true, "cluster": [1, 1]}
+    },
+    "N=12288|S=128|dt=fp16": {
+      "label": "tcgen05 2-SM TI256 TS12 TJ64 ns9 nt512 cluster 2x2 g per head",
+      "params": {"ab_dtype": "fp16", "D": 8, "H": 8, "KO_TILE": 64, "TILE_I": 256, "TILE_J": 64, "TILE_S": 12, "atom_p": [1, 2, 1], "atom_v": [2, 1, 1], "c_m": 64, "num_stages": 9, "num_stages_w": 2, "num_threads": 512, "swizzle": true, "cluster": [2, 2]}
     }
   }
 }

@@ -67,7 +67,7 @@ class PairWeightedAveragingCubinExecutable(CuTeDSLKernelLibraryExecutable):
         except (RuntimeError, TypeError, ValueError) as error:
             raise CuTeDSLKernelVariantUnavailable(
                 f"No pair_weighted_averaging CUBIN for SM{target_sm}, I={I}, J={J}, S={S}, "
-                f"D={D}, c_m={c_m}, dtype={dtype}"
+                f"D={D}, c_m={c_m}, dtype={dtype}: {error}"
             ) from error
 
         self._kernel_library = kernel_library

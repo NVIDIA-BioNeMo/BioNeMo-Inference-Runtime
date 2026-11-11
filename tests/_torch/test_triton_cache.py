@@ -268,6 +268,33 @@ def test_fused_ln_projection_driver_is_deterministic_in_cuda_graph() -> None:
     torch.testing.assert_close(graph_output.float(), expected, rtol=0.05, atol=0.05)
 
 
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
+@requires_driver_path
+def test_fused_ln_projection_leaves_i32_overflowing_strides_to_the_jit_launch(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The driver's scalar slots are i32 and would wrap a 2**31 batch stride, so such a call takes the JIT launch."""
+    pytest.importorskip("cuda.bindings.driver")
+
+    # D=48 is not a multiple of the streaming chunk, so bfloat16 takes the non-streaming kernel.
+    i, j, d, heads = 9, 13, 48, 4
+    stride, rows = 2**31 + 64, i * j * d
+    if torch.cuda.mem_get_info()[0] < 2 * (stride + rows) + (1 << 30):
+        pytest.skip("needs about 5 GiB of free device memory")
+    torch.manual_seed(123)
+    z = torch.empty(stride + rows, device="cuda", dtype=torch.bfloat16).as_strided((2, i, j, d), (stride, j * d, d, 1))
+    z.copy_(torch.randn(z.shape, device="cuda", dtype=z.dtype))
+    ln_weight, ln_bias = torch.randn(2, d, device="cuda", dtype=z.dtype).unbind()
+    proj_weight = torch.randn(heads, d, device="cuda", dtype=z.dtype)
+    op = FusedLNProjMoveaxisPad(D=d, H=heads, dtype=z.dtype)
+    driver = op._kernels[z.dtype].driver
+    assert driver is not None and not op.streams(z.dtype)
+    monkeypatch.setattr(type(driver), "launch_with", lambda *args, **kwargs: pytest.fail("driver took a 2**31 stride"))
+
+    actual = op(z, ln_weight, ln_bias, proj_weight, multiple=8)
+
+    expected = _ln_proj_moveaxis_pad_reference(z, ln_weight, ln_bias, proj_weight, actual.shape[-1])
+    torch.testing.assert_close(actual.float(), expected, rtol=0.05, atol=0.05)
+
+
 def _ln_proj_moveaxis_pad_reference(
     z: torch.Tensor,
     ln_weight: torch.Tensor,
@@ -309,6 +336,17 @@ def test_blackwell_streaming_keeps_d128_unrolled(sm: int, monkeypatch: pytest.Mo
     """Keep the existing loop for the D128/N400 case that regressed in the Blackwell screen."""
     monkeypatch.setattr("bionemo_ir.dsl_kernels.triton.fused_ln_proj_moveaxis_pad._device_info", lambda _: (sm, 148))
     assert _streaming_variant(400 * 400, 400, torch.device("cuda", 0), _STREAMING_TUNING[sm], True, 128) == (64, 4, 1)
+
+
+@pytest.mark.parametrize("sm", [100, 103])
+def test_blackwell_streaming_layernorm_d128_takes_the_wide_tile(sm: int, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Blackwell LayerNorm at D128 (the pair-weighted-averaging pair bias) takes the 128-row tile; other widths keep 64."""
+    monkeypatch.setattr("bionemo_ir.dsl_kernels.triton.fused_ln_proj_moveaxis_pad._device_info", lambda _: (sm, 148))
+    device = torch.device("cuda", 0)
+    tuning = _STREAMING_TUNING[sm]
+    assert _streaming_variant(512 * 512, 512, device, tuning, False, 128) == (128, 4, 1)
+    assert _streaming_variant(512 * 512, 512, device, tuning, False, 256) == (64, 4, 1)
+    assert _streaming_variant(400 * 400, 400, device, tuning, True, 128) == (64, 4, 1)
 
 
 @pytest.mark.parametrize("sm", [90, 100, 103])
@@ -582,7 +620,8 @@ def test_float16_op_streams_after_a_bfloat16_op_of_the_same_shape(monkeypatch: p
     FusedLNProjMoveaxisPad(D=128, H=4, dtype=torch.bfloat16)
     op = FusedLNProjMoveaxisPad(D=128, H=4, dtype=torch.float16)
     assert op.streams(torch.float16)
-    assert {(torch.float16, tile_j, 1) for tile_j, _ in op._streaming_tuning.tiles} <= set(op._streaming_kernels)
+    tile_j, _, stages = _streaming_variant(128 * 128, 128, torch.device("cuda"), op._streaming_tuning, False, 128)
+    assert (torch.float16, tile_j, stages) in op._streaming_kernels
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")

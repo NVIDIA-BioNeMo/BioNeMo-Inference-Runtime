@@ -49,7 +49,9 @@ void bind(nb::module_& parent)
     .def_prop_ro("tile_i", [](KernelConfig const& config) { return config.embedded_image->tile_i; })
     .def_prop_ro("tile_s", [](KernelConfig const& config) { return config.embedded_image->tile_s; })
     .def_prop_ro("tile_j", [](KernelConfig const& config) { return config.embedded_image->tile_j; })
-    .def_prop_ro("num_threads", [](KernelConfig const& config) { return config.embedded_image->num_threads; });
+    .def_prop_ro("num_threads", [](KernelConfig const& config) { return config.embedded_image->num_threads; })
+    .def_prop_ro("cluster_i", [](KernelConfig const& config) { return config.embedded_image->cluster_i; })
+    .def_prop_ro("cluster_s", [](KernelConfig const& config) { return config.embedded_image->cluster_s; });
 
   nb::class_<LaunchParams>(module, "LaunchParams")
     .def(nb::init<>())

@@ -261,11 +261,12 @@ inline CoordTensorS4 make_sm90_bias_coord(Tensor4View const& view)
   }};
 }
 
+/* Up to kTmaMaxRank extents and element strides; a source of lower rank leaves the trailing ones zero. */
 struct TmaTensorSource
 {
   std::uint64_t data;
-  std::array<std::uint64_t, 4> dimensions;
-  std::array<std::uint64_t, 4> strides;
+  std::array<std::uint64_t, kTmaMaxRank> dimensions;
+  std::array<std::uint64_t, kTmaMaxRank> strides;
 };
 
 inline TmaTensorSource make_tma_tensor2_source(Tensor2View const& view, bool is_column_major)
@@ -276,11 +277,9 @@ inline TmaTensorSource make_tma_tensor2_source(Tensor2View const& view, bool is_
     {
       static_cast<std::uint64_t>(view.shape[0]),
       static_cast<std::uint64_t>(view.shape[1]),
-      0,
-      0,
     },
-    is_column_major ? std::array<std::uint64_t, 4>{1, dynamic_stride, 0, 0}
-                    : std::array<std::uint64_t, 4>{dynamic_stride, 1, 0, 0},
+    is_column_major ? std::array<std::uint64_t, kTmaMaxRank>{1, dynamic_stride}
+                    : std::array<std::uint64_t, kTmaMaxRank>{dynamic_stride, 1},
   };
 }
 
@@ -336,13 +335,11 @@ inline void encode_tma_descriptor(
   TmaTensorSource const& source,
   char const* name)
 {
-  constexpr std::uint32_t kSourceRank = 4;
   constexpr std::uint64_t kTmaAddressAlignment = 16;
   constexpr std::uint64_t kTmaStrideAlignment = 16;
   constexpr std::uint64_t kMaxTmaGlobalDimension = std::uint64_t{1} << 32;
   constexpr std::uint64_t kMaxTmaGlobalStride = std::uint64_t{1} << 40;
-  static_assert(kSourceRank <= kTmaMaxRank);
-  if (info.rank == 0 || info.rank > kSourceRank)
+  if (info.rank == 0 || info.rank > kTmaMaxRank)
     throw std::invalid_argument("CUBIN has an unsupported TMA rank");
   if (info.data_type != expected_dtype)
     throw std::invalid_argument("CUBIN has a mismatched TMA data type");
@@ -350,7 +347,7 @@ inline void encode_tma_descriptor(
 
   std::array<std::uint64_t, kTmaMaxRank> global_dimensions{};
   std::array<std::uint64_t, kTmaMaxRank - 1> global_strides{};
-  std::array<bool, kSourceRank> seen_dimensions{};
+  std::array<bool, kTmaMaxRank> seen_dimensions{};
   std::uint64_t const item_size = 2;
   for (std::uint32_t index = 0; index < info.rank; ++index)
   {

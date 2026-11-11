@@ -340,11 +340,29 @@ _FAMILY_SPECS: dict[str, _FamilySpec] = {
             _Field("tile_s", _POSITIVE, "std::uint32_t tile_s;", suffix="U"),
             _Field("tile_j", _POSITIVE, "std::uint32_t tile_j;", suffix="U"),
             _Field("num_threads", _POSITIVE, "std::uint32_t num_threads;", suffix="U"),
+            # The SM90 or SM100 kernel within its launch ABI: 0 for D=32, 1 for D=8. Images published before carry
+            # none.
+            _Field("kernel_variant", _INDEX, "std::int32_t kernel_variant;", default=0),
+            # Token tiles and MSA-row tiles per cluster. Images published before carry none and launch no cluster.
+            _Field("cluster_i", _POSITIVE, "std::uint32_t cluster_i;", suffix="U", default=1),
+            _Field("cluster_s", _POSITIVE, "std::uint32_t cluster_s;", suffix="U", default=1),
         ),
         runtime_key=("is_bfloat16", "D", "c_m", "@n_anchor", "@s_anchor"),
         alias=_AliasSpec(
             ("n_anchor", "s_anchor"),
             ("std::int32_t n_anchor;", "std::int32_t s_anchor;"),
+        ),
+        sm90=_Sm90Spec("enabled", ("w", "v", "g", "wo"), ranks=(4, 4, 4, 2), optional=(("output", 4),)),
+        # The tcgen05 kernels split each head's d out of v, a rank-5 map; the D=8 kernel loads v transposed, which
+        # changes the map's dimension order and box, not its rank. Only the D=32 TMA epilogue records the output store,
+        # with g as a rank-5 map; the D=8 kernel records a rank-4 g, and the D=32 direct and pair tiles neither. The
+        # D=32 split tile leaves Wo to the caller and records no Wo map either.
+        sm100=_Sm100Spec(
+            "enabled",
+            ("w", "v"),
+            clusters=True,
+            ranks=(4, 5),
+            optional=(("wo", 2), ("g", (4, 5)), ("output", 4)),
         ),
     ),
     "pairwise_attention": _ATTENTION_SPEC,

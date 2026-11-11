@@ -16,12 +16,15 @@
 
 from __future__ import annotations
 
+import functools
+import json
 import math
 import os
 from collections.abc import Mapping
 from dataclasses import dataclass, fields
+from types import MappingProxyType
 
-from bionemo_ir._torch.utils.kernel import get_config_file_name, load_kernel_configs
+from bionemo_ir._torch.utils.kernel import KernelConfigBundle, get_config_file_name, load_kernel_configs
 
 _KERNEL_H = 8
 
@@ -34,7 +37,7 @@ _SUPPORTED_DIMS: tuple[tuple[int, int], ...] = (
 )
 _KERNEL_D, _KERNEL_CM = _SUPPORTED_DIMS[0]
 
-# Defaults for fp16 (only bf16 is tuned) or a missing tuning file.
+# Defaults for a dtype its tuning file does not list, or a missing tuning file.
 # At D=8, each cp.async row is one 128-bit vector, so TILE_I and TILE_J
 # must be multiples of num_threads.
 _DEFAULT_PARAMS_BY_DIMS: dict[tuple[int, int], dict[str, object]] = {
@@ -43,14 +46,23 @@ _DEFAULT_PARAMS_BY_DIMS: dict[tuple[int, int], dict[str, object]] = {
     (8, 128): {"TILE_I": 64, "TILE_J": 64, "TILE_S": 4, "KO_TILE": 32, "num_stages": 3},
 }
 
-# The auto-chunk gets the same performance with better memory utilization when token count exceeds this limit.
+# Default limit when a tuning file sets none for the dtype. Measured limits live in the file, next to the
+# measurements. A dtype the file does not list was not swept, so it never takes a limit higher than this default.
 _MAX_FUSED_TOKENS_BY_DIMS: dict[tuple[int, int], int | None] = {
     (32, 64): 1536,
     (8, 64): 2048,
     (8, 128): 2048,
 }
+_FUSED_LIMIT_DTYPES = ("bf16", "fp16")
 
-_SUPPORTED_SM = (80, 90, 100, 103)
+_SUPPORTED_SM = (80, 90, 100, 103, 120, 121)
+
+# Kernels that load v transposed, [B, S, H*D, N] with j contiguous, so the value GEMM's B operand arrives in 128-byte
+# rows. Every other kernel loads [B, S, N, H*D].
+_TRANSPOSED_V_KERNELS = frozenset({("sm100", "d8")})
+# The SM100 D=32 split tile: its 8-row value MMA fills TMEM, so the kernel writes the gated value Z [B, S, I, H*D] and
+# the caller applies Wo as one GEMM.
+_SM100_SPLIT_TILE_S = 8
 
 
 def is_supported_dims(H: int, D: int, c_m: int) -> bool:
@@ -58,22 +70,47 @@ def is_supported_dims(H: int, D: int, c_m: int) -> bool:
     return H == _KERNEL_H and (D, c_m) in _SUPPORTED_DIMS
 
 
-def max_fused_tokens(D: int, c_m: int) -> int | None:
-    """Token count above which the chunked eager fallback is faster."""
-    return _MAX_FUSED_TOKENS_BY_DIMS.get((D, c_m))
+def max_fused_tokens(
+    D: int,
+    c_m: int,
+    sm_version: int | None = None,
+    dtype_str: str = "bf16",
+) -> int | None:
+    """Token count above which the chunked eager fallback is the supported path, or ``None`` for no limit.
+
+    A tuning file's ``max_fused_tokens`` is either one bf16 limit or a mapping from dtype to limit, each
+    measured on that SM. A dtype the file does not list keeps the default for ``(D, c_m)``, or the file's bf16
+    limit when that is lower. With no ``sm_version`` and no file, the default applies.
+    """
+    default = _MAX_FUSED_TOKENS_BY_DIMS.get((D, c_m))
+    if sm_version is None:
+        return default
+    file_limits = _max_fused_tokens_in_file(sm_version, D, c_m)
+    if dtype_str in file_limits:
+        return file_limits[dtype_str]
+    bf16_limit = file_limits.get("bf16")
+    if default is None or bf16_limit is None:
+        return default
+    return min(default, bf16_limit)
 
 
-def is_profitable_shape(H: int, D: int, c_m: int, tokens: int) -> bool:
-    """Whether fusing this shape is worth it, from dimensions alone.
+def is_profitable_shape(
+    H: int,
+    D: int,
+    c_m: int,
+    tokens: int,
+    sm_version: int | None = None,
+    dtype_str: str = "bf16",
+) -> bool:
+    """Whether fusing this shape is worth it, from dimensions, dtype, and the SM.
 
-    Callers that own an eager fallback should consult this *before* building
-    kernel inputs: declining inside the op only reaches its own unchunked
-    reference, which is both slower and the memory blow-up fusing exists to
-    avoid.
+    Callers that own an eager fallback should consult this *before* building kernel inputs: declining inside
+    the op only reaches its own unchunked reference. The limit is the largest measured size, not a claim that
+    the fused kernel wins at every size past it.
     """
     if not is_supported_dims(H, D, c_m):
         return False
-    token_limit = max_fused_tokens(D, c_m)
+    token_limit = max_fused_tokens(D, c_m, sm_version, dtype_str)
     return token_limit is None or tokens <= token_limit
 
 
@@ -83,6 +120,27 @@ def config_file_name(sm_version: int, D: int, c_m: int) -> str:
 
 
 _PWA_CONFIGS_DIR = os.path.join(os.path.dirname(__file__), "configs")
+
+
+@functools.cache
+def _max_fused_tokens_in_file(sm_version: int, D: int, c_m: int) -> Mapping[str, int | None]:
+    """Read one tuning file's token limits by dtype. A bare limit is bf16's; a missing file or field lists none."""
+    path = os.path.join(_PWA_CONFIGS_DIR, config_file_name(sm_version, D, c_m))
+    if not os.path.exists(path):
+        return MappingProxyType({})
+    with open(path) as handle:
+        raw = json.load(handle)
+    limits = raw.get("max_fused_tokens", {})
+    if not isinstance(limits, dict):
+        limits = {"bf16": limits}
+    for dtype_str, limit in limits.items():
+        if dtype_str not in _FUSED_LIMIT_DTYPES:
+            raise ValueError(f"max_fused_tokens in {path} lists {dtype_str!r}; expected one of {_FUSED_LIMIT_DTYPES}")
+        if limit is not None and (not isinstance(limit, int) or isinstance(limit, bool) or limit <= 0):
+            raise ValueError(
+                f"{dtype_str} max_fused_tokens in {path} must be a positive integer or null, got {limit!r}"
+            )
+    return MappingProxyType(dict(limits))
 
 
 @dataclass(frozen=True, slots=True)
@@ -103,15 +161,16 @@ class PWAConfigParams:
     num_stages: int = 4
     num_stages_w: int = 2
     swizzle: bool = True
+    cluster: tuple[int, int] = (1, 1)
 
     @classmethod
     def from_dict(cls, params: Mapping[str, object]) -> PWAConfigParams:
         """Parse one raw JSON ``params`` mapping into immutable values."""
         known = {field.name for field in fields(cls)}
         values = {name: value for name, value in params.items() if name in known}
-        for atom_name in ("atom_v", "atom_p"):
-            if atom_name in values:
-                values[atom_name] = tuple(values[atom_name])
+        for name in ("atom_v", "atom_p", "cluster"):
+            if name in values:
+                values[name] = tuple(values[name])
         return cls(**values)
 
     @classmethod
@@ -142,6 +201,7 @@ class PWAConfigParams:
             self.num_stages,
             self.num_stages_w,
             self.swizzle,
+            self.cluster,
         )
 
     def config_key(self) -> tuple[object, ...]:
@@ -156,10 +216,28 @@ class PWAConfigSelection:
     params: PWAConfigParams
     n_anchor: int | None = None
     s_anchor: int | None = None
+    kernel_abi: str = "sm80"
+    kernel_variant: str | None = None
 
     def machine_key(self) -> tuple[object, ...]:
         """Return the selected machine-code identity."""
         return self.params.machine_key()
+
+    @property
+    def transposed_v(self) -> bool:
+        """Whether the selected kernel loads v as ``[B, S, H*D, N]`` with j contiguous."""
+        return (self.kernel_abi, self.kernel_variant) in _TRANSPOSED_V_KERNELS
+
+    @property
+    def writes_gated_value(self) -> bool:
+        """Whether the selected kernel stops at the gated value and leaves the Wo projection to the caller."""
+        return self.kernel_abi == "sm100" and self.kernel_variant is None and self.params.TILE_S == _SM100_SPLIT_TILE_S
+
+
+def loads_transposed_value(sm_version: int, D: int, c_m: int) -> bool:
+    """Whether the kernel ``sm_version`` runs for ``(D, c_m)`` loads v transposed. One file's tiles share a kernel."""
+    bundle = load_kernel_configs(_PWA_CONFIGS_DIR, config_file_name(sm_version, D, c_m))
+    return bundle is not None and (bundle.kernel_abi, bundle.kernel_variant) in _TRANSPOSED_V_KERNELS
 
 
 def _parse_key(key: str) -> tuple[int, int, str]:
@@ -179,9 +257,20 @@ def _default_selection(
     H: int,
     D: int,
     c_m: int,
+    kernel_abi: str = "sm80",
+    kernel_variant: str | None = None,
 ) -> PWAConfigSelection:
     """Build the historical untuned ``PWAConfig`` defaults without importing it."""
-    return PWAConfigSelection(params=default_params(dtype_str, H, D, c_m))
+    return PWAConfigSelection(
+        params=default_params(dtype_str, H, D, c_m), kernel_abi=kernel_abi, kernel_variant=kernel_variant
+    )
+
+
+_SelectionBucket = tuple[PWAConfigSelection, tuple[PWAConfigSelection, ...]]
+# Selections by loaded bundle and call axes. An entry keeps its bundle alive, so no other bundle can take the id
+# in its key; reloading a file, or another configs directory, yields a new bundle and a fresh selection.
+_SELECTIONS: dict[tuple[object, ...], tuple[object, _SelectionBucket]] = {}
+_MAX_SELECTIONS = 4096
 
 
 def _select_pwa_config_selection_bucket(
@@ -193,13 +282,26 @@ def _select_pwa_config_selection_bucket(
     H: int = _KERNEL_H,
     D: int = _KERNEL_D,
     c_m: int = _KERNEL_CM,
-) -> tuple[PWAConfigSelection, tuple[PWAConfigSelection, ...]]:
+) -> _SelectionBucket:
     """Return the nearest selection and unique configs in its nearest-N bucket."""
     bundle = load_kernel_configs(_PWA_CONFIGS_DIR, config_file_name(sm_version, D, c_m))
+    key = (id(bundle), sm_version, I, J, S, dtype_str, H, D, c_m)
+    cached = _SELECTIONS.get(key)
+    if cached is not None:
+        return cached[1]
+    selection = _select_in_bundle(bundle, I, J, S, dtype_str, H, D, c_m)
+    if len(_SELECTIONS) >= _MAX_SELECTIONS:
+        _SELECTIONS.clear()
+    _SELECTIONS[key] = (bundle, selection)
+    return selection
 
-    # The shipped tuning data is bf16-only. fp16 intentionally retains the
-    # original PWAConfig defaults instead of borrowing bf16 tile choices.
-    if bundle is not None and dtype_str == "bf16":
+
+def _select_in_bundle(
+    bundle: KernelConfigBundle | None, I: int, J: int, S: int, dtype_str: str, H: int, D: int, c_m: int
+) -> _SelectionBucket:
+    # Tuning files list configs per dtype. A dtype a file does not list keeps
+    # the original PWAConfig defaults instead of borrowing another dtype's tiles.
+    if bundle is not None:
         side = math.sqrt(float(I) * float(J))
         candidates = [
             (n_anchor, s_anchor, key)
@@ -222,6 +324,8 @@ def _select_pwa_config_selection_bucket(
                     params=PWAConfigParams.from_dict(raw_params),
                     n_anchor=n_anchor,
                     s_anchor=s_anchor,
+                    kernel_abi=bundle.kernel_abi,
+                    kernel_variant=bundle.kernel_variant,
                 )
 
             selected = make_selection(selected_key)
@@ -231,7 +335,8 @@ def _select_pwa_config_selection_bucket(
                 variants.setdefault(selection.params.config_key(), selection)
             return selected, tuple(variants.values())
 
-    default = _default_selection(dtype_str, H, D, c_m)
+    kernel = ("sm80", None) if bundle is None else (bundle.kernel_abi, bundle.kernel_variant)
+    default = _default_selection(dtype_str, H, D, c_m, *kernel)
     return default, (default,)
 
 

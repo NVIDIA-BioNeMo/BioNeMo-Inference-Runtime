@@ -81,6 +81,7 @@ _SM90_LAUNCH_SHAPES = {
     "dual_gemm_x0_x1": (("x0", "x1", "w0", "w1", "output"), 2, True, 128),
     "dual_gemm_x_x": (("x0", "x1", "w0", "w1", "output"), 2, True, 128),
     "outer_product_mean": (("a", "a2", "b", "w"), (3, 4, 3, 2), False, 384),
+    "pair_weighted_averaging": (("w", "v", "g", "wo"), (4, 4, 4, 2), False, 384),
     "pairwise_attention": (("q", "k", "v", "bias", "output"), 4, False, 128),
     "transition_mlp": (("x", "w1", "w2", "residual", "output"), 2, False, 384),
     "triangle_attention": (("q", "k", "v", "bias", "output"), 4, False, 128),
@@ -100,6 +101,7 @@ _SM100_LAUNCH_SHAPES = {
     "pairwise_attention": (("q", "k", "v", "bias", "output"), 4, False, 512),
     "transition_mlp": (("x", "w1", "w2"), (2, 4, 2), True, 512),
     "outer_product_mean": (("a", "b", "w", "output"), (4, 3, 2, 4), True, 352),
+    "pair_weighted_averaging": (("w", "v"), (4, 5), True, 512),
     "triangle_attention": (("q", "k", "v", "bias", "output"), 4, False, 512),
 }
 
@@ -248,11 +250,14 @@ def _metadata(family: str, dtype: str, kernel_sm: int) -> dict[str, object]:
             "tile_i": 64,
             "tile_s": 32,
             "tile_j": 64,
-            "num_threads": 128,
-            "H": 4,
+            "num_threads": {90: 384, 100: 512}.get(kernel_sm, 128),
+            "H": 8,
             "D": 32,
-            "c_m": 16,
+            "c_m": 64,
             "runtime_aliases": [{"n_anchor": 64, "s_anchor": 128}],
+            "sm90_launch": _sm90_launch(family, dtype) if kernel_sm == 90 else None,
+            # Omitted below SM100, and the cluster fields everywhere, so records published before them stay covered.
+            **({"sm100_launch": _sm100_launch(family, dtype)} if kernel_sm == 100 else {}),
         }
     elif family in {"pairwise_attention", "triangle_attention"}:
         concrete = {
@@ -734,17 +739,20 @@ def test_sm90_outer_product_mean_rejects_a_rank_outside_its_set(
         materializer.verify_packs([(family, index)])
 
 
-@pytest.mark.parametrize("family", ["trimul_kf_k1", "trimul_kf_k3"])
+@pytest.mark.parametrize("family", ["pair_weighted_averaging", "trimul_kf_k1", "trimul_kf_k3"])
 def test_sm90_registry_renders_per_operand_tma_ranks(tmp_path: Path, family: str) -> None:
-    """A family mixing rank-2 rows with rank-3 channel-major buffers records each operand's own rank."""
+    """A family mixing rank-2, rank-3, or rank-4 TMA maps records each operand's own rank."""
     index = _write_case(tmp_path / "source", family, kernel_sm=90)
     result = materializer.materialize([(family, index)], tmp_path / "build")
     source = (result.output_dir / f"{family}_registry.cpp").read_text()
 
     names, ranks, _, _ = _SM90_LAUNCH_SHAPES[family]
-    rendered = [int(line.strip().rstrip("U,")) for line in source.splitlines() if line.strip() in {"2U,", "3U,"}]
+    rendered = [int(line.strip().rstrip("U,")) for line in source.splitlines() if line.strip() in {"2U,", "3U,", "4U,"}]
     assert rendered == list(ranks)
-    assert "CU_TENSOR_MAP_DATA_TYPE_BFLOAT16" in source
+    expected_dtype = (
+        "CU_TENSOR_MAP_DATA_TYPE_BFLOAT16" if family in _BF16_ONLY_FAMILIES else "CU_TENSOR_MAP_DATA_TYPE_FLOAT16"
+    )
+    assert expected_dtype in source
 
 
 def test_window_attention_sm90_registry_has_no_tma_metadata(tmp_path: Path) -> None:
@@ -1073,6 +1081,79 @@ def test_trimul_kf_k1_padded_image_renders_its_row_chunk_map(tmp_path: Path, mon
     monkeypatch.setitem(_SM90_LAUNCH_SHAPES, family, ((*names, "x_chunk"), (*ranks, 2), epi_tile, threads))
     index = _write_case(tmp_path / "wrong_rank", family, kernel_sm=90)
     with pytest.raises(materializer.MaterializationError, match=r"tma_descriptors\.x_chunk\.rank must be 3"):
+        materializer.verify_packs([(family, index)])
+
+
+def test_pair_weighted_averaging_sm90_output_map_is_optional(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The D=32 Hopper kernel stores its output from registers and renders a rank-0 output map; the D=8 kernel
+    records the rank-4 map its TMA store encodes."""
+    family = "pair_weighted_averaging"
+    names, ranks, epi_tile, threads = _SM90_LAUNCH_SHAPES[family]
+    index = _write_case(tmp_path / "register_store", family, kernel_sm=90)
+    result = materializer.materialize([(family, index)], tmp_path / "register_build")
+    header = (result.output_dir / f"{family}_registry.h").read_text()
+    source = (result.output_dir / f"{family}_registry.cpp").read_text()
+    assert "TmaDescriptorInfo output;" in header
+    assert "std::int32_t kernel_variant;" in header
+    assert "      {},\n    },\n" in source
+
+    monkeypatch.setitem(_SM90_LAUNCH_SHAPES, family, ((*names, "output"), (*ranks, 4), epi_tile, threads))
+    index = _write_case(tmp_path / "tma_store", family, kernel_sm=90)
+    result = materializer.materialize([(family, index)], tmp_path / "tma_build")
+    source = (result.output_dir / f"{family}_registry.cpp").read_text()
+    rendered = [int(line.strip().rstrip("U,")) for line in source.splitlines() if line.strip() in {"2U,", "4U,"}]
+    assert rendered == [*ranks, 4]
+    assert "      {},\n    },\n" not in source
+
+    monkeypatch.setitem(_SM90_LAUNCH_SHAPES, family, ((*names, "output"), (*ranks, 2), epi_tile, threads))
+    index = _write_case(tmp_path / "wrong_rank", family, kernel_sm=90)
+    with pytest.raises(materializer.MaterializationError, match=r"tma_descriptors\.output\.rank must be 4"):
+        materializer.verify_packs([(family, index)])
+
+
+def _sm100_ranks(source: str) -> list[int]:
+    """The TMA ranks a generated registry renders, in order."""
+    return [int(line.strip().rstrip("U,")) for line in source.splitlines() if line.strip() in {"2U,", "4U,", "5U,"}]
+
+
+@pytest.mark.parametrize(
+    "maps,ranks",
+    [((), ()), (("wo",), (2,)), (("wo", "g", "output"), (2, 5, 4)), (("wo", "g"), (2, 4))],
+    ids=["d32-split", "d32-direct-or-pair", "d32-tma-epilogue", "d8"],
+)
+def test_pair_weighted_averaging_sm100_registry_renders_each_kernels_maps(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, maps: tuple[str, ...], ranks: tuple[int, ...]
+) -> None:
+    """Every tcgen05 image maps w and a rank-5 v, and all but the D=32 split tile map Wo. Only the D=32 TMA epilogue
+    adds a rank-5 g and the output store, and the D=8 kernel a rank-4 g; a map an image does not record renders as
+    rank 0."""
+    family = "pair_weighted_averaging"
+    names, required, clusters, threads = _SM100_LAUNCH_SHAPES[family]
+    monkeypatch.setitem(_SM100_LAUNCH_SHAPES, family, ((*names, *maps), (*required, *ranks), clusters, threads))
+    index = _write_case(tmp_path / "source", family, kernel_sm=100)
+    result = materializer.materialize([(family, index)], tmp_path / "build")
+    header = (result.output_dir / f"{family}_registry.h").read_text()
+    source = (result.output_dir / f"{family}_registry.cpp").read_text()
+
+    assert "SM100LaunchInfo sm100;" in header and "SM90LaunchInfo sm90;" in header
+    assert all(f"  TmaDescriptorInfo {name};" in header for name in ("w", "v", "wo", "g", "output"))
+    assert "std::uint32_t cluster_i;" in header and "std::uint32_t cluster_s;" in header
+    assert '"pair_weighted_averaging_sm100"' in source
+    assert _sm100_ranks(source) == [*required, *ranks]
+    assert source.count("      {},\n") == 3 - len(maps)
+
+
+@pytest.mark.parametrize("name,rank", [("v", 4), ("wo", 3), ("g", 3), ("output", 5)])
+def test_pair_weighted_averaging_sm100_rejects_a_map_of_another_rank(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, name: str, rank: int
+) -> None:
+    family = "pair_weighted_averaging"
+    names, required, clusters, threads = _SM100_LAUNCH_SHAPES[family]
+    ranks = dict(zip(names, required, strict=True)) | {"wo": 2, "g": 5, "output": 4, name: rank}
+    monkeypatch.setitem(_SM100_LAUNCH_SHAPES, family, (tuple(ranks), tuple(ranks.values()), clusters, threads))
+    index = _write_case(tmp_path / "source", family, kernel_sm=100)
+
+    with pytest.raises(materializer.MaterializationError, match=rf"tma_descriptors\.{name}\.rank must be"):
         materializer.verify_packs([(family, index)])
 
 

@@ -17,14 +17,17 @@
 import gzip
 import hashlib
 import importlib.util
+import io
+import json
 import sys
+import urllib.error
+import urllib.request
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
 
-SCRIPT = (
-    Path(__file__).resolve().parents[2] / ".agents" / "skills" / "bench-perf-oss" / "dataset" / "rebuild_dataset.py"
-)
+SCRIPT = Path(__file__).resolve().parents[2] / "skills" / "bench-perf-oss" / "dataset" / "rebuild_dataset.py"
 _spec = importlib.util.spec_from_file_location("bench_perf_oss_rebuild_dataset", SCRIPT)
 rebuild = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(rebuild)
@@ -144,3 +147,62 @@ def test_symlink_escape_rejected(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="Dataset path escapes data root"):
         rebuild.fetch_structure(data, "ground_truth/7PV5.cif", None, {}, False)
     assert not (outside / "7PV5.cif").exists()
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "file:///etc/passwd",
+        "http://health.api.nvidia.com",
+        "https://user:password@example.com",
+        "https://",
+        "https://example.com/#fragment",
+    ],
+)
+def test_unsafe_service_url_rejected_before_network(monkeypatch, url):
+    def unexpected_network(*args, **kwargs):
+        pytest.fail("Rejected URL reached the network")
+
+    monkeypatch.setattr(rebuild.urllib.request, "build_opener", unexpected_network)
+    with pytest.raises(ValueError, match="HTTPS service URL"):
+        rebuild.http_get(url)
+    with pytest.raises(ValueError, match="HTTPS service URL"):
+        rebuild.MsaClient("test-key", base=url)
+
+
+@pytest.mark.parametrize("code", [301, 302, 303, 307, 308])
+def test_authenticated_redirects_are_refused(code):
+    request = urllib.request.Request(rebuild.MSA_BASE, headers={"Authorization": "Bearer test-key"})
+    with pytest.raises(urllib.error.HTTPError, match="Redirect refused"):
+        rebuild._NoRedirect().redirect_request(request, io.BytesIO(), code, "redirect", {}, "https://other.example/")
+
+
+def test_msa_authentication_and_async_polling(monkeypatch):
+    calls = []
+
+    class Response:
+        def __init__(self, status, headers, body):
+            self.status, self.headers, self.body = status, headers, body
+
+        def read(self):
+            return json.dumps(self.body).encode()
+
+    @contextmanager
+    def open_https(request, timeout):
+        calls.append((request.full_url, request.get_header("Authorization"), timeout))
+        if len(calls) == 1:
+            yield Response(202, {"nvcf-reqid": "test-request"}, {})
+        else:
+            yield Response(200, {}, {"result": "alignment"})
+
+    monkeypatch.setattr(rebuild, "_open_https", open_https)
+    assert rebuild.MsaClient("test-key")._post("/predict", {"sequence": "ACDE"}) == {"result": "alignment"}
+    assert calls == [
+        (rebuild.MSA_BASE + "/predict", "Bearer test-key", 900),
+        (rebuild.NVCF_STATUS.format(reqid="test-request"), "Bearer test-key", 120),
+    ]
+
+
+def test_poll_request_id_cannot_change_request_target():
+    with pytest.raises(ValueError, match="Invalid NVCF request ID"):
+        rebuild.MsaClient("test-key")._poll("../../other?token=value")

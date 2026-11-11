@@ -59,8 +59,9 @@ numerical evidence, and experiment stopping rules.
   launching GPU attempts. Freeze the workload and source identity, change one
   lever at a time, and close a repeat-confirmed pass/OOM bracket.
 - **BioIR-versus-OSS folding latency or quality:** use
-  [`bench-perf-oss`](../bench-perf-oss/SKILL.md). A synthetic capacity workload
-  has no folding ground truth and cannot support a quality claim.
+  [`bench-perf-oss`](../../../skills/bench-perf-oss/SKILL.md). A synthetic
+  capacity workload has no folding ground truth and cannot support a quality
+  claim.
 
 ## The four transferable levers
 
@@ -1028,7 +1029,7 @@ alone caused the failure.
 For comparative latency work, keep both implementations on the default
 allocator as required by [the benchmark protocol][bench-alloc].
 
-[bench-alloc]: ../bench-perf-oss/measurement.md#allocator-flags--leave-pytorch-on-its-default
+[bench-alloc]: ../../../skills/bench-perf-oss/measurement.md#allocator-flags--leave-pytorch-on-its-default
 
 ## Reduce-then-verify (when applying a found fix)
 

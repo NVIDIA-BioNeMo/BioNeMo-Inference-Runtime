@@ -318,4 +318,4 @@ Finish with the following evidence:
 
 [support]: ../ref/support-matrix.md
 [weights]: ../ref/model-weights.md
-[benchmark]: ../../.agents/skills/bench-perf-oss/SKILL.md
+[benchmark]: ../../skills/bench-perf-oss/SKILL.md

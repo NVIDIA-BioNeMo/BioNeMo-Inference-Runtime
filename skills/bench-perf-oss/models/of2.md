@@ -54,7 +54,7 @@ git -C "$WORKDIR/oss/openfold" describe --tags --exact-match
 test "$(git -C "$WORKDIR/oss/openfold" rev-parse HEAD)" = \
   "e938c184a291bf053af3b14c1e3e8bb29aee57e2"
 git -C "$WORKDIR/oss/openfold" apply \
-  "$REPO/.agents/skills/bench-perf-oss/models/misc/of2-lazy-relax-import.patch"
+  "$REPO/skills/bench-perf-oss/models/misc/of2-lazy-relax-import.patch"
 ```
 
 Do not clone `main`. Consume the tree via `PYTHONPATH=$OSS_ROOT` — do
@@ -355,7 +355,7 @@ after checkout so `relax` is imported only inside
 
 ```bash
 git -C "$WORKDIR/oss/openfold" apply \
-  "$REPO/.agents/skills/bench-perf-oss/models/misc/of2-lazy-relax-import.patch"
+  "$REPO/skills/bench-perf-oss/models/misc/of2-lazy-relax-import.patch"
 ```
 
 Do not install OpenMM/pdbfixer to "make the import work". Do not

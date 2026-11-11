@@ -16,6 +16,7 @@ from typing import Any
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 from bionemo_ir.logger import logger
 
@@ -62,6 +63,60 @@ from .convert import (
     convert_hf_template_embedder_multimer_torch,
     convert_hf_template_embedder_torch,
 )
+
+
+def _compact_msa_features(feats: dict[str, torch.Tensor], *, template_msa_rows: int = 0) -> dict[str, torch.Tensor]:
+    """Trim unsupported cluster rows before entering the trunk graph.
+
+    Keep the prefix through the last supported row across the batch, rounded
+    to 16 rows so nearby depths share a graph. Internal holes stay in place.
+    Template rows are appended by the trunk after this prefix.
+    """
+    mask = feats["msa_mask"]
+    n_rows = mask.shape[-2]
+    # An all-masked softmax with a finite mask bias can depend on its length.
+    # Retain the original path if an active residue has no supported key.
+    supported = mask.bool()
+    empty_column = (feats["seq_mask"].bool() & ~supported.any(dim=-2)).any()
+    row_support = supported.any(dim=-1).reshape(-1, n_rows).any(dim=0)
+    indices = torch.arange(1, n_rows + 1, device=mask.device)
+    last_row = int(torch.where(empty_column, n_rows, torch.where(row_support, indices, 0).amax()).item())
+    # Length-mask backends select a prefix of keys in column attention. Keep
+    # enough original cluster rows for that prefix even when template keys
+    # follow the cluster padding; moving them into it would change the path.
+    n_compact = min(n_rows, max(16, (last_row + template_msa_rows + 15) // 16 * 16))
+    if n_compact == n_rows:
+        return feats
+    return {
+        **feats,
+        "msa_feat": feats["msa_feat"][..., :n_compact, :, :].contiguous(),
+        "msa_mask": mask[..., :n_compact, :].contiguous(),
+    }
+
+
+def _template_msa_row_count(feats: dict[str, torch.Tensor], *, is_multimer: bool) -> int | None:
+    """Resolve a safe template prefix outside capture without trimming pair features."""
+    if is_multimer:
+        atom_mask = feats.get("template_all_atom_mask")
+        # The multimer computes its chi mask inside the template embedder.
+        # A row without any atoms cannot contribute a supported chi angle.
+        mask = atom_mask.bool().any(dim=-1) if atom_mask is not None else None
+    else:
+        torsion_mask = feats.get("template_torsion_angles_mask")
+        mask = torsion_mask[..., 2] if torsion_mask is not None else None
+    if mask is None:
+        return None
+    msa_mask = feats.get("msa_mask")
+    seq_mask = feats.get("seq_mask")
+    if msa_mask is not None and seq_mask is not None:
+        if bool((seq_mask.bool() & ~msa_mask.bool().any(dim=-2)).any().item()):
+            return None
+    n_rows = mask.shape[-2]
+    if n_rows == 0:
+        return 0
+    row_support = mask.bool().any(dim=-1).reshape(-1, n_rows).any(dim=0)
+    indices = torch.arange(1, n_rows + 1, device=mask.device)
+    return int(torch.where(row_support, indices, 0).amax().item())
 
 
 class OpenFold2(nn.Module, OptimizedModuleSetterMixin):
@@ -322,6 +377,7 @@ class OpenFold2(nn.Module, OptimizedModuleSetterMixin):
         seq_mask: torch.Tensor,
         template_present: bool,
         template_mask_any: bool = True,
+        template_msa_rows: int | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Run the recycle trunk; structure generation and host checks stay outside.
 
@@ -362,17 +418,16 @@ class OpenFold2(nn.Module, OptimizedModuleSetterMixin):
             if template_pair_embedding is not None:
                 z = z + template_pair_embedding
 
-            if "template_single_embedding" in template_embeds:
+            if "template_single_embedding" in template_embeds and template_msa_rows != 0:
                 # [*, S = S_c + S_t, N, C_m]
-                m = torch.cat([m, template_embeds["template_single_embedding"]], dim=-3)
+                template_m = template_embeds["template_single_embedding"][..., :template_msa_rows, :, :]
+                m = torch.cat([m, template_m], dim=-3)
                 if not self.config.is_multimer:
                     torsion_angles_mask = feats["template_torsion_angles_mask"]
-                    msa_mask = torch.cat([feats["msa_mask"], torsion_angles_mask[..., 2]], dim=-2)
+                    template_mask = torsion_angles_mask[..., 2]
                 else:
-                    msa_mask = torch.cat(
-                        [feats["msa_mask"], template_embeds["template_mask"]],
-                        dim=-2,
-                    )
+                    template_mask = template_embeds["template_mask"]
+                msa_mask = torch.cat([msa_mask, template_mask[..., :template_msa_rows, :]], dim=-2)
 
         n_true = seq_mask.shape[-1]
         trunk_feats = feats
@@ -431,6 +486,10 @@ class OpenFold2(nn.Module, OptimizedModuleSetterMixin):
         # Pipeline timings and record metadata vary per request but are not
         # trunk inputs. Preserve tensor order and exclude those host values.
         trunk_feats = {key: value for key, value in feats.items() if torch.is_tensor(value)}
+        # Resolve support outside capture. Tensor shapes include the row bucket
+        # in the graph key, and replay copies new masks even within one bucket.
+        template_msa_rows = _template_msa_row_count(trunk_feats, is_multimer=self.is_multimer)
+        trunk_feats = _compact_msa_features(trunk_feats, template_msa_rows=template_msa_rows or 0)
         m, z, s = self.trunk_graph(
             feats=trunk_feats,
             m_1_prev=m_1_prev.contiguous(),
@@ -439,6 +498,7 @@ class OpenFold2(nn.Module, OptimizedModuleSetterMixin):
             seq_mask=feats["seq_mask"],
             template_present=template_present,
             template_mask_any=template_mask_any,
+            template_msa_rows=template_msa_rows,
         )
 
         structure_output = {}
@@ -458,7 +518,11 @@ class OpenFold2(nn.Module, OptimizedModuleSetterMixin):
         z_prev = z
         x_prev = structure_output["final_atom_positions"]
         n_seq = feats["msa_feat"].shape[-3]
-        structure_output["msa"] = m[..., :n_seq, :, :]
+        n_compact = trunk_feats["msa_feat"].shape[-3]
+        # Template rows follow the compact clusters, so exclude them before
+        # restoring the public cluster shape consumed by the auxiliary head.
+        msa = m[..., :n_compact, :, :]
+        structure_output["msa"] = F.pad(msa, (0, 0, 0, 0, 0, n_seq - n_compact)) if n_compact < n_seq else msa
 
         return structure_output, m_1_prev, z_prev, x_prev, early_stop
 

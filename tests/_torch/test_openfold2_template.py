@@ -252,6 +252,8 @@ def test_iteration_keys_trunk_graph_on_template_mask(template_mask: list[int]):
         "is_template_present": torch.tensor(False),
         "template_mask": torch.tensor(template_mask, dtype=torch.float32),
         "seq_mask": torch.ones(8),
+        "msa_mask": torch.ones(16, 8),
+        "msa_feat": torch.zeros(16, 8, 4),
     }
     prevs = [torch.zeros(8, 4), torch.zeros(8, 8, 4), torch.zeros(8, 37, 3)]
 

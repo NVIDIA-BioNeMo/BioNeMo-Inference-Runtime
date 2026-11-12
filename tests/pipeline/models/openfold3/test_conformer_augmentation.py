@@ -21,6 +21,8 @@ import torch
 
 from bionemo_ir._torch.layers.random_augmentation import centre_random_augmentation
 from bionemo_ir.pipeline.models.openfold3.common import centre_random_augmentation_blocks
+from bionemo_ir.pipeline.models.openfold3.const import NUM_ELEMENT_CLASSES
+from bionemo_ir.pipeline.models.openfold3.feature_generators import ConformerFeatureGenerator
 
 
 def _per_block(pos: torch.Tensor, block_sizes: list[int]) -> torch.Tensor:
@@ -48,3 +50,24 @@ def test_blocks_match_per_block_calls_and_rng_stream(block_sizes: list[int]) -> 
 
     torch.testing.assert_close(got, expected, rtol=0, atol=1e-5)
     assert torch.equal(got_next, expected_next)
+
+
+def test_empty_conformer_element_tensor_preserves_layout() -> None:
+    features = ConformerFeatureGenerator()(
+        {},
+        {
+            "structure": {
+                "n_atoms": 0,
+                "atom_names": [],
+                "atom_elements": [],
+                "atom_token_idx": [],
+                "n_tokens": 0,
+                "atoms_per_token": [],
+            }
+        },
+    )
+
+    ref_element = features["ref_element"]
+    assert ref_element.shape == (0, NUM_ELEMENT_CLASSES)
+    assert ref_element.dtype == torch.int32
+    assert ref_element.stride() == (NUM_ELEMENT_CLASSES, 1)

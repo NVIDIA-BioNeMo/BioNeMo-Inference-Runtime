@@ -27,10 +27,10 @@ from typing import Any
 
 import numpy as np
 import torch
-import torch.nn.functional as F
 
 from bionemo_ir.pipeline.base import FeatureGeneratorBase
 from bionemo_ir.pipeline.utils._template_transfer import record_template_slots
+from bionemo_ir.pipeline.utils.atom import one_hot_host
 from bionemo_ir.pipeline.utils.msa import a3m_columns, code_points, map_code_points, ragged_mask, truncate_rows
 
 from .common import (
@@ -273,10 +273,7 @@ class ConformerFeatureGenerator(FeatureGeneratorBase):
                 # RDKit raises if symbol unknown; assign to unknown bin
                 anum = 119  # → index 118 after -1
             element_indices.append(max(0, anum - 1))  # 0-indexed
-        feats["ref_element"] = F.one_hot(
-            torch.tensor(element_indices, dtype=torch.long),
-            NUM_ELEMENT_CLASSES,
-        ).to(torch.int32)
+        feats["ref_element"] = one_hot_host(element_indices, NUM_ELEMENT_CLASSES)
 
         # ref_charge: from RDKit formal charges
         all_charges: list[float] = []

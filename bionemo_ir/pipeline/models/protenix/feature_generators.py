@@ -25,7 +25,7 @@ from scipy.spatial.transform import Rotation
 
 from bionemo_ir.pipeline.base import FeatureGeneratorBase
 from bionemo_ir.pipeline.models.boltz2.const import res_to_disto_atom
-from bionemo_ir.pipeline.utils.atom import encode_atom_name_chars_one_hot
+from bionemo_ir.pipeline.utils.atom import encode_atom_name_chars_one_hot, one_hot_host
 
 from .const import MOL_TYPES, RESTYPES
 
@@ -152,8 +152,8 @@ class ReferenceFeatureGenerator(FeatureGeneratorBase):
             "ref_pos": torch.as_tensor(positions, dtype=torch.float32),
             "ref_mask": torch.as_tensor(atoms.ref_mask),
             "ref_charge": torch.as_tensor(atoms.ref_charge),
-            "ref_element": F.one_hot(torch.tensor([_ELEMENT_INDEX[e] for e in atoms.element]), 128),
-            "ref_atom_name_chars": encode_atom_name_chars_one_hot(atoms.atom_name).long(),
+            "ref_element": one_hot_host([_ELEMENT_INDEX[e] for e in atoms.element], 128, dtype=torch.int64),
+            "ref_atom_name_chars": encode_atom_name_chars_one_hot(atoms.atom_name, dtype=torch.int64),
             "ref_space_uid": torch.as_tensor(atoms.ref_space_uid),
             "has_frame": frames,
         }

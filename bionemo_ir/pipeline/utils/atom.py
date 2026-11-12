@@ -22,7 +22,6 @@ from typing import NamedTuple
 
 import numpy as np
 import torch
-import torch.nn.functional as F
 
 from bionemo_ir.data.schemas.basic import AtomTypes
 from bionemo_ir.logger import logger
@@ -34,6 +33,7 @@ ATOM_NAME_TO_FOLDING_INDEX: dict[str, int] = {
     atom_type.name: index for index, atom_type in enumerate(AtomTypes.all_types())
 }
 NUM_FOLDING_ATOM_TYPES = len(ATOM_NAME_TO_FOLDING_INDEX)
+_NUMPY_ONE_HOT_DTYPES = {torch.int32: np.int32, torch.int64: np.int64}
 
 
 def encode_atom_name_chars(
@@ -52,20 +52,47 @@ def encode_atom_name_chars(
     return codes
 
 
+def one_hot_host(
+    indices: Sequence[int] | np.ndarray, num_classes: int, dtype: torch.dtype = torch.int32
+) -> torch.Tensor:
+    """One-hot encode ``indices`` into a contiguous CPU ``[*indices.shape, num_classes]`` tensor.
+
+    NumPy writes the final int32 or int64 directly; ``F.one_hot`` allocates an
+    int64 intermediate and dispatches CPU workers even for small host features.
+    """
+    if dtype not in _NUMPY_ONE_HOT_DTYPES:
+        raise ValueError("one-hot dtype must be int32 or int64")
+    codes = np.asarray(indices, dtype=np.intp)
+    if codes.size == 0:
+        # torch.from_numpy gives an empty array zero strides; keep the contiguous ones.
+        return torch.empty((*codes.shape, num_classes), dtype=dtype)
+    encoded = np.zeros((codes.size, num_classes), dtype=_NUMPY_ONE_HOT_DTYPES[dtype])
+    encoded[np.arange(codes.size), codes.reshape(-1)] = 1
+    return torch.from_numpy(encoded).view(*codes.shape, num_classes)
+
+
 def encode_atom_name_chars_one_hot(
     atom_names: Sequence[str],
     *,
     strip: bool = False,
+    dtype: torch.dtype = torch.int32,
 ) -> torch.Tensor:
-    """One-hot encode atom names to ``[N_atom, 4, 64]`` int32."""
-    codes = [encode_atom_name_chars(name, strip=strip) for name in atom_names]
-    if not codes:
-        return torch.empty(
-            (0, NUM_ATOM_NAME_CHARS, NUM_ATOM_NAME_CHAR_CLASSES),
-            dtype=torch.int32,
-        )
-    codes_tensor = torch.tensor(codes, dtype=torch.long)
-    return F.one_hot(codes_tensor, NUM_ATOM_NAME_CHAR_CLASSES).to(torch.int32)
+    """One-hot encode atom names to ``[N_atom, 4, 64]`` CPU integers.
+
+    Args:
+        atom_names: Atom names, padded or truncated to four characters.
+        strip: Strip surrounding whitespace before padding.
+        dtype: Output integer type, either int32 or int64.
+    """
+
+    @cache
+    def encode(name: str) -> list[int]:
+        return encode_atom_name_chars(name, strip=strip)
+
+    codes = [encode(name) for name in atom_names]
+    return one_hot_host(
+        np.asarray(codes, dtype=np.intp).reshape(len(codes), NUM_ATOM_NAME_CHARS), NUM_ATOM_NAME_CHAR_CLASSES, dtype
+    )
 
 
 def decode_atom_name_chars(

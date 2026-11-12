@@ -17,6 +17,7 @@
 import math
 from collections.abc import Sequence
 
+import numpy as np
 import torch
 
 from bionemo_ir._torch.layers.random_augmentation import _quaternion_components_to_matrix
@@ -127,7 +128,7 @@ def centre_random_augmentation_blocks(pos: torch.Tensor, block_sizes: Sequence[i
     translations = noise[:, 4:]
 
     sizes = torch.tensor(block_sizes)
-    block_of_atom = torch.repeat_interleave(torch.arange(len(block_sizes)), sizes)
+    block_of_atom = torch.from_numpy(np.repeat(np.arange(len(block_sizes), dtype=np.int64), block_sizes))
     centres = torch.zeros(len(block_sizes), 3, dtype=pos.dtype).index_add_(0, block_of_atom, pos)
     centres = centres / sizes.to(pos.dtype)[:, None]
     centred = pos - centres[block_of_atom]

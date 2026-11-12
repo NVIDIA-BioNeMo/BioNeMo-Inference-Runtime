@@ -25,6 +25,7 @@ from bionemo_ir.pipeline.utils.atom import (
     decode_element_symbols,
     encode_atom_name_chars,
     encode_atom_name_chars_one_hot,
+    one_hot_host,
     scatter_flat_atoms_to_folding_layout,
     to_numpy,
 )
@@ -47,6 +48,50 @@ def test_empty_atom_name_batch_preserves_codec_rank():
     encoded = encode_atom_name_chars_one_hot([])
     assert encoded.shape == (0, 4, 64)
     assert encoded.dtype == torch.int32
+
+
+@pytest.mark.parametrize("as_array", [False, True], ids=["list", "array"])
+@pytest.mark.parametrize("dtype", [torch.int32, torch.int64])
+@pytest.mark.parametrize("strip", [False, True])
+def test_atom_name_encoding_matches_torch_reference(dtype: torch.dtype, strip: bool, as_array: bool) -> None:
+    names = ["", " CA ", "C4'", "ABCDE", "CA", "CA"] + [chr(code + 32) * 4 for code in range(64)]
+    expected = torch.nn.functional.one_hot(
+        torch.tensor([encode_atom_name_chars(name, strip=strip) for name in names]), 64
+    ).to(dtype)
+    got = encode_atom_name_chars_one_hot(np.array(names) if as_array else names, strip=strip, dtype=dtype)
+    assert torch.equal(got, expected)
+    assert got.dtype == dtype
+    assert got.stride() == expected.stride()
+    got.zero_()
+    assert torch.equal(encode_atom_name_chars_one_hot(names, strip=strip, dtype=dtype), expected)
+    empty = encode_atom_name_chars_one_hot([], dtype=dtype)
+    assert empty.shape == (0, 4, 64)
+    assert empty.dtype == dtype
+    assert empty.stride() == (256, 64, 1)
+
+
+@pytest.mark.parametrize("name", ["a", "\x1f", "é"])
+def test_atom_name_encoding_rejects_unsupported_characters(name: str) -> None:
+    with pytest.raises(ValueError, match="contains unsupported characters"):
+        encode_atom_name_chars_one_hot(["CA", name, "CA"])
+
+
+def test_atom_name_encoding_rejects_non_integer_output() -> None:
+    with pytest.raises(ValueError, match="dtype must be int32 or int64"):
+        encode_atom_name_chars_one_hot(["CA"], dtype=torch.float32)
+
+
+@pytest.mark.parametrize("dtype", [torch.int32, torch.int64])
+def test_one_hot_host_matches_torch_one_hot(dtype: torch.dtype) -> None:
+    indices = [3, 0, 118, 3, 7]
+    got = one_hot_host(indices, 119, dtype)
+    assert torch.equal(got, torch.nn.functional.one_hot(torch.tensor(indices), 119).to(dtype))
+    assert got.dtype == dtype
+    assert got.stride() == (119, 1)
+    empty = one_hot_host([], 119, dtype)
+    assert empty.shape == (0, 119)
+    assert empty.dtype == dtype
+    assert empty.stride() == (119, 1)
 
 
 def test_scatter_flat_atoms_to_folding_layout():

@@ -200,3 +200,35 @@ def test_extra_msa_block_precomputed_masks(sc: Scenario):
 
     torch.testing.assert_close(out_m_pre, out_m, atol=0, rtol=0)
     torch.testing.assert_close(out_z_pre, out_z, atol=0, rtol=0)
+
+
+@pytest.mark.parametrize("opm_first", [False, True], ids=["opm_last", "opm_first"])
+@pytest.mark.parametrize("dtype", ["float32", "bfloat16"])
+@pytest.mark.parametrize("n_res", [24, 77])
+def test_extra_msa_block_all_masked_skips_msa(dtype: str, opm_first: bool, n_res: int):
+    """With every extra-MSA entry masked, ``m=None`` must give the full path's pair output bitwise for finite ``m``."""
+    torch.manual_seed(7)
+    sc = Scenario(n_res=n_res, n_seq=48, dtype=dtype)
+    torch_dtype = str_dtype_to_torch(sc.dtype)
+    device = torch.device("cuda")
+
+    ref_module = RefExtraMSABlock.load_weights()
+    weights_and_biases = create_extra_msa_block_weights(from_ref=ref_module)
+    module = _create_extra_msa_block(ref_module, sc, torch_dtype)
+    module.opm_first = opm_first
+    load_extra_msa_block_weights_torch(module, weights_and_biases)
+    module = module.to(device).eval()
+
+    m = torch.randn(1, sc.n_seq, sc.n_res, ref_module.c_m, dtype=torch_dtype, device=device)
+    z = torch.randn(1, sc.n_res, sc.n_res, ref_module.c_z, dtype=torch_dtype, device=device)
+    msa_mask = torch.zeros(1, sc.n_seq, sc.n_res, dtype=torch_dtype, device=device)
+    seq_mask = make_left_aligned_mask(1, sc.n_res, dtype=torch.float32, device=device, min_valid=sc.n_res // 2)
+    pair_mask = (seq_mask[..., None] * seq_mask[..., None, :]).to(torch_dtype)
+    trimul_metadata = precompute_trimul_metadata(z, None, None)
+
+    with torch.inference_mode():
+        _, z_full = module(m, z, msa_mask, pair_mask, trimul_metadata)
+        m_skip, z_skip = module(None, z, None, pair_mask, trimul_metadata)
+
+    assert m_skip is None
+    assert torch.equal(z_skip, z_full)

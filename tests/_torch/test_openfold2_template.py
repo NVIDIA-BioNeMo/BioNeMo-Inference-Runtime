@@ -237,8 +237,9 @@ def test_embed_templates_follows_template_mask(template_mask: list[int]):
 
 
 @pytest.mark.parametrize("template_mask", [[0, 0, 0, 0], [1, 0, 0, 0]], ids=["all_masked", "unresolved_hit"])
-def test_iteration_keys_trunk_graph_on_template_mask(template_mask: list[int]):
-    """``iteration`` hands the trunk graph the mask-based flag, not the atom-based one."""
+@pytest.mark.parametrize("extra_msa_present", [False, True], ids=["empty_extra_msa", "present_extra_msa"])
+def test_iteration_keys_trunk_graph_on_template_mask(template_mask: list[int], extra_msa_present: bool):
+    """``iteration`` keys template and extra-MSA omissions independently."""
 
     class Captured(Exception):
         pass
@@ -258,8 +259,9 @@ def test_iteration_keys_trunk_graph_on_template_mask(template_mask: list[int]):
     prevs = [torch.zeros(8, 4), torch.zeros(8, 8, 4), torch.zeros(8, 37, 3)]
 
     with pytest.raises(Captured) as captured:
-        OpenFold2.iteration(model, feats, prevs)
+        OpenFold2.iteration(model, feats, prevs, extra_msa_present=extra_msa_present)
 
     kwargs = captured.value.args[0]
     assert kwargs["template_present"] is False
     assert kwargs["template_mask_any"] is any(template_mask)
+    assert kwargs["extra_msa_present"] is extra_msa_present

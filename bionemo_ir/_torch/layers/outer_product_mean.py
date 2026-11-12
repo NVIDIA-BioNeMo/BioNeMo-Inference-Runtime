@@ -133,6 +133,21 @@ class OuterProductMean(nn.Module):
             return num_mask + self.mask_eps  # OpenFold family
         return num_mask.clamp(min=1)  # Boltz family
 
+    def all_masked_output(self, z: torch.Tensor) -> torch.Tensor:
+        """Return ``forward``'s output when every MSA entry is masked, as ``[*, 1, 1, c_out]``.
+
+        The mask zeroes finite ``a`` and ``b`` exactly, so every pair ``(i, j)``
+        gets the same value: ``proj_o`` of a zero vector over the empty-mask
+        normalizer. One masked row and token runs the same per-pair arithmetic
+        as the full call, so the value matches it bitwise for finite MSA
+        activations; a NaN or Inf in a masked row, which the full call spreads
+        to every pair, does not reach this output. ``z`` supplies the batch
+        dims, device and the dtype the caller casts the MSA to.
+        """
+        dtype = self.dtype or z.dtype
+        m = torch.zeros((*z.shape[:-3], 1, 1, self.c_in), dtype=dtype, device=z.device)
+        return self.forward(m, mask=m[..., 0])
+
     def _forward_impl(
         self,
         a_rows: torch.Tensor,

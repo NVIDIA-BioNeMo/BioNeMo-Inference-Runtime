@@ -130,35 +130,40 @@ class ExtraMSABlock(EvoformerBlock):
 
     def forward(
         self,
-        m: torch.Tensor,
+        m: torch.Tensor | None,
         z: torch.Tensor,
-        msa_mask: torch.Tensor,
+        msa_mask: torch.Tensor | None,
         pair_mask: torch.Tensor,
         trimul_metadata: TriangleMultiplicationMetadata,
         attn_metadata: AttentionMetadata | None = None,
         precomputed_masks: PrecomputedPairMasks | None = None,
-    ) -> torch.Tensor:
+    ) -> tuple[torch.Tensor | None, torch.Tensor]:
         """
         Args:
             m:
-                [*, N_seq, N_res, C_m] MSA embedding
+                [*, N_seq, N_res, C_m] MSA embedding, or None when every
+                extra-MSA entry is masked. The MSA then reaches ``z`` only
+                through the outer product mean's constant all-masked output.
             z:
                 [*, N_res, N_res, C_z] pair embedding
             msa_mask:
-                [*, N_seq, N_res] MSA mask
+                [*, N_seq, N_res] MSA mask, or None with ``m``
             pair_mask:
                 [*, N_res, N_res] pair mask
             precomputed_masks:
                 Optional precomputed mask biases for triangle attention.
         """
-        if self.opm_first:
-            m, z = self._compute_opm(m, z, msa_mask)
-        m = self.msa_att_row(m, z, mask=msa_mask, attn_metadata=attn_metadata, residual=True)
-        m = m + self.msa_att_col(m, mask=msa_mask)
-        m = self.msa_transition(m, mask=msa_mask, residual=True)
+        if m is None:
+            z = z + self.outer_product_mean.all_masked_output(z)
+        else:
+            if self.opm_first:
+                m, z = self._compute_opm(m, z, msa_mask)
+            m = self.msa_att_row(m, z, mask=msa_mask, attn_metadata=attn_metadata, residual=True)
+            m = m + self.msa_att_col(m, mask=msa_mask)
+            m = self.msa_transition(m, mask=msa_mask, residual=True)
 
-        if not self.opm_first:
-            m, z = self._compute_opm(m, z, msa_mask)
+            if not self.opm_first:
+                m, z = self._compute_opm(m, z, msa_mask)
         z = self.tri_mul_out(z, mask=pair_mask, trimul_metadata=trimul_metadata, residual=True)
         z = self.tri_mul_in(z, mask=pair_mask, trimul_metadata=trimul_metadata, residual=True)
 
@@ -225,37 +230,40 @@ class ExtraMSAStack(nn.Module):
 
     def forward(
         self,
-        m: torch.Tensor,
+        m: torch.Tensor | None,
         z: torch.Tensor,
-        msa_mask: torch.Tensor,
+        msa_mask: torch.Tensor | None,
         pair_mask: torch.Tensor,
         attn_metadata: AttentionMetadata | None = None,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
+    ) -> torch.Tensor:
         """
         Args:
             m:
-                [*, N_seq, N_res, C_m] MSA embedding
+                [*, N_seq, N_res, C_m] MSA embedding, or None when every
+                extra-MSA entry is masked; the blocks then skip the MSA ops.
             z:
                 [*, N_res, N_res, C_z] pair embedding
             msa_mask:
-                [*, N_seq, N_res] MSA mask
+                [*, N_seq, N_res] MSA mask, or None with ``m``
             pair_mask:
                 [*, N_res, N_res] pair mask
             attn_metadata:
                 Attention metadata
         """
         # Expand the batch dimensions if needed
-        n_dims = m.ndim
+        n_dims = z.ndim
         if n_dims == 3:
-            m = m.unsqueeze(0)
             z = z.unsqueeze(0)
-            msa_mask = msa_mask.unsqueeze(0)
             pair_mask = pair_mask.unsqueeze(0)
+            if m is not None:
+                m = m.unsqueeze(0)
+                msa_mask = msa_mask.unsqueeze(0)
 
-        m = m.to(dtype=self.config.torch_dtype)
         z = z.to(dtype=self.config.torch_dtype)
-        msa_mask = msa_mask.to(dtype=self.config.torch_dtype)
         pair_mask = pair_mask.to(dtype=self.config.torch_dtype)
+        if m is not None:
+            m = m.to(dtype=self.config.torch_dtype)
+            msa_mask = msa_mask.to(dtype=self.config.torch_dtype)
 
         precomputed = precompute_pair_masks(
             self.blocks[0].triangle_attn_backend,
@@ -281,6 +289,5 @@ class ExtraMSAStack(nn.Module):
                 precomputed_masks=precomputed,
             )
         if n_dims == 3:
-            m = m.squeeze(0)
             z = z.squeeze(0)
         return z

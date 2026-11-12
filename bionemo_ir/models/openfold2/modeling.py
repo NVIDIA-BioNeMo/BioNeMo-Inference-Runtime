@@ -378,11 +378,14 @@ class OpenFold2(nn.Module, OptimizedModuleSetterMixin):
         template_present: bool,
         template_mask_any: bool = True,
         template_msa_rows: int | None = None,
+        extra_msa_present: bool = True,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Run the recycle trunk; structure generation and host checks stay outside.
 
         ``template_mask_any=False`` asserts that every ``template_mask`` entry
         is 0, so the monomer template pair embedding is omitted.
+        ``extra_msa_present=False`` asserts that every ``extra_msa_mask`` entry
+        is 0, so the extra-MSA stack runs its pair ops only.
         """
         # Resolve the template flag before capture and keep template mutations local.
         feats = dict(feats)
@@ -440,13 +443,14 @@ class OpenFold2(nn.Module, OptimizedModuleSetterMixin):
             )
             m, z, msa_mask, pair_mask = padded["m"], padded["z"], padded["msa_mask"], padded["pair_mask"]
 
-        a = None
         if self.config.enable_extra_msa:
-            extra_msa_feat = self.extra_msa_fn(**self.get_module_feed_dict(trunk_feats, "extra_msa_feat")).to(
-                self.config.extra_msa_embedder.torch_dtype
-            )
-
-            a = self.extra_msa_embedder(extra_msa_feat)
+            a = extra_msa_mask = None
+            if extra_msa_present:
+                extra_msa_feat = self.extra_msa_fn(**self.get_module_feed_dict(trunk_feats, "extra_msa_feat")).to(
+                    self.config.extra_msa_embedder.torch_dtype
+                )
+                a = self.extra_msa_embedder(extra_msa_feat)
+                extra_msa_mask = trunk_feats["extra_msa_mask"].to(m)
 
             triangle_metadata_cls = get_attention_backend(
                 self.config.trunk.extra_msa_stack.triangle_attention_backend
@@ -455,7 +459,7 @@ class OpenFold2(nn.Module, OptimizedModuleSetterMixin):
             z = self.extra_msa_stack(
                 a,
                 z,
-                msa_mask=trunk_feats["extra_msa_mask"].to(m),
+                msa_mask=extra_msa_mask,
                 pair_mask=pair_mask.to(m),
                 attn_metadata=triangle_metadata_cls(),
             )
@@ -474,7 +478,9 @@ class OpenFold2(nn.Module, OptimizedModuleSetterMixin):
 
         return m, z, s
 
-    def iteration(self, feats: dict[str, torch.Tensor], prevs: list[torch.Tensor]) -> tuple[torch.Tensor, torch.Tensor]:
+    def iteration(
+        self, feats: dict[str, torch.Tensor], prevs: list[torch.Tensor], extra_msa_present: bool = True
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         """Run one trunk and structure iteration with caller-owned recycle state."""
         m_1_prev, z_prev, x_prev = reversed([prevs.pop() for _ in range(3)])
         template_present = feats.get("is_template_present", True)
@@ -499,6 +505,7 @@ class OpenFold2(nn.Module, OptimizedModuleSetterMixin):
             template_present=template_present,
             template_mask_any=template_mask_any,
             template_msa_rows=template_msa_rows,
+            extra_msa_present=extra_msa_present,
         )
 
         structure_output = {}
@@ -559,6 +566,12 @@ class OpenFold2(nn.Module, OptimizedModuleSetterMixin):
             dtype=self.config.input_embedder.torch_dtype,
         )
 
+        # One host read for every cycle: whether any extra-MSA entry is unmasked.
+        extra_msa_present = [True] * num_iters
+        if self.config.enable_extra_msa:
+            extra_msa_mask = feed_dict["extra_msa_mask"]
+            extra_msa_present = extra_msa_mask.reshape(-1, extra_msa_mask.shape[-1]).any(dim=0).tolist()
+
         prevs = [m_1_prev, z_prev, x_prev]
         num_recycles = 0
         model_prediction = {}
@@ -566,7 +579,9 @@ class OpenFold2(nn.Module, OptimizedModuleSetterMixin):
             batch = self.get_current_batch(feed_dict, cycle_no)
             # Cycle 0 runs a different state dtype, so capture starts at recycle 1.
             with eager_graphs(cycle_no == 0):
-                structure_output, m_1_prev, z_prev, x_prev, early_stop = self.iteration(batch, prevs)
+                structure_output, m_1_prev, z_prev, x_prev, early_stop = self.iteration(
+                    batch, prevs, extra_msa_present=extra_msa_present[cycle_no]
+                )
             prevs = [m_1_prev, z_prev, x_prev]
             num_recycles += 1
             if early_stop:

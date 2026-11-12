@@ -27,6 +27,7 @@ from bionemo_ir._torch.graph_optimization.graph_policy import (
     pairformer_graph_config,
     trunk_graph_config,
 )
+from bionemo_ir._torch.modules.protenix._common import DENOISER_FEATURE_KEYS
 from bionemo_ir._torch.sampling.frame_reuse import require_evaluated_period, require_evaluated_steps
 from bionemo_ir.configs import (
     BaseConfig,
@@ -49,6 +50,7 @@ def _diffusion_graph_config() -> CUDAGraphOptimizationConfig:
         ),
         max_tokens=diffusion_graph_max_tokens(),
         stable_kwargs=("input_feature_dict", "s_inputs", "s_trunk", "z_trunk", "cache"),
+        feature_kwargs={"input_feature_dict": DENOISER_FEATURE_KEYS},
     )
 
 

@@ -41,6 +41,9 @@ from bionemo_ir._torch.modules.openfold3.utils.token_atom_constants import (
 from bionemo_ir._torch.utils.common import _deterministic_algorithms as _shared_deterministic_algorithms
 from bionemo_ir.dsl_kernels.triton.atom_gather_kernel import MAX_ORDERED_ATOMS
 
+# The gather tables :func:`prepare_atom_reduction` adds to a batch.
+ATOM_GATHER_KEYS: tuple[str, ...] = ("atom_gather_index", "atom_gather_mask", "atom_gather_counts")
+
 
 def _deterministic_algorithms():
     """Compatibility export for existing OpenFold3 determinism tests."""
@@ -119,11 +122,10 @@ def prepare_atom_reduction(batch: dict[str, torch.Tensor]) -> dict[str, torch.Te
         A shallow copy with reusable reduction metadata, or a batch without
         incomplete metadata when its layout requires deterministic scatter.
     """
-    gather_keys = ("atom_gather_index", "atom_gather_mask", "atom_gather_counts")
-    if all(key in batch for key in gather_keys):
+    if all(key in batch for key in ATOM_GATHER_KEYS):
         return batch
-    if any(key in batch for key in gather_keys):
-        batch = {key: value for key, value in batch.items() if key not in gather_keys}
+    if any(key in batch for key in ATOM_GATHER_KEYS):
+        batch = {key: value for key, value in batch.items() if key not in ATOM_GATHER_KEYS}
     required = ("num_atoms_per_token", "start_atom_index", "atom_mask", "atom_to_token_index", "token_mask")
     if any(key not in batch for key in required):
         return batch

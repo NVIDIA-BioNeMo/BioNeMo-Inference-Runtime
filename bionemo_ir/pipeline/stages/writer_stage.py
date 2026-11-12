@@ -23,6 +23,7 @@ import numpy as np
 from bionemo_ir.data.schemas import FoldingOutput
 from bionemo_ir.data.writers import CIFWriter, PDBWriter
 from bionemo_ir.pipeline.stages.base import StatefulStage, StatefulStageUDF
+from bionemo_ir.pipeline.utils import STAGE_TIMING_COLUMN
 
 _SUPPORTED_FORMATS = {"pdb", "cif"}
 _EXT_MAP = {"pdb": ".pdb", "cif": ".cif"}
@@ -270,7 +271,7 @@ class WriterUDF(StatefulStageUDF):
             "scores": scores_json,
             self.RECORD_ID_IN_BATCH_COLUMN: row_id,
         }
-        for timing_key in ("time_taken", "model_inference_time", "model_inference_time_samples", "stage_timing_s"):
+        for timing_key in ("time_taken", "model_inference_time", "model_inference_time_samples", STAGE_TIMING_COLUMN):
             if timing_key in row:
                 result[timing_key] = row[timing_key]
         return result

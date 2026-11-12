@@ -26,6 +26,7 @@ import pyarrow
 from pydantic import BaseModel, ConfigDict, Field
 
 from bionemo_ir.logger import logger
+from bionemo_ir.pipeline.utils import STAGE_TIMING_COLUMN
 
 
 def unpack_pipeline_row(row: dict[str, Any]) -> dict[str, Any]:
@@ -286,9 +287,9 @@ class StatefulStageUDF:
                 result = await self.udf_for_item(row)
                 # Accumulate per-stage wall time (always on). Carrying the prior dict
                 # means it survives both update_row=True (merge) and =False (replace).
-                _timing = dict(row.get("stage_timing_s") or {})
+                _timing = dict(row.get(STAGE_TIMING_COLUMN) or {})
                 _timing[self.__class__.__name__] = _time.perf_counter() - _t0
-                result["stage_timing_s"] = _timing
+                result[STAGE_TIMING_COLUMN] = _timing
                 result["__inference_error__"] = {"error_msg": None, "traceback": None}
             except Exception as e:
                 result = self.on_row_error(row, e)

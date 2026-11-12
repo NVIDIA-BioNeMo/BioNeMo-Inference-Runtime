@@ -98,6 +98,14 @@ class InputRoutingConfig(BaseModel):
             "those in-place writes."
         ),
     )
+    feature_kwargs: dict[str, list[str]] = Field(
+        default_factory=dict,
+        description=(
+            "Dict keyword inputs, such as a feature dict, mapped to the keys the module reads. The region passes "
+            "only those keys, on the eager path too, so request metadata and unread tensors stay out of graph "
+            "keys and static buffers. A listed key the call lacks is skipped."
+        ),
+    )
 
     @model_validator(mode="after")
     def _written_inputs_are_not_stable(self) -> "InputRoutingConfig":

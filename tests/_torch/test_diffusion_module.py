@@ -15,6 +15,7 @@
 
 import os
 from dataclasses import dataclass
+from types import SimpleNamespace
 
 import pytest
 import torch
@@ -250,3 +251,67 @@ def test_diffusion_module(sc: Scenario):
 
             assert abs(diff0_max - diff1_max) / torch.min(diff0_max, diff1_max) <= 0.57
             assert abs(diff0_mean - diff1_mean) <= 0.25
+
+
+@pytest.mark.parametrize("dtype", ["float32", "bfloat16"])
+def test_prepared_atom_biases_replace_the_raw_biases(dtype: str) -> None:
+    """With the atom biases prepared once per rollout, the step reads neither raw bias.
+
+    The sampler drops both raw biases from the conditioning, so no step graph clones them.
+    """
+    sc = Scenario(dtype=dtype, multiplicity=2)
+    torch.manual_seed(0)
+    device = torch.device("cuda")
+    dims = SimpleNamespace(token_s=sc.token_s, atom_s=sc.dim, dim_fourier=256, conditioning_transition_layers=2)
+    model = DiffusionModule(config=init_config(sc, dims)).to(device).eval()
+    with torch.no_grad():
+        for param in model.parameters():
+            param.normal_(std=0.05)
+    torch_dtype = str_dtype_to_torch(dtype)
+    K, W, H = sc.n_atoms // sc.atom_window_queries, sc.atom_window_queries, sc.atom_window_keys
+    gather_indices, _ = create_gather_indices(K, W, H, device)
+    attn_metadata = AttentionMetadata(
+        query_to_keys=lambda x: query_to_keys_optimized(x, gather_indices, W, H), bias_cache={}
+    )
+    atom_pad_mask = torch.ones(1, sc.n_atoms, device=device, dtype=torch_dtype)
+    atom_pad_mask[:, -40:] = 0
+    atom_bias_dim = sc.heads * sc.depth
+    raw = {
+        "q": torch.randn(1, sc.n_atoms, sc.dim, device=device, dtype=torch_dtype),
+        "c": torch.randn(1, sc.n_atoms, sc.dim, device=device, dtype=torch_dtype),
+        "atom_enc_bias": torch.randn(1, sc.n_atoms, H, atom_bias_dim, device=device, dtype=torch_dtype),
+        "atom_dec_bias": torch.randn(1, sc.n_atoms, H, atom_bias_dim, device=device, dtype=torch_dtype),
+        "token_trans_bias": torch.randn(
+            1,
+            sc.n_res,
+            sc.n_res,
+            sc.token_transformer_heads * sc.token_transformer_depth,
+            device=device,
+            dtype=torch_dtype,
+        ),
+    }
+    step_inputs = {
+        "atom_to_token": torch.nn.functional.one_hot(
+            torch.arange(sc.n_atoms, device=device) * sc.n_res // sc.n_atoms, sc.n_res
+        )[None].to(torch_dtype),
+        "atom_pad_mask": atom_pad_mask,
+        "token_pad_mask": torch.ones(1, sc.n_res, device=device, dtype=torch_dtype),
+        "s_inputs": torch.randn(1, sc.n_res, sc.token_s, device=device, dtype=torch_dtype),
+        "s_trunk": torch.randn(1, sc.n_res, sc.token_s, device=device, dtype=torch_dtype),
+        "r_noisy": torch.randn(1, sc.multiplicity, sc.n_atoms, 3, device=device, dtype=torch_dtype),
+        "times": torch.tensor([1.4], device=device),
+        "attn_metadata": attn_metadata,
+    }
+    with torch.inference_mode():
+        prepared = {
+            **raw,
+            "prepared_atom_enc_bias": model.atom_attention_encoder.prepare_pair_biases(
+                raw["atom_enc_bias"], atom_pad_mask, attn_metadata
+            ),
+            "prepared_atom_dec_bias": model.atom_attention_decoder.prepare_pair_biases(
+                raw["atom_dec_bias"], atom_pad_mask, attn_metadata
+            ),
+        }
+        with_raw = model(**step_inputs, diffusion_conditioning_kwargs=prepared)[0]
+        without_raw = {key: value for key, value in prepared.items() if key not in ("atom_enc_bias", "atom_dec_bias")}
+        assert torch.equal(model(**step_inputs, diffusion_conditioning_kwargs=without_raw)[0], with_raw)

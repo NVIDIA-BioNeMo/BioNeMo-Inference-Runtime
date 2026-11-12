@@ -351,6 +351,12 @@ Three things follow:
   also capture recycle trunks and repeated confidence Pairformers. OpenFold2
   / AlphaFold2 capture the recycle trunk, including extra-MSA and Evoformer;
   structure generation stays outside.
+- **A graph is keyed on every input leaf.** Tensor shapes, dtypes and
+  strides enter the key, and so do non-tensor values. A region that takes a
+  feature dict lists the keys it reads in its policy's `feature_kwargs`, so
+  request metadata and unread tensors, such as MSA rows in a denoising step,
+  cannot recapture a same-shape graph. A same-shape capture that differs only
+  in nested non-tensor values logs a warning naming them.
 
 ### Where the Memory Savings Come From
 

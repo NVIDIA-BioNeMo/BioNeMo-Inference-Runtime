@@ -24,7 +24,17 @@ from bionemo_ir.configs.base import EngineConfig
 from bionemo_ir.data.schemas import FoldingOutput
 from bionemo_ir.logger import logger
 from bionemo_ir.pipeline.base import PostProcessorBase
-from bionemo_ir.pipeline.utils import SAMPLING_SEED_ARG, SAMPLING_SEED_COLUMN
+from bionemo_ir.pipeline.utils import SAMPLING_SEED_ARG, SAMPLING_SEED_COLUMN, STAGE_TIMING_COLUMN
+
+
+def _is_model_column(name: str) -> bool:
+    """Whether a row column is a model input rather than pipeline bookkeeping.
+
+    The pipeline's own columns (record id, batch index, error slot, request seed)
+    are dunder-named, and stage timings change on every call. A model that hands
+    its feature dict to a CUDA-graph region would key the graph on them.
+    """
+    return not name.startswith("__") and name != STAGE_TIMING_COLUMN
 
 
 class FoldingEngine:
@@ -92,7 +102,7 @@ class FoldingEngine:
     def execute(self, batch: dict[str, Any]) -> FoldingOutput:
         """Execute the model with the input."""
         sampling_seed = batch.get(SAMPLING_SEED_COLUMN)
-        model_batch = {key: value for key, value in batch.items() if key != SAMPLING_SEED_COLUMN}
+        model_batch = {key: value for key, value in batch.items() if _is_model_column(key)}
         device_batch = self.transfer_batch_to_device(model_batch)
         runtime_args = {**self.runtime_args}
         if sampling_seed is not None and runtime_args.get(SAMPLING_SEED_ARG) is None:

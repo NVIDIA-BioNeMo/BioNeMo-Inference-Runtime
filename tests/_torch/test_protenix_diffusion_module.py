@@ -923,6 +923,45 @@ def test_shared_noise_diffusion_cudagraph_parity(use_cache: bool, token_dtype: s
             torch.testing.assert_close(actual, expected, atol=2e-3, rtol=2e-3)
 
 
+@pytest.mark.parametrize("use_cache", [False, True])
+def test_diffusion_graph_replays_across_request_metadata(use_cache: bool) -> None:
+    """Same-shape requests that differ only in metadata replay the one captured step graph."""
+    torch.backends.cuda.matmul.allow_tf32 = False
+    torch.backends.cudnn.allow_tf32 = False
+    torch.manual_seed(7)
+    device = torch.device("cuda")
+    sc = Scenario(dtype="float32", z_pair_dtype="float32")
+    module = ProtenixDiffusionModule(_build_config(sc)).to(device).eval()
+    with torch.no_grad():
+        for name, param in module.named_parameters():
+            if name.endswith("weight") and "norm" in name:
+                param.fill_(1)
+            elif param.ndim > 1:
+                param.normal_(std=0.02)
+            else:
+                param.zero_()
+    batch, s_inputs, s_trunk, z_trunk = _sampler_inputs(device, sc, module)
+    # What a pipeline row adds: a new record per seed, the row's batch index, and
+    # per-token names that differ between same-shape mutants.
+    requests = [
+        {"__record_id": "7WR3_seed1", "__idx_in_batch": 0, "token_resnames": ["GLY"] * sc.n_token},
+        {"__record_id": "7WR3_seed2", "__idx_in_batch": 1, "token_resnames": ["GLY"] * sc.n_token},
+        {"__record_id": "7WR3_G5A", "__idx_in_batch": 0, "token_resnames": ["ALA"] * sc.n_token},
+    ]
+    sampler = ProtenixDiffusionSampler(module, use_cache=use_cache).eval()
+    with torch.inference_mode():
+        coords = [
+            sampler.sample_coords(
+                {**batch, **metadata}, s_inputs, s_trunk, z_trunk, num_sampling_steps=2, N_sample=sc.n_sample, seed=11
+            )
+            for metadata in requests
+        ]
+    counts = sampler.graph.tracker.execution_counts
+    assert counts["capture"] == 1
+    assert counts["eviction"] == 0
+    assert all(torch.equal(coords[0], other) for other in coords[1:])
+
+
 @pytest.mark.parametrize("token_dtype", ["float32", "bfloat16"])
 def test_precomputed_single_diffusion_graph_replay(token_dtype: str) -> None:
     """Cache the single projection once, preserving graph replay and cache refresh parity."""

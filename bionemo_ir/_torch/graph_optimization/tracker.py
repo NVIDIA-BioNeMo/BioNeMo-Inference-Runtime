@@ -17,6 +17,8 @@
 import abc
 import copy
 import inspect
+import weakref
+from collections.abc import Iterator
 from typing import Any
 
 import torch
@@ -24,7 +26,6 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch import Tensor
 
-from bionemo_ir._torch.attention_backend import AttentionMetadata
 from bionemo_ir._torch.graph_optimization.config import (
     GraphOptimizationConfig,
     acceptance_max_by_name,
@@ -105,6 +106,8 @@ class GraphOptimizationTracker(BackendBase):
         self.inner_module = inner_module
         # Lazily cached positional parameter names.
         self._forward_positional_names: list[str] | None = None
+        # Each stable input tensor's last key part by path, with a weak reference to the tensor it describes.
+        self._stable_tensor_parts: dict[str, tuple[weakref.ref, str]] = {}
 
     @property
     def graph_optimization_config(self) -> GraphOptimizationConfig:
@@ -173,9 +176,17 @@ class GraphOptimizationTracker(BackendBase):
                         expected_length = length
 
     def input_key_for_this_call(self, *args, **kwargs) -> str:
-        """Return a cache key from tensor metadata and non-tensor values/types."""
-        key = self.SEP_FOR_ARGS.join(self._extract_input_metadata(*args, **kwargs))
-        return key
+        """Return a cache key from tensor metadata and non-tensor values/types, each in walk order."""
+        stable = self._stable_input_kwargs()
+        tensor_parts: list[str] = []
+        nontensor_parts: list[str] = []
+        for root, value in self._call_roots(args, kwargs):
+            tensors, nontensors = self._root_metadata(
+                root, value, self._stable_tensor_parts if root in stable else None
+            )
+            tensor_parts += tensors
+            nontensor_parts += nontensors
+        return f"{self.SEP_FOR_ARGS.join(tensor_parts)}{self.SEP_FOR_ARGS}{self.SEP_FOR_ARGS.join(nontensor_parts)}"
 
     def _walk_container_leaves(self, value: TensorContainer, path: str, on_leaf) -> None:
         """Call ``on_leaf(path, leaf)`` for each nested leaf."""
@@ -196,13 +207,15 @@ class GraphOptimizationTracker(BackendBase):
         else:
             on_leaf(path, value)
 
+    def _call_roots(self, args: tuple, kwargs: dict) -> Iterator[tuple[str, Any]]:
+        """Yield each call input with its root path, excluding graph-owned workspace kwargs."""
+        yield from zip(self._positional_param_names(len(args)), args, strict=True)
+        yield from self._graph_input_kwargs(kwargs).items()
+
     def _walk_call(self, args: tuple, kwargs: dict, on_leaf) -> None:
         """Walk call leaves, excluding graph-owned workspace kwargs."""
-        roots = self._positional_param_names(len(args))
-        for i, v in enumerate(args):
-            self._walk_container_leaves(v, roots[i], on_leaf)
-        for k, v in self._graph_input_kwargs(kwargs).items():
-            self._walk_container_leaves(v, k, on_leaf)
+        for root, value in self._call_roots(args, kwargs):
+            self._walk_container_leaves(value, root, on_leaf)
 
     def _extract_tensor_container_shape_maps(
         self, args: tuple, kwargs: dict
@@ -237,41 +250,51 @@ class GraphOptimizationTracker(BackendBase):
         shapes_device, _ = self._extract_tensor_container_shape_maps(args, kwargs)
         return shapes_device
 
-    def _extract_input_tensor_metadata(self, *args, **kwargs) -> str:
-        """Serialize tensor paths, dtypes, and shapes in walk order."""
-        parts: list[str] = []
+    def _stable_input_kwargs(self) -> frozenset:
+        """Return the kwargs whose unchanged tensors skip replay copies and key serialization."""
+        routing = self.graph_optimization_config.input_routing_config
+        return frozenset(routing.stable_input_kwargs) if routing is not None else frozenset()
+
+    def _leaf_metadata(self, path: str, leaf: Any) -> tuple[bool, str]:
+        """Serialize one leaf: a tensor's dtype, device, stride and shape, else its value or type."""
+        if isinstance(leaf, Tensor):
+            dims = self.SEP_FOR_DIMS.join(str(d) for d in leaf.shape)
+            return True, (
+                f"{path}{self.SEP_BW_NAME_AND_SHAPE}{leaf.dtype}:{leaf.device}:{leaf.stride()}"
+                f"{self.SEP_BW_NAME_AND_SHAPE}{dims}"
+            )
+        if isinstance(leaf, (bool, int, float, str)):
+            return False, f"{path}{self.SEP_BW_NAME_AND_SHAPE}{leaf}"
+        return False, f"{path}{self.SEP_BW_ARG_AND_TYPE}{type(leaf)}"
+
+    def _root_metadata(
+        self, root: str, value: Any, memo: dict[str, tuple[weakref.ref, str]] | None = None
+    ) -> tuple[list[str], list[str]]:
+        """Serialize one call input's tensor and non-tensor leaves in walk order.
+
+        With ``memo``, a tensor reuses its part while the same tensor object comes back at its path. A rollout passes
+        the same cache to every denoising step, and formatting its many tensors dominates keying; the stable contract
+        makes identity sufficient, and the weak reference never keeps a finished rollout's cache alive.
+        """
+        tensor_parts: list[str] = []
+        nontensor_parts: list[str] = []
 
         def on_leaf(path: str, leaf: Any) -> None:
-            if isinstance(leaf, torch.Tensor):
-                dims = self.SEP_FOR_DIMS.join(str(d) for d in leaf.shape)
-                parts.append(
-                    f"{path}{self.SEP_BW_NAME_AND_SHAPE}{leaf.dtype}:{leaf.device}:{leaf.stride()}"
-                    f"{self.SEP_BW_NAME_AND_SHAPE}{dims}"
-                )
+            if memo is not None and isinstance(leaf, Tensor):
+                cached = memo.get(path)
+                if cached is not None and cached[0]() is leaf:
+                    tensor_parts.append(cached[1])
+                    return
+            is_tensor, part = self._leaf_metadata(path, leaf)
+            if not is_tensor:
+                nontensor_parts.append(part)
+                return
+            tensor_parts.append(part)
+            if memo is not None:
+                memo[path] = (weakref.ref(leaf), part)
 
-        self._walk_call(args, kwargs, on_leaf)
-        return self.SEP_FOR_ARGS.join(parts)
-
-    def _extract_input_nontensor_metadata(self, *args, **kwargs) -> str:
-        """Serialize non-tensor paths and values/types in walk order."""
-        parts: list[str] = []
-
-        def on_leaf(path: str, leaf: Any) -> None:
-            if isinstance(leaf, (bool, int, float, str)):
-                parts.append(f"{path}{self.SEP_BW_NAME_AND_SHAPE}{leaf}")
-            elif isinstance(leaf, AttentionMetadata):
-                parts.append(f"{path}{self.SEP_BW_ARG_AND_TYPE}{type(leaf)}")
-            elif not isinstance(leaf, Tensor):
-                parts.append(f"{path}{self.SEP_BW_ARG_AND_TYPE}{type(leaf)}")
-
-        self._walk_call(args, kwargs, on_leaf)
-        return self.SEP_FOR_ARGS.join(parts)
-
-    def _extract_input_metadata(self, *args, **kwargs) -> tuple[str, str]:
-        """Return tensor and non-tensor metadata strings."""
-        tensor_metadata = self._extract_input_tensor_metadata(*args, **kwargs)
-        nontensor_metadata = self._extract_input_nontensor_metadata(*args, **kwargs)
-        return tensor_metadata, nontensor_metadata
+        self._walk_container_leaves(value, root, on_leaf)
+        return tensor_parts, nontensor_parts
 
     @abc.abstractmethod
     def update_graph_state_by_key(self, key: str) -> None:

@@ -14,6 +14,8 @@
 # limitations under the License.
 """Replay-copy skipping for stable keyword inputs of CUDAGraphOptimizationTracker."""
 
+import weakref
+
 import pytest
 import torch
 import torch.nn as nn
@@ -117,3 +119,48 @@ def test_release_forgets_stable_sources():
     assert state.stable_sources
     state.release()
     assert state.stable_sources == {}
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        lambda cond: {**cond, "gain": cond["gain"][:2]},  # a new tensor of another shape
+        lambda cond: {**cond, "gain": cond["gain"].t()},  # a new view with another stride
+        lambda cond: {"gain": cond["gain"], "bias": cond["bias"]},  # the same tensors in another order
+        lambda cond: {**cond, "step": 3},  # an added non-tensor value
+    ],
+)
+def test_stable_kwarg_key_reuse_follows_its_leaves(change) -> None:
+    """A stable kwarg's serialized key is reused only while its paths, tensors and values are unchanged."""
+    _, cond, _ = _inputs(seed=0)
+    memoized = _make_tracker()
+    key = memoized.input_key_for_this_call(cond=cond)
+    assert memoized.input_key_for_this_call(cond=dict(cond)) == key
+    changed = change(cond)
+    plain = CUDAGraphOptimizationTracker(CUDAGraphOptimizationConfig(), inner_module=_Conditioned().cuda()).eval()
+    assert memoized.input_key_for_this_call(cond=changed) == plain.input_key_for_this_call(cond=changed) != key
+
+
+def test_stable_kwarg_key_memo_holds_tensors_weakly() -> None:
+    """The memo never keeps a finished rollout's tensors alive, and a freed tensor's successor is re-serialized."""
+    tracker = _make_tracker()
+    _, cond, _ = _inputs(seed=0)
+    key = tracker.input_key_for_this_call(cond=cond)
+    released = weakref.ref(cond["gain"])
+    del cond
+    assert released() is None
+    successor = {"bias": torch.zeros(4, 8, device="cuda"), "gain": torch.zeros(2, 8, device="cuda")}
+    assert tracker.input_key_for_this_call(cond=successor) != key
+
+
+def test_stable_kwarg_key_memo_serializes_none_in_place_of_a_freed_tensor() -> None:
+    """A dead reference never stands in for a ``None`` that now sits at the freed tensor's path."""
+    tracker = _make_tracker()
+    _, cond, _ = _inputs(seed=0)
+    tracker.input_key_for_this_call(cond=cond)
+    bias, released = cond["bias"], weakref.ref(cond["gain"])
+    del cond
+    assert released() is None
+    emptied = {"bias": bias, "gain": None}
+    plain = CUDAGraphOptimizationTracker(CUDAGraphOptimizationConfig(), inner_module=_Conditioned().cuda()).eval()
+    assert tracker.input_key_for_this_call(cond=emptied) == plain.input_key_for_this_call(cond=emptied)

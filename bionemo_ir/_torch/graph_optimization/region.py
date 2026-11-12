@@ -66,6 +66,7 @@ def _validate_routing_against_signature(sig: inspect.Signature, routing: InputRo
     state_kwargs = routing.state_input_kwargs if routing is not None else ()
     borrowed_kwargs = routing.borrowed_input_kwargs if routing is not None else ()
     static_args = routing.static_args if routing is not None else ()
+    feature_kwargs = routing.feature_kwargs if routing is not None else {}
     for dim in named_dim_ties:
         for tensor_name, _axes in dim.input_dims:
             _check(tensor_name, "input-tie tensor")
@@ -79,6 +80,25 @@ def _validate_routing_against_signature(sig: inspect.Signature, routing: InputRo
         _check(name, "borrowed kwarg")
     for name in static_args:
         _check(name, "static arg")
+    for name in feature_kwargs:
+        _check(name, "feature kwarg")
+
+
+def _select_features(kwargs: dict[str, Any], feature_kwargs: dict[str, list[str]]) -> dict[str, Any]:
+    """Narrow each feature-dict kwarg to the keys its module reads.
+
+    The tracker keys a graph on every leaf it is given, so a request id or a
+    per-token name would recapture it for each request of the same shape, and
+    an unread tensor would key it and fill a static buffer.
+    """
+    if not feature_kwargs:
+        return kwargs
+    selected = dict(kwargs)
+    for name, keys in feature_kwargs.items():
+        features = kwargs.get(name)
+        if isinstance(features, dict):
+            selected[name] = {key: features[key] for key in keys if key in features}
+    return selected
 
 
 class _OwnerCall(nn.Module):
@@ -191,6 +211,8 @@ class GraphRegion(nn.Module):
 
     def forward(self, *args: Any, **kwargs: Any) -> Any:
         policy = self.policy
+        if policy is not None and policy.input_routing_config is not None:
+            kwargs = _select_features(kwargs, policy.input_routing_config.feature_kwargs)
         if (
             not self.enabled
             or policy is None

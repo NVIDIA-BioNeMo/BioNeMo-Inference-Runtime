@@ -22,6 +22,7 @@ from bionemo_ir._torch.graph_optimization.graph_policy import (
     pairformer_graph_config,
     trunk_graph_config,
 )
+from bionemo_ir._torch.modules.openfold3.utils.atomize_utils import ATOM_GATHER_KEYS
 from bionemo_ir._torch.sampling.frame_reuse import require_evaluated_period
 from bionemo_ir.configs import (
     BaseConfig,
@@ -32,6 +33,28 @@ from bionemo_ir.configs import (
     TrunkPadSpec,
 )
 from bionemo_ir.registry import SupMat
+
+# Batch features the denoising step reads: relative-position features, reference
+# conformer, atom layout and the gather tables of ``prepare_atom_reduction``.
+DENOISER_FEATURE_KEYS: tuple[str, ...] = (
+    "asym_id",
+    "entity_id",
+    "residue_index",
+    "sym_id",
+    "token_index",
+    "token_mask",
+    "num_atoms_per_token",
+    "atom_mask",
+    "atom_to_token_index",
+    "atom_broadcast_index",
+    *ATOM_GATHER_KEYS,
+    "ref_atom_name_chars",
+    "ref_charge",
+    "ref_element",
+    "ref_mask",
+    "ref_pos",
+    "ref_space_uid",
+)
 
 
 def _diffusion_graph_config() -> CUDAGraphOptimizationConfig:
@@ -61,6 +84,7 @@ def _diffusion_graph_config() -> CUDAGraphOptimizationConfig:
             "prepared_token_pair_biases",
             "prepared_token_conditioning_weights",
         ),
+        feature_kwargs={"batch": DENOISER_FEATURE_KEYS},
     )
 
 

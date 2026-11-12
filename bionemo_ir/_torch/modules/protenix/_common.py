@@ -35,6 +35,10 @@ DIFFUSION_CONSUMED_FEATURES: tuple[str, ...] = ("relp",) + tuple(
     k for k in ATOM_ENCODER_FEATURE_KEYS if k != "atom_to_token_idx"
 )
 
+# Every feature the denoiser reads: the uncached path also takes ``relp`` and the
+# precomputed ``atom_reduction``; the cached path reads only ``atom_to_token_idx``.
+DENOISER_FEATURE_KEYS: tuple[str, ...] = ("relp", *ATOM_ENCODER_FEATURE_KEYS, "atom_reduction")
+
 
 def atom_encoder_kwargs(features: dict) -> dict:
     """Assemble atom-encoder keyword args from a feature dict (stable key set)."""

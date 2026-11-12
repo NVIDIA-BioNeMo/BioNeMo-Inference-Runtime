@@ -357,7 +357,8 @@ class DiffusionModule(nn.Module):
                 - atom_dec_bias: (B, N, atom_decoder_heads)
                 - prepared_atom_enc_bias / prepared_atom_dec_bias: optional
                   per-layer layouts from the atom encoder's and decoder's
-                  prepare_pair_biases, which replace the raw biases
+                  prepare_pair_biases, which replace the raw biases; the
+                  raw biases may then be absent
                 - prepared_atom_to_token: optional per-token atom slots from
                   prepare_atom_to_token, which replace the one-hot contraction
             attn_metadata: AttentionMetadata | None
@@ -372,9 +373,9 @@ class DiffusionModule(nn.Module):
 
         q = diffusion_conditioning_kwargs["q"]
         c = diffusion_conditioning_kwargs["c"]
-        atom_enc_bias = diffusion_conditioning_kwargs["atom_enc_bias"]
+        atom_enc_bias = diffusion_conditioning_kwargs.get("atom_enc_bias")
         prepared_token_bias = diffusion_conditioning_kwargs.get("prepared_token_trans_bias")
-        atom_dec_bias = diffusion_conditioning_kwargs["atom_dec_bias"]
+        atom_dec_bias = diffusion_conditioning_kwargs.get("atom_dec_bias")
 
         s_trunk = s_trunk.to(self.dtype)
         s_inputs = s_inputs.to(self.dtype)
@@ -1321,9 +1322,10 @@ class BoltzDiffusionSampler(nn.Module):
         if isinstance(atom_encoder, AtomAttentionEncoder) and isinstance(atom_decoder, AtomAttentionDecoder):
             network_condition_kwargs = dict(network_condition_kwargs)
             atom_pad_mask = feature_dict["atom_pad_mask"]
+            # The prepared bias replaces the raw one, which leaves the dict so that no step graph clones it.
             for name, attention in (("atom_enc_bias", atom_encoder), ("atom_dec_bias", atom_decoder)):
                 network_condition_kwargs[f"prepared_{name}"] = attention.prepare_pair_biases(
-                    network_condition_kwargs[name], atom_pad_mask, attn_metadata
+                    network_condition_kwargs.pop(name), atom_pad_mask, attn_metadata
                 )
             # So is the atom conditioning: project each atom layer's fused transition table once, and the layers run
             # their transitions as one kernel.

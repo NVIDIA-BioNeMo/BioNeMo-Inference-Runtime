@@ -33,6 +33,7 @@ from bionemo_ir._torch.graph_optimization.config import (
     InputRoutingConfig,
     NamedDimTies,
 )
+from bionemo_ir._torch.graph_optimization.cuda_graph import runtime as cuda_graph_runtime
 from bionemo_ir._torch.graph_optimization.graph_policy import _release_unused_graphs, exact_graph_config
 from bionemo_ir._torch.graph_optimization.region import _validate_routing_against_signature
 from bionemo_ir.configs import AcceleratedConfig, BaseConfig
@@ -40,11 +41,12 @@ from bionemo_ir.models.openfold2.modeling import OpenFold2
 from bionemo_ir.models.optimize_module_setter import OptimizedModuleSetterMixin
 
 
-def _policy(max_tokens: int):
+def _policy(max_tokens: int, **routing):
     return exact_graph_config(
         named_dims=(NamedDimTies(name="num_tokens", input_dims=(("x", (-2,)),)),),
         max_tokens=max_tokens,
         repeated=True,
+        **routing,
     )
 
 
@@ -191,6 +193,7 @@ def cuda_model() -> _Model:
     [
         ({"named_dims": (NamedDimTies(name="num_tokens", input_dims=(("y", (-2,)),)),)}, "input-tie tensor 'y'"),
         ({"named_dims": (), "stable_kwargs": ("missing",)}, "stable kwarg 'missing'"),
+        ({"named_dims": (), "feature_kwargs": {"missing": ["w"]}}, "feature kwarg 'missing'"),
     ],
 )
 def test_routed_names_must_be_parameters_of_the_region_target(cuda_model: _Model, routing, message) -> None:
@@ -242,6 +245,59 @@ def test_scalar_values_key_graphs_and_long_inputs_run_eagerly(cuda_model: _Model
     torch.testing.assert_close(cuda_model(large), cuda_model.step(large), rtol=0, atol=0)
     assert counts["out_of_range"] == 1
     assert counts["capture"] == 2
+
+
+class _FeatureModel(nn.Module):
+    """One graphed step that reads ``features["w"]``, with an optional feature-key allowlist."""
+
+    def __init__(self, feature_kwargs: dict[str, list[str]] | None) -> None:
+        """Wrap ``step`` in an EXACT graph region whose routing lists ``feature_kwargs``."""
+        super().__init__()
+        self.seen_keys: list[set[str]] = []
+        self.graph = GraphRegion(self, "step", _policy(8, feature_kwargs=feature_kwargs))
+
+    def step(self, x: torch.Tensor, *, features: dict) -> torch.Tensor:
+        """Record the feature keys the step sees, then scale by ``w``."""
+        self.seen_keys.append(set(features))
+        return x * features["w"]
+
+    def forward(self, x: torch.Tensor, *, features: dict) -> torch.Tensor:
+        """Run ``step`` through the graph region."""
+        return self.graph(x, features=features)
+
+
+@pytest.mark.parametrize(("feature_kwargs", "captures"), [(None, 3), ({"features": ["w", "absent"]}, 1)])
+@torch.inference_mode()
+def test_feature_kwargs_keep_request_metadata_out_of_graph_keys(
+    feature_kwargs, captures: int, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Same-shape calls differing in nested metadata recapture unless the region narrows the feature dict."""
+    if not torch.cuda.is_available():
+        pytest.skip("CUDA required")
+    warnings: list[str] = []
+    monkeypatch.setattr(cuda_graph_runtime.logger, "warning", warnings.append)
+    model = _FeatureModel(feature_kwargs).cuda().eval()
+    x = torch.ones(1, 4, 4, device="cuda")
+    w = torch.full((4,), 2.0, device="cuda")
+    unread = torch.zeros(3, device="cuda")
+    for record_id in ("7WR3_seed1", "memo|alice@example.com", "7WR3_G5A"):
+        features = {"w": w, "unread": unread, "__record_id": record_id, "resnames": ["GLY", record_id]}
+        torch.testing.assert_close(model(x, features=features), x * w, rtol=0, atol=0)
+    counts = model.graph.tracker.execution_counts
+    assert counts["capture"] == captures
+    assert counts["metadata_recapture"] == captures - 1
+    # The warning names changed paths only; a value holding the key separator never leaks into it.
+    assert len(warnings) == min(captures - 1, 1)
+    assert not any("alice" in message for message in warnings)
+    if feature_kwargs is not None:
+        assert all(keys == {"w"} for keys in model.seen_keys)
+
+
+def test_feature_kwargs_narrow_eager_calls_too() -> None:
+    """Eager calls get the narrowed feature dict too, so a read key the policy omits fails without a capture."""
+    model = _FeatureModel({"features": ["w"]})
+    model(torch.ones(1, 4, 4), features={"w": torch.ones(4), "__record_id": "a"})
+    assert model.seen_keys == [{"w"}]
 
 
 def test_captures_answers_whether_a_call_would_replay(cuda_model: _Model) -> None:

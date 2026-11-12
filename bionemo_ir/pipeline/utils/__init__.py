@@ -17,3 +17,5 @@
 RANDOM_SEED_COLUMN = "random_seed"
 SAMPLING_SEED_ARG = "sampling_seed"
 SAMPLING_SEED_COLUMN = "__sampling_seed"
+# Per-stage wall times (seconds) that every stage adds to its output row.
+STAGE_TIMING_COLUMN = "stage_timing_s"

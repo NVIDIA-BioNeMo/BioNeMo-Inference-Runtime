@@ -306,7 +306,7 @@ class AtomAttentionEncoder(nn.Module):
         atom_pad_mask: torch.Tensor,
         q: torch.Tensor,
         c: torch.Tensor,
-        bias: torch.Tensor,
+        bias: torch.Tensor | None,
         r: torch.Tensor = None,
         attn_metadata: AttentionMetadata | None = None,
         buffers: PreallocatedBuffers | None = None,
@@ -325,7 +325,7 @@ class AtomAttentionEncoder(nn.Module):
             c: torch.Tensor
                 The condition tensor. Shape [B, N_atoms, D]
             bias: torch.Tensor
-                The bias tensor. Shape [B, N_atoms, H, D]
+                The bias tensor. Shape [B, N_atoms, H, D]; ``None`` with ``prepared_pair_biases``.
             r: torch.Tensor
                 The residue coordinates. Shape [B, multiplicity, N_atoms, 3]
             prepared_pair_biases: list[torch.Tensor]
@@ -492,7 +492,7 @@ class AtomAttentionDecoder(nn.Module):
         a: torch.Tensor,
         q: torch.Tensor,
         c: torch.Tensor,
-        bias: torch.Tensor,
+        bias: torch.Tensor | None,
         attn_metadata: AttentionMetadata | None = None,
         buffers: PreallocatedBuffers | None = None,
         prepared_pair_biases: list[torch.Tensor] | None = None,
@@ -512,7 +512,7 @@ class AtomAttentionDecoder(nn.Module):
             c: torch.Tensor
                 The condition tensor. Shape [B, 1, N_atoms, D]
             bias: torch.Tensor
-                The bias tensor. Shape [B, N_atoms, H, D]
+                The bias tensor. Shape [B, N_atoms, H, D]; ``None`` with ``prepared_pair_biases``.
             multiplicity: int
                 The multiplicity that used for the structure prediction.
             prepared_pair_biases: list[torch.Tensor]

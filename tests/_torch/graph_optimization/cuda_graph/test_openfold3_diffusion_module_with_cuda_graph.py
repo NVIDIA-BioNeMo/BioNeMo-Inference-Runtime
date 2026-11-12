@@ -26,7 +26,9 @@ import gc
 
 import pytest
 import torch
+from torch import nn
 
+from bionemo_ir._torch.graph_optimization import GraphRegion
 from bionemo_ir._torch.graph_optimization.config import (
     CUDAGraphOptimizationConfig,
 )
@@ -375,3 +377,32 @@ def test_of3_diffusion_module_b2_cuda_graph_byte_identical(_of3_diffusion_captur
         "CUDA-graph replay is not byte-identical to eager "
         f"(max|Δ|={(graph_out.float() - eager_out.float()).abs().max().item():.3e})"
     )
+
+
+def test_of3_diffusion_region_replays_across_msa_depth_and_metadata(_of3_diffusion_capture):
+    """Same-token requests differing in MSA depth or record metadata replay one denoising-step graph.
+
+    The step reads neither, so the model policy's ``feature_kwargs`` keeps both out of its key.
+    """
+    reason = harness_skip_reason(_SAMPLE_IDS[:1])
+    if reason is not None:
+        pytest.skip(reason)
+    if _of3_diffusion_capture is None:
+        pytest.skip("openfold3 weights/metadata unavailable")
+    module, per_sample, _ = _of3_diffusion_capture
+    kwargs = clone_tree(per_sample[0])
+    for key in _PREPARED_KEYS:
+        kwargs.pop(key, None)
+    owner = nn.Module()
+    owner.diffusion_module = module.eval()
+    region = GraphRegion(owner, "diffusion_module", DiffusionModuleConfig().graph_optimization_config).eval()
+    token_mask = kwargs["batch"]["token_mask"]
+    outputs = []
+    with torch.no_grad():
+        for msa_depth, record_id in ((4, "T1038_seed1"), (7, "T1038_seed2"), (7, "T1038_G5A")):
+            msa = torch.zeros((*token_mask.shape[:-1], msa_depth, token_mask.shape[-1], 32), device=token_mask.device)
+            batch = {**kwargs["batch"], "msa": msa, "__record_id": record_id, "token_resnames": [record_id]}
+            outputs.append(region(**{**kwargs, "batch": batch}).clone())
+    counts = region.tracker.execution_counts
+    assert (counts["capture"], counts["metadata_recapture"]) == (1, 0)
+    assert all(torch.equal(outputs[0], output) for output in outputs[1:])

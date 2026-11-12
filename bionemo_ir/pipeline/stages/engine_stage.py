@@ -28,6 +28,7 @@ from bionemo_ir.logger import logger
 from bionemo_ir.pipeline.engine import FoldingEngine
 from bionemo_ir.pipeline.stages.base import StatefulStage, StatefulStageUDF
 from bionemo_ir.pipeline.stages.configs import ParallelismMode
+from bionemo_ir.pipeline.utils import STAGE_TIMING_COLUMN
 from bionemo_ir.registry import get_model_class, get_postprocessor
 from bionemo_ir.utils import is_device_fatal
 
@@ -134,9 +135,9 @@ class FoldingEngineUDF(StatefulStageUDF):
         }
         # This stage uses update_row=False (replaces the row), so explicitly carry
         # the upstream per-stage timing forward and tag the engine's own time (always on).
-        _timing = dict(row.get("stage_timing_s") or {})
+        _timing = dict(row.get(STAGE_TIMING_COLUMN) or {})
         _timing["FoldingEngine"] = output.get("model_inference_time", time_taken)
-        resp["stage_timing_s"] = _timing
+        resp[STAGE_TIMING_COLUMN] = _timing
         return resp
 
     def _create_error_response(self, row: dict[str, Any], error_msg: str, traceback_str: str) -> dict[str, Any]:

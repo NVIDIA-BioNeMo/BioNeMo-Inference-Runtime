@@ -18,7 +18,7 @@
 from __future__ import annotations
 
 import gc
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING
 
 import torch
@@ -84,6 +84,7 @@ def exact_graph_config(
     stable_kwargs: Sequence[str] = (),
     state_kwargs: Sequence[str] = (),
     borrowed_kwargs: Sequence[str] = (),
+    feature_kwargs: Mapping[str, Sequence[str]] | None = None,
 ) -> CUDAGraphOptimizationConfig:
     """Build an exact policy with model-declared dimensions and acceptance.
 
@@ -98,6 +99,7 @@ def exact_graph_config(
         state_kwargs: Inputs the module overwrites with its next call's input and returns, which go back to the
             caller uncloned.
         borrowed_kwargs: Inputs whose caller-owned tensor the graph reads in place of a copy.
+        feature_kwargs: Dict inputs mapped to the keys the module reads; the region passes only those.
     """
     return CUDAGraphOptimizationConfig(
         graph_optimization_mode=GraphOptimizationMode.CUDA_GRAPH_VIA_TORCH,
@@ -110,6 +112,7 @@ def exact_graph_config(
             stable_input_kwargs=list(stable_kwargs),
             state_input_kwargs=list(state_kwargs),
             borrowed_input_kwargs=list(borrowed_kwargs),
+            feature_kwargs={name: list(keys) for name, keys in (feature_kwargs or {}).items()},
         ),
         num_calls_for_kernel_compilation=1,
         num_calls_for_memory_allocator=1 if repeated else 3,

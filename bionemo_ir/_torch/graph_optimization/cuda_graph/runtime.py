@@ -20,6 +20,7 @@ permanently revert the affected key to eager execution.
 
 import enum
 import gc
+import re
 import weakref
 from collections import Counter
 from collections.abc import Callable, Iterator
@@ -57,6 +58,8 @@ from bionemo_ir.logger import logger
 from bionemo_ir.utils import is_device_fatal
 
 _EAGER: ContextVar[bool] = ContextVar("bioir_eager_graphs", default=False)
+_SIGNATURES_MAX_FOR_RECAPTURE_CHECK = 64
+_LIST_INDEX_SUFFIX = re.compile(r"(\.\d+)+$")
 
 
 def graph_eligible(training: bool) -> bool:
@@ -242,6 +245,9 @@ class CUDAGraphOptimizationTracker(GraphOptimizationTracker):
 
         # Tracker-level flags survive state eviction, keeping failed keys eager.
         self.fallback_to_eager_by_key: dict[str, bool] = {}
+        # Non-tensor metadata last seen per tensor signature, to name values that recapture a same-shape call.
+        self.nontensor_metadata_by_signature = LRU(_SIGNATURES_MAX_FOR_RECAPTURE_CHECK)
+        self._reported_recapture_paths: set[tuple[str, ...]] = set()
         # A function rather than a bound method keeps the tracker out of a reference cycle, so a dropped
         # tracker frees its graphs at once, not in a garbage collection that may run inside another capture.
         self.register_load_state_dict_pre_hook(_reset_before_load)
@@ -384,6 +390,7 @@ class CUDAGraphOptimizationTracker(GraphOptimizationTracker):
             self.validate_input_ties(input_tensor_shapes_host)
             if not self.input_accepted(input_tensor_shapes_host):
                 return self.inner_module(*args, **kwargs)
+            self._check_metadata_recapture(args, kwargs)
 
             if key_method == InputKeyMethod.EXACT:
                 adjusted_args = args
@@ -438,6 +445,45 @@ class CUDAGraphOptimizationTracker(GraphOptimizationTracker):
                 output = self.unpad_output((adjusted_output,), input_tensor_shapes_host)
 
         return output
+
+    def _check_metadata_recapture(self, args: tuple, kwargs: dict) -> None:
+        """Count, and report once per path set, a new key whose tensors match an earlier one.
+
+        Such a key differs only in non-tensor values, usually request metadata a caller passed in a
+        container; each new value then evicts, warms up and recaptures a graph of the same shape.
+        ``InputRoutingConfig.feature_kwargs`` keeps those values out.
+        """
+        tensor_parts: list[str] = []
+        nontensor_leaves: set[tuple[str, str]] = set()
+
+        def on_leaf(path: str, leaf: Any) -> None:
+            is_tensor, part = self._leaf_metadata(path, leaf)
+            if is_tensor:
+                tensor_parts.append(part)
+            else:
+                nontensor_leaves.add((path, part))
+
+        self._walk_call(args, kwargs, on_leaf)
+        signature = self.SEP_FOR_ARGS.join(tensor_parts)
+        current = frozenset(nontensor_leaves)
+        prior = self.nontensor_metadata_by_signature.get(signature)
+        self.nontensor_metadata_by_signature[signature] = current
+        if prior is None or prior == current:
+            return
+        # Only paths are reported, never values. A top-level scalar such as a conditioning flag selects a graph on
+        # purpose; only values inside a container are suspect.
+        changed = {path for path, _ in prior ^ current if self.SEP_BW_ARG_AND_DIM in path}
+        paths = tuple(sorted({_LIST_INDEX_SUFFIX.sub("", path) for path in changed}))
+        if not paths:
+            return
+        self.execution_counts["metadata_recapture"] += 1
+        if paths in self._reported_recapture_paths:
+            return
+        self._reported_recapture_paths.add(paths)
+        logger.warning(
+            f"{type(self).__name__}: same-shape call recaptures on non-tensor inputs {list(paths)}; "
+            "list the read keys in feature_kwargs"
+        )
 
     def _prepare_first_capture(self, args: tuple, kwargs: dict, input_key: str) -> None:
         """Prime on fresh input copies without consuming the prediction's RNG."""
@@ -665,11 +711,6 @@ class CUDAGraphOptimizationTracker(GraphOptimizationTracker):
             _copy_tensors_into(dest=static_kwargs[name], src=value)
             if name in stable:
                 state.stable_sources[name] = _leaf_sources(value)
-
-    def _stable_input_kwargs(self) -> frozenset:
-        """Return the kwargs whose unchanged tensors skip replay copies."""
-        routing = self.graph_optimization_config.input_routing_config
-        return frozenset(routing.stable_input_kwargs) if routing is not None else frozenset()
 
     def _state_input_kwargs(self) -> tuple[str, ...]:
         """Return the kwargs whose static buffers the module updates in place and returns uncloned."""

@@ -13,14 +13,20 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import io
 import os
+import re
 import tempfile
 
+import ihm
+import ihm.format
+import modelcif.model
 import numpy as np
 import pytest
 
+from bionemo_ir.data.schemas import FoldingOutput
 from bionemo_ir.data.utils import get_all_atom_types, get_all_residue_types
-from bionemo_ir.data.writers.cif_writer import CIFWriter
+from bionemo_ir.data.writers.cif_writer import _BULK_IHM_VERSIONS, CIFWriter, _BulkCifWriter
 from tests.common.test_utils.data import get_sample_folding_output
 
 
@@ -34,6 +40,43 @@ def _write_outside_the_checkout(tmp_path, monkeypatch):
     ``test.cif`` next to ``setup.py``.
     """
     monkeypatch.chdir(tmp_path)
+
+
+def _force_stock_dumper(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Make the next CIF writes take modelcif's stock dumper as the reference."""
+    monkeypatch.setattr(ihm, "__version__", "unsupported")
+
+
+@pytest.fixture
+def atom_allocations(monkeypatch: pytest.MonkeyPatch) -> list[int]:
+    """Count ``modelcif.model.Atom`` constructions; the bulk dumper builds one scratch atom."""
+    allocations: list[int] = []
+    original = modelcif.model.Atom
+
+    class CountingAtom(original):
+        def __init__(self, *args, **kwargs):
+            allocations.append(1)
+            super().__init__(*args, **kwargs)
+
+    monkeypatch.setattr(modelcif.model, "Atom", CountingAtom)
+    return allocations
+
+
+def test_loop_writer_matches_stock_rows() -> None:
+    """Cached tokens keep ihm's quoting, wrapping and multi-line values."""
+    keys = ["a", "b", "c", "d", "e", "f"]
+    rows = [
+        {"a": "x", "b": 1, "c": 1.5, "d": None, "e": True, "f": "two words"},
+        {"a": "x", "b": np.int64(7), "c": 0.0001, "d": "?", "e": "_x", "f": "L" * 90},
+        {"a": "line\nbreak", "b": -2, "c": np.float32(3.25), "e": ihm.unknown, "f": "x"},
+        {"a": "", "b": "'quoted'", "c": "x" * 70, "d": "y" * 10, "e": "end\n", "f": "data_x"},
+    ]
+    actual, expected = io.StringIO(), io.StringIO()
+    for writer in (_BulkCifWriter(actual), ihm.format.CifWriter(expected)):
+        with writer.loop("_x", keys) as loop:
+            for row in rows * 2:
+                loop.write(**row)
+    assert actual.getvalue() == expected.getvalue()
 
 
 class TestCIFWriter:
@@ -174,6 +217,113 @@ class TestCIFWriter:
 
         assert file_content == cif_content
 
+    @pytest.mark.parametrize(
+        "case", ["default", "float64", "float16", "quoted", "multiline", "nonfinite", "non_ascii", "empty_residue"]
+    )
+    def test_bulk_matches_reference_bytes(
+        self, res_type_mapping, atom_type_mapping, sample_folding_output, monkeypatch, case
+    ):
+        """Keep atom formatting identical across dtypes and unusual tokens."""
+        record = sample_folding_output
+        if case in ("float64", "float16"):
+            record["atom_positions"] = record["atom_positions"].astype(case)
+            record["b_factors"] = record["b_factors"].astype(case)
+        elif case in ("quoted", "multiline", "non_ascii"):
+            names = np.full(record["atom_mask"].shape, "", dtype=object)
+            i, j = np.argwhere(record["atom_mask"] >= 0.5)[0]
+            names[i, j] = {"quoted": "atom with 'quotes'", "multiline": "atom\nname", "non_ascii": "Cα"}[case]
+            record["atom_names"] = names
+        elif case == "empty_residue":
+            record["atom_mask"] = record["atom_mask"].copy()
+            record["atom_mask"][1] = 0
+        elif case == "nonfinite":
+            record["atom_positions"] = record["atom_positions"].copy()
+            record["atom_positions"].flat[:6] = [np.nan, np.inf, -np.inf, -0.0, 0.00001, 1e8]
+        writer = CIFWriter(res_type_mapping=res_type_mapping, atom_type_mapping=atom_type_mapping)
+        actual = writer.write(record)
+        _force_stock_dumper(monkeypatch)
+        expected = writer.write(record)
+        assert actual == expected
+
+    def test_bulk_uses_one_atom_object(
+        self, res_type_mapping, atom_type_mapping, sample_folding_output, monkeypatch, atom_allocations
+    ):
+        """Validation needs one scratch Atom rather than one allocation per atom."""
+        writer = CIFWriter(res_type_mapping=res_type_mapping, atom_type_mapping=atom_type_mapping)
+        actual = writer.write(sample_folding_output)
+        assert len(atom_allocations) == 1
+        atom_allocations.clear()
+        _force_stock_dumper(monkeypatch)
+        assert writer.write(sample_folding_output) == actual
+        assert len(atom_allocations) > 1
+
+    @pytest.mark.parametrize("version", sorted(_BULK_IHM_VERSIONS))
+    def test_bulk_covers_released_ihm(
+        self, res_type_mapping, atom_type_mapping, sample_folding_output, monkeypatch, atom_allocations, version
+    ):
+        """An unpinned install resolves ihm 2.12; it must keep the bulk path."""
+        monkeypatch.setattr(ihm, "__version__", version)
+        CIFWriter(res_type_mapping=res_type_mapping, atom_type_mapping=atom_type_mapping).write(sample_folding_output)
+        assert len(atom_allocations) == 1
+
+    def test_bulk_follows_ihm_line_wrap_setting(
+        self, res_type_mapping, atom_type_mapping, sample_folding_output, monkeypatch
+    ):
+        """With ihm's line wrapping off, rows longer than 80 columns stay on one line as the stock dumper writes them."""
+        monkeypatch.setattr(ihm.format.CifWriter, "_line_wrap", False)
+        record = sample_folding_output
+        record["atom_positions"] = np.full_like(record["atom_positions"], -12345.678)
+        writer = CIFWriter(res_type_mapping=res_type_mapping, atom_type_mapping=atom_type_mapping)
+        actual = writer.write(record)
+        assert any(len(line) > 80 for line in actual.splitlines())
+        _force_stock_dumper(monkeypatch)
+        assert actual == writer.write(record)
+
+    def test_bulk_preserves_duplicate_atom_error(
+        self, res_type_mapping, atom_type_mapping, sample_folding_output, monkeypatch
+    ):
+        """Duplicate names keep the canonical validation error."""
+        record = sample_folding_output
+        names = np.full(record["atom_mask"].shape, "", dtype=object)
+        i = np.flatnonzero(np.count_nonzero(record["atom_mask"] >= 0.5, axis=1) >= 2)[0]
+        j, k = np.flatnonzero(record["atom_mask"][i] >= 0.5)[:2]
+        names[i, j] = names[i, k] = "duplicate"
+        record["atom_names"] = names
+        writer = CIFWriter(res_type_mapping=res_type_mapping, atom_type_mapping=atom_type_mapping)
+        with pytest.raises(ValueError, match="Multiple atoms with same atom_id") as actual:
+            writer.write(record)
+        _force_stock_dumper(monkeypatch)
+        with pytest.raises(ValueError) as expected:
+            writer.write(record)
+        assert str(actual.value) == str(expected.value)
+
+    @pytest.mark.parametrize("two_chains", [False, True])
+    def test_bulk_preserves_missing_coordinates_for_truncated_atom_mapping(
+        self, res_type_mapping, atom_type_mapping, monkeypatch, two_chains
+    ):
+        """Masked-in unsupported slots must not count as emitted coordinates."""
+        mask = np.array([[1, 0], [0, 1]] if two_chains else [[0, 1]], dtype=np.float32)
+        n = len(mask)
+        record = FoldingOutput(
+            atom_positions=np.zeros((n, 2, 3), dtype=np.float32),
+            atom_mask=mask,
+            residue_types=np.zeros(n, dtype=np.int64),
+            residue_indices=np.ones(n, dtype=np.int64),
+            chain_indices=np.arange(n, dtype=np.int64),
+            b_factors=np.ones((n, 2), dtype=np.float32),
+        )
+        writer = CIFWriter(res_type_mapping=res_type_mapping, atom_type_mapping={0: atom_type_mapping[0]})
+        with pytest.raises(ValueError, match="don't have coordinates") as actual:
+            writer.write(record)
+        _force_stock_dumper(monkeypatch)
+        with pytest.raises(ValueError) as expected:
+            writer.write(record)
+        # Assembly diagnostics include AsymUnit object addresses, which differ
+        # between the two independently constructed systems.
+        assert re.sub(r"0x[0-9a-f]+", "<address>", str(actual.value)) == re.sub(
+            r"0x[0-9a-f]+", "<address>", str(expected.value)
+        )
+
 
 # ---------------------------------------------------------------------------
 # Multi-polymer test suite (RNA / DNA / non-polymer ligand chains)
@@ -197,6 +347,24 @@ class TestCIFWriterMultiPolymer:
     def writer(self):
         res_map, atom_map = of3_mappings()
         return CIFWriter(res_type_mapping=res_map, atom_type_mapping=atom_map, output_path="test.cif")
+
+    @pytest.mark.parametrize(
+        "make",
+        [
+            lambda: rna_only_folding(sequence="AGCU", with_residue_names=True, with_mol_types=True),
+            lambda: dna_only_folding(sequence="ACN", with_residue_names=True, with_mol_types=True),
+            lambda: protein_only_folding(sequence="AN", with_mol_types=True),
+            lambda: nonpoly_ligand_folding(atom_names=["C1", "C2", "N2"], ccd_code="NAG", with_mol_types=True),
+            lambda: multi_polymer_folding(),
+            lambda: multi_polymer_folding(with_residue_names=False, with_mol_types=False),
+            lambda: many_chains_folding(60),
+        ],
+    )
+    def test_bulk_matches_reference_bytes(self, writer, make, monkeypatch):
+        """Whole-column atom rows match the stock dumper for every chain kind."""
+        actual = writer.write(make())
+        _force_stock_dumper(monkeypatch)
+        assert actual == writer.write(make())
 
     # ----- RNA -------------------------------------------------------
 

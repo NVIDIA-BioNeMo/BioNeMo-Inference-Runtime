@@ -16,19 +16,26 @@
 import io
 import string
 from collections import defaultdict
+from collections.abc import Callable, Sequence
+from itertools import chain, repeat
+from typing import NamedTuple
 
 import ihm
+import ihm.dumper
+import ihm.format
 import modelcif
 import numpy as np
 from modelcif import dumper, model, qa_metric  # noqa: F401
 
 from bionemo_ir.data.schemas.basic import FoldingOutput
+from bionemo_ir.data.writers import _text
 from bionemo_ir.data.writers.base_writer import (
     _IHM_REMAP,
     _MOL_TYPE_TO_KIND,
     BaseWriter,
     _classify_chain,
     _occupied_atoms,
+    _OccupiedAtoms,
 )
 from bionemo_ir.logger import logger
 
@@ -77,6 +84,361 @@ _UNKNOWN_NUCLEOTIDE_COMPS: dict[str, ihm.ChemComp] = {
     "N": ihm.RNAChemComp(id="N", code="N", code_canonical="N", name="UNKNOWN RIBONUCLEOTIDE"),
     "DN": ihm.DNAChemComp(id="DN", code="DN", code_canonical="N", name="UNKNOWN DEOXYRIBONUCLEOTIDE"),
 }
+
+
+# ``modelcif`` pins only itself, so an install outside the lock resolves the
+# newest ``ihm``. 2.12 keeps 2.11's CIF writer, range checker and the dumpers
+# that modelcif 1.6 runs, and writes the same bytes.
+_BULK_IHM_VERSIONS = frozenset({"2.11", "2.12"})
+_BULK_MODELCIF_VERSION = "1.6"
+_ATOM_SITE_KEYS = [
+    "group_PDB",
+    "id",
+    "type_symbol",
+    "label_atom_id",
+    "label_alt_id",
+    "label_comp_id",
+    "label_seq_id",
+    "auth_seq_id",
+    "pdbx_PDB_ins_code",
+    "label_asym_id",
+    "Cartn_x",
+    "Cartn_y",
+    "Cartn_z",
+    "occupancy",
+    "label_entity_id",
+    "auth_asym_id",
+    "auth_comp_id",
+    "B_iso_or_equiv",
+    "pdbx_PDB_model_num",
+]
+
+
+def _bulk_dumper_supported() -> bool:
+    """Whether the installed ``ihm`` and ``modelcif`` are the versions whose private hooks the bulk dumper uses.
+
+    The compatibility tests cover the atom-site output of exactly these versions.
+    """
+    return (
+        ihm.__version__ in _BULK_IHM_VERSIONS
+        and modelcif.__version__ == _BULK_MODELCIF_VERSION
+        and hasattr(modelcif.dumper, "_ModelDumper")
+        and hasattr(ihm.dumper, "_RangeChecker")
+    )
+
+
+class _EmittedResidue(NamedTuple):
+    """A residue row of the model with its asym unit, ``seq_id`` and record type."""
+
+    row: int
+    asym: modelcif.AsymUnit
+    seq_id: int
+    het: bool
+
+
+class _ResidueTokens(NamedTuple):
+    """One residue's formatted ``_atom_site`` tokens, which its atoms share."""
+
+    group: str
+    comp_id: str
+    label_seq_id: str
+    auth_seq_id: str
+    ins_code: str
+    asym_id: str
+    entity_id: str
+    strand_id: str
+
+
+def _check_atoms(
+    scored_model: modelcif.model.Model,
+    check: bool,
+    residues: list[_EmittedResidue],
+    atoms: _OccupiedAtoms,
+) -> None:
+    """Apply ihm's atom range and duplicate checks without one call per atom.
+
+    The assembly and representation checks depend only on an atom's asym unit
+    and ``seq_id``. When an asym unit has one assembly range and one
+    representation segment, the ``seq_id`` values that pass form an interval
+    (``{1}`` for a non-polymer, possibly empty), so its residues with the
+    smallest and largest ``seq_id`` stand for the rest; otherwise every
+    residue is checked. The duplicate check becomes one set over every atom.
+    If either finds a problem, the per-atom checker runs in emission order to
+    raise its own error.
+
+    Args:
+        scored_model: Model whose assembly and representation bound the atoms.
+        check: The dumper's ``_check`` flag; ``False`` skips every check.
+        residues: Emitted residues.
+        atoms: Occupied atom slots for every row.
+    """
+    if not check:
+        return
+    atom = modelcif.model.Atom(None, None, None, None, 0, 0, 0)
+    checker = ihm.dumper._RangeChecker(scored_model, check)
+    by_asym: dict[modelcif.AsymUnit, list[tuple[int, int]]] = {}
+    keys = []
+    for i, asym, seq_id, _ in residues:
+        lo, hi = atoms.bounds[i], atoms.bounds[i + 1]
+        if lo < hi:
+            by_asym.setdefault(asym, []).append((seq_id, i))
+            keys.extend(zip(repeat(asym._id), repeat(seq_id), atoms.names[lo:hi]))
+    try:
+        for asym, members in by_asym.items():
+            if len(checker.asmb_asym_ids.get(asym._id, ())) == 1 and len(checker.repr_asym_ids.get(asym._id, ())) == 1:
+                members = {min(members), max(members)}
+            for seq_id, i in members:
+                atom.asym_unit, atom.seq_id, atom.atom_id = asym, seq_id, atoms.names[atoms.bounds[i]]
+                checker(atom)
+    except ValueError:
+        pass
+    else:
+        if len(set(keys)) == len(keys):
+            return
+    checker = ihm.dumper._RangeChecker(scored_model, check)
+    for i, asym, seq_id, _ in residues:
+        atom.asym_unit, atom.seq_id = asym, seq_id
+        for k in range(atoms.bounds[i], atoms.bounds[i + 1]):
+            atom.atom_id = atoms.names[k]
+            checker(atom)
+
+
+def _residue_tokens(residues: list[_EmittedResidue], quote: Callable[[object], str]) -> list[_ResidueTokens]:
+    """Format each residue's shared ``_atom_site`` tokens, quoting each asym unit and component once."""
+    asym_tokens: dict[modelcif.AsymUnit, tuple[str, bool, str, str, str]] = {}
+    comp_tokens: dict[str, str] = {}
+    tokens = []
+    for residue in residues:
+        asym = residue.asym
+        shared = asym_tokens.get(asym)
+        if shared is None:
+            shared = asym_tokens[asym] = (
+                "HETATM" if residue.het else "ATOM",
+                asym.entity.is_polymeric(),
+                quote(asym._id),
+                str(asym.entity._id),
+                quote(asym.strand_id),
+            )
+        group, polymeric, asym_id, entity_id, strand_id = shared
+        comp_id = asym.sequence[residue.seq_id - 1].id
+        comp = comp_tokens.get(comp_id)
+        if comp is None:
+            comp = comp_tokens[comp_id] = quote(comp_id)
+        auth_seq_id, ins_code = asym._get_auth_seq_id_ins_code(residue.seq_id)
+        tokens.append(
+            _ResidueTokens(
+                group=group,
+                comp_id=comp,
+                label_seq_id=str(residue.seq_id) if polymeric else ".",
+                auth_seq_id=quote(auth_seq_id),
+                ins_code=quote(ins_code or ihm.unknown),
+                asym_id=asym_id,
+                entity_id=entity_id,
+                strand_id=strand_id,
+            )
+        )
+    return tokens
+
+
+def _atom_site_text(
+    atoms: _OccupiedAtoms,
+    residues: list[_EmittedResidue],
+    residue_tokens: list[_ResidueTokens],
+    quote: Callable[[object], str],
+    model_id: str,
+    line_length: int,
+) -> str | None:
+    """Format every ``_atom_site`` row at once, or return ``None`` for inputs the stock dumper must format.
+
+    The column formatter covers float32 coordinates and B factors with ASCII
+    identifiers, which is what the structure predictors emit.
+
+    Args:
+        atoms: Occupied atom slots for every residue row.
+        residues: Emitted residues.
+        residue_tokens: Per emitted residue, its formatted tokens.
+        quote: The CIF writer's token formatter.
+        model_id: Formatted model number.
+        line_length: Columns before a row wraps; 0 keeps rows on one line.
+
+    Returns:
+        The rows, or ``None`` when the input needs the stock dumper.
+    """
+    if atoms.positions.dtype != np.float32 or atoms.b_factors.dtype != np.float32:
+        return None
+    counts = np.array([atoms.bounds[r.row + 1] - atoms.bounds[r.row] for r in residues], dtype=np.int64)
+    total = int(counts.sum())
+    if not total:
+        return ""
+    starts = np.array([atoms.bounds[r.row] for r in residues], dtype=np.int64)
+    residue_of_atom = np.repeat(np.arange(len(residues)), counts)
+    atom_index = starts[residue_of_atom] + np.arange(total) - np.repeat(np.cumsum(counts) - counts, counts)
+
+    def dictionary_column(
+        values: Sequence[str], index: np.ndarray, spell: Callable[[str], str] = str
+    ) -> tuple[np.ndarray, np.ndarray] | None:
+        # Spell each distinct value once, then gather the spellings by ``index``.
+        codes = {value: code for code, value in enumerate(dict.fromkeys(values))}
+        column = _text.string_text([spell(value) for value in codes])
+        if column is None:
+            return None
+        rows = np.fromiter(map(codes.__getitem__, values), dtype=np.intp, count=len(values))[index]
+        return column[0][rows], column[1][rows]
+
+    def constant_column(token: str) -> tuple[np.ndarray, int] | None:
+        column = _text.string_text([token])
+        return None if column is None else (column[0], int(column[1][0]))
+
+    per_field = _ResidueTokens(*zip(*residue_tokens, strict=True))
+
+    def by_residue(values: Sequence[str]) -> tuple[np.ndarray, np.ndarray] | None:
+        return dictionary_column(values, residue_of_atom)
+
+    chars, lengths = _text.float32_text(
+        np.concatenate([atoms.positions[atom_index].T, atoms.b_factors[None, atom_index]])
+    )
+    x, y, z, b_factor = ((chars[i * total : (i + 1) * total], lengths[i * total : (i + 1) * total]) for i in range(4))
+    comp = by_residue(per_field.comp_id)
+    # One entry per ``_ATOM_SITE_KEYS`` key, in order; the stock dumper writes no alternate location.
+    fields = [
+        by_residue(per_field.group),
+        _text.uint_text(np.arange(1, total + 1)),
+        dictionary_column(atoms.elements, atom_index, quote),
+        dictionary_column(atoms.names, atom_index, quote),
+        constant_column("."),
+        comp,
+        by_residue(per_field.label_seq_id),
+        by_residue(per_field.auth_seq_id),
+        by_residue(per_field.ins_code),
+        by_residue(per_field.asym_id),
+        x,
+        y,
+        z,
+        constant_column(quote(1.0)),
+        by_residue(per_field.entity_id),
+        by_residue(per_field.strand_id),
+        comp,
+        b_factor,
+        constant_column(model_id),
+    ]
+    if any(field is None for field in fields):
+        return None
+    return _text.wrapped_rows(fields, total, line_length).decode("ascii")
+
+
+class _LoopWriter(ihm.format._CifLoopWriter):
+    """``ihm``'s loop writer, remembering each string's CIF token, that also takes preformatted rows."""
+
+    @property
+    def line_length(self) -> int:
+        """Columns a row may fill before ``ihm`` wraps it; 0 when wrapping is off."""
+        return _text.CIF_LINE_LENGTH if self._line_wrap else 0
+
+    def _start(self) -> None:
+        if self._empty_loop:
+            self.writer.fh.write("#\nloop_\n" + "".join(f"{self.category}.{key}\n" for key in self.keys))
+            self._empty_loop = False
+
+    def write_rows(self, text: str) -> None:
+        """Write rows already formatted as :meth:`write` would format them."""
+        if text:
+            self._start()
+            self.writer.fh.write(text)
+
+    def write(self, **kwargs: object) -> None:
+        self._start()
+        writer = self.writer
+        token_cache = writer.token_cache
+        line_length = self.line_length
+        parts = []
+        column = 0
+        for key in self.python_keys:
+            value = kwargs.get(key)
+            if isinstance(value, str):
+                if "\n" in value:
+                    # ``ihm.format._write_multiline`` restarts the line afterwards.
+                    parts.append("\n;" + value + ("" if value.endswith("\n") else "\n") + ";\n")
+                    column = 0
+                    continue
+                token = token_cache.get(value)
+                if token is None:
+                    token = token_cache[value] = writer._repr(value)
+            elif value is None:
+                token = "."
+            elif type(value) is int:
+                token = str(value)
+            else:
+                token = writer._repr(value)
+            if column:
+                if line_length and column + len(token) + 1 > line_length:
+                    parts.append("\n")
+                    column = 0
+                else:
+                    parts.append(" ")
+                    column += 1
+            parts.append(token)
+            column += len(token)
+        parts.append("\n")
+        writer.fh.write("".join(parts))
+
+
+class _BulkCifWriter(ihm.format.CifWriter):
+    """``ihm``'s CIF writer whose loops cache string tokens and take preformatted rows."""
+
+    def __init__(self, fh: io.TextIOBase) -> None:
+        super().__init__(fh)
+        self.token_cache: dict[str, str] = {}
+
+    def loop(self, category: str, keys: list[str]) -> _LoopWriter:
+        return _LoopWriter(self, category, keys, line_wrap=self._line_wrap)
+
+
+class _BulkModelDumper(modelcif.dumper._ModelDumper):
+    """modelcif's model dumper with the ``_atom_site`` rows formatted as whole columns.
+
+    Validation and category order stay modelcif's; only atom construction and
+    text formatting are batched. Inputs the column formatter does not cover go
+    to the stock dumper.
+    """
+
+    def __init__(self, scored_model: modelcif.model.Model, residues: list[_EmittedResidue], atoms: _OccupiedAtoms):
+        super().__init__()
+        self._scored_model = scored_model
+        self._residues = residues
+        self._atoms = atoms
+
+    def dump_atoms(self, system: modelcif.System, writer: _BulkCifWriter, add_ihm: bool = True) -> dict[str, None]:
+        scored_model, residues, atoms = self._scored_model, self._residues, self._atoms
+        _check_atoms(scored_model, self._check, residues, atoms)
+        quote = writer._repr
+        line_length = _text.CIF_LINE_LENGTH if writer._line_wrap else 0
+        text = _atom_site_text(
+            atoms, residues, _residue_tokens(residues, quote), quote, str(scored_model._id), line_length
+        )
+        if text is None:
+            return super().dump_atoms(system, writer, add_ihm)
+        with writer.loop("_atom_site", _ATOM_SITE_KEYS) as loop:
+            loop.write_rows(text)
+        emitting = [r for r in residues if atoms.bounds[r.row] < atoms.bounds[r.row + 1]]
+        # As in the stock dumper, an asym unit counts as modeled only if it emits an atom.
+        self._assembly_checker.add_model_asyms(scored_model, {r.asym._id for r in emitting})
+        return dict.fromkeys(
+            chain.from_iterable(atoms.elements[atoms.bounds[r.row] : atoms.bounds[r.row + 1]] for r in emitting)
+        )
+
+
+class _BulkCifVariant(modelcif.dumper.ModelCIFVariant):
+    """ModelCIF output through :class:`_BulkCifWriter`, with ``model_dumper`` in place of modelcif's own."""
+
+    def __init__(self, model_dumper: _BulkModelDumper) -> None:
+        super().__init__()
+        self._model_dumper = model_dumper
+
+    def get_dumpers(self) -> list[ihm.dumper.Dumper]:
+        return [self._model_dumper if isinstance(d, modelcif.dumper._ModelDumper) else d for d in super().get_dumpers()]
+
+    def get_system_writer(self, system: modelcif.System, writer_class: type, writer: ihm.format.CifWriter) -> object:
+        return super().get_system_writer(system, _BulkCifWriter, _BulkCifWriter(writer.fh))
 
 
 class CIFWriter(BaseWriter):
@@ -348,8 +710,6 @@ class CIFWriter(BaseWriter):
         _atoms = _occupied_atoms(
             atom_types, atom_positions, atom_mask, b_factors, per_slot_atom_names, per_slot_elements
         )
-        _xs, _ys, _zs = (list(_atoms.positions[:, axis]) for axis in range(3))
-        _atom_b_factors = list(_atoms.b_factors)
         _atom_mask = atom_mask
         _b_factors = b_factors
         _chain_indices = chain_indices
@@ -361,6 +721,9 @@ class CIFWriter(BaseWriter):
 
         class _MyModel(modelcif.model.AbInitioModel):
             def get_atoms(self):
+                # The bulk dumper reads the arrays directly; only the stock dumper needs per-atom scalars.
+                xs, ys, zs = (list(_atoms.positions[:, axis]) for axis in range(3))
+                atom_b_factors = list(_atoms.b_factors)
                 for i in range(n):
                     c = int(_chain_indices[i])
                     if c not in _asym_unit_map:
@@ -375,11 +738,11 @@ class CIFWriter(BaseWriter):
                             type_symbol=_atoms.elements[k],
                             seq_id=seq_id,
                             atom_id=_atoms.names[k],
-                            x=_xs[k],
-                            y=_ys[k],
-                            z=_zs[k],
+                            x=xs[k],
+                            y=ys[k],
+                            z=zs[k],
                             het=het,
-                            biso=_atom_b_factors[k],
+                            biso=atom_b_factors[k],
                             occupancy=1.00,
                         )
 
@@ -419,7 +782,17 @@ class CIFWriter(BaseWriter):
         system.model_groups.append(modelcif.model.ModelGroup([m], name="All models"))
 
         fh = io.StringIO()
-        modelcif.dumper.write(fh, [system])
+        if _bulk_dumper_supported() and "\n" not in "".join(
+            chain(_atoms.names, _atoms.elements, *chain_to_cif.values())
+        ):
+            residues = [
+                _EmittedResidue(i, asym_unit_map[c], local_seq_id[(c, int(residue_indices[i]))], chain_is_het[c])
+                for i in range(n)
+                if (c := int(chain_indices[i])) in asym_unit_map
+            ]
+            modelcif.dumper.write(fh, [system], variant=_BulkCifVariant(_BulkModelDumper(m, residues, _atoms)))
+        else:
+            modelcif.dumper.write(fh, [system])
         buffer: str = fh.getvalue()
 
         if self.output_path is not None:

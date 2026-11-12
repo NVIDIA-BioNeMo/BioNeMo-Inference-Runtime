@@ -15,19 +15,27 @@
 
 import json
 import os
+import threading
+from collections.abc import Callable
+from concurrent.futures import Future
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 
 from bionemo_ir.data.schemas import FoldingOutput
-from bionemo_ir.data.writers import CIFWriter, PDBWriter
+from bionemo_ir.data.writers import CIFWriter, PDBWriter, _text
 from bionemo_ir.pipeline.stages.base import StatefulStage, StatefulStageUDF
 from bionemo_ir.pipeline.utils import STAGE_TIMING_COLUMN
 
 _SUPPORTED_FORMATS = {"pdb", "cif"}
 _EXT_MAP = {"pdb": ".pdb", "cif": ".cif"}
 _SCORE_PRECISION = 4
+_SCORE_SCALE = 10**_SCORE_PRECISION
+# Rounded scores in [0, _SCORE_GRID_MAX], which covers PAE in angstroms, are spelled from one shared token table.
+_SCORE_GRID_MAX = 32
+# Score sets with at least this many values encode on a helper thread; smaller ones take less than the handoff.
+_SCORE_THREAD_MIN_VALUES = 65536
 
 
 def _encode_float_array(values: np.ndarray) -> str:
@@ -47,10 +55,72 @@ def _encode_float_array(values: np.ndarray) -> str:
     return _join_json_tokens(table[inverse.reshape(values.shape)])
 
 
+def _encode_rounded_float32_array(values: np.ndarray) -> str:
+    """Return :func:`_encode_float_array` of ``np.round(values.astype(np.float64), _SCORE_PRECISION)``.
+
+    ``np.round`` multiplies by ``10**_SCORE_PRECISION``, rounds to an integer and
+    divides. For values in ``[0, _SCORE_GRID_MAX]`` those integers index the token
+    table of :func:`_text.grid_tokens`, which spells the same text without the
+    division or a per-value encoding.
+    """
+    scaled = values.astype(np.float64)
+    scaled *= _SCORE_SCALE
+    np.rint(scaled, out=scaled)
+    # ``signbit`` rejects negatives and -0.0; NaN fails the upper bound.
+    if (
+        _SCORE_PRECISION == _text.GRID_DECIMALS
+        and scaled.ndim
+        and scaled.size
+        and not np.signbit(scaled).any()
+        and scaled.max() <= _SCORE_GRID_MAX * _SCORE_SCALE
+    ):
+        text = _text.json_grid_text(scaled.astype(np.int32), _text.grid_tokens(_SCORE_GRID_MAX))
+        if text is not None:
+            return text
+    scaled /= _SCORE_SCALE
+    return _encode_float_array(scaled)
+
+
 def _join_json_tokens(tokens: np.ndarray) -> str:
     if tokens.ndim == 1:
         return "[" + ", ".join(tokens.tolist()) + "]"
     return "[" + ", ".join(_join_json_tokens(row) for row in tokens) + "]"
+
+
+class _PendingScores:
+    """Score JSON, encoded on a helper thread when the score arrays are large.
+
+    The array encoders spend most of their time in NumPy, which releases the
+    GIL, so a helper thread overlaps them with the structure text that the
+    caller builds meanwhile. Small score sets encode when :meth:`result` runs,
+    because a thread handoff would cost more than it hides.
+    """
+
+    def __init__(self, encode: Callable[[FoldingOutput], str], record: FoldingOutput) -> None:
+        self._encode = encode
+        self._record = record
+        self._future: Future[str] | None = None
+        values = sum(value.size for value in record.get_score_values().values() if isinstance(value, np.ndarray))
+        if values >= _SCORE_THREAD_MIN_VALUES:
+            self._future = Future()
+            threading.Thread(target=self._run, name="bioir-writer-scores", daemon=True).start()
+
+    def _run(self) -> None:
+        try:
+            self._future.set_result(self._encode(self._record))
+        except BaseException as error:
+            self._future.set_exception(error)
+
+    def result(self) -> str:
+        """Return the score JSON, raising any error from encoding it."""
+        if self._future is None:
+            return self._encode(self._record)
+        return self._future.result()
+
+    def settle(self) -> None:
+        """Wait for a helper thread without raising, before another error propagates."""
+        if self._future is not None:
+            self._future.exception()
 
 
 class WriterUDF(StatefulStageUDF):
@@ -131,20 +201,24 @@ class WriterUDF(StatefulStageUDF):
         in float64 (a 24-bit significand times 625 fits in 34 bits), and both
         ``np.round`` and Python ``round`` break ties to even and divide with
         correct rounding, so the result is bit-identical to :meth:`round_floats`
-        without the per-element Python loop. :func:`_encode_float_array` then
-        encodes those arrays without converting them to lists. Every other value
-        keeps :meth:`round_floats`.
+        without the per-element Python loop; :func:`_encode_rounded_float32_array`
+        encodes them without converting them to lists. Every other value keeps
+        :meth:`round_floats`. The text is joined once, since a PAE field alone can
+        run to tens of megabytes.
         """
-        fields = []
+        parts = ["{"]
         for key, value in record.get_score_values().items():
             if isinstance(value, np.ndarray) and value.dtype == np.float32:
-                encoded = _encode_float_array(np.round(value.astype(np.float64), _SCORE_PRECISION))
+                encoded = _encode_rounded_float32_array(value)
             elif isinstance(value, np.ndarray):
                 encoded = json.dumps(self.round_floats(value.tolist()))
             else:
                 encoded = json.dumps(self.round_floats(value))
-            fields.append(f"{json.dumps(key)}: {encoded}")
-        return "{" + ", ".join(fields) + "}"
+            if len(parts) > 1:
+                parts.append(", ")
+            parts += (json.dumps(key), ": ", encoded)
+        parts.append("}")
+        return "".join(parts)
 
     def _create_writer(self, fmt: str):
         res_type_mapping = self.mappings.get("res_type_mapping", None)
@@ -240,21 +314,26 @@ class WriterUDF(StatefulStageUDF):
         output_paths: dict[str, str | None] = {}
         primary_raw: str | None = None
 
-        for fmt in self.formats:
-            ext = _EXT_MAP[fmt]
-            out_path = self._resolve_path(row, row_id, ext)
-            if out_path:
-                os.makedirs(os.path.dirname(out_path), exist_ok=True)
+        scores = _PendingScores(self._encode_scores, record)
+        try:
+            for fmt in self.formats:
+                ext = _EXT_MAP[fmt]
+                out_path = self._resolve_path(row, row_id, ext)
+                if out_path:
+                    os.makedirs(os.path.dirname(out_path), exist_ok=True)
 
-            writer = self._create_writer(fmt)
-            writer.set_output_path(out_path)
-            raw = writer.write(record)
+                writer = self._create_writer(fmt)
+                writer.set_output_path(out_path)
+                raw = writer.write(record)
 
-            output_paths[fmt] = out_path
-            if primary_raw is None:
-                primary_raw = raw
+                output_paths[fmt] = out_path
+                if primary_raw is None:
+                    primary_raw = raw
+        except BaseException:
+            scores.settle()
+            raise
 
-        scores_json = self._encode_scores(record)
+        scores_json = scores.result()
 
         score_path = self._resolve_path(row, row_id, "_scores.json")
 

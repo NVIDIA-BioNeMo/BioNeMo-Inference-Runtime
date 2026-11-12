@@ -124,3 +124,24 @@ def test_a_verified_capture_reads_the_borrowed_state_its_caller_passed():
             out, state = tracker(x, state=buffer, init=init)
             assert torch.equal(out, expected_out) and torch.equal(state, expected_state), call
     assert tracker.execution_counts["capture"] == 1
+
+
+def test_a_capturing_first_call_hands_back_the_state_buffer_without_a_replay(copied):
+    """The first call returns its warm-up's result, with the state moved into its buffer as a replay leaves it."""
+    routing = InputRoutingConfig(state_input_kwargs=["state"])
+    config = CUDAGraphOptimizationConfig(input_routing_config=routing, capture_on_first_call=True)
+    tracker = CUDAGraphOptimizationTracker(config, inner_module=_Recycle().cuda()).eval()
+    x, init = _inputs()
+    with torch.inference_mode():
+        calls = _run(tracker, x, init)
+        reference = _run(_Recycle().cuda(), x, init)
+    graph_state = tracker.graph_state_by_key[tracker.input_key_for_this_call(x, state=init, init=init)]
+    buffer = graph_state.static_input_kwargs["state"]
+
+    assert tracker.execution_counts["capture"] == 1
+    assert tracker.execution_counts["replay"] == NUM_CALLS - 1
+    assert all(state is buffer for _, state in calls)
+    assert copied.count(id(buffer)) == 0
+    for (out, _), (expected_out, _) in zip(calls, reference, strict=True):
+        torch.testing.assert_close(out, expected_out)
+    torch.testing.assert_close(buffer, reference[-1][1])

@@ -15,8 +15,17 @@
 """Classification of unrecoverable CUDA errors."""
 
 import pytest
+import torch
 
 from bionemo_ir.utils import is_device_fatal
+
+# PyTorch (c10/cuda/CUDAException) appends this hint to every CUDA error it raises.
+TORCH_CUDA_ERROR_HINT = (
+    "\nCUDA kernel errors might be asynchronously reported at some other API call, "
+    "so the stacktrace below might be incorrect.\n"
+    "For debugging consider passing CUDA_LAUNCH_BLOCKING=1\n"
+    "Compile with `TORCH_USE_CUDA_DSA` to enable device-side assertions.\n"
+)
 
 # Messages CUDA reports for sticky faults, as they reach Python.
 FATAL_MESSAGES = [
@@ -50,12 +59,51 @@ def test_recoverable_errors_are_not_fatal(message: str) -> None:
     assert not is_device_fatal(RuntimeError(message))
 
 
+def test_torch_hint_alone_is_not_fatal() -> None:
+    """The DSA hint on every torch CUDA error must not make the error fatal."""
+    assert not is_device_fatal(RuntimeError(TORCH_CUDA_ERROR_HINT))
+
+
+@pytest.mark.parametrize(
+    ("error_enum", "cause", "fatal"),
+    [
+        ("cudaErrorStreamCaptureInvalidated", "operation failed due to a previous error during capture", False),
+        ("cudaErrorStreamCaptureUnsupported", "operation not permitted when stream is capturing", False),
+        ("cudaErrorAssert", "device-side assert triggered", True),
+        ("cudaErrorIllegalAddress", "an illegal memory access was encountered", True),
+    ],
+)
+def test_torch_cuda_errors_classify_by_cause(error_enum: str, cause: str, fatal: bool) -> None:
+    """Full torch CUDA error messages classify by the error, not the trailing hint."""
+    message = (
+        f"CUDA error: {cause}\n"
+        f"Search for `{error_enum}' in https://docs.nvidia.com/cuda/cuda-runtime-api/group__CUDART__TYPES.html "
+        f"for more information.{TORCH_CUDA_ERROR_HINT}"
+    )
+    assert is_device_fatal(RuntimeError(message)) is fatal
+
+
+@pytest.mark.parametrize(
+    ("error_code", "fatal"),
+    [
+        pytest.param(700, True, id="cudaErrorIllegalAddress"),
+        pytest.param(702, True, id="cudaErrorLaunchTimeout"),
+        pytest.param(717, True, id="cudaErrorInvalidAddressSpace"),
+        pytest.param(900, False, id="cudaErrorStreamCaptureUnsupported"),
+        pytest.param(901, False, id="cudaErrorStreamCaptureInvalidated"),
+    ],
+)
+def test_torch_cuda_errors_classify_by_code(error_code: int, fatal: bool) -> None:
+    """PyTorch attaches the CUDA error code, which decides even when no marker names the fault."""
+    exc = torch.AcceleratorError(f"CUDA error {error_code}{TORCH_CUDA_ERROR_HINT}")
+    exc.error_code = error_code
+    assert is_device_fatal(exc) is fatal
+
+
 def test_out_of_memory_stays_recoverable() -> None:
     """OOM must keep reverting to eager: the context is still usable."""
     assert not is_device_fatal(torch_oom())
 
 
 def torch_oom() -> Exception:
-    import torch
-
     return torch.cuda.OutOfMemoryError("CUDA out of memory.")

@@ -263,8 +263,9 @@ class HeuristicTriangleAttention(AttentionBackend[HeuristicTriangleAttentionMeta
     128 on SM100 and SM103, runs on ``CUEQUIV`` where its kernels take the
     head dimension and key count, else on SDPA over row chunks, and raises a
     ``RuntimeWarning`` once per layer and route. That route skips the LSE
-    store. Routes are chosen on the first eager call per shape and reused
-    during CUDA graph capture.
+    store. Routes are chosen on the first call per shape and reused by later
+    calls. A capture may choose a route for a new shape when an eager call
+    has already created that route's delegate.
 
     Args:
         layer_idx: The index of the attention layer.
@@ -398,14 +399,15 @@ class HeuristicTriangleAttention(AttentionBackend[HeuristicTriangleAttentionMeta
         )
         backend_name = self._route_cache.get(key)
         if backend_name is None:
-            if q.is_cuda and torch.cuda.is_current_stream_capturing():
-                raise RuntimeError(
-                    "Heuristic triangle-attention route was not cached before CUDA capture; "
-                    "run one eager warmup call for this shape first"
-                )
             backend_name = self._select_backend_name(key)
             delegate = self._delegates.get(backend_name)
             if delegate is None:
+                # Choosing a route is a host-side policy, but a new delegate's first call may set up kernels.
+                if q.is_cuda and torch.cuda.is_current_stream_capturing():
+                    raise RuntimeError(
+                        f"Heuristic triangle-attention delegate {backend_name!r} was not created before CUDA "
+                        "capture; run one eager call that takes this route first"
+                    )
                 delegate = self._create_delegate(backend_name)
                 self._delegates[backend_name] = delegate
             self._route_cache[key] = backend_name

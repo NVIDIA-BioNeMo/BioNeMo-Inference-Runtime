@@ -288,28 +288,36 @@ def test_heuristic_mask_prefix_check_is_debug_only(
         heuristic_module._normalize_left_mask_biases([interior])
 
 
-def test_heuristic_refuses_uncached_route_during_capture(monkeypatch: pytest.MonkeyPatch):
+def test_heuristic_refuses_to_create_a_delegate_during_capture(monkeypatch: pytest.MonkeyPatch):
     backend = HeuristicTriangleAttention(0, 4, 32, 4)
     _install_fake_delegates(backend, monkeypatch)
     q = torch.empty((1, 1, 512, 128), dtype=torch.bfloat16, device="cuda")
     monkeypatch.setattr(torch.cuda, "is_current_stream_capturing", lambda: True)
 
-    with pytest.raises(RuntimeError, match="not cached before CUDA capture"):
+    with pytest.raises(RuntimeError, match="not created before CUDA capture"):
         backend.forward(q, q, q)
+    assert not backend._route_cache
 
 
-def test_heuristic_reuses_cached_route_during_capture(monkeypatch: pytest.MonkeyPatch):
+@pytest.mark.parametrize(
+    ("capture_shape", "routes"), [((1, 32, 512, 128), 1), ((1, 48, 512, 128), 2)], ids=["seen-shape", "new-shape"]
+)
+def test_heuristic_capture_reuses_the_delegate_an_eager_call_created(
+    monkeypatch: pytest.MonkeyPatch, capture_shape: tuple[int, ...], routes: int
+):
+    """A capture routes the eager call's shape, or a new one, to the delegate that call created."""
     backend = HeuristicTriangleAttention(0, 4, 32, 4)
     delegates = _install_fake_delegates(backend, monkeypatch)
-    q = torch.empty((1, 32, 512, 128), dtype=torch.bfloat16, device="cuda")
+    eager_q = torch.empty((1, 32, 512, 128), dtype=torch.bfloat16, device="cuda")
     monkeypatch.setattr(torch.cuda, "is_current_stream_capturing", lambda: False)
-    backend.forward(q, q, q)
+    backend.forward(eager_q, eager_q, eager_q)
     monkeypatch.setattr(torch.cuda, "is_current_stream_capturing", lambda: True)
 
-    backend.forward(q, q, q)
+    capture_q = torch.empty(capture_shape, dtype=torch.bfloat16, device="cuda")
+    backend.forward(capture_q, capture_q, capture_q)
 
     assert len(delegates["ClaudeKit"].calls) == 2
-    assert len(backend._route_cache) == 1
+    assert len(backend._route_cache) == routes
 
 
 def _skip_without_cuequiv() -> None:

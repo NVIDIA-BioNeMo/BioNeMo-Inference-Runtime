@@ -44,6 +44,7 @@ from bionemo_ir._torch.graph_optimization.cuda_graph.memory import (
 from bionemo_ir._torch.graph_optimization.tensor_copy_utils import (
     _assert_equal_but_distinct,
     _clone_tensors,
+    _copy_kept_leaves_into,
     _copy_tensors_into,
     _delete_tensors_in_container,
     _tensor_leaves,
@@ -101,6 +102,26 @@ def graph_owned_cublas_workspace() -> Iterator[None]:
         torch._C._cuda_clearCublasWorkspaces()
 
 
+@contextmanager
+def _capture_without_barrier(graph: torch.cuda.CUDAGraph, stream: Stream) -> Iterator[None]:
+    """Capture on ``stream`` as ``torch.cuda.graph`` does, without the work it does on entry.
+
+    ``torch.cuda.graph`` synchronizes the device and empties the device and
+    pinned-host caching allocators, and collects garbage when configured to.
+    Capture records launches without running them, so work already queued,
+    such as the warmup whose result the call returns, need not finish first.
+    The private pool allocates fresh segments either way, and the capacity
+    check reads driver-free memory, which excludes cached blocks; flushing the
+    cache would only make later eager allocations pay ``cudaMalloc`` again.
+    """
+    with torch.cuda.stream(stream):
+        graph.capture_begin(capture_error_mode="global")
+        try:
+            yield
+        finally:
+            graph.capture_end()
+
+
 class CUDAGraphPreparationState(enum.Enum):
     """Per-key warmup-to-replay state."""
 
@@ -132,13 +153,27 @@ class CUDAGraphState:
         self.warmup_peak_activation_bytes: int = 0
         # Per stable kwarg, the tensors (and their versions) its static buffer last received.
         self.stable_sources: dict[str, list[tuple[weakref.ref, int | None]]] = {}
+        # Recorded once a call's output is out of the static buffers, so teardown waits for this graph's work only.
+        self.last_use: torch.cuda.Event | None = None
+
+    def mark_used(self) -> None:
+        """Record, on the current stream, the end of the last work queued that reads this state's buffers."""
+        if self.last_use is None:
+            self.last_use = torch.cuda.Event()
+        self.last_use.record()
 
     def release(self) -> None:
-        """Drain the device, then drop this key's buffers and graph. Idempotent.
+        """Wait for this graph's last use, then drop this key's buffers and graph. Idempotent.
 
         Leaving teardown to refcounting fires whenever the last reference happens
         to drop, possibly mid-forward or during a later capture, and destroys the
         graph without draining the replays still in flight.
+
+        The last use covers a call's replay and the copy of its output out of the
+        static buffers, so it suffices whichever stream allocated them and however
+        the allocator hands their memory on. A device-wide sync would also wait for
+        unrelated queued work, such as the warmup of the key whose capture evicts
+        this one.
         """
         if not any(
             resource is not None
@@ -153,8 +188,9 @@ class CUDAGraphState:
             )
         ):
             return
-        if torch.cuda.is_available():
-            torch.cuda.synchronize()
+        if self.last_use is not None:
+            self.last_use.synchronize()
+            self.last_use = None
 
         # Static outputs live in the graph's private pool, so they go before it does.
         _delete_tensors_in_container(self.static_input_arg)
@@ -203,6 +239,26 @@ def _unchanged_since_copy(sources: list[tuple[weakref.ref, int | None]] | None, 
     )
 
 
+def _rng_devices(device: torch.device | None) -> list[int]:
+    """The CUDA devices whose RNG state ``torch.random.fork_rng`` saves for work on ``device``."""
+    if device is None:
+        return []
+    return [device.index if device.index is not None else torch.cuda.current_device()]
+
+
+def _record_caller_stream(value: Any) -> None:
+    """Mark each CUDA tensor in ``value`` as in use on its device's current stream, the caller's.
+
+    A tensor that a warmup stream allocated goes back to that stream's pool when
+    the caller frees it, and PyTorch hands the same CUDA stream to later
+    ``torch.cuda.Stream()`` callers. With the mark, the allocator reuses the
+    memory only after the work that the caller's stream queued before the release.
+    """
+    for leaf in _tensor_leaves(value):
+        if leaf.is_cuda:
+            leaf.record_stream(torch.cuda.current_stream(leaf.device))
+
+
 def cudagraph_delete_callback(_input_key: str, value: CUDAGraphState, counts: Counter[str] | None = None) -> None:
     """Release an LRU-evicted graph state.
 
@@ -216,8 +272,7 @@ def cudagraph_delete_callback(_input_key: str, value: CUDAGraphState, counts: Co
 
 def _reset_before_load(tracker: "CUDAGraphOptimizationTracker", *args: object) -> None:
     """Release captured storage before state-dict loading can replace it."""
-    if tracker.graph_state_by_key:
-        tracker.reset()
+    tracker.forget_captures()
 
 
 class CUDAGraphOptimizationTracker(GraphOptimizationTracker):
@@ -248,6 +303,9 @@ class CUDAGraphOptimizationTracker(GraphOptimizationTracker):
         # Non-tensor metadata last seen per tensor signature, to name values that recapture a same-shape call.
         self.nontensor_metadata_by_signature = LRU(_SIGNATURES_MAX_FOR_RECAPTURE_CHECK)
         self._reported_recapture_paths: set[tuple[str, ...]] = set()
+        # Set by the first capture kept since construction, reset, move or reload. With capture on the first call,
+        # later signatures then skip the allocator warmups.
+        self.allocator_warmed_up = False
         # A function rather than a bound method keeps the tracker out of a reference cycle, so a dropped
         # tracker frees its graphs at once, not in a garbage collection that may run inside another capture.
         self.register_load_state_dict_pre_hook(_reset_before_load)
@@ -289,11 +347,18 @@ class CUDAGraphOptimizationTracker(GraphOptimizationTracker):
         fallback_to_eager_by_key = getattr(self, "fallback_to_eager_by_key", None)
         if fallback_to_eager_by_key is not None:
             fallback_to_eager_by_key.clear()
+        self.allocator_warmed_up = False
 
         gc.collect()
         if torch.cuda.is_available():
             torch.cuda.synchronize()
             torch.cuda.empty_cache()
+
+    def forget_captures(self) -> None:
+        """Drop every graph and the warm-allocator mark before parameter storage changes."""
+        if self.graph_state_by_key:
+            self.reset()
+        self.allocator_warmed_up = False
 
     def update_graph_state_by_key(self, *args, **kwargs) -> tuple[str, int]:
         """Create or advance this call's graph state.
@@ -417,14 +482,12 @@ class CUDAGraphOptimizationTracker(GraphOptimizationTracker):
             state.cached_input_tensor_shapes_host = input_tensor_shapes_host
 
         ps = state.preparation_state
-        if self.config.capture_on_first_call and ps in (
-            CUDAGraphPreparationState.WARMUP,
-            CUDAGraphPreparationState.WARMUP_KERNELS_COMPILED,
-        ):
-            self._prepare_first_capture(adjusted_args, adjusted_kwargs, input_key)
-            ps = state.preparation_state
         if ps in (CUDAGraphPreparationState.WARMUP, CUDAGraphPreparationState.WARMUP_KERNELS_COMPILED):
-            adjusted_output = self._warmup_call(adjusted_args, adjusted_kwargs, input_key)
+            if self.config.capture_on_first_call:
+                adjusted_output = self._first_capture_call(adjusted_args, adjusted_kwargs, input_key)
+            else:
+                adjusted_output = self._warmup_call(adjusted_args, adjusted_kwargs, input_key)
+                _record_caller_stream(adjusted_output)
 
         elif ps == CUDAGraphPreparationState.WARMUP_MEMORY_ALLOCATOR_READY:
             adjusted_output = self._capture_call(adjusted_args, adjusted_kwargs, input_key)
@@ -485,15 +548,69 @@ class CUDAGraphOptimizationTracker(GraphOptimizationTracker):
             "list the read keys in feature_kwargs"
         )
 
-    def _prepare_first_capture(self, args: tuple, kwargs: dict, input_key: str) -> None:
-        """Prime on fresh input copies without consuming the prediction's RNG."""
+    def _first_capture_call(self, args: tuple, kwargs: dict, input_key: str) -> Tensor | tuple[Tensor, ...]:
+        """Warm up and capture a new signature and return its last warmup's result, or run eagerly if capture fails.
+
+        Warmups run on copies of the inputs, so the caller's tensors stay
+        unmutated, as under a replay. Warmups before the last do not consume the
+        prediction's RNG. The last one does, so its output is this call's result
+        and the capture that follows need not replay it: the same kernels run on
+        equal values with equal RNG offsets, so for deterministic kernels the
+        result equals a replay's. If capture fails, the RNG goes back and the
+        region runs eagerly on the caller's inputs, which it may mutate.
+        """
         device = container_device((args, kwargs))
-        devices = [device.index if device.index is not None else torch.cuda.current_device()] if device else []
-        with torch.random.fork_rng(devices=devices):
-            state = self.graph_state_by_key[input_key]
-            while state.preparation_state != CUDAGraphPreparationState.WARMUP_MEMORY_ALLOCATOR_READY:
-                self._warmup_call(_clone_tensors(args), _clone_tensors(kwargs), input_key)
-                self._advance_graph_state_by_key(input_key)
+        cpu_rng = torch.get_rng_state()
+        cuda_rng = torch.cuda.get_rng_state(device) if device is not None else None
+        self._run_isolated_warmups(args, kwargs, input_key, device)
+        state = self.graph_state_by_key[input_key]
+        # The last warmup and the copy of its result stay queued on the warmup stream, so the capture records while
+        # they run; the input copies live until the caller's stream has joined that stream.
+        warmup_inputs = self._warmup_copies(args, kwargs)
+        output = self._warmup_call(*warmup_inputs, input_key, join=False)
+        with torch.cuda.stream(state.warmup_stream):
+            # The region may return storage it owns, such as a buffer, that later replays overwrite.
+            output = _clone_tensors(output)
+        self._advance_graph_state_by_key(input_key)
+        # A refused capture evicts the state and its stream, so read the stream to join first.
+        warmup_stream = state.warmup_stream
+        captured = self._capture(args, kwargs, input_key)
+        torch.cuda.current_stream().wait_stream(warmup_stream)
+        # The result's copy came from the warmup stream's pool, and from here on the caller's stream reads it.
+        _record_caller_stream(output)
+        del warmup_inputs
+        if captured:
+            output = self._first_call_output(state, output)
+            state.mark_used()
+            return output
+
+        del output
+        torch.set_rng_state(cpu_rng)
+        if cuda_rng is not None:
+            torch.cuda.set_rng_state(cuda_rng, device)
+        return self.inner_module(*args, **kwargs)
+
+    def _run_isolated_warmups(self, args: tuple, kwargs: dict, input_key: str, device: torch.device | None) -> None:
+        """Run a new signature's warmups before the last on input copies, without consuming the prediction's RNG.
+
+        Only the tracker's first capture runs the allocator warmups.
+        """
+        cfg = self.graph_optimization_config
+        warmups = cfg.num_calls_for_kernel_compilation
+        if not self.allocator_warmed_up:
+            warmups = max(warmups, cfg.num_calls_for_memory_allocator)
+        state = self.graph_state_by_key[input_key]
+        if state.num_prev_calls_by_input_key + 1 < warmups:
+            with torch.random.fork_rng(devices=_rng_devices(device)):
+                while state.num_prev_calls_by_input_key + 1 < warmups:
+                    self._warmup_call(*self._warmup_copies(args, kwargs), input_key)
+                    self._advance_graph_state_by_key(input_key)
+
+    def _warmup_copies(self, args: tuple, kwargs: dict) -> tuple[Any, dict]:
+        """Copies of a call's inputs for a warmup; stable kwargs, which the module never writes, stay shared."""
+        stable = self._stable_input_kwargs()
+        keep = tuple(_tensor_leaves([kwargs[name] for name in stable if name in kwargs]))
+        return _clone_tensors(args), _clone_tensors(kwargs, keep)
 
     def _reserve_graph_budget(self, input_key: str) -> None:
         """Evict older states until this signature fits the estimated budget."""
@@ -515,8 +632,13 @@ class CUDAGraphOptimizationTracker(GraphOptimizationTracker):
         args: Tensor | tuple | Any,
         kwargs: dict,
         input_key: str,
+        join: bool = True,
     ) -> Tensor | tuple[Tensor, ...]:
-        """Warm up on a side stream and initialize the static output."""
+        """Warm up on a side stream and initialize the static output.
+
+        Without ``join``, the current stream does not wait for the warmup: the
+        caller joins later and keeps ``args`` and ``kwargs`` alive until then.
+        """
         state = self.graph_state_by_key[input_key]
         self.execution_counts["warmup"] += 1
 
@@ -537,33 +659,44 @@ class CUDAGraphOptimizationTracker(GraphOptimizationTracker):
                 kwargs,
                 input_tensor_shapes=state.static_unadjusted_input_tensor_shapes,
             )
+            if device is not None:
+                peak_activation = torch.cuda.max_memory_allocated(device) - allocated_before
+                state.warmup_peak_activation_bytes = max(state.warmup_peak_activation_bytes, peak_activation)
+            if state.static_output is None:
+                state.static_output = _clone_tensors(adjusted_output)
 
-        torch.cuda.current_stream().wait_stream(state.warmup_stream)
-
-        if device is not None:
-            peak_activation = torch.cuda.max_memory_allocated(device) - allocated_before
-            state.warmup_peak_activation_bytes = max(state.warmup_peak_activation_bytes, peak_activation)
-
-        if state.static_output is None:
-            state.static_output = _clone_tensors(adjusted_output)
+        if join:
+            torch.cuda.current_stream().wait_stream(state.warmup_stream)
 
         return adjusted_output
 
     def _capture_call(self, args: tuple, kwargs: dict, input_key: str) -> Tensor | tuple[Tensor, ...]:
-        """Check capacity, capture, optionally verify, and replay.
+        """Capture, then replay this call.
 
         Replays copy every input except stable kwargs whose tensors are the same,
-        unmodified objects as last time. Any failure permanently reverts this key
-        to eager.
+        unmodified objects as last time.
         """
-        # Synchronize only the warmup stream. Its dependency on the current
-        # stream preserves input ordering without a device-wide barrier.
+        if not self._capture(args, kwargs, input_key):
+            return self.inner_module(*args, **kwargs)
+        # Capture may mutate its static inputs. Refreshing before the first replay,
+        # just as on every later call, applies an in-place block once.
+        return self._replay_for_caller(args, kwargs, input_key, self.graph_state_by_key[input_key])
+
+    def _capture(self, args: tuple, kwargs: dict, input_key: str) -> bool:
+        """Check capacity, capture, and optionally verify.
+
+        Any failure permanently reverts this key to eager.
+
+        Returns:
+            Whether the key holds a usable graph.
+        """
+        # The warmup stream's dependency on the current stream preserves input
+        # ordering; queued warmups keep running while the host records the graph.
         state = self.graph_state_by_key[input_key]
         if state.warmup_stream is None:
             state.warmup_stream = torch.cuda.Stream()
 
         state.warmup_stream.wait_stream(torch.cuda.current_stream())
-        state.warmup_stream.synchronize()
 
         # Capture requires fixed-address inputs; replay refreshes their values.
         if state.static_input_arg is None:
@@ -585,21 +718,26 @@ class CUDAGraphOptimizationTracker(GraphOptimizationTracker):
         capture_bytes = state.working_set_bytes + state.warmup_peak_activation_bytes
         static_inputs = (state.static_input_arg, state.static_input_kwargs)
         check = check_capacity_for_capture(working_set_bytes=capture_bytes, input_container=static_inputs)
-        if not check.ok and check.gpu_short:
-            # Free device memory excludes the allocator's unused cache, which
-            # capture entry releases anyway. Release it before refusing a
-            # capture that only the cache crowds out.
-            torch.cuda.empty_cache()
+        if check.gpu_short:
+            # Free memory excludes the allocator's unused cache, which capture's
+            # private pool cannot reuse. Releasing it waits for the device, so
+            # it happens only when the capture would not fit otherwise.
+            try:
+                torch.cuda.empty_cache()
+            except Exception as exc:  # noqa: BLE001 - e.g. another thread's capture refuses cudaFree -> eager
+                self._revert_unless_fatal(input_key, "cache release", exc)
+                return False
+            self.execution_counts["cache_release"] += 1
             check = check_capacity_for_capture(working_set_bytes=capture_bytes, input_container=static_inputs)
         if not check.ok:
             logger.info(f"{type(self).__name__}: skipping capture, revert to eager ({check.reason})")
             self._revert_to_eager(input_key)
-            return self.inner_module(*args, **kwargs)
+            return False
 
         # Capture on the warmup stream to preserve allocator stream ownership.
         graph = torch.cuda.CUDAGraph()
         try:
-            with graph_owned_cublas_workspace(), torch.cuda.graph(graph, stream=state.warmup_stream):
+            with graph_owned_cublas_workspace(), _capture_without_barrier(graph, state.warmup_stream):
                 state.static_output = self._f_capture(
                     state.static_input_arg,
                     state.static_input_kwargs,
@@ -607,13 +745,8 @@ class CUDAGraphOptimizationTracker(GraphOptimizationTracker):
                 )
 
         except Exception as exc:  # noqa: BLE001 - any capture failure -> eager
-            # A sticky CUDA error is not a capture problem: eager execution would hit
-            # the same poisoned context and report the fault somewhere unrelated.
-            if is_device_fatal(exc):
-                raise
-            logger.info(f"{type(self).__name__}: capture failed, revert to eager ({exc})")
-            self._revert_to_eager(input_key)
-            return self.inner_module(*args, **kwargs)
+            self._revert_unless_fatal(input_key, "capture", exc)
+            return False
 
         state.graph = graph
         self.execution_counts["capture"] += 1
@@ -621,19 +754,21 @@ class CUDAGraphOptimizationTracker(GraphOptimizationTracker):
 
         if self.config.verify_capture:
             if not self._verify_capture(args, kwargs, input_key):
-                return self.inner_module(*args, **kwargs)
+                return False
             state.preparation_state = CUDAGraphPreparationState.GRAPH_VERIFIED
+        self.allocator_warmed_up = True
+        return True
 
-        # Capture may mutate its static inputs. Refresh before the first replay,
-        # just as on every later call, so an in-place block is applied once.
-        self._refresh_inputs(args, kwargs, state)
-        replay_ok: bool = self._replay(input_key, state)
-        if not replay_ok:
-            return self.inner_module(*args, **kwargs)
+    def _revert_unless_fatal(self, input_key: str, step: str, exc: Exception) -> None:
+        """Re-raise a device-fatal error from ``step``; otherwise log it and permanently revert the key to eager.
 
-        output = self._caller_output(state)
-
-        return output
+        A sticky CUDA error is not a capture problem: eager execution would hit
+        the same poisoned context and report the fault somewhere unrelated.
+        """
+        if is_device_fatal(exc):
+            raise exc
+        logger.info(f"{type(self).__name__}: {step} failed, revert to eager ({exc})")
+        self._revert_to_eager(input_key)
 
     def _verify_capture(self, args: tuple, kwargs: dict, input_key: str) -> bool:
         """Compare capture output with eager and revert on mismatch.
@@ -645,8 +780,7 @@ class CUDAGraphOptimizationTracker(GraphOptimizationTracker):
             Whether outputs match.
         """
         state = self.graph_state_by_key[input_key]
-        device = container_device((args, kwargs))
-        devices = [device.index if device.index is not None else torch.cuda.current_device()] if device else []
+        devices = _rng_devices(container_device((args, kwargs)))
         with torch.random.fork_rng(devices=devices):
             eager_out = self._f_capture(
                 _clone_tensors(args),
@@ -660,6 +794,7 @@ class CUDAGraphOptimizationTracker(GraphOptimizationTracker):
             state.graph.replay()
             replay_out = _clone_tensors(state.static_output)
         _copy_tensors_into(borrowed, saved)
+        state.mark_used()
         try:
             _assert_equal_but_distinct(eager_out, replay_out)
             return True
@@ -669,29 +804,46 @@ class CUDAGraphOptimizationTracker(GraphOptimizationTracker):
             return False
 
     def _replay_call(self, args: Tensor | tuple, kwargs: dict, input_key: str) -> Tensor | tuple[Tensor, ...]:
-        # Copy real inputs only; the captured graph owns workspace kwargs, and an
-        # unchanged stable kwarg's buffer already holds its values.
-        state = self.graph_state_by_key[input_key]
         self.execution_counts["replay"] += 1
+        return self._replay_for_caller(args, kwargs, input_key, self.graph_state_by_key[input_key])
+
+    def _replay_for_caller(
+        self, args: tuple, kwargs: dict, input_key: str, state: CUDAGraphState
+    ) -> Tensor | tuple[Tensor, ...]:
+        """Refresh the static inputs, replay, and return the caller's output, or run eagerly if the replay fails.
+
+        Only real inputs are copied: the captured graph owns workspace kwargs, and
+        an unchanged stable kwarg's buffer already holds its values.
+        """
         self._refresh_inputs(args, kwargs, state)
-
-        replay_ok: bool = self._replay(input_key, state)
-        if not replay_ok:
+        if not self._replay(input_key, state):
             return self.inner_module(*args, **kwargs)
-
-        return self._caller_output(state)
+        output = self._caller_output(state)
+        state.mark_used()
+        return output
 
     def _caller_output(self, state: CUDAGraphState) -> Tensor | tuple[Tensor, ...]:
         """Clone the static output for the caller, except a state kwarg's static buffer the module returned.
 
         That buffer goes back as itself: the caller hands it to the next call, which then copies nothing in.
         """
+        return _clone_tensors(state.static_output, self._state_buffers(state))
+
+    def _first_call_output(self, state: CUDAGraphState, output: Any) -> Any:
+        """The first call's warm-up result, with its state outputs moved into their static buffers.
+
+        A replay would have left them there, so the caller gets those buffers back, as from every replay.
+        """
+        keep = self._state_buffers(state)
+        return _copy_kept_leaves_into(state.static_output, output, keep) if keep else output
+
+    def _state_buffers(self, state: CUDAGraphState) -> tuple[Tensor, ...]:
+        """The static buffers of the state kwargs, which outputs hand back uncloned."""
         state_kwargs = self._state_input_kwargs()
         if not state_kwargs:
-            return _clone_tensors(state.static_output)
+            return ()
         static_kwargs = self._graph_input_kwargs(state.static_input_kwargs)
-        keep = tuple(static_kwargs[name] for name in state_kwargs if isinstance(static_kwargs.get(name), Tensor))
-        return _clone_tensors(state.static_output, keep)
+        return tuple(static_kwargs[name] for name in state_kwargs if isinstance(static_kwargs.get(name), Tensor))
 
     def _refresh_inputs(self, args: tuple, kwargs: dict, state: CUDAGraphState) -> None:
         """Restore dynamic inputs before replay, including a capturing call."""
@@ -800,6 +952,5 @@ class CUDAGraphOptimizationTracker(GraphOptimizationTracker):
         self.reset()
 
     def _apply(self, fn: Callable, recurse: bool = True) -> nn.Module:
-        if self.graph_state_by_key:
-            self.reset()
+        self.forget_captures()
         return super()._apply(fn, recurse=recurse)

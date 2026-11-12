@@ -48,6 +48,30 @@ def _clone_tensors(value: Any, keep: tuple[torch.Tensor, ...] = ()) -> Any:
     return value
 
 
+def _copy_kept_leaves_into(static: Any, value: Any, keep: tuple[torch.Tensor, ...]) -> Any:
+    """``value``, except that each leaf whose ``static`` counterpart is in ``keep`` is copied into that buffer.
+
+    The buffer then stands in for the leaf, as :func:`_clone_tensors` hands back a kept tensor as itself.
+    """
+    if isinstance(static, torch.Tensor):
+        if any(static is kept for kept in keep):
+            static.copy_(value)
+            return static
+        return value
+    if isinstance(static, dict):
+        return {k: _copy_kept_leaves_into(static[k], value[k], keep) for k in static}
+    if isinstance(static, (list, tuple)):
+        return type(static)(_copy_kept_leaves_into(s, v, keep) for s, v in zip(static, value, strict=True))
+    if _is_dataclass_instance(static):
+        copied = copy.copy(value)
+        for (name, static_field), (_, value_field) in zip(
+            _dataclass_fields(static), _dataclass_fields(value), strict=True
+        ):
+            object.__setattr__(copied, name, _copy_kept_leaves_into(static_field, value_field, keep))
+        return copied
+    return value
+
+
 def _copy_tensors_into(dest: Any, src: Any) -> None:
     """Copy tensor leaves in place, preserving destination addresses.
 

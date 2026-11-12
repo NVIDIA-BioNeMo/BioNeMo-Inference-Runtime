@@ -78,11 +78,39 @@ def _get_sm_version(device_index: int) -> int:
 
 # CUDA marks these errors sticky: every later call on the context returns the same
 # error, so no amount of retrying, falling back to eager, or emptying the cache can
-# recover -- only tearing the process down can. Markers are matched against the
-# message with underscores and hyphens flattened to spaces, so one entry covers both
-# the runtime spelling ("an illegal memory access was encountered") and the driver
-# enum ("CUDA_ERROR_ILLEGAL_ADDRESS") that a cuLaunchKernel failure reports.
-_STICKY_CUDA_ERRORS = (
+# recover -- only tearing the process down can. driver_types.h documents each code
+# as leaving the process in an inconsistent state, except uncorrectable ECC, which
+# is fatal in practice. The runtime (cudaError_t) and driver (CUresult) enums share
+# these values.
+_STICKY_CUDA_ERROR_CODES = frozenset(
+    {
+        214,  # ECC uncorrectable
+        226,  # contained
+        700,  # illegal address
+        702,  # launch timeout
+        710,  # assert
+        714,  # hardware stack error
+        715,  # illegal instruction
+        716,  # misaligned address
+        717,  # invalid address space
+        718,  # invalid program counter
+        719,  # launch failure
+        721,  # tensor memory leak
+        810,  # MPS client terminated
+        911,  # external device
+    }
+)
+
+# Errors without a code, such as Triton's or a cuLaunchKernel failure's, are matched
+# by message for the common sticky faults. Markers are matched against the message
+# with underscores and hyphens flattened to spaces, so one entry covers both the
+# runtime spelling ("an illegal memory access was encountered") and the driver enum
+# ("CUDA_ERROR_ILLEGAL_ADDRESS") that a cuLaunchKernel failure reports. Each marker
+# must be specific: PyTorch appends "Compile with `TORCH_USE_CUDA_DSA` to enable
+# device-side assertions." to every CUDA error, and a re-raise that keeps only the
+# message carries that hint too, so "device side assert" would match recoverable
+# errors.
+_STICKY_CUDA_ERROR_MARKERS = (
     "illegal memory access",
     "illegal address",
     "illegal instruction",
@@ -90,7 +118,7 @@ _STICKY_CUDA_ERRORS = (
     "invalid address space",
     "unspecified launch failure",
     "cuda error launch failed",
-    "device side assert",
+    "device side assert triggered",
     "cuda error assert",
     "uncorrectable ecc",
     "ecc uncorrectable",
@@ -105,11 +133,17 @@ def is_device_fatal(exc: BaseException) -> bool:
     reports it at unrelated call sites later. Callers should propagate instead of
     retrying, and must not touch the device (``empty_cache`` included) first.
 
+    PyTorch raises CUDA errors as ``torch.AcceleratorError`` with the error code
+    attached, which decides; other errors are classified by their message.
+
     Args:
         exc: The exception to classify.
     """
+    error_code = getattr(exc, "error_code", None)
+    if isinstance(exc, torch.AcceleratorError) and error_code is not None:
+        return error_code in _STICKY_CUDA_ERROR_CODES
     message = str(exc).lower().replace("_", " ").replace("-", " ")
-    return any(marker in message for marker in _STICKY_CUDA_ERRORS)
+    return any(marker in message for marker in _STICKY_CUDA_ERROR_MARKERS)
 
 
 __all__ = ["get_sm_version", "is_device_fatal", "str_dtype_to_torch", "torch_dtype_to_str"]

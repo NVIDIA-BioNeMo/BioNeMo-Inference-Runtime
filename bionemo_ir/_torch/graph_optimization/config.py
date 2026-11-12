@@ -397,7 +397,13 @@ class CUDAGraphOptimizationConfig(GraphOptimizationConfig):
     """CUDA-graph warmup thresholds and optional capture verification."""
 
     num_calls_for_kernel_compilation: int = 1
-    num_calls_for_memory_allocator: int = 3
+    num_calls_for_memory_allocator: int = Field(
+        default=3,
+        description=(
+            "Calls before capture. With capture_on_first_call, only the tracker's first capture since construction, "
+            "reset, move or reload runs them; later signatures warm up num_calls_for_kernel_compilation times."
+        ),
+    )
     verify_capture: bool = False
     capture_on_first_call: bool = Field(
         default=False,

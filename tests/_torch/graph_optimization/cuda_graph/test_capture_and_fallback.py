@@ -21,6 +21,8 @@ path matches eager.
 
 import os
 import re
+from contextlib import AbstractContextManager
+from typing import Literal
 
 import pytest
 import torch
@@ -30,6 +32,7 @@ import bionemo_ir._torch.graph_optimization.cuda_graph.runtime as trk
 from bionemo_ir._torch.graph_optimization.config import (
     CUDAGraphOptimizationConfig,
     InputKeyMethod,
+    InputRoutingConfig,
     InputRoutingConfigFactory,
     NamedDimTies,
 )
@@ -55,14 +58,19 @@ class _RandomRegion(nn.Module):
         return value + torch.rand_like(value)
 
 
-def _early_config(**kwargs: object) -> CUDAGraphOptimizationConfig:
-    return CUDAGraphOptimizationConfig(
-        num_calls_for_kernel_compilation=1,
-        num_calls_for_memory_allocator=1,
-        capture_on_first_call=True,
-        num_graphs_max_for_this_module=4,
-        **kwargs,
-    )
+def _early_config(**overrides: object) -> CUDAGraphOptimizationConfig:
+    """Capture on the first call after one warmup, keeping four graphs, unless ``overrides`` say otherwise."""
+    settings: dict[str, object] = {
+        "num_calls_for_kernel_compilation": 1,
+        "num_calls_for_memory_allocator": 1,
+        "capture_on_first_call": True,
+        "num_graphs_max_for_this_module": 4,
+    }
+    return CUDAGraphOptimizationConfig(**(settings | overrides))
+
+
+# A capacity check that refuses: far more needed than free.
+_REFUSED_CAPACITY = gc_mem.MemoryCheck(False, "forced-low-mem", 1 << 40, 1 << 20)
 
 
 @pytest.mark.parametrize("verify", [False, True])
@@ -95,6 +103,206 @@ def test_first_capture_preparation_preserves_rng() -> None:
     torch.testing.assert_close(actual, expected, rtol=0, atol=0)
     assert torch.equal(actual_rng, expected_rng)
     assert tracker.execution_counts["capture"] == 1
+    assert not tracker.fallback_to_eager_by_key
+
+
+class _MutatingRandomRegion(nn.Module):
+    """Mutate a positional input and a state kwarg, returning both as aliases."""
+
+    def forward(self, value: torch.Tensor, state: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        value.add_(torch.rand_like(value))
+        return value, state.add_(value)
+
+
+@pytest.mark.parametrize("warmups", [1, 3])
+@pytest.mark.parametrize("borrowed", [False, True])
+@pytest.mark.parametrize("failure", ["capacity", "capture", "verification"])
+def test_first_capture_failure_runs_eager_on_caller_inputs(
+    monkeypatch: pytest.MonkeyPatch,
+    warmups: int,
+    borrowed: bool,
+    failure: Literal["capacity", "capture", "verification"],
+) -> None:
+    """A refused first capture preserves eager mutations, aliases and RNG offsets.
+
+    Args:
+        monkeypatch: Patches the selected capture failure.
+        warmups: Number of warmup calls before capture.
+        borrowed: Whether the state kwarg uses the caller's buffer for capture.
+        failure: Stage at which the first capture is refused.
+    """
+    routing = InputRoutingConfig(state_input_kwargs=["state"], borrowed_input_kwargs=["state"] if borrowed else [])
+    config = _early_config(input_routing_config=routing, verify_capture=True, num_calls_for_memory_allocator=warmups)
+    region = _MutatingRandomRegion().cuda().eval()
+    tracker = CUDAGraphOptimizationTracker(config, region).eval()
+
+    def no_capacity(*args: object, **kwargs: object) -> gc_mem.MemoryCheck:
+        return _REFUSED_CAPACITY
+
+    def no_capture(graph: torch.cuda.CUDAGraph, stream: torch.cuda.Stream) -> None:
+        raise RuntimeError("forced capture failure")
+
+    def mismatch(*args: object, **kwargs: object) -> None:
+        raise AssertionError("forced verification mismatch")
+
+    if failure == "capacity":
+        monkeypatch.setattr(trk, "check_capacity_for_capture", no_capacity)
+    elif failure == "capture":
+        monkeypatch.setattr(trk, "_capture_without_barrier", no_capture)
+    else:
+        monkeypatch.setattr(trk, "_assert_equal_but_distinct", mismatch)
+
+    value = torch.ones(2, 8, device="cuda")
+    state = torch.zeros_like(value)
+    expected_value, expected_state = value.clone(), state.clone()
+    key = tracker.input_key_for_this_call(value, state=state)
+    with torch.inference_mode():
+        torch.manual_seed(42)
+        region(expected_value, expected_state)
+        expected_cpu_rng = torch.get_rng_state()
+        expected_cuda_rng = torch.cuda.get_rng_state()
+        torch.manual_seed(42)
+        first_value, first_state = tracker(value, state=state)
+        assert first_value is value and first_state is state
+        torch.testing.assert_close(value, expected_value, rtol=0, atol=0)
+        torch.testing.assert_close(state, expected_state, rtol=0, atol=0)
+        assert torch.equal(torch.get_rng_state(), expected_cpu_rng)
+        assert torch.equal(torch.cuda.get_rng_state(), expected_cuda_rng)
+
+        # The next call must stay eager and use the next random values exactly once.
+        region(expected_value, expected_state)
+        next_cuda_rng = torch.cuda.get_rng_state()
+        torch.cuda.set_rng_state(expected_cuda_rng)
+        next_value, next_state = tracker(value, state=state)
+        assert next_value is value and next_state is state
+        torch.testing.assert_close(value, expected_value, rtol=0, atol=0)
+        torch.testing.assert_close(state, expected_state, rtol=0, atol=0)
+        assert torch.equal(torch.cuda.get_rng_state(), next_cuda_rng)
+
+    assert tracker.fallback_to_eager_by_key[key] is True
+    assert key not in tracker.graph_state_by_key
+    assert tracker.execution_counts["fallback"] == 1
+    assert not tracker.allocator_warmed_up
+
+
+class _CountingRegion(nn.Module):
+    def __init__(self) -> None:
+        super().__init__()
+        self.register_buffer("runs", torch.zeros((), dtype=torch.int64))
+
+    def forward(self, value: torch.Tensor) -> torch.Tensor:
+        self.runs.add_(1)
+        return value * 2.0
+
+
+@pytest.mark.parametrize("warmups", [1, 3])
+def test_first_capture_call_returns_its_warmup_without_replaying(warmups: int) -> None:
+    config = _early_config(num_calls_for_memory_allocator=warmups)
+    region = _CountingRegion().cuda()
+    tracker = CUDAGraphOptimizationTracker(config, region).eval()
+    value = torch.randn(2, 8, device="cuda")
+    with torch.inference_mode():
+        first = tracker(value)
+        assert region.runs.item() == warmups
+        second = tracker(value + 1.0)
+        assert region.runs.item() == warmups + 1
+    torch.testing.assert_close(first, value * 2.0, rtol=0, atol=0)
+    torch.testing.assert_close(second, (value + 1.0) * 2.0, rtol=0, atol=0)
+    assert tracker.execution_counts["capture"] == 1
+    assert tracker.execution_counts["replay"] == 1
+
+
+# More allocator warmups than kernel-compilation ones, so a call's run count shows which kind it ran.
+_ALLOCATOR_WARMUPS = 3
+
+
+def _one_graph_config(**overrides: object) -> CUDAGraphOptimizationConfig:
+    """Capture after the allocator warmups and keep one resident graph, like a region that does not repeat."""
+    return _early_config(
+        num_calls_for_memory_allocator=_ALLOCATOR_WARMUPS, num_graphs_max_for_this_module=1, **overrides
+    )
+
+
+def test_later_signature_skips_the_allocator_warmups() -> None:
+    region = _CountingRegion().cuda()
+    tracker = CUDAGraphOptimizationTracker(_one_graph_config(), region).eval()
+    small = torch.randn(2, 8, device="cuda")
+    large = torch.randn(4, 8, device="cuda")
+    with torch.inference_mode():
+        tracker(small)
+        assert region.runs.item() == _ALLOCATOR_WARMUPS
+        first_large = tracker(large)  # One kernel-compilation warmup, whose result the call returns.
+        assert region.runs.item() == _ALLOCATOR_WARMUPS + 1
+        replayed_large = tracker(large + 1.0)
+        assert region.runs.item() == _ALLOCATOR_WARMUPS + 2
+        tracker.reset()
+        tracker(small)
+        assert region.runs.item() == 2 * _ALLOCATOR_WARMUPS + 2
+    torch.testing.assert_close(first_large, large * 2.0, rtol=0, atol=0)
+    torch.testing.assert_close(replayed_large, (large + 1.0) * 2.0, rtol=0, atol=0)
+    assert tracker.execution_counts["capture"] == 3
+    assert tracker.execution_counts["eviction"] == 1
+    assert not tracker.fallback_to_eager_by_key
+
+
+def test_later_signature_preserves_rng() -> None:
+    raw = _RandomRegion().cuda().eval()
+    tracker = CUDAGraphOptimizationTracker(_one_graph_config(verify_capture=True), raw).eval()
+    with torch.inference_mode():
+        tracker(torch.zeros(2, 8, device="cuda"))
+        value = torch.zeros(4, 8, device="cuda")
+        torch.manual_seed(42)
+        expected = raw(value)
+        expected_rng = torch.cuda.get_rng_state()
+        torch.manual_seed(42)
+        actual = tracker(value)
+        actual_rng = torch.cuda.get_rng_state()
+    torch.testing.assert_close(actual, expected, rtol=0, atol=0)
+    assert torch.equal(actual_rng, expected_rng)
+    assert tracker.execution_counts["capture"] == 2
+    assert not tracker.fallback_to_eager_by_key
+
+
+def test_moving_an_empty_tracker_restores_the_allocator_warmups() -> None:
+    region = _CountingRegion().cuda()
+    tracker = CUDAGraphOptimizationTracker(_one_graph_config(), region).eval()
+    with torch.inference_mode():
+        tracker(torch.randn(2, 8, device="cuda"))
+        tracker._evict_all_keys()
+        tracker.cuda()
+        tracker(torch.randn(4, 8, device="cuda"))
+    assert region.runs.item() == 2 * _ALLOCATOR_WARMUPS
+
+
+class _BufferRegion(nn.Module):
+    """Writes its result into a registered buffer and returns that buffer."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.register_buffer("out", torch.zeros(2, 8))
+
+    def forward(self, value: torch.Tensor) -> torch.Tensor:
+        self.out.copy_(value * 2.0)
+        return self.out
+
+
+@pytest.mark.parametrize("warmups", [1, 3])
+@pytest.mark.parametrize("verify", [False, True])
+def test_first_result_survives_later_replays(verify: bool, warmups: int) -> None:
+    config = _early_config(verify_capture=verify, num_calls_for_memory_allocator=warmups)
+    region = _BufferRegion().cuda()
+    tracker = CUDAGraphOptimizationTracker(config, region).eval()
+    value = torch.randn(2, 8, device="cuda")
+    with torch.inference_mode():
+        first = tracker(value)
+        second = tracker(value + 10.0)
+        third = tracker(value - 10.0)
+    assert first.data_ptr() != region.out.data_ptr()
+    torch.testing.assert_close(first, value * 2.0, rtol=0, atol=0)
+    torch.testing.assert_close(second, (value + 10.0) * 2.0, rtol=0, atol=0)
+    torch.testing.assert_close(third, (value - 10.0) * 2.0, rtol=0, atol=0)
+    assert tracker.execution_counts["capture"] == 1
+    assert tracker.execution_counts["replay"] == 2
     assert not tracker.fallback_to_eager_by_key
 
 
@@ -138,6 +346,107 @@ def test_graph_budget_evicts_old_states_but_keeps_one_graph() -> None:
     assert len(tracker.graph_state_by_key) == 1
     assert tracker.execution_counts["capture"] == 2
     assert tracker.execution_counts["eviction"] == 1
+
+
+def test_eviction_waits_for_the_evicted_replay_not_the_device(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Evicting a state waits on its own last replay and leaves other queued work running."""
+    tracker = CUDAGraphOptimizationTracker(_early_config(graph_cache_budget_bytes=1), nn.ReLU().cuda()).eval()
+    with torch.inference_mode():
+        tracker(torch.randn(2, 8, device="cuda"))
+        old = torch.randn(2, 8, device="cuda")
+        replayed = tracker(old)
+    (state,) = tracker.graph_state_by_key.values()
+    assert state.last_use is not None
+    last_use = state.last_use
+    waits: list[str] = []
+    monkeypatch.setattr(torch.cuda, "synchronize", lambda *a, **k: waits.append("device"))
+    real_event_sync = torch.cuda.Event.synchronize
+
+    def event_sync(event: torch.cuda.Event) -> None:
+        waits.append("replay")
+        real_event_sync(event)
+
+    monkeypatch.setattr(torch.cuda.Event, "synchronize", event_sync)
+    with torch.inference_mode():
+        new = tracker(torch.randn(3, 8, device="cuda"))
+    assert waits == ["replay"]
+    assert last_use.query()
+    assert tracker.execution_counts["eviction"] == 1
+    torch.testing.assert_close(replayed, old.relu(), rtol=0, atol=0)
+    assert new.shape == (3, 8)
+
+
+# GPU clock cycles a test sleeps on the caller's stream, so the work queued behind the sleep is still pending when the
+# host acts next.
+_CALLER_DELAY_CYCLES = 200_000_000
+
+
+@pytest.mark.parametrize(("output_step", "calls_before_eviction"), [("_caller_output", 2), ("_first_call_output", 1)])
+def test_eviction_waits_for_the_output_copy(
+    monkeypatch: pytest.MonkeyPatch, output_step: str, calls_before_eviction: int
+) -> None:
+    """An evicted state's buffers outlive the copy of the last call's output, however long it queues."""
+    tracker = CUDAGraphOptimizationTracker(_early_config(graph_cache_budget_bytes=1), nn.ReLU().cuda()).eval()
+    copied: list[torch.cuda.Event] = []
+    real_step = getattr(CUDAGraphOptimizationTracker, output_step)
+
+    def slow_step(self: CUDAGraphOptimizationTracker, *args: object) -> object:
+        torch.cuda._sleep(_CALLER_DELAY_CYCLES)
+        result = real_step(self, *args)
+        copied.append(torch.cuda.Event())
+        copied[-1].record()
+        return result
+
+    monkeypatch.setattr(CUDAGraphOptimizationTracker, output_step, slow_step)
+    copied_at_release: list[bool] = []
+    real_release = CUDAGraphState.release
+
+    def release(state: CUDAGraphState) -> None:
+        real_release(state)
+        copied_at_release.append(copied[-1].query())
+
+    monkeypatch.setattr(CUDAGraphState, "release", release)
+    x = torch.randn(2, 8, device="cuda")
+    with torch.inference_mode():
+        for _ in range(calls_before_eviction):
+            out = tracker(x)
+        tracker(torch.randn(3, 8, device="cuda"))
+    assert tracker.execution_counts["eviction"] == 1
+    assert copied_at_release[0]
+    torch.testing.assert_close(out, x.relu(), rtol=0, atol=0)
+
+
+# Blocks the reuse test takes from the warmup stream's pool before it stops looking for the freed output's block.
+_REUSE_PROBES_MAX = 64
+
+
+@pytest.mark.parametrize("capture_on_first_call", [True, False])
+def test_freed_first_output_keeps_its_memory_for_the_callers_reads(capture_on_first_call: bool) -> None:
+    """The first call's output, freed while a read of it is queued, keeps its memory until that read has run.
+
+    The output comes from the warmup stream's pool, and a later ``torch.cuda.Stream()`` can wrap the same CUDA
+    stream. Here a second stream object on that CUDA stream takes blocks of the output's size and fills them.
+    """
+    tracker = CUDAGraphOptimizationTracker(
+        _early_config(capture_on_first_call=capture_on_first_call), _CountingRegion().cuda()
+    ).eval()
+    value = torch.ones(1 << 20, device="cuda")
+    with torch.inference_mode():
+        output = tracker(value)
+        warmup_stream = next(iter(tracker.graph_state_by_key.values())).warmup_stream
+        torch.cuda._sleep(_CALLER_DELAY_CYCLES)
+        seen = output * 1.0  # The caller's read, queued behind the sleep.
+        freed = output.data_ptr()
+        del output
+        with torch.cuda.stream(torch.cuda.ExternalStream(warmup_stream.cuda_stream)):
+            probes = [torch.empty_like(value)]
+            while probes[-1].data_ptr() != freed and len(probes) < _REUSE_PROBES_MAX:
+                probes.append(torch.empty_like(value))
+            for probe in probes:
+                probe.fill_(7.0)
+        torch.cuda.synchronize()
+    assert all(probe.data_ptr() != freed for probe in probes)
+    torch.testing.assert_close(seen, value * 2.0, rtol=0, atol=0)
 
 
 def _make():
@@ -287,9 +596,7 @@ def test_grad_or_training_falls_back_to_eager():
 def test_memory_gate_refusal_reverts_to_eager(monkeypatch):
     m, raw = _make()
     x = torch.randn(2, 8, device="cuda")
-    monkeypatch.setattr(
-        trk, "check_capacity_for_capture", lambda *a, **k: gc_mem.MemoryCheck(False, "forced-low-mem", 1 << 40, 1 << 20)
-    )
+    monkeypatch.setattr(trk, "check_capacity_for_capture", lambda *a, **k: _REFUSED_CAPACITY)
     with torch.no_grad():
         ref = raw(x)
         # The NUM_CALLS_TO_CAPTURE-th call reaches the capture step, where the
@@ -303,42 +610,6 @@ def test_memory_gate_refusal_reverts_to_eager(monkeypatch):
     # cache; the call still returns the correct eager result.
     assert m.fallback_to_eager_by_key.get(_key(m, x)) is True
     assert _key(m, x) not in m.graph_state_by_key
-    assert torch.allclose(out, ref, atol=1e-5)
-
-
-def test_memory_gate_releases_cached_memory_before_refusing(monkeypatch: pytest.MonkeyPatch) -> None:
-    m, raw = _make()
-    x = torch.randn(2, 8, device="cuda")
-    events: list[str] = []
-    checks = iter(
-        [
-            gc_mem.MemoryCheck(False, "insufficient GPU memory", 1 << 30, 1 << 20),
-            gc_mem.MemoryCheck(True, "ok", 1 << 20, 1 << 30),
-        ]
-    )
-
-    def check(*_args: object, **_kwargs: object) -> gc_mem.MemoryCheck:
-        result = next(checks)
-        events.append(f"check:{result.ok}")
-        return result
-
-    real_empty_cache = torch.cuda.empty_cache
-
-    def empty_cache() -> None:
-        events.append("empty_cache")
-        real_empty_cache()
-
-    monkeypatch.setattr(trk, "check_capacity_for_capture", check)
-    monkeypatch.setattr(torch.cuda, "empty_cache", empty_cache)
-    with torch.no_grad():
-        ref = raw(x)
-        for _ in range(NUM_CALLS_TO_CAPTURE):
-            out = m(x)
-
-    # The retry runs before capture entry, which empties the cache again.
-    assert events[:3] == ["check:False", "empty_cache", "check:True"]
-    assert m.fallback_to_eager_by_key.get(_key(m, x)) is not True
-    assert next(iter(m.graph_state_by_key.values())).graph is not None
     assert torch.allclose(out, ref, atol=1e-5)
 
 
@@ -385,21 +656,106 @@ def test_memory_gate_refuses_host_shortage_without_releasing_cache(monkeypatch: 
     assert torch.allclose(out, ref, atol=1e-5)
 
 
+_AMPLE_FREE_BYTES = 40 << 30  # Far more than the test region's capture needs.
+_STARVED_FREE_BYTES = 1 << 20  # Below the capture margin, so no capture fits.
+
+
+def _fake_device_memory(
+    monkeypatch: pytest.MonkeyPatch, free_bytes: int, free_after_release: int | None = None
+) -> list[str]:
+    """Fake free device memory and return the ordered cache releases and captures."""
+    events: list[str] = []
+    free = [free_bytes]
+
+    def mem_get_info(device: torch.device | int | None = None) -> tuple[int, int]:
+        return free[0], free[0]  # The capacity check reads only the free bytes.
+
+    def empty_cache() -> None:
+        events.append("release")
+        if free_after_release is not None:
+            free[0] = free_after_release
+
+    real_capture = trk._capture_without_barrier
+
+    def capture(graph: torch.cuda.CUDAGraph, stream: torch.cuda.Stream) -> AbstractContextManager[None]:
+        events.append("capture")
+        return real_capture(graph, stream)
+
+    monkeypatch.setattr(torch.cuda, "mem_get_info", mem_get_info)
+    monkeypatch.setattr(torch.cuda, "empty_cache", empty_cache)
+    monkeypatch.setattr(trk, "_capture_without_barrier", capture)
+    return events
+
+
+def _run_to_capture(m: CUDAGraphOptimizationTracker, raw: nn.Module, x: torch.Tensor) -> None:
+    with torch.no_grad():
+        ref = raw(x)
+        for _ in range(NUM_CALLS_TO_CAPTURE + 1):
+            out = m(x)
+    assert torch.allclose(out, ref, atol=1e-5)
+
+
+def test_capture_that_fits_keeps_the_cache(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A capture that fits in free memory leaves cached allocations in place.
+
+    Args:
+        monkeypatch: Patches device memory availability and records capture.
+    """
+    m, raw = _make()
+    x = torch.randn(2, 8, device="cuda")
+    events = _fake_device_memory(monkeypatch, free_bytes=_AMPLE_FREE_BYTES)
+    _run_to_capture(m, raw, x)
+    assert events == ["capture"]
+    assert m.execution_counts["fallback"] == 0
+    assert m.execution_counts["cache_release"] == 0
+
+
+def test_capture_crowded_out_by_the_cache_releases_it_and_captures(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A capture that fits after releasing cached allocations still succeeds.
+
+    Args:
+        monkeypatch: Patches memory availability before and after release.
+    """
+    m, raw = _make()
+    x = torch.randn(2, 8, device="cuda")
+    events = _fake_device_memory(monkeypatch, free_bytes=_STARVED_FREE_BYTES, free_after_release=_AMPLE_FREE_BYTES)
+    _run_to_capture(m, raw, x)
+    assert events == ["release", "capture"]
+    assert m.execution_counts["fallback"] == 0
+    assert m.execution_counts["cache_release"] == 1
+    assert m.graph_state_by_key[_key(m, x)].preparation_state == CUDAGraphPreparationState.GRAPH_VERIFIED
+
+
+def test_cache_release_failure_reverts_to_eager(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A failed cache release reverts the key to eager instead of raising.
+
+    Args:
+        monkeypatch: Starves device memory and makes the release raise.
+    """
+    m, raw = _make()
+    x = torch.randn(2, 8, device="cuda")
+    events = _fake_device_memory(monkeypatch, free_bytes=_STARVED_FREE_BYTES)
+
+    def refuse_release() -> None:
+        events.append("release")
+        raise RuntimeError("operation not permitted when stream is capturing")
+
+    monkeypatch.setattr(torch.cuda, "empty_cache", refuse_release)
+    _run_to_capture(m, raw, x)
+    assert events == ["release"]
+    assert m.execution_counts["cache_release"] == 0
+    assert m.fallback_to_eager_by_key.get(_key(m, x)) is True
+    assert _key(m, x) not in m.graph_state_by_key
+
+
 def test_capture_failure_reverts_to_eager(monkeypatch):
     m, raw = _make()
     x = torch.randn(2, 8, device="cuda")
 
-    class _BoomGraph:
-        def __init__(self, *a, **k):
-            pass
+    def boom(*_args: object) -> None:
+        raise RuntimeError("forced capture failure")
 
-        def __enter__(self):
-            raise RuntimeError("forced capture failure")
-
-        def __exit__(self, *a):
-            return False
-
-    monkeypatch.setattr(torch.cuda, "graph", lambda *a, **k: _BoomGraph())
+    monkeypatch.setattr(trk, "_capture_without_barrier", boom)
     with torch.no_grad():
         ref = raw(x)
         # The NUM_CALLS_TO_CAPTURE-th call reaches the capture step (which
@@ -412,6 +768,27 @@ def test_capture_failure_reverts_to_eager(monkeypatch):
     assert m.fallback_to_eager_by_key.get(_key(m, x)) is True
     assert _key(m, x) not in m.graph_state_by_key
     assert torch.allclose(out, ref, atol=1e-5)
+
+
+class _SyncsDuringCapture(nn.Module):
+    """Runs eagerly, but synchronizing invalidates a stream capture."""
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        torch.cuda.synchronize()
+        return x * 2.0 + 1.0
+
+
+def test_real_capture_error_reverts_to_eager():
+    # torch appends its device-side-assertion hint to every CUDA error, so a
+    # recoverable capture error must not be mistaken for a sticky fault.
+    m = CUDAGraphOptimizationTracker(CUDAGraphOptimizationConfig(), inner_module=_SyncsDuringCapture()).eval()
+    x = torch.randn(2, 8, device="cuda")
+    with torch.no_grad():
+        for _ in range(NUM_CALLS_TO_CAPTURE + 2):
+            out = m(x)
+    assert m.fallback_to_eager_by_key.get(_key(m, x)) is True
+    assert _key(m, x) not in m.graph_state_by_key
+    assert torch.allclose(out, x * 2.0 + 1.0)
 
 
 def test_replay_failure_reverts_to_eager():
@@ -589,17 +966,10 @@ def test_device_fatal_capture_error_propagates(monkeypatch):
     m, _ = _make()
     x = torch.randn(2, 8, device="cuda")
 
-    class _IllegalAccessGraph:
-        def __init__(self, *a, **k):
-            pass
+    def illegal_access(*_args: object) -> None:
+        raise RuntimeError("CUDA error: an illegal memory access was encountered")
 
-        def __enter__(self):
-            raise RuntimeError("CUDA error: an illegal memory access was encountered")
-
-        def __exit__(self, *a):
-            return False
-
-    monkeypatch.setattr(torch.cuda, "graph", lambda *a, **k: _IllegalAccessGraph())
+    monkeypatch.setattr(trk, "_capture_without_barrier", illegal_access)
     with torch.no_grad(), pytest.raises(RuntimeError, match="illegal memory access"):
         for _ in range(NUM_CALLS_TO_CAPTURE):
             m(x)

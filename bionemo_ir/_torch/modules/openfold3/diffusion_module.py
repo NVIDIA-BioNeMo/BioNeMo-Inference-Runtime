@@ -149,6 +149,7 @@ class DiffusionModule(nn.Module):
         prepared_atom_encoder_conditioning: list[tuple[torch.Tensor, ...]] | None = None,
         prepared_atom_decoder_conditioning: list[tuple[torch.Tensor, ...]] | None = None,
         prepared_token_pair_biases: list[torch.Tensor] | None = None,
+        prepared_token_conditioning_weights: tuple[torch.Tensor, ...] | None = None,
     ) -> torch.Tensor:
         """
         Note:
@@ -202,6 +203,8 @@ class DiffusionModule(nn.Module):
             prepared_token_pair_biases:
                 Optional token-transformer biases projected from ``prepared_zij``;
                 used only with that pair.
+            prepared_token_conditioning_weights:
+                Optional token AdaLN and gate weights stacked once per rollout.
         Returns:
             [*, N_atom, 3] Denoised atom positions
         """
@@ -273,11 +276,14 @@ class DiffusionModule(nn.Module):
         token_kwargs = {}
         if prepared_token_pair_biases is not None and prepared_zij is not None and use_conditioning:
             token_kwargs["prepared_pair_biases"] = prepared_token_pair_biases
+        # Prepared biases replace the pair, which then skips its cast.
+        z_token = zij if token_kwargs else zij.to(dtype=token_dtype)
+        if prepared_token_conditioning_weights is not None:
+            token_kwargs["prepared_conditioning_weights"] = prepared_token_conditioning_weights
         ai = self.diffusion_transformer(
             a=ai.to(dtype=token_dtype),
             s=si.to(dtype=token_dtype),
-            # Prepared biases replace the pair, which then skips its cast.
-            z=zij if token_kwargs else zij.to(dtype=token_dtype),
+            z=z_token,
             mask=token_mask.to(dtype=token_dtype),
             **token_kwargs,
         )
@@ -364,7 +370,34 @@ class OpenFold3DiffusionSampler(nn.Module):
         prepared_atom_encoder_conditioning: list[tuple[torch.Tensor, ...]] | None = None,
         prepared_atom_decoder_conditioning: list[tuple[torch.Tensor, ...]] | None = None,
         prepared_token_pair_biases: list[torch.Tensor] | None = None,
+        prepared_token_conditioning_weights: tuple[torch.Tensor, ...] | None = None,
     ) -> torch.Tensor:
+        """Denoise atom positions at one noise level.
+
+        Args:
+            x_noisy: Noisy positions shaped ``[B, S, N_atom, 3]``.
+            sigma_hat: Noise level for this step.
+            batch: Input features, including the token mask.
+            atom_mask: Atom mask shaped ``[..., N_atom]``.
+            si_input: Input token embedding shaped ``[..., N_token, c_s_input]``.
+            si_trunk: Trunk single representation shaped ``[..., N_token, c_s]``.
+            zij_trunk: Trunk pair representation shaped ``[..., N_token, N_token, c_z]``.
+            attn_metadata: Metadata for local atom attention.
+            use_conditioning: Whether to use trunk conditioning.
+            prepared_zij: Optional pair conditioning shared across steps.
+            prepared_si: Optional noise-independent single projection.
+            prepared_atom_cl: Optional atom single conditioning shared across steps.
+            prepared_atom_plm: Optional atom pair conditioning shared across steps.
+            prepared_atom_encoder_pair_biases: Optional per-layer encoder pair biases.
+            prepared_atom_decoder_pair_biases: Optional per-layer decoder pair biases.
+            prepared_atom_encoder_conditioning: Optional per-layer encoder conditioning tuples.
+            prepared_atom_decoder_conditioning: Optional per-layer decoder conditioning tuples.
+            prepared_token_pair_biases: Optional per-layer token pair biases.
+            prepared_token_conditioning_weights: Optional packed token AdaLN and gate weights.
+
+        Returns:
+            Denoised positions shaped ``[B, S, N_atom, 3]``.
+        """
         diffusion_kwargs = {
             "batch": batch,
             "xl_noisy": x_noisy,
@@ -383,6 +416,8 @@ class OpenFold3DiffusionSampler(nn.Module):
                 diffusion_kwargs["prepared_si"] = prepared_si
             if prepared_token_pair_biases is not None:
                 diffusion_kwargs["prepared_token_pair_biases"] = prepared_token_pair_biases
+        if prepared_token_conditioning_weights is not None:
+            diffusion_kwargs["prepared_token_conditioning_weights"] = prepared_token_conditioning_weights
         if prepared_atom_cl is not None and prepared_atom_plm is not None:
             diffusion_kwargs["prepared_atom_cl"] = prepared_atom_cl
             diffusion_kwargs["prepared_atom_plm"] = prepared_atom_plm
@@ -461,6 +496,7 @@ class OpenFold3DiffusionSampler(nn.Module):
         prepared_atom_encoder_conditioning = None
         prepared_atom_decoder_conditioning = None
         prepared_token_pair_biases = None
+        prepared_token_conditioning_weights = None
         if prepared_zij is not None and use_conditioning:
             # Reference and trunk conditioning do not depend on noisy atom
             # coordinates or the diffusion time. Prepare them once before the
@@ -494,6 +530,7 @@ class OpenFold3DiffusionSampler(nn.Module):
             # or engine-backed replacement keeps its own bias path.
             if isinstance(module.diffusion_transformer, DiffusionTransformer):
                 prepared_token_pair_biases = module.diffusion_transformer.prepare_pair_biases(prepared_zij)
+                prepared_token_conditioning_weights = module.diffusion_transformer.conditioning_weights()
 
         # Non-tensor leaves would make graph keys request-specific.
         denoise_batch = {key: value for key, value in batch.items() if isinstance(value, torch.Tensor)}
@@ -518,6 +555,7 @@ class OpenFold3DiffusionSampler(nn.Module):
                 prepared_atom_encoder_conditioning=prepared_atom_encoder_conditioning,
                 prepared_atom_decoder_conditioning=prepared_atom_decoder_conditioning,
                 prepared_token_pair_biases=prepared_token_pair_biases,
+                prepared_token_conditioning_weights=prepared_token_conditioning_weights,
             )
 
         integrator = self.integrator

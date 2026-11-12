@@ -59,6 +59,7 @@ def _diffusion_graph_config() -> CUDAGraphOptimizationConfig:
             "prepared_atom_encoder_conditioning",
             "prepared_atom_decoder_conditioning",
             "prepared_token_pair_biases",
+            "prepared_token_conditioning_weights",
         ),
     )
 

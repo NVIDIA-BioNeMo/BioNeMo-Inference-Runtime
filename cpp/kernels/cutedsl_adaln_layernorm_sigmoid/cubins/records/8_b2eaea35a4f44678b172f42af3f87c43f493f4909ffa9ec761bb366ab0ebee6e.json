@@ -286,6 +286,17 @@
       "target_arch": "sm_121a",
       "target_sm": 121
     },
+    "8d06ca1b23d54b09d4a0e82ef24104b81e3638e6f7bb0ca7ba0475da7dac3b41": {
+      "dtype": "fp32",
+      "dynamic_smem_bytes": 16,
+      "image_sha256": "4cd63ed293bd25671a5068446a8ff131076cad1498c1743b2e1a3c589ca326b4",
+      "image_size": 15288,
+      "kernel_sm": 90,
+      "kernel_symbol": "7946c82b76dd6cf625bae914203a2fb1bf630af19c74a3579a0cb3f8a4c6ef16",
+      "launch_abi": "adaln_layernorm_sigmoid_sm90_mask_v1",
+      "target_arch": "sm_107a",
+      "target_sm": 107
+    },
     "8d3b0b8b7821214ac88284e2caa54a0a79668d706b89ca7875955cb7a5c7ada9": {
       "dtype": "bf16",
       "dynamic_smem_bytes": 64,
@@ -625,6 +636,17 @@
       "variant_id": "8a73e562d8674b644779"
     },
     {
+      "executable": "10a6641bee805b5855013c236fa90fb3b019be8e6cf54555c6d41bb1b46dfb52",
+      "runtime_metadata": {
+        "cluster_n": 1,
+        "feature_dim": 384,
+        "is_rms_norm": true,
+        "num_threads": 128,
+        "threads_per_row": 16
+      },
+      "variant_id": "8a7b7ea85edf1004a6ab"
+    },
+    {
       "executable": "6754fa71d8eb160b69d1b4af13a696d96518e8f36796021313c7112827163dbe",
       "runtime_metadata": {
         "cluster_n": 1,
@@ -689,6 +711,28 @@
         "threads_per_row": 32
       },
       "variant_id": "8d3bb58d5d6af16b7c26"
+    },
+    {
+      "executable": "42acbd547507c6d1e0ee60d1a95ddf4936e53b2d247db2733d7f01e3ad7a93b9",
+      "runtime_metadata": {
+        "cluster_n": 1,
+        "feature_dim": 512,
+        "is_rms_norm": false,
+        "num_threads": 64,
+        "threads_per_row": 32
+      },
+      "variant_id": "8d6324d78818fecedfc7"
+    },
+    {
+      "executable": "b080f690d54d592020a51ef0d988b7a33634a5346b4e35db2cf3b5eef4825ba6",
+      "runtime_metadata": {
+        "cluster_n": 1,
+        "feature_dim": 1024,
+        "is_rms_norm": false,
+        "num_threads": 64,
+        "threads_per_row": 64
+      },
+      "variant_id": "8e00f200d36755c3975a"
     },
     {
       "executable": "fad04ae6832da76f3d0fe78424d1151db032ca7e0839bf5d6c402638c0fc114e",

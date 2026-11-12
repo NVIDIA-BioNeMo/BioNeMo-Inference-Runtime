@@ -56,7 +56,6 @@ dependencies = [
   "uvloop==0.23.0; python_version >= '3.14'",
   "modelcif==1.6",  # Needed for CIFWriter.
   "rdkit==2025.9.6",  # Needed for the Boltz2 data pipeline.
-  "nvidia-cudnn-frontend==1.23.0",
   "biotite==1.6.0",
   # https://github.com/huggingface/datasets/issues/7344
   "datasets==5.0.1",

@@ -612,7 +612,7 @@ def test_forced_cubins_select_the_op_only_when_its_family_ships(monkeypatch):
     op = get_transition_mlp_op(torch.bfloat16, width=256, hidden=512)
     assert (op is not None) == hasattr(library, "transition_mlp")
 
-    layer = PairTransition(c_z=256, n=2, dtype=torch.bfloat16, enable_cudnn_graph=True).cuda()
+    layer = PairTransition(c_z=256, n=2, dtype=torch.bfloat16).cuda()
     z = torch.randn(1, 9, 9, 256, device="cuda", dtype=torch.bfloat16)
     mask = torch.ones(1, 9, 9, 1, device="cuda", dtype=torch.bfloat16)
     with torch.inference_mode():
@@ -802,9 +802,7 @@ def test_pair_transition_runs_fused(mode, residual, monkeypatch):
     """
     skip_if_not_sm90()
     c_z, n = 256, 2
-    layer = _on_transition_mlp(
-        _init(PairTransition(c_z=c_z, n=n, dtype=torch.bfloat16, enable_cudnn_graph=True).cuda())
-    )
+    layer = _on_transition_mlp(_init(PairTransition(c_z=c_z, n=n, dtype=torch.bfloat16).cuda()))
     assert layer._fused_mlp_ops[residual] is not None
     z = torch.randn(2, 37, 37, c_z, device="cuda", dtype=torch.bfloat16)
     mask = (torch.rand(2, 37, 37, 1, device="cuda") > 0.2).to(torch.bfloat16)

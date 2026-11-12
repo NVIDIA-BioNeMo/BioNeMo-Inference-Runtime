@@ -232,7 +232,6 @@ class PairUpdateBlock(nn.Module):
         eps: float,
         dtype: torch.dtype,
         pair_write: Literal["sum", "hadamard"] = "sum",
-        enable_cudnn_graph: bool = True,
         use_tri_mult: bool = True,
         trimul_bias: bool = True,
     ) -> None:
@@ -241,7 +240,6 @@ class PairUpdateBlock(nn.Module):
             raise ValueError(f"pair_write must be 'sum' or 'hadamard', got {pair_write!r}")
         self.pair_write = pair_write
         self.pair_mask_left_aligned = pair_mask_left_aligned
-        self.enable_cudnn_graph = enable_cudnn_graph
         self.use_tri_mult = use_tri_mult
         self.layer_norm_in = nn.LayerNorm(token_dim, eps=eps, dtype=dtype)
         self.linear_x = nn.Linear(token_dim, 2 * pair_dim, bias=False, dtype=dtype)
@@ -275,7 +273,6 @@ class PairUpdateBlock(nn.Module):
             eps=eps,
             dtype=dtype,
             auto_chunk_policy=CHUNK_REGISTRY.get(PAIR_TRANSITION),
-            enable_cudnn_graph=enable_cudnn_graph,
         )
         self.pair_injection = PairInjection(
             pair_dim=pair_dim,

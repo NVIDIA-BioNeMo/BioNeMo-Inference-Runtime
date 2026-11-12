@@ -203,17 +203,13 @@ def test_relu_transition_skip_create_weights_defers_linears(
     transition = transition_type(
         **kwargs,
         skip_create_weights=True,
-        enable_cudnn_graph=True,
-        cudnn_dynamic_shapes=True,
     )
 
     for linear in (transition.linear_1, transition.linear_2):
         assert not linear._weights_created
         assert dict(linear.named_parameters()) == {}
-    assert transition._cudnn_graph_plans == {}
 
     transition.to(dtype=torch.bfloat16)
-    assert transition._cudnn_graph_plans == {}
 
 
 @pytest.mark.parametrize("chunk_rows", [8, 7], ids=["even", "partial"])
@@ -241,44 +237,6 @@ def test_pair_transition_auto_chunk(chunk_rows: int, with_mask: bool, residual: 
     torch.testing.assert_close(chunked, dense, atol=1e-5, rtol=1e-5)
     if with_mask and not residual:
         assert torch.count_nonzero(chunked[:, -3:]) == 0
-
-
-@pytest.mark.parametrize("cudnn_dynamic_shapes", [False, True], ids=["static", "dynamic"])
-def test_msa_transition_cudnn_graph_matches_vanilla(cudnn_dynamic_shapes: bool) -> None:
-    torch.manual_seed(2)
-    device = torch.device("cuda")
-    channels, expansion = 256, 4
-    vanilla = MSATransition(
-        c_m=channels,
-        n=expansion,
-        dtype=torch.bfloat16,
-        enable_cudnn_graph=False,
-    ).to(device)
-    fused = MSATransition(
-        c_m=channels,
-        n=expansion,
-        dtype=torch.bfloat16,
-        enable_cudnn_graph=True,
-        cudnn_dynamic_shapes=cudnn_dynamic_shapes,
-    ).to(device)
-    # cuDNN against the plain linears, so neither takes the LayerNorm-fused kernel.
-    vanilla._w_norm_op = fused._w_norm_op = None
-    # Only the opt-in holds plans; the default path builds them per row count.
-    assert set(fused._cudnn_graph_plans) == ({"linear_relu", "linear_mask"} if cudnn_dynamic_shapes else set())
-    with torch.no_grad():
-        for parameter in vanilla.parameters():
-            parameter.normal_(mean=0.0, std=0.02)
-    fused.load_state_dict(vanilla.state_dict())
-
-    m = torch.randn(1, 3, 17, channels, device=device, dtype=torch.bfloat16)
-    mask = torch.ones(1, 3, 17, device=device, dtype=torch.bool)
-    mask[:, 1, -3:] = False
-    with torch.inference_mode():
-        expected = vanilla(m, mask)
-        actual = fused(m, mask)
-
-    torch.testing.assert_close(actual, expected, atol=2e-2, rtol=2e-2)
-    assert torch.count_nonzero(actual[:, 1, -3:]) == 0
 
 
 def test_transition_normalize_false_skips_layernorm():

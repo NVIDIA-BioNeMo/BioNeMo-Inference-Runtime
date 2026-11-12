@@ -20,11 +20,8 @@ Each layer runs a call on the first path that accepts it:
    (:class:`_LayerNormFusedPath`), where it ships for the layer's shape.
 2. The LayerNorm, then ``transition_mlp``: both linears, the mask and the residual in one kernel with the hidden
    activation on chip.
-3. cuDNN graphs (ReLU layers, when enabled).
-4. The PyTorch modules.
+3. The PyTorch modules.
 """
-
-from collections.abc import Callable
 
 import torch
 import torch.nn as nn
@@ -39,41 +36,11 @@ from bionemo_ir._torch.custom_ops.transition_mlp_w_norm import (
     get_transition_mlp_w_norm_op,
     pack_weights,
 )
-from bionemo_ir._torch.graph_optimization.cudnn_graph import (
-    CudnnGraphModule,
-    can_use_cudnn_graph,
-    cudnn_linear_mask,
-    cudnn_linear_mask_residual,
-    cudnn_linear_relu,
-    cudnn_linear_residual,
-    prepare_cudnn_linear_mask,
-    prepare_cudnn_linear_relu,
-)
 from bionemo_ir._torch.layers.linear import Linear, WeightMode, WeightsLoadingConfig
 from bionemo_ir._torch.layers.normalization import AdaLN, AdaLNNormType, FusedLayerNorm
 from bionemo_ir._torch.utils import ChunkPolicy, chunk_apply, iter_chunks
 from bionemo_ir.dsl_kernels.triton.fused_swiglu import FusedSwiGLU
 from bionemo_ir.runtime.buffers import PreallocatedBuffers
-
-type _CudnnPlan = Callable[..., torch.Tensor | None]
-
-
-def _run_cudnn_linear(
-    prepared: _CudnnPlan | None,
-    static: _CudnnPlan,
-    *inputs: torch.Tensor,
-) -> torch.Tensor | None:
-    """Run a held dynamic-shape plan when there is one, else the static plan.
-
-    ``prepared`` is only populated under ``cudnn_dynamic_shapes``, and it
-    rejects row counts cuDNN will not override, so the static plan is both the
-    default and the fallback.
-    """
-    if prepared is not None:
-        output = prepared(*inputs)
-        if output is not None:
-            return output
-    return static(*inputs)
 
 
 def _get_silu_projection_op(dtype: torch.dtype | None, K: int, N: int):
@@ -564,7 +531,7 @@ class ConditionedTransitionBlock(nn.Module):
         return self.b_to_a(b)
 
 
-class _ReluTransition(_LayerNormFusedPath, CudnnGraphModule):
+class _ReluTransition(_LayerNormFusedPath, nn.Module):
     """``linear_2(relu(linear_1(LayerNorm(x))))``, both linears with biases, over ``[..., width]``.
 
     The body :class:`PairTransition` and :class:`MSATransition` share. It runs as one ``transition_mlp_w_norm`` kernel
@@ -579,16 +546,11 @@ class _ReluTransition(_LayerNormFusedPath, CudnnGraphModule):
         *,
         dtype: torch.dtype | None,
         skip_create_weights: bool,
-        enable_cudnn_graph: bool,
-        cudnn_dynamic_shapes: bool,
     ) -> None:
         super().__init__()
-        self.enable_cudnn_graph = enable_cudnn_graph
-        self.cudnn_dynamic_shapes = cudnn_dynamic_shapes
         self.dtype = dtype
         self.n = n
         self._width = width
-        self._cudnn_graph_plans: dict[str, _CudnnPlan] = {}
 
         self.layer_norm = layer_norm
         self.linear_1 = Linear(width, n * width, bias=True, dtype=dtype, skip_create_weights=skip_create_weights)
@@ -602,36 +564,9 @@ class _ReluTransition(_LayerNormFusedPath, CudnnGraphModule):
         self._init_w_norm(
             get_transition_mlp_w_norm_op(op_dtype, width=width, hidden=n * width, activation="relu"), "relu"
         )
-        self._prepare_cudnn_graphs()
 
     def _w_norm_parts(self) -> tuple[nn.LayerNorm, Linear, Linear]:
         return self.layer_norm, self.linear_1, self.linear_2
-
-    def _prepare_cudnn_graphs(self) -> None:
-        self._cudnn_graph_plans.clear()
-        if not self.cudnn_dynamic_shapes:
-            return
-        if not self.linear_1._weights_created or not self.linear_2._weights_created:
-            return
-        if not can_use_cudnn_graph(self.linear_1.weight, enabled=self.enable_cudnn_graph):
-            return
-        hidden_dim = self.n * self._width
-        linear_relu = prepare_cudnn_linear_relu(
-            self.linear_1.weight.device,
-            self.linear_1.weight.dtype,
-            self._width,
-            hidden_dim,
-        )
-        linear_mask = prepare_cudnn_linear_mask(
-            self.linear_2.weight.device,
-            self.linear_2.weight.dtype,
-            hidden_dim,
-            self._width,
-        )
-        if linear_relu is not None:
-            self._cudnn_graph_plans["linear_relu"] = linear_relu
-        if linear_mask is not None:
-            self._cudnn_graph_plans["linear_mask"] = linear_mask
 
     def _forward_fused(self, x: torch.Tensor, mask: torch.Tensor | None, *, residual: bool) -> torch.Tensor | None:
         """LayerNorm, then one ``transition_mlp`` kernel for both linears, the mask and any residual; ``None`` if
@@ -646,21 +581,6 @@ class _ReluTransition(_LayerNormFusedPath, CudnnGraphModule):
             return None
         return op(self.layer_norm(x), *weights, x if residual else None, mask)
 
-    def _cudnn_hidden(self, normed: torch.Tensor) -> torch.Tensor | None:
-        """``relu(linear_1(normed))`` as ``[1, rows, n * width]`` from cuDNN, or ``None`` if it declines."""
-        rows = normed.numel() // self._width
-        return _run_cudnn_linear(
-            self._cudnn_graph_plans.get("linear_relu"),
-            cudnn_linear_relu,
-            normed.reshape(1, rows, self._width).contiguous(),
-            self.linear_1.weight.unsqueeze(0).transpose(-1, -2),
-            self.linear_1.bias.reshape(1, 1, self.n * self._width),
-        )
-
-    def _cudnn_linear_2(self) -> tuple[torch.Tensor, torch.Tensor]:
-        """``linear_2``'s weight and bias in the layout the cuDNN graphs take."""
-        return self.linear_2.weight.unsqueeze(0).transpose(-1, -2), self.linear_2.bias.reshape(1, 1, self._width)
-
 
 class PairTransition(_ReluTransition):
     def __init__(
@@ -671,8 +591,6 @@ class PairTransition(_ReluTransition):
         dtype: torch.dtype = None,
         skip_create_weights: bool = False,
         auto_chunk_policy: ChunkPolicy | None = None,
-        enable_cudnn_graph: bool = False,
-        cudnn_dynamic_shapes: bool = False,
     ):
         """ReLU pair transition ``linear_2(relu(linear_1(LayerNorm(z))))`` over ``[*, N, N, c_z]``.
 
@@ -685,8 +603,6 @@ class PairTransition(_ReluTransition):
             FusedLayerNorm(c_z, eps=eps, dtype=dtype),
             dtype=dtype,
             skip_create_weights=skip_create_weights,
-            enable_cudnn_graph=enable_cudnn_graph,
-            cudnn_dynamic_shapes=cudnn_dynamic_shapes,
         )
         self.c_z = c_z
         self.auto_chunk_policy = auto_chunk_policy
@@ -700,50 +616,11 @@ class PairTransition(_ReluTransition):
         return self._forward_slice(z, mask, residual=residual)
 
     def _forward_slice(self, z: torch.Tensor, mask: torch.Tensor | None, *, residual: bool) -> torch.Tensor:
-        """Run a dense slice through fused, cuDNN, or ordinary linears."""
+        """Run a dense slice through the fused kernel, or ordinary linears when it declines."""
         output = self._forward_fused(z, mask, residual=residual)
         if output is not None:
             return output
-        if can_use_cudnn_graph(z, enabled=self.enable_cudnn_graph):
-            output = self._forward_cudnn(z, mask, residual=residual)
-            if output is not None:
-                return output
         return self._forward_impl(z, mask, residual=residual)
-
-    def _forward_cudnn(
-        self,
-        z: torch.Tensor,
-        mask: torch.Tensor | None,
-        *,
-        residual: bool,
-    ) -> torch.Tensor | None:
-        normed = self.layer_norm(z)
-        hidden = self._cudnn_hidden(normed)
-        if hidden is None:
-            return None
-        if mask is None and not residual:
-            return self.linear_2(hidden).view_as(normed)
-
-        rows = normed.numel() // self.c_z
-        weight_2_t, bias_2 = self._cudnn_linear_2()
-        if residual:
-            residual_flat = z.reshape(1, rows, self.c_z)
-            if mask is None:
-                output = cudnn_linear_residual(hidden, weight_2_t, bias_2, residual_flat)
-            else:
-                mask_flat = mask.reshape(1, rows, 1).to(dtype=normed.dtype)
-                output = cudnn_linear_mask_residual(hidden, weight_2_t, bias_2, mask_flat, residual_flat)
-        else:
-            mask_flat = mask.reshape(1, rows, 1).to(dtype=normed.dtype)
-            output = _run_cudnn_linear(
-                self._cudnn_graph_plans.get("linear_mask"),
-                cudnn_linear_mask,
-                hidden,
-                weight_2_t,
-                bias_2,
-                mask_flat,
-            )
-        return None if output is None else output.view_as(normed)
 
     def _forward_impl(
         self,
@@ -780,8 +657,6 @@ class MSATransition(_ReluTransition):
         eps: float = 1e-5,
         dtype: torch.dtype = None,
         skip_create_weights: bool = False,
-        enable_cudnn_graph: bool = False,
-        cudnn_dynamic_shapes: bool = False,
     ) -> None:
         """ReLU MSA transition ``linear_2(relu(linear_1(LayerNorm(m))))`` over ``[*, S, N, c_m]``.
 
@@ -794,8 +669,6 @@ class MSATransition(_ReluTransition):
             nn.LayerNorm(c_m, eps=eps, dtype=dtype),
             dtype=dtype,
             skip_create_weights=skip_create_weights,
-            enable_cudnn_graph=enable_cudnn_graph,
-            cudnn_dynamic_shapes=cudnn_dynamic_shapes,
         )
         self.c_m = c_m
 
@@ -806,29 +679,8 @@ class MSATransition(_ReluTransition):
             output = self._forward_fused(m, mask, residual=residual)
         if output is not None:
             return output
-        if can_use_cudnn_graph(m, enabled=self.enable_cudnn_graph):
-            output = self._forward_cudnn(m, mask)
-        if output is None:
-            output = self._forward_impl(m, mask)
+        output = self._forward_impl(m, mask)
         return m + output if residual else output
-
-    def _forward_cudnn(self, m: torch.Tensor, mask: torch.Tensor) -> torch.Tensor | None:
-        normed = self.layer_norm(m)
-        rows = normed.numel() // self.c_m
-        mask_flat = mask.reshape(1, rows, 1).to(dtype=normed.dtype).contiguous()
-        hidden = self._cudnn_hidden(normed)
-        if hidden is None:
-            return None
-        weight_2_t, bias_2 = self._cudnn_linear_2()
-        output = _run_cudnn_linear(
-            self._cudnn_graph_plans.get("linear_mask"),
-            cudnn_linear_mask,
-            hidden,
-            weight_2_t,
-            bias_2,
-            mask_flat,
-        )
-        return None if output is None else output.view_as(normed)
 
     def _forward_impl(self, m: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
         mask = mask.unsqueeze(-1)

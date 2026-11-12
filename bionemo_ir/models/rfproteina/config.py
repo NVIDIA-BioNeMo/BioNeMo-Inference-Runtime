@@ -540,10 +540,6 @@ class RFProteinaTrunkConfig(BaseConfig):
         pair_channel=("pair",),
         single_last=("padding_mask",),
     )
-    # Use cached cuDNN operation graphs for validated BF16 pair operations.
-    # Unsupported devices, dtypes, batch sizes, and active chunking retain the
-    # vanilla Torch path.
-    enable_cudnn_graph: bool = True
     pairwise_attention_backend: str = "SDPA"
     mask_inf: float = 1e4
     trimul_high_precision: bool = False

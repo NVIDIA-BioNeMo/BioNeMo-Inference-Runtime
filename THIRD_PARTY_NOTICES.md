@@ -179,11 +179,6 @@ wheel. Their package-provided license and notice files remain authoritative.
   - License: Apache-2.0; see [`LICENSE`][bioir-license]
   - Source and license: [cuEquivariance][cuequivariance]
 
-- **nvidia-cudnn-frontend**
-  - Copyright: NVIDIA Corporation
-  - License: MIT; see [`LICENSES/MIT.txt`][mit]
-  - Source and license: [cuDNN Frontend 1.23.0][cudnn-frontend]
-
 - **triton**
   - Copyright: OpenAI and Triton contributors
   - License: MIT; see [`LICENSES/MIT.txt`][mit]
@@ -405,7 +400,6 @@ resolved operating-system and base-image package closure.
 [certifi]: https://raw.githubusercontent.com/certifi/python-certifi/master/LICENSE
 [cmake]: https://github.com/Kitware/CMake
 [cuda-python]: https://pypi.org/project/cuda-python/
-[cudnn-frontend]: https://github.com/NVIDIA/cudnn-frontend/tree/v1.23.0
 [cueq-ops-cu13]: https://pypi.org/project/cuequivariance-ops-cu13/
 [cueq-ops-torch-cu13]: https://pypi.org/project/cuequivariance-ops-torch-cu13/
 [cuequivariance]: https://github.com/NVIDIA/cuEquivariance

@@ -30,7 +30,6 @@ import torch.nn.functional as F
 import bionemo_ir._torch.graph_optimization.cuda_graph.runtime as graph_runtime
 from bionemo_ir._torch.attention_backend.utils import precompute_pair_masks, precompute_single_masks
 from bionemo_ir._torch.custom_ops.fused_ln_proj_moveaxis_pad import LNProjMoveaxisPad
-from bionemo_ir._torch.layers import transition as transition_layer
 from bionemo_ir._torch.layers.attention import AttentionPairBias
 from bionemo_ir._torch.layers.normalization import FusedLayerNorm, FusedRMSNorm
 from bionemo_ir._torch.layers.transformers import (
@@ -41,7 +40,7 @@ from bionemo_ir._torch.layers.transformers import (
     local_latents_encoder,
     local_latents_transformer,
 )
-from bionemo_ir._torch.layers.transformers.blocks import ConditionedTransformerBlock, PairUpdateBlock
+from bionemo_ir._torch.layers.transformers.blocks import PairUpdateBlock
 from bionemo_ir._torch.layers.transition import PairTransition
 from bionemo_ir._torch.layers.triangle_nodes import (
     TriangleMultiplicationNode,
@@ -387,7 +386,6 @@ def _oss_trunk_shapes(
 
 def test_rfproteina_released_config() -> None:
     config = RFProteinaConfig()
-    assert config.trunk.enable_cudnn_graph
     assert config.trunk.enable_token_pad
     assert config.trunk.token_dim == 768
     assert config.trunk.pair_dim == 384
@@ -1077,24 +1075,6 @@ def test_rfproteina_trunk_reads_one_condition_per_recycle_pass() -> None:
         module(single, pair, stacked[:2], mask, recycle_depth=3)
 
 
-def test_rfproteina_cudnn_graph_flag_propagates_to_optimized_modules() -> None:
-    enabled_config = _small_config(dtype="bfloat16")
-    enabled_trunk = LocalLatentsTransformer(enabled_config)
-    enabled_update = next(module for module in enabled_trunk.pair_update_layers if module is not None)
-
-    assert enabled_update.enable_cudnn_graph
-    assert isinstance(enabled_trunk.transformer_layers[0], ConditionedTransformerBlock)
-    assert isinstance(enabled_update, PairUpdateBlock)
-    assert enabled_update.transition_out.enable_cudnn_graph
-
-    disabled_config = _small_config(dtype="bfloat16", enable_cudnn_graph=False)
-    disabled_trunk = LocalLatentsTransformer(disabled_config)
-    disabled_update = next(module for module in disabled_trunk.pair_update_layers if module is not None)
-
-    assert not disabled_update.enable_cudnn_graph
-    assert not disabled_update.transition_out.enable_cudnn_graph
-
-
 @pytest.mark.parametrize("batch_size", [1, 2])
 def test_rfproteina_fused_masked_residual_matches_vanilla(
     monkeypatch: pytest.MonkeyPatch,
@@ -1125,82 +1105,6 @@ def test_rfproteina_fused_masked_residual_matches_vanilla(
     assert torch.count_nonzero(actual[~mask]) == 0
 
 
-@pytest.mark.parametrize("with_mask", [False, True], ids=["unmasked", "masked"])
-@pytest.mark.parametrize("residual", [False, True], ids=["no_residual", "residual"])
-def test_rfproteina_cudnn_pair_transition_matches_vanilla(
-    monkeypatch: pytest.MonkeyPatch,
-    with_mask: bool,
-    residual: bool,
-) -> None:
-    torch.manual_seed(23)
-    device = torch.device("cuda")
-    pair_dim, expansion, tokens = 32, 2, 17
-    vanilla = PairTransition(
-        c_z=pair_dim,
-        n=expansion,
-        dtype=torch.bfloat16,
-        enable_cudnn_graph=False,
-    ).to(device)
-    fused = PairTransition(
-        c_z=pair_dim,
-        n=expansion,
-        dtype=torch.bfloat16,
-        enable_cudnn_graph=True,
-    ).to(device)
-    init_module_weights(vanilla)
-    fused.load_state_dict(vanilla.state_dict())
-    pair = torch.randn(1, tokens, tokens, pair_dim, device=device, dtype=torch.bfloat16)
-    token_mask = torch.arange(tokens, device=device) < tokens - 3
-    pair_mask = (token_mask.unsqueeze(0) & token_mask.unsqueeze(1)).unsqueeze(0)
-
-    calls = {
-        "linear_relu": 0,
-        "linear_mask": 0,
-        "linear_residual": 0,
-        "linear_mask_residual": 0,
-    }
-    cudnn_linear_relu = transition_layer.cudnn_linear_relu
-    cudnn_linear_mask = transition_layer.cudnn_linear_mask
-    cudnn_linear_residual = transition_layer.cudnn_linear_residual
-    cudnn_linear_mask_residual = transition_layer.cudnn_linear_mask_residual
-
-    def tracked_linear_relu(*args, **kwargs):
-        calls["linear_relu"] += 1
-        return cudnn_linear_relu(*args, **kwargs)
-
-    def tracked_linear_mask(*args, **kwargs):
-        calls["linear_mask"] += 1
-        return cudnn_linear_mask(*args, **kwargs)
-
-    def tracked_linear_residual(*args, **kwargs):
-        calls["linear_residual"] += 1
-        return cudnn_linear_residual(*args, **kwargs)
-
-    def tracked_linear_mask_residual(*args, **kwargs):
-        calls["linear_mask_residual"] += 1
-        return cudnn_linear_mask_residual(*args, **kwargs)
-
-    monkeypatch.setattr(transition_layer, "cudnn_linear_relu", tracked_linear_relu)
-    monkeypatch.setattr(transition_layer, "cudnn_linear_mask", tracked_linear_mask)
-    monkeypatch.setattr(transition_layer, "cudnn_linear_residual", tracked_linear_residual)
-    monkeypatch.setattr(transition_layer, "cudnn_linear_mask_residual", tracked_linear_mask_residual)
-    mask = pair_mask if with_mask else None
-    with torch.inference_mode():
-        expected = vanilla(pair, mask, residual=residual)
-        actual = fused(pair, mask, residual=residual)
-
-    assert calls == {
-        "linear_relu": 1,
-        "linear_mask": int(with_mask and not residual),
-        "linear_residual": int(residual and not with_mask),
-        "linear_mask_residual": int(residual and with_mask),
-    }
-    torch.testing.assert_close(actual, expected, atol=0, rtol=0)
-    if with_mask and not residual:
-        assert torch.count_nonzero(actual[:, -3:]) == 0
-        assert torch.count_nonzero(actual[:, :, -3:]) == 0
-
-
 def test_pair_transition_fused_residual_matches_pair_update_chain() -> None:
     """The fused transition tail matches the former masked residual chain."""
     torch.manual_seed(31)
@@ -1221,40 +1125,6 @@ def test_pair_transition_fused_residual_matches_pair_update_chain() -> None:
 
     assert expected is not None
     torch.testing.assert_close(actual, expected, atol=0, rtol=0)
-
-
-def test_pair_transition_prepares_cudnn_graphs_at_construction_and_cuda_move(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    calls = {"linear_relu": 0, "linear_mask": 0}
-
-    def prepare_linear_relu(*args: object, **kwargs: object) -> bool:
-        calls["linear_relu"] += 1
-        return True
-
-    def prepare_linear_mask(*args: object, **kwargs: object) -> bool:
-        calls["linear_mask"] += 1
-        return True
-
-    monkeypatch.setattr(transition_layer, "prepare_cudnn_linear_relu", prepare_linear_relu)
-    monkeypatch.setattr(transition_layer, "prepare_cudnn_linear_mask", prepare_linear_mask)
-    # The default static path holds no plan, so nothing is prepared for it.
-    PairTransition(c_z=32, n=2, dtype=torch.bfloat16, enable_cudnn_graph=True)
-    assert calls == {"linear_relu": 0, "linear_mask": 0}
-
-    module = PairTransition(
-        c_z=32,
-        n=2,
-        dtype=torch.bfloat16,
-        enable_cudnn_graph=True,
-        cudnn_dynamic_shapes=True,
-    )
-    assert calls == {"linear_relu": 1, "linear_mask": 1}
-
-    module.cpu()
-    assert calls == {"linear_relu": 1, "linear_mask": 1}
-    module.cuda()
-    assert calls == {"linear_relu": 2, "linear_mask": 2}
 
 
 @pytest.mark.parametrize(
@@ -1520,7 +1390,6 @@ def test_rfproteina_pair_update_supports_nonstandard_hidden_dim(pair_write: str)
     actual_seqlens = {}
 
     def capture_actual_seqlen(name):
-
         def hook(_module, _args, kwargs):
             metadata = kwargs["trimul_metadata"]
             actual_seqlens[name] = metadata.outgoing_actual_seqlen if name == "out" else metadata.incoming_actual_seqlen
@@ -1555,7 +1424,7 @@ def test_rfproteina_pair_update_supports_nonstandard_hidden_dim(pair_write: str)
 
 @pytest.mark.parametrize("batch_size", [1, 2])
 @pytest.mark.parametrize("pair_write", ["sum", "hadamard"])
-def test_rfproteina_cudnn_pair_update_matches_vanilla(
+def test_rfproteina_pair_update_fuses_injection_and_triangle_residuals(
     monkeypatch: pytest.MonkeyPatch,
     batch_size: int,
     pair_write: str,
@@ -1567,22 +1436,19 @@ def test_rfproteina_cudnn_pair_update_matches_vanilla(
     """
     torch.manual_seed(29)
     device = torch.device("cuda")
-    kwargs = {
-        "layer_idx": 0,
-        "token_dim": 32,
-        "pair_dim": 16,
-        "trimul_hidden_dim": 8,
-        "pair_transition_expansion": 2,
-        "pair_mask_left_aligned": True,
-        "trimul_high_precision": False,
-        "eps": 1e-5,
-        "dtype": torch.bfloat16,
-        "pair_write": pair_write,
-    }
-    vanilla = RFProteinaPairUpdate(**kwargs, enable_cudnn_graph=False).to(device)
-    fused = RFProteinaPairUpdate(**kwargs, enable_cudnn_graph=True).to(device)
-    init_module_weights(vanilla)
-    fused.load_state_dict(vanilla.state_dict())
+    module = RFProteinaPairUpdate(
+        layer_idx=0,
+        token_dim=32,
+        pair_dim=16,
+        trimul_hidden_dim=8,
+        pair_transition_expansion=2,
+        pair_mask_left_aligned=True,
+        trimul_high_precision=False,
+        eps=1e-5,
+        dtype=torch.bfloat16,
+        pair_write=pair_write,
+    ).to(device)
+    init_module_weights(module)
     tokens = 17
     single = torch.randn(batch_size, tokens, 32, device=device, dtype=torch.bfloat16)
     pair = torch.randn(batch_size, tokens, tokens, 16, device=device, dtype=torch.bfloat16)
@@ -1596,7 +1462,7 @@ def test_rfproteina_cudnn_pair_update_matches_vanilla(
 
     calls = {"injection": 0, "residual": 0}
     fused_masked_residual = transformer_blocks.fused_masked_residual
-    triton_injection = fused.pair_injection._fused_kernel
+    triton_injection = module.pair_injection._fused_kernel
 
     def tracked_injection(*args, **kwargs):
         calls["injection"] += 1
@@ -1606,7 +1472,7 @@ def test_rfproteina_cudnn_pair_update_matches_vanilla(
         calls["residual"] += 1
         return fused_masked_residual(*args, **kwargs)
 
-    monkeypatch.setattr(fused.pair_injection, "_fused_kernel", tracked_injection)
+    monkeypatch.setattr(module.pair_injection, "_fused_kernel", tracked_injection)
     monkeypatch.setattr(transformer_blocks, "fused_masked_residual", tracked_residual)
     trimul_metadata = precompute_trimul_metadata(
         pair,
@@ -1614,12 +1480,11 @@ def test_rfproteina_cudnn_pair_update_matches_vanilla(
         pair_masks.mask_bias_transposed,
     )
     with torch.inference_mode():
-        expected = vanilla(single, pair.clone(), token_mask, trimul_metadata, precomputed_masks=pair_masks)
-        actual = fused(single, pair.clone(), token_mask, trimul_metadata, precomputed_masks=pair_masks)
+        actual = module(single, pair.clone(), token_mask, trimul_metadata, precomputed_masks=pair_masks)
 
-    # Two triangle residuals per arm. The patch counts both arms.
-    assert calls == {"injection": 1, "residual": 4}
-    torch.testing.assert_close(actual, expected, atol=0, rtol=0)
+    # Outgoing and incoming updates each call the Triton residual once.
+    # 17 tokens is not a multiple of the GEMM alignment, so neither fuses.
+    assert calls == {"injection": 1, "residual": 2}
     assert torch.count_nonzero(actual[:, -3:]) == 0
     assert torch.count_nonzero(actual[:, :, -3:]) == 0
 

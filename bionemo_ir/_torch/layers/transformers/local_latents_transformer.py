@@ -192,7 +192,6 @@ class LocalLatentsTransformer(nn.Module):
                     trimul_high_precision=config.trimul_high_precision,
                     eps=config.norm_epsilon,
                     dtype=self.dtype,
-                    enable_cudnn_graph=config.enable_cudnn_graph,
                     trimul_bias=config.trimul_bias,
                 )
                 if i % config.pair_update_every == 0

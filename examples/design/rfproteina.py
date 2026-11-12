@@ -80,7 +80,6 @@ def load_model(flow_checkpoint: Path, autoencoder_checkpoint: Path, steps: int |
         weights[flow],
         dtype="bfloat16",
         pairwise_attention_backend=pretrained.trunk.pairwise_attention_backend,
-        enable_cudnn_graph=pretrained.trunk.enable_cudnn_graph,
     )
     representation = rfproteina_representation_config_from_weights(
         weights[flow],

@@ -322,15 +322,19 @@ back to two plain GEMMs. The attention backend is chosen the same way, with
 CuTeDSL on SM80, SM86, SM89, and SM90 in half precision and
 `F.scaled_dot_product_attention` everywhere else.
 
-The pair transition has three levels rather than two. It first tries the fused
-CuTeDSL transition kernel, which runs both linears, the ReLU, the mask, and any
-residual in one launch and keeps the hidden activation on chip — tuned for SM80,
-SM86, and SM89 with `cp.async` and for SM90 with TMA. If no tuned tile exists
-for the requested `(width, hidden)` it falls back to a cuDNN operation graph
-when one is enabled, and to ordinary linears otherwise. The released pair width
-of 384 with an expansion of 2 is a tuned shape on every supported SM, so the
-fused kernel is what actually runs; the token transition at 768 by 3072 is not,
-which is the fallback in action rather than a gap.
+The pair transition tries two fused kernels, then ordinary linears.
+`transition_mlp_w_norm` runs first. It folds the LayerNorm into the first
+linear and keeps the ReLU, the mask, and any residual in that launch. It
+ships on SM90, SM100, and SM103. When that kernel declines,
+`transition_mlp` runs the LayerNorm on its own, then both linears, the
+ReLU, the mask, and any residual in one launch, with the hidden activation
+on chip. That second kernel uses `cp.async` on SM80, SM86, and SM89, TMA
+on SM90, and `tcgen05` on SM100 and SM103. With no tuned tile for
+`(width, hidden)` on either kernel, the layer uses ordinary linears. The
+released pair width of 384 with an expansion of 2 takes
+`transition_mlp_w_norm` on SM90, SM100, and SM103, and `transition_mlp` on
+SM80, SM86, and SM89. The token transition at 768 by 3072 has no such
+tile, which is the fallback in action rather than a gap.
 
 One property inverts the usual expectation that a missing fast path degrades
 gracefully. Dispatch commits to CuTeDSL based on the presence of a *tuning*

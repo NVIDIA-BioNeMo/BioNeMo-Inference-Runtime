@@ -546,7 +546,10 @@ class Boltz2ConfidenceModule(nn.Module):
         z = self.z_norm(z)
 
         if self.add_z_input_to_z:
-            relative_position_encoding = self.rel_pos(
+            # In-place accumulation: z (a freshly-owned z_norm output) is the accumulator, so each
+            # [N, N, c_z] add reuses its buffer instead of allocating a new fp32 temporary. Each
+            # term stays unnamed so it frees after its add, not after the pairformer loop.
+            z += self.rel_pos(
                 asym_id=feats["asym_id"],
                 residue_index=feats["residue_index"],
                 entity_id=feats["entity_id"],
@@ -554,9 +557,6 @@ class Boltz2ConfidenceModule(nn.Module):
                 token_index=feats["token_index"],
                 sym_id=feats["sym_id"],
             )
-            # In-place accumulation: z (a freshly-owned z_norm output) is the accumulator, so each
-            # [N, N, c_z] add reuses its buffer instead of allocating a new fp32 temporary.
-            z += relative_position_encoding
             z += self.token_bonds(feats["token_bonds"].float())
             if self.bond_type_feature:
                 z += self.token_bonds_type(feats["type_bonds"].long())

@@ -221,13 +221,28 @@ class DiffusionConditioning(nn.Module):
 
         # Cast z once and build the large [N, N, depth*heads] token-transformer bias directly in the
         # (bf16) token_trans_bias dtype -- it feeds the token transformer at that precision anyway.
-        token_trans_bias = []
         z_ttb = z.to(self.token_trans_bias_dtype)
-        for layer in self.token_trans_proj_z:
-            token_trans_bias.append(layer(z_ttb))
-        token_trans_bias = torch.cat(token_trans_bias, dim=-1)
+        del z
+        token_trans_bias = self._assemble_token_trans_bias(z_ttb)
 
         return q, c, atom_enc_bias, atom_dec_bias, token_trans_bias
+
+    def _assemble_token_trans_bias(self, z: torch.Tensor) -> torch.Tensor:
+        """Write each layer's ``[*, N, N, heads]`` bias into its slice of one output.
+
+        Equal to concatenating the layer outputs on the last dim, but only one layer output
+        is live next to the result, instead of all of them during the concatenation.
+        """
+        out = None
+        start = 0
+        for layer in self.token_trans_proj_z:
+            bias = layer(z)
+            if out is None:
+                out = bias.new_empty(*bias.shape[:-1], bias.shape[-1] * len(self.token_trans_proj_z))
+            out[..., start : start + bias.shape[-1]].copy_(bias)
+            start += bias.shape[-1]
+            del bias
+        return out
 
 
 class DiffusionModule(nn.Module):

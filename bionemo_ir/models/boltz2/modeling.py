@@ -489,6 +489,9 @@ class Boltz2(nn.Module, OptimizedModuleSetterMixin):
         template_feats = None
         if getattr(self.trunk_config, "use_templates_v2", False) and has_templates:
             template_feats = self.get_module_feed_dict(feed_dict, "template")
+        # Apply the trunk's own input cast here, so the FP32 accumulator frees now
+        # instead of overlapping the whole trunk.
+        z_init = z_init.to(self.trunk.dtype)
         s, z = self.trunk(
             s_init=s_init,
             z_init=z_init,
@@ -497,6 +500,7 @@ class Boltz2(nn.Module, OptimizedModuleSetterMixin):
             recycling_steps=recycling_steps,
             template_feats=template_feats,
         )
+        del z_init
         # Reducing here keeps the [N, N, num_bins] logits (3.97 GB at N=3936) from staying resident
         # across diffusion and confidence. Left unnamed: the bin slice is a view of the distogram.
         prob_contact = compute_contact_prob(self.distogram_module(z)[:, :, :, 0])
@@ -504,6 +508,11 @@ class Boltz2(nn.Module, OptimizedModuleSetterMixin):
         # Run diffusion conditioning module
         if self.recompute_rel_pos:
             relative_position_encoding = self.rel_pos(**rel_pos_feats)
+        # The conditioner casts the encoding to its own dtype first; casting here
+        # instead frees the FP32 encoding before the conditioner's transitions.
+        conditioner_dtype = self.diffusion_conditioning.pairwise_conditioner.dtype
+        if conditioner_dtype is not None:
+            relative_position_encoding = relative_position_encoding.to(conditioner_dtype)
         q, c, atom_enc_bias, atom_dec_bias, token_trans_bias = self.diffusion_conditioning(
             s_trunk=s,
             z_trunk=z,
@@ -511,6 +520,7 @@ class Boltz2(nn.Module, OptimizedModuleSetterMixin):
             feature_dict=feed_dict,
             query_to_keys=attn_metadata.query_to_keys,
         )
+        del relative_position_encoding
 
         network_condition_kwargs = {
             "q": q,

@@ -429,9 +429,11 @@ class StructureModule(nn.Module):
             self.training,
             fmt="quat",
         )
+        # Pair features and IPA parameters are invariant across these blocks.
+        pair_bias = self.ipa.linear_b(z)
         outputs = []
         for _ in range(self.no_blocks):
-            s = s + self.ipa(s, z, rigids, mask)
+            s = s + self.ipa(s, z, rigids, mask, pair_bias=pair_bias)
             s = self.layer_norm_ipa(s)
             s = self.transition(s)
 
@@ -489,9 +491,11 @@ class StructureModule(nn.Module):
             s.shape[:-1],
             s.device,
         )
+        # Pair features and IPA parameters are invariant across these blocks.
+        pair_bias = self.ipa.linear_b(z)
         outputs = []
         for _ in range(self.no_blocks):
-            s = s + self.ipa(s, z, rigids, mask)
+            s = s + self.ipa(s, z, rigids, mask, pair_bias=pair_bias)
             s = self.layer_norm_ipa(s)
             s = self.transition(s)
 

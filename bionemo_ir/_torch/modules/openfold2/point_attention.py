@@ -22,6 +22,7 @@ from bionemo_ir._torch.layers.linear import Linear
 from bionemo_ir._torch.modules.openfold2.utils.geometry.rigid_matrix_vector import Rigid3Array
 from bionemo_ir._torch.modules.openfold2.utils.rigid_utils import Rigid
 from bionemo_ir._torch.utils import flatten_final_dims, permute_final_dims
+from bionemo_ir.dsl_kernels.triton.ipa_scores import ipa_scores
 
 
 class PointProjection(nn.Module):
@@ -181,7 +182,14 @@ class InvariantPointAttention(nn.Module):
         self.softmax = nn.Softmax(dim=-1)
         self.softplus = nn.Softplus()
 
-    def forward(self, s: torch.Tensor, z: torch.Tensor, r: Rigid | Rigid3Array, mask: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self,
+        s: torch.Tensor,
+        z: torch.Tensor,
+        r: Rigid | Rigid3Array,
+        mask: torch.Tensor,
+        pair_bias: torch.Tensor | None = None,
+    ) -> torch.Tensor:
         """
         Args:
             s:
@@ -192,6 +200,8 @@ class InvariantPointAttention(nn.Module):
                 [*, N_res] transformation object
             mask:
                 [*, N_res] mask
+            pair_bias:
+                Optional [*, N_res, N_res, H] projection of z, shared across blocks.
         Returns:
             [*, N_res, C_s] single representation update
         """
@@ -243,41 +253,57 @@ class InvariantPointAttention(nn.Module):
         # Compute attention scores
         ##########################
         # [*, N_res, N_res, H]
-        b = self.linear_b(z)
+        b = self.linear_b(z) if pair_bias is None else pair_bias
 
         a = torch.matmul(
             permute_final_dims(q, (1, 0, 2)),  # [*, H, N_res, C_hidden]
             permute_final_dims(k, (1, 2, 0)),  # [*, H, C_hidden, N_res]
         )
 
-        a *= math.sqrt(1.0 / (3 * self.c_hidden))
-        a += math.sqrt(1.0 / 3) * permute_final_dims(b, (2, 0, 1))
+        use_fused_scores = (
+            s.is_cuda
+            and s.dtype == torch.float32
+            and 0 < s.shape[-2] <= 2048
+            and self.no_qk_points in (4, 8)
+            and not torch.is_grad_enabled()
+            and not torch.compiler.is_compiling()
+            and torch.cuda.get_device_capability(s.device) in ((10, 0), (10, 3))
+            and all(
+                tensor.dtype == torch.float32 and tensor.device == s.device and not tensor.is_neg()
+                for tensor in (a, b, q_pts, k_pts, mask, self.head_weights)
+            )
+        )
+        if use_fused_scores:
+            point_weights = self.softplus(self.head_weights) * math.sqrt(1.0 / (3 * (self.no_qk_points * 9.0 / 2)))
+            a = ipa_scores(a, b, q_pts, k_pts, point_weights, mask, self.c_hidden, self.inf)
+        else:
+            a *= math.sqrt(1.0 / (3 * self.c_hidden))
+            a += math.sqrt(1.0 / 3) * permute_final_dims(b, (2, 0, 1))
 
-        # [*, N_res, N_res, H, P_q, 3]
-        pt_att = q_pts.unsqueeze(-4) - k_pts.unsqueeze(-5)
+            # [*, N_res, N_res, H, P_q, 3]
+            pt_att = q_pts.unsqueeze(-4) - k_pts.unsqueeze(-5)
 
-        pt_att = pt_att**2
+            pt_att = pt_att**2
 
-        pt_att = sum(torch.unbind(pt_att, dim=-1))
+            pt_att = sum(torch.unbind(pt_att, dim=-1))
 
-        head_weights = self.softplus(self.head_weights).view(*((1,) * len(pt_att.shape[:-2]) + (-1, 1)))
-        head_weights = head_weights * math.sqrt(1.0 / (3 * (self.no_qk_points * 9.0 / 2)))
+            head_weights = self.softplus(self.head_weights).view(*((1,) * len(pt_att.shape[:-2]) + (-1, 1)))
+            head_weights = head_weights * math.sqrt(1.0 / (3 * (self.no_qk_points * 9.0 / 2)))
 
-        pt_att *= head_weights
+            pt_att *= head_weights
 
-        # [*, N_res, N_res, H]
-        pt_att = torch.sum(pt_att, dim=-1) * (-0.5)
+            # [*, N_res, N_res, H]
+            pt_att = torch.sum(pt_att, dim=-1) * (-0.5)
 
-        # [*, N_res, N_res]
-        square_mask = mask.unsqueeze(-1) * mask.unsqueeze(-2)
-        square_mask = self.inf * (square_mask - 1)
+            # [*, N_res, N_res]
+            square_mask = mask.unsqueeze(-1) * mask.unsqueeze(-2)
+            square_mask = self.inf * (square_mask - 1)
 
-        # [*, H, N_res, N_res]
-        pt_att = permute_final_dims(pt_att, (2, 0, 1))
-        a = a + pt_att
-        a = a + square_mask.unsqueeze(-3)
-        a = self.softmax(a)
-
+            # [*, H, N_res, N_res]
+            pt_att = permute_final_dims(pt_att, (2, 0, 1))
+            a = a + pt_att
+            a = a + square_mask.unsqueeze(-3)
+            a = self.softmax(a)
         ################
         # Compute output
         ################

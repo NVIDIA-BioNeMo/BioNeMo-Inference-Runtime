@@ -42,15 +42,21 @@ Usage::
 
 from __future__ import annotations
 
+import atexit
 import hashlib
 import json
 import logging
 import os
+import select
 import subprocess
 import sys
 import tempfile
 import textwrap
-from collections.abc import Sequence
+import threading
+import time
+from collections import deque
+from collections.abc import Callable, Iterator, Sequence
+from contextlib import contextmanager, suppress
 from pathlib import Path
 from typing import Any
 
@@ -228,47 +234,634 @@ def _triton_cache_was_cold() -> bool:
 
 
 _WARM_TIMEOUT = 120
-# A waiter outlasts one peer's warm subprocess.
+# A waiter outlasts one peer's compile; a worker or one-shot process holds the lock for one.
 _WARM_LOCK_TIMEOUT = _WARM_TIMEOUT + 60
 
-_SUBPROCESS_SCRIPT = textwrap.dedent("""\
-import json, os, sys
+_WARM_SCRIPT = textwrap.dedent("""\
+import functools, json, os, sys
 
-with open(sys.argv[1]) as _f:
-    spec = json.load(_f)
+@functools.cache
+def compile_only_driver():
+    # Warmup compiles and returns before any launch, so this process needs no
+    # device, stream or CUDA context. It compiles for the target the parent
+    # names and never initializes CUDA, which would contend with the parent.
+    from triton.backends.nvidia.driver import CudaDriver
+    from triton.runtime import driver
 
-# Match the parent process's cache before importing Triton.
-os.environ["TRITON_CACHE_DIR"] = spec["triton_cache_dir"]
+    cuda = CudaDriver()
+    cuda.get_current_stream = lambda device=None: 0
+    driver.set_active(cuda)
+    return cuda
 
-import importlib, torch
+def warm(spec):
+    # Match the parent process's cache before importing Triton.
+    os.environ["TRITON_CACHE_DIR"] = spec["triton_cache_dir"]
+    import importlib, torch
+    from triton.backends.compiler import GPUTarget
 
-mod = importlib.import_module(spec["module"])
-jit_fn = getattr(mod, spec["fn_name"])
-grid = tuple(spec["grid"])
-ckw = spec["constexpr_kwargs"]
+    cuda = compile_only_driver()
+    if spec["target"] is not None:
+        target = GPUTarget(**spec["target"])
+        cuda.get_current_target = lambda: target
+        # Triton keys its per-device caches, target included, by this id.
+        cuda.get_current_device = lambda: target.arch
 
-for variant in spec["variants"]:
-    args = []
-    for a in variant:
-        if a["type"] == "tensor":
-            args.append(torch.empty(a["shape"], dtype=getattr(torch, a["dtype"]), device="cuda"))
-        else:
-            args.append(a["value"])
-    jit_fn.warmup(*args, grid=grid, **ckw)
+    mod = importlib.import_module(spec["module"])
+    jit_fn = getattr(mod, spec["fn_name"])
+    grid = tuple(spec["grid"])
+    ckw = spec["constexpr_kwargs"]
+
+    for variant in spec["variants"]:
+        args = []
+        for a in variant:
+            if a["type"] == "tensor":
+                # Warmup takes a dtype as an aligned placeholder tensor, as the parent's allocations are.
+                args.append(getattr(torch, a["dtype"]))
+            else:
+                args.append(a["value"])
+        jit_fn.warmup(*args, grid=grid, **ckw)
 """)
 
+_SUBPROCESS_SCRIPT = _WARM_SCRIPT + textwrap.dedent("""\
+with open(sys.argv[1]) as f:
+    warm(json.load(f))
+""")
 
-def _compile_in_subprocess(
+# A worker outlives its last configuration only while its parent lives. Stdin EOF
+# ends it between configurations; on Linux the kernel also kills it mid-compile
+# when the parent thread that started it exits. ``argv[1]`` is the parent's pid.
+_PARENT_DEATH_SCRIPT = textwrap.dedent("""\
+import os, sys
+
+if sys.platform.startswith("linux"):
+    import ctypes, signal
+
+    ctypes.CDLL(None).prctl(1, signal.SIGKILL)  # PR_SET_PDEATHSIG
+    if os.getppid() != int(sys.argv[1]):
+        os._exit(0)
+""")
+
+_WORKER_SCRIPT = (
+    _PARENT_DEATH_SCRIPT
+    + _WARM_SCRIPT
+    + textwrap.dedent("""\
+import traceback
+
+# Reply on a private copy of fd 1 and point fd 1 at stderr: native compiler
+# code and the tools it starts write to fd 1, and must not reach the parent.
+reply = os.fdopen(os.dup(1), "wb", buffering=0)
+os.dup2(2, 1)
+
+# Load Triton's driver while the parent constructs the model.
+compile_only_driver()
+
+for line in sys.stdin:
+    try:
+        warm(json.loads(line))
+    except Exception:
+        traceback.print_exc(file=sys.stderr)
+        reply.write(b"failed\\n")
+    else:
+        reply.write(b"ok\\n")
+# Every reply follows a complete cache write, so finalization has nothing to save.
+os._exit(0)
+""")
+)
+
+# Each worker is a full interpreter with Torch and Triton. Cold first output, OpenFold3/Protenix, 1/4/27 workers:
+# B200 23.4/19.0/21.9 and 26.4/22.9/25.0 s, B300 43.6/39.5/43.2 and 44.8/39.1/44.0 s; 2 or 8 land within noise of 4.
+_MAX_WORKERS = 4
+
+
+def _session_worker_limit() -> int:
+    """Workers one construction may run, leaving a CPU for the constructor."""
+    try:
+        cpus = len(os.sched_getaffinity(0))
+    except (AttributeError, OSError):
+        cpus = os.cpu_count() or 1
+    return max(1, min(_MAX_WORKERS, cpus - 1))
+
+
+# Outcomes of one worker request. A worker that replies "failed" keeps serving;
+# a timed-out or broken one stops. A failed or broken compile retries once in a
+# one-shot process for its diagnostics; a timed-out one would only time out again.
+_WARMED, _FAILED, _TIMED_OUT, _BROKEN = "warmed", "failed", "timed out", "broken"
+
+
+def _request_warm(process: subprocess.Popen[bytes], spec: dict) -> str:
+    """Send one configuration to a worker and wait for its bounded reply; return the outcome."""
+    name = f"{spec.get('module')}.{spec.get('fn_name')}"
+    try:
+        if process.stdin is None or process.stdout is None:
+            raise RuntimeError("its pipes are unavailable")
+        process.stdin.write(json.dumps(spec).encode() + b"\n")
+        process.stdin.flush()
+        deadline = time.monotonic() + _WARM_TIMEOUT
+        response = b""
+        while b"\n" not in response:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0 or not select.select([process.stdout], [], [], remaining)[0]:
+                logger.warning("Triton compiler worker timed out after %s s on %s; stopping it", _WARM_TIMEOUT, name)
+                return _TIMED_OUT
+            chunk = os.read(process.stdout.fileno(), 32)
+            if not chunk or len(response) + len(chunk) > 32:
+                raise RuntimeError("its reply is unavailable")
+            response += chunk
+    except (OSError, ValueError, RuntimeError) as exc:
+        logger.warning("Triton compiler worker stopped on %s; using a one-shot subprocess: %s", name, exc)
+        return _BROKEN
+    if response == b"ok\n":
+        return _WARMED
+    if response == b"failed\n":
+        logger.warning("Triton compiler worker failed to compile %s; retrying in a one-shot subprocess", name)
+        return _FAILED
+    logger.warning("Triton compiler worker sent an unreadable reply on %s: %r; stopping it", name, response)
+    return _BROKEN
+
+
+def _stop_worker(process: subprocess.Popen[bytes], timeout: float = 5) -> None:
+    """Wait for a worker whose stdin is closed, killing it after ``timeout``."""
+    try:
+        process.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait(timeout=5)
+    finally:
+        if process.stdout is not None:
+            process.stdout.close()
+
+
+class _CompileJob:
+    """One cold configuration: compiled by a session worker, loaded by the constructor on first use."""
+
+    def __init__(
+        self,
+        cache: TritonKernelCache,
+        jit_fn: JITFunction,
+        make_dummy_args: Callable[[torch.dtype], tuple],
+        dummy_args_by_dtype: dict[torch.dtype, tuple],
+        grid: tuple[int, ...],
+        max_registers: int | None,
+        constexpr_kwargs: dict,
+    ) -> None:
+        self.cache = cache
+        self.jit_fn = jit_fn
+        self.make_dummy_args = make_dummy_args
+        self.dummy_args_by_dtype = dummy_args_by_dtype
+        self.grid = grid
+        self.max_registers = max_registers
+        self.constexpr_kwargs = constexpr_kwargs
+        self.spec: dict = {}
+        self.marker = ""
+        self.device = torch.cuda.current_device()
+        self.stream = torch.cuda.current_stream()
+        self.kernels = {dtype: _PendingKernel(self) for dtype in dummy_args_by_dtype}
+        self.pool: _CompilerPool | None = None
+        self.started = False
+        self.outcome = _FAILED
+        self.done = threading.Event()
+        self._load_lock = threading.RLock()
+        self._loaded = False
+
+    def finish(self, outcome: str) -> None:
+        self.outcome = outcome
+        self.done.set()
+
+    def load(self) -> None:
+        """Wait for the worker, then load each dtype from the disk cache in this process."""
+        with self._load_lock:
+            if self._loaded:
+                return
+            pool = self.pool
+            if pool is not None:
+                pool.wait(self)
+            if self.outcome in (_FAILED, _BROKEN):
+                # The worker could not warm it: take the path a constructor outside a session takes.
+                _compile_in_subprocess(self.jit_fn, self.dummy_args_by_dtype, self.grid, self.constexpr_kwargs)
+            # A timed-out configuration compiles below in this process, as one whose one-shot compile times out does.
+            with torch.cuda.device(self.device), torch.cuda.stream(self.stream):
+                loaded = {
+                    dtype: self.cache.compile(self.jit_fn, dummy_args, self.grid, self.constexpr_kwargs, self.stream)
+                    for dtype, dummy_args in self.dummy_args_by_dtype.items()
+                }
+                if self.max_registers is not None:
+                    self.cache._cap_registers(
+                        loaded, self.jit_fn, self.make_dummy_args, self.grid, self.max_registers, self.constexpr_kwargs
+                    )
+            for dtype, pending in self.kernels.items():
+                pending._adopt(loaded[dtype])
+            self._loaded = True
+            self.dummy_args_by_dtype = {}
+
+
+def _loaded(kernel: CachedKernel) -> CachedKernel:
+    """Return ``kernel`` after loading it if a session worker still holds its compile."""
+    if isinstance(kernel, _PendingKernel):
+        kernel._wait()
+    return kernel
+
+
+class _PendingKernel(CachedKernel):
+    """A ``CachedKernel`` whose cold compile is still in a session worker.
+
+    The first use loads it and turns it into a plain ``CachedKernel``, so a
+    loaded kernel costs launches nothing; the session loads any left unused
+    before the constructor returns. ``_kernel`` holds the job until then.
+    """
+
+    __slots__ = ()
+
+    def __init__(self, job: _CompileJob) -> None:
+        self._kernel = job
+        self._stream = job.stream
+        self._driver = None
+
+    def _adopt(self, loaded: CachedKernel) -> None:
+        # Replace the job last: a thread that finds a loaded kernel in _kernel before the class switch below
+        # also finds its stream and driver.
+        self._stream, self._driver = loaded._stream, loaded._driver
+        self._kernel = loaded._kernel
+        # Same slots, so the loaded object is exactly a CachedKernel from here on.
+        self.__class__ = CachedKernel
+
+    def _wait(self) -> None:
+        """Load the kernel, unless another thread's ``_adopt`` has already replaced the job."""
+        job = self._kernel  # read once: _adopt replaces it before it switches the class
+        if isinstance(job, _CompileJob):
+            job.load()
+
+    @property
+    def driver(self) -> DriverLauncher | None:
+        """``DriverLauncher`` for the cuda.bindings fast path, or None."""
+        self._wait()
+        return self._driver
+
+    @property
+    def compiled(self) -> Any:
+        """The underlying Triton ``CompiledKernel``."""
+        self._wait()
+        return self._kernel
+
+    def launch(self, grid: tuple[int, ...], *args: Any) -> None:
+        """Load the kernel, then launch it as a ``CachedKernel``."""
+        self._wait()
+        CachedKernel.launch(self, grid, *args)
+
+
+class _CompilerPool:
+    """Isolated compiler processes shared by one thread's model construction.
+
+    A constructor queues each cold configuration and continues; up to
+    ``limit`` workers compile the queue in parallel, each holding the shared
+    marker lock of the configuration it compiles. A configuration's kernels
+    load when first used, or when the session closes.
+
+    A worker that times out or breaks its reply protocol is stopped and not
+    replaced, so a session starts at most ``limit`` workers; once none is
+    left, the queue falls back to one-shot compiles. With ``idle_timeout``, a
+    worker that waits that many seconds for work stops, and the next
+    configuration starts a new one.
+    """
+
+    def __init__(self, limit: int, idle_timeout: float | None = None) -> None:
+        self._limit = limit
+        self._idle_timeout = idle_timeout
+        self._cond = threading.Condition()
+        self._queue: deque[_CompileJob] = deque()
+        self._jobs: dict[str, _CompileJob] = {}
+        self._threads: list[threading.Thread] = []
+        self._processes: list[subprocess.Popen[bytes]] = []
+        self._idle = 0
+        self._live = 0
+        self._failed = False
+        self._closed = False
+        # Set when a failed constructor stops the pool: workers give up waiting for a marker lock.
+        self._cancelled = threading.Event()
+
+    def submit(self, job: _CompileJob) -> _CompileJob | None:
+        """Queue ``job``, or return the queued job for the same marker; else ``None`` after a failure."""
+        with self._cond:
+            # Even after a failure: the queued job already took its fallback, which a timed-out compile
+            # would otherwise repeat in a one-shot process.
+            queued = self._jobs.get(job.marker)
+            if queued is not None:
+                return queued
+            if self._failed or self._closed:
+                return None
+            job.pool = self
+            self._jobs[job.marker] = job
+            self._queue.append(job)
+            if self._idle == 0:
+                self._spawn()
+            self._cond.notify()
+        return job
+
+    def forget(self, job: _CompileJob) -> None:
+        """Drop a loaded ``job``: its marker now answers later requests for the same configuration."""
+        with self._cond:
+            if self._jobs.get(job.marker) is job:
+                del self._jobs[job.marker]
+
+    def start(self, count: int | None = None) -> None:
+        """Start ``count`` workers, all by default, so their startup overlaps other work."""
+        with self._cond:
+            while (count is None or len(self._threads) < count) and self._spawn():
+                pass
+
+    def _spawn(self) -> bool:
+        # Hold self._cond.
+        if len(self._threads) >= self._limit:
+            return False
+        thread = threading.Thread(target=self._serve, name="bioir-triton-compiler", daemon=True)
+        try:
+            thread.start()
+        except RuntimeError as exc:
+            # The host has no thread to spare: keep the workers running, and fall back without any.
+            logger.warning("Triton compiler worker unavailable; using one-shot subprocess: %s", exc)
+            self._limit = len(self._threads)
+            if not self._threads:
+                self._failed = True
+                self._fail_queue()
+            return False
+        # The thread waits for self._cond, which the caller holds, before it can retire.
+        self._threads.append(thread)
+        self._live += 1
+        return True
+
+    def wait(self, job: _CompileJob) -> None:
+        """Move ``job`` ahead of the queue if no worker took it yet, then wait for it."""
+        with self._cond:
+            if not job.started and job in self._queue:
+                self._queue.remove(job)
+                self._queue.appendleft(job)
+        job.done.wait()
+
+    def _fail_queue(self) -> None:
+        # Hold self._cond. Queued configurations fall back when loaded.
+        while self._queue:
+            self._queue.popleft().finish(_FAILED)
+
+    def _retire(self) -> None:
+        # Hold self._cond. The last worker to stop leaves the queue to one-shot compiles.
+        self._live -= 1
+        if self._live == 0:
+            self._failed = True
+            self._fail_queue()
+            self._cond.notify_all()
+
+    def _serve(self) -> None:
+        process = None
+        expired = killed = False
+        try:
+            env = {**os.environ, "TRITON_CACHE_DIR": TRITON_CACHE_DIR}
+            # No stderr pipe: compiler diagnostics cannot fill it and block a
+            # response. The one-shot fallback keeps them for failures.
+            process = subprocess.Popen(
+                [sys.executable, "-u", "-c", _WORKER_SCRIPT, str(os.getpid())],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                env=env,
+            )
+            with self._cond:
+                self._processes.append(process)
+            served = False
+            ready = False
+            while True:
+                with self._cond:
+                    if not ready:
+                        self._idle += 1
+                    ready = False
+                    while not self._queue and not self._closed and not self._failed:
+                        if not self._cond.wait(self._idle_timeout) and not self._queue:
+                            expired = True
+                            break
+                    self._idle -= 1
+                    if expired:
+                        # Free the slot, so the next configuration spawns a worker; close() still reaps the process.
+                        self._threads.remove(threading.current_thread())
+                        self._live -= 1
+                        return
+                    if not self._queue:
+                        if not served:
+                            # It wrote nothing: stop it without waiting for its startup.
+                            process.kill()
+                        return
+                    job = self._queue.popleft()
+                    job.started = True
+                served = True
+                outcome = _BROKEN
+                try:
+                    outcome = self._warm(process, job)
+                finally:
+                    if outcome not in (_TIMED_OUT, _BROKEN):
+                        # Count it idle before its caller wakes, so the caller's next configuration finds it.
+                        with self._cond:
+                            self._idle += 1
+                        ready = True
+                    job.finish(outcome)
+                if outcome in (_TIMED_OUT, _BROKEN):
+                    # Stop it now: a hung compile would otherwise run until the session closes.
+                    process.kill()
+                    killed = True
+                    with self._cond:
+                        self._retire()
+                    return
+        except Exception as exc:
+            # Retire on any error, so queued configurations fall back instead of waiting on a dead thread.
+            logger.warning("Triton compiler worker unavailable; using one-shot subprocess: %s", exc)
+            if process is not None:
+                with suppress(OSError):
+                    process.kill()
+                killed = True
+            with self._cond:
+                self._retire()
+        finally:
+            if process is not None and process.stdin is not None:
+                with suppress(OSError):
+                    process.stdin.close()
+            if expired or killed:
+                # Reap it now: a pool that lives as long as the process would keep a zombie and its pipe.
+                _stop_worker(process)
+            if expired:
+                with self._cond:
+                    self._processes.remove(process)
+
+    def _warm(self, process: subprocess.Popen[bytes], job: _CompileJob) -> str:
+        try:
+            os.makedirs(os.path.dirname(job.marker), exist_ok=True)
+            lock = FileLock(
+                Path(f"{job.marker}.lock"), exclusive=True, timeout=_WARM_LOCK_TIMEOUT, cancel=self._cancelled
+            )
+            lock.__enter__()
+        except (OSError, RuntimeError):
+            if self._cancelled.is_set():
+                # close() killed the worker; a kernel kept past the failure loads through the one-shot path.
+                return _BROKEN
+            # No shared marker: warm this process's own copy.
+            return _request_warm(process, job.spec)
+        try:
+            if os.path.exists(job.marker):
+                return _WARMED
+            outcome = _request_warm(process, job.spec)
+            if outcome == _WARMED:
+                with suppress(OSError):
+                    Path(job.marker).touch()
+            return outcome
+        finally:
+            lock.__exit__(None, None, None)
+
+    def close(self, load: bool) -> None:
+        """Load every queued configuration when ``load``, then stop the workers."""
+        try:
+            if load:
+                for job in list(self._jobs.values()):
+                    job.load()
+        finally:
+            with self._cond:
+                self._closed = True
+                self._fail_queue()
+                self._cond.notify_all()
+                processes = list(self._processes)
+                threads = list(self._threads)
+            if not load:
+                # A failed constructor needs no compile in flight; Triton writes cache entries atomically.
+                self._cancelled.set()
+                for process in processes:
+                    with suppress(OSError):
+                        process.kill()
+            for thread in threads:
+                thread.join()
+            # A worker that was still starting has joined the list by now.
+            with self._cond:
+                processes = list(self._processes)
+            for process in processes:
+                _stop_worker(process)
+
+
+_warm_session = threading.local()
+
+# A worker idle this long after its last request-time compile stops; the next one starts another. An idle worker holds
+# ~600 MiB RSS and 28 threads; a restart slows the next new-shape request (OpenFold3 8FZA 30 s vs 150 s after the first
+# request: B200 3.2 vs 5.1 s, B300 4.7 vs 7.2 s).
+_REQUEST_IDLE_TIMEOUT = 120
+_request_pool_lock = threading.Lock()
+_request_pool_instance: _CompilerPool | None = None
+
+
+def _request_pool() -> _CompilerPool:
+    """The process's compilers for cold configurations first compiled outside model construction.
+
+    Each caller waits for its own configuration; a worker serves one after
+    another, so a single thread pays the interpreter startup once rather than
+    per configuration. Concurrent callers start more workers, up to the session
+    limit. Like session workers, a worker keeps the environment it started with.
+    """
+    global _request_pool_instance
+    with _request_pool_lock:
+        if _request_pool_instance is None:
+            _request_pool_instance = _CompilerPool(_session_worker_limit(), idle_timeout=_REQUEST_IDLE_TIMEOUT)
+        return _request_pool_instance
+
+
+@atexit.register
+def _close_request_pool() -> None:
+    pool = _request_pool_instance
+    if pool is not None:
+        pool.close(load=False)
+
+
+def _forget_request_pool() -> None:
+    """Give a forked child no compiler: it has none of the parent's threads, and starts its own on demand."""
+    global _request_pool_instance, _request_pool_lock
+    pool, _request_pool_instance = _request_pool_instance, None
+    _request_pool_lock = threading.Lock()
+    if pool is not None:
+        # Point the inherited pipe ends at /dev/null, so a parent's worker sees EOF when the parent closes its
+        # stdin. Rebinding the descriptors takes none of the pipes' locks, which a parent thread may have held.
+        devnull = os.open(os.devnull, os.O_RDWR)
+        try:
+            for process in pool._processes:
+                for pipe in (process.stdin, process.stdout):
+                    if pipe is not None:
+                        with suppress(OSError, ValueError):
+                            os.dup2(devnull, pipe.fileno())
+        finally:
+            os.close(devnull)
+
+
+os.register_at_fork(after_in_child=_forget_request_pool)
+
+
+def _start_triton_driver() -> None:
+    """Start Triton's CUDA driver in this process, which a cold cache makes it build.
+
+    The build lands in the shared cache, so workers starting meanwhile load it
+    instead of each building their own. This process needs the driver for its
+    first kernel load anyway.
+    """
+    try:
+        from triton.runtime import driver
+
+        driver.active.get_current_target()
+    except (ImportError, OSError, RuntimeError, subprocess.SubprocessError) as exc:
+        logger.debug("Triton driver unavailable before the first kernel load: %s", exc)
+
+
+@contextmanager
+def triton_warmup_session() -> Iterator[None]:
+    """Compile cold Triton configurations in parallel isolated workers during model construction.
+
+    Nested sessions share their thread's workers. Each configuration's kernels
+    load in this process on first use, and the outermost session loads the rest
+    and stops its workers before it exits. A warm disk cache starts no worker.
+    After a construction that compiled cold configurations, one worker stays up
+    for those the first requests compile; it stops after
+    ``_REQUEST_IDLE_TIMEOUT`` seconds idle.
+    """
+    if getattr(_warm_session, "pool", None) is not None:
+        yield
+        return
+    pool = _CompilerPool(_session_worker_limit())
+    _warm_session.pool = pool
+    loaded = False
+    compiled = False
+    try:
+        if _triton_cache_was_cold():
+            pool.start()
+            _start_triton_driver()
+        yield
+        loaded = True
+        compiled = bool(pool._jobs)
+    finally:
+        try:
+            # Loading may recompile under a register cap, through the same workers.
+            pool.close(load=loaded)
+        finally:
+            del _warm_session.pool
+    if compiled:
+        # Start it now, so its startup overlaps weight loading rather than the first request.
+        _request_pool().start(1)
+
+
+def _triton_target() -> dict | None:
+    """The GPU target Triton compiles for on this device, or ``None`` when it has no CUDA driver."""
+    try:
+        from triton.runtime import driver
+
+        target = driver.active.get_current_target()
+    except (ImportError, OSError, RuntimeError, subprocess.SubprocessError):
+        return None
+    return {"backend": target.backend, "arch": target.arch, "warp_size": target.warp_size}
+
+
+def _warm_spec(
     jit_fn: JITFunction,
     dummy_args_by_dtype: dict[torch.dtype, tuple],
     grid: tuple[int, ...],
     constexpr_kwargs: dict,
-) -> None:
-    """Compile one kernel config (all dtypes) in a subprocess.
-
-    A marker in the Triton cache records each warmed config, so concurrent
-    processes sharing the cache warm it once.
-    """
+) -> tuple[dict, str]:
+    """Describe one kernel config (all dtypes) for a compiler process, with its warm marker path."""
     variants = []
     for dummy_args in dummy_args_by_dtype.values():
         variant = []
@@ -294,17 +887,32 @@ def _compile_in_subprocess(
 
     spec = {
         "triton_cache_dir": TRITON_CACHE_DIR,
+        "target": _triton_target(),
         "module": jit_fn.fn.__module__,
         "fn_name": jit_fn.fn.__name__,
         "grid": list(grid),
         "constexpr_kwargs": ckw_ser,
         "variants": variants,
     }
-
     warm_dir = os.path.join(TRITON_CACHE_DIR, "bioir_warm")
     marker = os.path.join(warm_dir, hashlib.sha256(json.dumps(spec, sort_keys=True).encode()).hexdigest())
+    return spec, marker
+
+
+def _compile_in_subprocess(
+    jit_fn: JITFunction,
+    dummy_args_by_dtype: dict[torch.dtype, tuple],
+    grid: tuple[int, ...],
+    constexpr_kwargs: dict,
+) -> None:
+    """Compile one kernel config (all dtypes) in a subprocess.
+
+    A marker in the Triton cache records each warmed config, so concurrent
+    processes sharing the cache warm it once.
+    """
+    spec, marker = _warm_spec(jit_fn, dummy_args_by_dtype, grid, constexpr_kwargs)
     try:
-        os.makedirs(warm_dir, exist_ok=True)
+        os.makedirs(os.path.dirname(marker), exist_ok=True)
         with FileLock(Path(f"{marker}.lock"), exclusive=True, timeout=_WARM_LOCK_TIMEOUT):
             if not os.path.exists(marker):
                 _run_warm_subprocess(jit_fn, spec, marker)
@@ -427,17 +1035,24 @@ class TritonKernelCache(KernelCacheBase):
         make_dummy_args,
         *,
         grid: tuple[int, ...] = (0,),
+        max_registers: int | None = None,
         **constexpr_kwargs: Any,
     ) -> dict[torch.dtype, CachedKernel]:
         """Compile one kernel for each dtype.
+
+        During a :func:`triton_warmup_session` on a cold cache, the kernels
+        compile in the session's workers and each loads on first use, so the
+        constructor goes on while they compile.
 
         Args:
             jit_fn: A ``@triton.jit`` decorated function.
             dtypes: Sequence of dtypes to compile for.
             make_dummy_args: Callable returning positional arguments by dtype.
             grid: Compilation grid. An empty grid, the default, compiles and loads
-                the kernel without launching it, here and in the cold-cache warmup
-                subprocess, which rebuilds the tensor dummies with ``torch.empty``.
+                the kernel without launching it, here and in the cold-cache
+                compiler process, which passes each tensor dummy's dtype.
+            max_registers: Registers per thread a kernel may use. A dtype whose
+                kernel uses more is recompiled with ``maxnreg`` set to it.
             **constexpr_kwargs: Constexpr keyword arguments.
 
         Returns:
@@ -447,14 +1062,57 @@ class TritonKernelCache(KernelCacheBase):
         dummy_args_by_dtype = {dtype: make_dummy_args(dtype) for dtype in unique_dtypes}
 
         if _triton_cache_was_cold():
-            _compile_in_subprocess(jit_fn, dummy_args_by_dtype, grid, constexpr_kwargs)
+            session_pool = getattr(_warm_session, "pool", None)
+            pool = session_pool if session_pool is not None else _request_pool()
+            spec, marker = _warm_spec(jit_fn, dummy_args_by_dtype, grid, constexpr_kwargs)
+            if not os.path.exists(marker):
+                job = _CompileJob(
+                    self, jit_fn, make_dummy_args, dummy_args_by_dtype, grid, max_registers, constexpr_kwargs
+                )
+                job.spec, job.marker = spec, marker
+                queued = pool.submit(job)
+                if queued is job:
+                    if pool is not session_pool:
+                        # Outside a session the caller needs the kernels now.
+                        try:
+                            job.load()
+                        finally:
+                            pool.forget(job)
+                    return dict(job.kernels)
+                if queued is not None:
+                    # The same configuration is already queued: share its compile, or its fallback, and load
+                    # separately. A one-shot compile would only repeat a failure or a timeout.
+                    queued.load()
+                else:
+                    _compile_in_subprocess(jit_fn, dummy_args_by_dtype, grid, constexpr_kwargs)
+            else:
+                _compile_in_subprocess(jit_fn, dummy_args_by_dtype, grid, constexpr_kwargs)
 
         stream = torch.cuda.current_stream()
         kernels = {}
         for dt in unique_dtypes:
             dummy_args = dummy_args_by_dtype[dt]
             kernels[dt] = self.compile(jit_fn, dummy_args, grid, constexpr_kwargs, stream=stream)
+        if max_registers is not None:
+            self._cap_registers(kernels, jit_fn, make_dummy_args, grid, max_registers, constexpr_kwargs)
         return kernels
+
+    def _cap_registers(
+        self,
+        kernels: dict[torch.dtype, CachedKernel],
+        jit_fn: JITFunction,
+        make_dummy_args: Callable[[torch.dtype], tuple],
+        grid: tuple[int, ...],
+        max_registers: int,
+        constexpr_kwargs: dict,
+    ) -> None:
+        """Replace each loaded kernel that uses more than ``max_registers`` with a ``maxnreg`` build."""
+        heavy = [dtype for dtype, kernel in kernels.items() if getattr(kernel.compiled, "n_regs", 0) > max_registers]
+        if heavy:
+            capped = self.compile_for_dtypes(
+                jit_fn, heavy, make_dummy_args, grid=grid, maxnreg=max_registers, **constexpr_kwargs
+            )
+            kernels.update({dtype: _loaded(kernel) for dtype, kernel in capped.items()})
 
     def save_to_cache(self, key: tuple, artifact: Any) -> None:
         """No-op — Triton manages its own disk cache."""

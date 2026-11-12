@@ -188,6 +188,12 @@ def warm(*args, **kwargs):
     original(*args, **kwargs)
     warmed.update(Path(cache.TRITON_CACHE_DIR).rglob('*.cubin'))
 cache._compile_in_subprocess = warm
+request_warm = cache._request_warm
+def worker_warm(*args, **kwargs):
+    outcome = request_warm(*args, **kwargs)
+    warmed.update(Path(cache.TRITON_CACHE_DIR).rglob('*.cubin'))
+    return outcome
+cache._request_warm = worker_warm
 _ChurnKernel()
 assert warmed
 assert set(Path(cache.TRITON_CACHE_DIR).rglob('*.cubin')) == warmed

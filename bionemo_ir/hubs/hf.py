@@ -18,18 +18,28 @@ from collections import namedtuple
 from pathlib import Path
 from typing import Any
 
-import torch
-from huggingface_hub import hf_hub_download
-
 from bionemo_ir.hubs.integrity import HF_REVISIONS, verify_checkpoint_sha256
 from bionemo_ir.hubs.local import (
     BOLTZ_MODEL_NAMES,
     LOCAL_CHECKPOINTS,
     _load_boltz_state_dict,
     _load_of3_state_dict,
+    _load_to_cpu,
 )
 from bionemo_ir.hubs.support_matrix import FoldingSupportMatrix as SupMat
 from bionemo_ir.logger import logger
+
+
+def hf_hub_download(*args: Any, **kwargs: Any) -> str:
+    """``huggingface_hub.hf_hub_download``, imported on first download.
+
+    Importing the hub client takes about 0.3 s, which every process paid,
+    though most load staged checkpoints and never reach the hub.
+    """
+    from huggingface_hub import hf_hub_download as download
+
+    return download(*args, **kwargs)
+
 
 HFCheckpoint = namedtuple("HFCheckpoint", ["repo_id", "filename", "weights_only", "state_dict_key"])
 
@@ -149,10 +159,7 @@ def load_state_dict_from_hf(
     elif name == SupMat.OpenFold3:
         state_dict = _load_of3_state_dict(cached_file)
     else:
-        try:
-            state_dict = torch.load(cached_file, weights_only=weights_only)
-        except TypeError:
-            state_dict = torch.load(cached_file, weights_only=weights_only, map_location="cpu")
+        state_dict = _load_to_cpu(cached_file, weights_only=weights_only)
     if state_dict_key is not None:
         state_dict = state_dict[state_dict_key]
     return state_dict

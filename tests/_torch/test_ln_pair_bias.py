@@ -125,3 +125,21 @@ def test_no_kernel_outside_its_envelope(case) -> None:
     ln_bias = torch.zeros(channels, device="cuda", dtype=dtype)
     weight = torch.zeros(17 if case == "17-heads" else 8, channels, device="cuda", dtype=dtype)
     assert ln_pair_bias(x, ln_weight, ln_bias, 1e-5, weight) is None
+
+
+def test_constructor_queues_both_variants_before_reading_registers(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Reading a kernel's registers waits for its cold compile, so both variants must be queued first."""
+    from bionemo_ir.dsl_kernels.triton import ln_pair_bias as module
+
+    events: list[str] = []
+    compile_for_dtypes, resident_programs = LNPairBias.compile_for_dtypes, module._resident_programs
+    monkeypatch.setattr(LNPairBias, "_global_cache", {})
+    monkeypatch.setattr(
+        LNPairBias,
+        "compile_for_dtypes",
+        lambda self, *args, **kwargs: events.append("queue") or compile_for_dtypes(self, *args, **kwargs),
+    )
+    monkeypatch.setattr(module, "_resident_programs", lambda *args: events.append("read") or resident_programs(*args))
+    node = LNPairBias(128, 4, dtype=torch.bfloat16)
+    assert node._aligned_kernel is not None
+    assert events == ["queue", "queue", "read", "read"]

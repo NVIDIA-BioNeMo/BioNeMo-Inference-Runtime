@@ -13,6 +13,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import threading
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from enum import IntEnum
 
@@ -289,6 +292,32 @@ class TriangleAttentionEndingNode(TriangleAttentionNode):
         super().__init__(*args, **kwargs)
 
 
+_deferred_folds = threading.local()
+
+
+@contextmanager
+def defer_kf_folds() -> Iterator[None]:
+    """Fold each TriMul node's KF weights once, when the outermost scope on this thread exits.
+
+    Model construction folds a node when it sets token padding, on placeholder
+    weights, and again after loading them. Inside this scope those folds wait,
+    so each node folds once, from the weights it holds when the scope exits.
+    A fold the forward pass needs still runs at once. After an exception the
+    nodes stay unfolded, so their first forward folds them.
+    """
+    if getattr(_deferred_folds, "nodes", None) is not None:
+        yield
+        return
+    nodes: dict[int, TriangleMultiplicationNode] = {}
+    _deferred_folds.nodes = nodes
+    try:
+        yield
+    finally:
+        del _deferred_folds.nodes
+    for node in nodes.values():
+        node._prepare_kf_weights()
+
+
 def _refold_after_load_state_dict(node: "TriangleMultiplicationNode", *args: object) -> None:
     """Refold the weights ``load_state_dict`` loaded, as ``recursive_calling_load_weights`` does through the node."""
     node.post_load_weights()
@@ -468,7 +497,8 @@ class TriangleMultiplicationNode(nn.Module):
         The node folds whenever it is on the chain and its weights exist: at
         construction, where the weights hold placeholders until
         ``load_weights`` or ``load_state_dict`` fills them in place, and again
-        in :meth:`post_load_weights`. The LayerNorms may still be on the CPU
+        in :meth:`post_load_weights`. Inside :func:`defer_kf_folds`, both wait
+        for the scope to exit. The LayerNorms may still be on the CPU
         then; the fold reads every weight on ``device``. The input fold is
         centred where K1 drops the LayerNorm mean term
         (``TrimulKFK1Op.centred``).
@@ -478,6 +508,12 @@ class TriangleMultiplicationNode(nn.Module):
             self._kf_folds = None
             return
         if device is None:
+            deferred = getattr(_deferred_folds, "nodes", None)
+            if deferred is not None:
+                # defer_kf_folds folds the node once, from its final weights.
+                self._kf_folds = None
+                deferred[id(self)] = self
+                return
             device = self.p_in.weight.device
 
         def on(weight: torch.Tensor | None) -> torch.Tensor | None:

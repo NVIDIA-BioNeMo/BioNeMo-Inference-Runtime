@@ -30,6 +30,7 @@ from bionemo_ir._torch.attention_backend import (
     auto_select_triangle_attention_backend,
     get_attention_backend,
 )
+from bionemo_ir._torch.layers import triangle_nodes
 from bionemo_ir._torch.layers.normalization import replace_with_fused_layernorm
 from bionemo_ir._torch.layers.triangle_nodes import (
     TriangleAttentionNode,
@@ -37,6 +38,7 @@ from bionemo_ir._torch.layers.triangle_nodes import (
     TriangleMultiplicationMetadata,
     TriangleMultiplicationNode,
     TriangleMultiplicationNodeType,
+    defer_kf_folds,
     precompute_trimul_metadata,
     set_trimul_token_padding,
     split_pair_bias_proj,
@@ -701,3 +703,57 @@ def test_split_pair_bias_proj_moves_the_bias_segment() -> None:
         assert split[f"{node}.mha.in_proj"] == segments[:4]
         assert torch.equal(split[f"{node}.pair_bias_proj"][0]["weight"], segments[4]["weight"])
     assert split["blocks.0.msa_att_row.mha.in_proj"] == segments
+
+
+def _fold_tensors(folds: tuple) -> list[torch.Tensor]:
+    tensors = []
+    for fold in folds:
+        for name in sorted(fold.__dataclass_fields__):
+            value = getattr(fold, name)
+            values = value if isinstance(value, tuple) else (value,)
+            tensors += [item for item in values if isinstance(item, torch.Tensor)]
+    return tensors
+
+
+def test_deferred_kf_folds_fold_once_from_the_final_weights(monkeypatch: pytest.MonkeyPatch) -> None:
+    torch.manual_seed(47)
+    reference = _kf_trimul_node()
+    folds = []
+
+    def spy(name: str) -> None:
+        fold = getattr(triangle_nodes, name)
+
+        def counted(*args: object, **kwargs: object) -> object:
+            folds.append(name)
+            return fold(*args, **kwargs)
+
+        monkeypatch.setattr(triangle_nodes, name, counted)
+
+    spy("fold_input_weights")
+    spy("fold_output_weights")
+    with defer_kf_folds():
+        node = TriangleMultiplicationNode(**_KF_NODE).cuda()
+        node.set_token_padding(True)
+        node.load_state_dict(reference.state_dict())
+        assert node._kf_folds is None and folds == []
+    assert sorted(folds) == ["fold_input_weights", "fold_output_weights"]
+    assert node._kf_folds[0].device == node.p_in.weight.device
+    actual, expected = _fold_tensors(node._kf_folds), _fold_tensors(reference._kf_folds)
+    assert len(actual) == len(expected) > 0
+    for a, e in zip(actual, expected, strict=True):
+        assert a.dtype == e.dtype and torch.equal(a, e)
+
+
+def test_deferred_kf_folds_leave_a_failed_construction_to_the_forward() -> None:
+    torch.manual_seed(53)
+    reference = _kf_trimul_node()
+    with pytest.raises(ValueError, match="construction failed"), defer_kf_folds():
+        node = TriangleMultiplicationNode(**_KF_NODE).cuda()
+        node.load_state_dict(reference.state_dict())
+        raise ValueError("construction failed")
+    assert node._kf_folds is None
+    x, pair_mask, metadata = _kf_inputs(128, 128)
+    with torch.inference_mode():
+        actual = node._kf_forward_if_supported(x, pair_mask, metadata, True)
+        expected = reference._kf_forward_if_supported(x, pair_mask, metadata, True)
+    torch.testing.assert_close(actual, expected, atol=0, rtol=0)

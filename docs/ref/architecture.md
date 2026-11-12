@@ -422,6 +422,34 @@ Registered factories: `OpenFold2Factory`, `OpenFold2MultimerFactory`,
 `Boltz1Factory`, `Boltz2Factory`, `Boltz2AffinityFactory`, `OpenFold3Factory`,
 and `ProtenixFactory`.
 
+`OptimizedModuleSetterMixin` scopes isolated Triton compilers to model
+construction. It wraps the constructor of every model class that uses it,
+including subclasses that extend or inherit a constructor, so construction
+through `FoldingEngine` and direct construction behave alike, and every
+registered model class must use the mixin. Code that builds other modules can
+enter `model_construction_scope()` itself. On a cold
+cache, the scope starts up to four workers, and the constructor queues each
+kernel configuration and goes on; the workers compile the queue in parallel, and
+each kernel loads from the disk cache when first used. Nested construction
+shares the workers of its thread. A warm cache starts no worker. Construction
+loads the remaining kernels and stops its workers before it returns, and a
+failed construction stops them at once. A worker that fails to compile a
+configuration keeps serving, and that configuration retries once in a one-shot
+process. A worker that times out or breaks its replies stops for the rest of the
+construction; a timed-out configuration compiles in-process rather than wait out
+a second timeout, and once no worker is left the rest compile one-shot.
+After a construction that compiled cold configurations, one worker
+stays up for the kernels the first requests build lazily. Each caller still
+waits for its own kernels, but no longer starts an interpreter per
+configuration. Concurrent callers start more workers, up to the same limit. A
+worker never creates a CUDA context and stops after 120 seconds idle; a later
+cold configuration starts a new one. It exits when the process that started it
+closes its pipe, and on Linux the kernel also kills it mid-compile when that
+process dies.
+The same scope folds each TriMul node's KF weights once, from the weights the
+node holds when its constructor returns, rather than on placeholders and again
+after each load.
+
 Boltz-1/2 and OpenFold3 default to `recycling_steps=3`,
 `num_sampling_steps=200`, `diffusion_samples=1` (OpenFold3 remaps those
 Boltz-style names onto its own cycle / rollout knobs). AlphaFold2 / OpenFold2

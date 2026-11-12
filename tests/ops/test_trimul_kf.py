@@ -19,6 +19,8 @@ SM90, SM100 and SM103 run it from source and from CUBINs.
 
 from __future__ import annotations
 
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 
@@ -1122,3 +1124,64 @@ def test_source_kernels_never_request_programmatic_dependent_launch():
         assert "use_pdl=True" not in text, f"{name} requests PDL, which breaks CUDA graph replay"
         checked += text.count("use_pdl=")
     assert checked == 17, f"expected the chains' 17 launch sites (9 on SM90, 8 on SM100), found {checked}"
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+@pytest.mark.parametrize("shape", [(128, 128), (256, 128), (384, 64)])
+@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float64])
+def test_replayed_centring_matches_eager_bitwise(shape, dtype, monkeypatch):
+    """The graph each shape replays reproduces the eager passes bit for bit, input after input."""
+    monkeypatch.setattr(k3.ops, "_centre_graphs", {})
+    generator = torch.Generator(device="cuda").manual_seed(59)
+    for _ in range(3):
+        w = (torch.randn(shape, device="cuda", generator=generator, dtype=torch.float64) * 0.05).to(dtype)
+        replayed = k3.ops.centre_rows_bf16(w)
+        eager = k3.ops._centre_rows(w, k3.ops._CENTRE_PASSES)
+        assert replayed.dtype == eager.dtype == torch.bfloat16
+        assert torch.equal(replayed.view(torch.int16), eager.view(torch.int16))
+    assert len(k3.ops._centre_graphs) == 1
+    # A non-contiguous input and a capture both take the eager passes.
+    assert torch.equal(k3.ops.centre_rows_bf16(w.t().contiguous().t()).view(torch.int16), eager.view(torch.int16))
+    assert len(k3.ops._centre_graphs) == 1
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+@pytest.mark.parametrize("captured", [False, True], ids=["threads-capture", "threads-replay"])
+def test_replayed_centring_is_safe_across_threads_and_streams(captured, monkeypatch):
+    """Threads centring weights of one shape on their own streams each get their own weights' result."""
+    monkeypatch.setattr(k3.ops, "_centre_graphs", {})
+    generator = torch.Generator(device="cuda").manual_seed(61)
+    weights = [(torch.randn(256, 256, device="cuda", generator=generator) * 0.05).bfloat16() for _ in range(4)]
+    expected = [k3.ops._centre_rows(w, k3.ops._CENTRE_PASSES) for w in weights]
+    if captured:
+        k3.ops.centre_rows_bf16(weights[0])
+    barrier = threading.Barrier(len(weights))
+
+    def centre(index: int) -> int:
+        mismatches = 0
+        with torch.cuda.stream(torch.cuda.Stream()):
+            barrier.wait()
+            for _ in range(50):
+                mismatches += not torch.equal(k3.ops.centre_rows_bf16(weights[index]), expected[index])
+        return mismatches
+
+    with ThreadPoolExecutor(max_workers=len(weights)) as pool:
+        assert list(pool.map(centre, range(len(weights)))) == [0] * len(weights)
+    assert len(k3.ops._centre_graphs) == 1
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+@pytest.mark.parametrize("first", [torch.inference_mode, torch.no_grad], ids=["inference-first", "no-grad-first"])
+def test_replayed_centring_across_inference_mode(first, monkeypatch):
+    """A refold in a forward runs under inference_mode, a construction fold under no_grad: either may come first."""
+    monkeypatch.setattr(k3.ops, "_centre_graphs", {})
+    generator = torch.Generator(device="cuda").manual_seed(73)
+    w = (torch.randn(128, 128, device="cuda", generator=generator, dtype=torch.float64) * 0.05).bfloat16()
+    eager = k3.ops._centre_rows(w, k3.ops._CENTRE_PASSES)
+    modes = [first, torch.no_grad if first is torch.inference_mode else torch.inference_mode]
+    for mode in modes + modes:
+        with mode():
+            assert torch.equal(k3.ops.centre_rows_bf16(w).view(torch.int16), eager.view(torch.int16)), mode
+    assert len(k3.ops._centre_graphs) == 1
+    (_graph, static_in, static_out, _done) = next(iter(k3.ops._centre_graphs.values()))
+    assert not static_in.is_inference() and not static_out.is_inference()

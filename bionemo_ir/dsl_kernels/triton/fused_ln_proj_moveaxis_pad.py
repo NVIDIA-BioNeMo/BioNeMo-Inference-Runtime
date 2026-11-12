@@ -727,29 +727,16 @@ class FusedLNProjMoveaxisPad(TritonKernelCache):
                 dtype, ln_dtype=ln_dtype, tile_j=kwargs["TILE_J"], proj_dtype=proj_dtype
             )
 
-        kernels = self.compile_for_dtypes(
+        registers = torch.cuda.get_device_properties(torch.cuda.current_device()).regs_per_multiprocessor
+        return self.compile_for_dtypes(
             _fused_ln_proj_moveaxis_pad_streaming_kernel,
             dtypes=dtypes,
             make_dummy_args=make_dummy_args,
             # Compile without touching uninitialized dummy tensors.
             grid=(0,),
+            max_registers=registers // (_STREAMING_MIN_CTAS_PER_SM * kwargs["num_warps"] * 32),
             **kwargs,
         )
-        registers = torch.cuda.get_device_properties(torch.cuda.current_device()).regs_per_multiprocessor
-        budget = registers // (_STREAMING_MIN_CTAS_PER_SM * kwargs["num_warps"] * 32)
-        heavy = [dtype for dtype, kernel in kernels.items() if getattr(kernel.compiled, "n_regs", 0) > budget]
-        if heavy:
-            kernels.update(
-                self.compile_for_dtypes(
-                    _fused_ln_proj_moveaxis_pad_streaming_kernel,
-                    dtypes=heavy,
-                    make_dummy_args=make_dummy_args,
-                    grid=(0,),
-                    maxnreg=budget,
-                    **kwargs,
-                )
-            )
-        return kernels
 
     def streams(self, dtype: torch.dtype) -> bool:
         """Whether inputs of ``dtype`` take the streaming kernel."""

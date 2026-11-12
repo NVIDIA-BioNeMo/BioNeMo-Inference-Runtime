@@ -214,11 +214,14 @@ class LNPairBias(TritonKernelCache):
             if _has_tensor_core_dot(device):
                 self._device = device
                 self._kernel = self._compiled(1)
-                self._programs[1] = _resident_programs(device, self._kernel)
                 # Only the starting node's tiles hold contiguous keys, which aligned bias rows let it store
                 # as vectors; elsewhere the variant would only cost registers.
                 if not swap_ij and not transposed:
                     self._aligned_kernel = self._compiled(_KEY_ALIGN)
+                # Read the registers only after queuing both variants: the read waits for a cold compile,
+                # which would otherwise run before the second variant is queued.
+                self._programs[1] = _resident_programs(device, self._kernel)
+                if self._aligned_kernel is not None:
                     self._programs[_KEY_ALIGN] = _resident_programs(device, self._aligned_kernel)
 
     def _compiled(self, key_align: int) -> CachedKernel:
@@ -229,8 +232,7 @@ class LNPairBias(TritonKernelCache):
                 _ln_pair_bias_kernel,
                 dtypes=[self._dtype],
                 make_dummy_args=functools.partial(self._make_dummy_args, key_align=key_align),
-                # Compile without launching: a cold-cache warmup subprocess rebuilds
-                # these dummies with torch.empty and launches with this grid.
+                # Compile without launching on these uninitialized dummies.
                 grid=(0,),
                 C=self._channels,
                 H=self._heads,

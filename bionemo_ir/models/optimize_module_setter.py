@@ -13,14 +13,53 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from collections.abc import Iterator
+from contextlib import contextmanager
+from functools import wraps
+
 import torch.nn as nn
 
 from bionemo_ir.configs import AcceleratedConfig, BackendType
 
 
+@contextmanager
+def model_construction_scope() -> Iterator[None]:
+    """Scope a model constructor: compile cold Triton kernels in parallel and fold TriMul weights once.
+
+    The TriMul folds run as the scope exits, while the compiler workers
+    finish; the kernels load and the workers stop after them.
+    """
+    from bionemo_ir._torch.layers.triangle_nodes import defer_kf_folds
+    from bionemo_ir.dsl_kernels.triton_cache import triton_warmup_session
+
+    with triton_warmup_session(), defer_kf_folds():
+        yield
+
+
 class OptimizedModuleSetterMixin:
     #: Roles of the model's graph regions (:class:`GraphRegion`): role name -> region path.
     GRAPH_REGIONS: dict[str, str] = {}
+
+    def __init_subclass__(cls, **kwargs: object) -> None:
+        """Run every model constructor, including a subclass's, in :func:`model_construction_scope`.
+
+        This is the only place construction is scoped: ``FoldingEngine`` builds
+        registered models, and every registered model class uses this mixin. A
+        class that inherits its constructor from a base outside the mixin gets
+        that constructor wrapped too.
+        """
+        super().__init_subclass__(**kwargs)
+        initialize = cls.__init__
+        if getattr(initialize, "_bioir_scoped", False) and "__init__" not in cls.__dict__:
+            return
+
+        @wraps(initialize)
+        def scoped_init(self: "OptimizedModuleSetterMixin", *args: object, **kwargs: object) -> None:
+            with model_construction_scope():
+                return initialize(self, *args, **kwargs)
+
+        scoped_init._bioir_scoped = True
+        cls.__init__ = scoped_init
 
     def optimize(self, accelerated_configs: dict[str, AcceleratedConfig] | None = None) -> nn.Module:
         """Enable the model's CUDA-graph regions.

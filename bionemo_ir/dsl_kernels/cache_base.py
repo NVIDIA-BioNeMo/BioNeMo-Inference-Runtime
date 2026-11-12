@@ -105,12 +105,16 @@ _LOCK_TIMEOUT = 60
 
 
 class FileLock:
-    """Advisory file lock using ``fcntl.flock`` with timeout."""
+    """Advisory file lock using ``fcntl.flock`` with timeout.
 
-    def __init__(self, lock_path: Path, exclusive: bool, timeout: float = 15):
+    A waiter given ``cancel`` stops waiting soon after the event is set, as it does on timeout.
+    """
+
+    def __init__(self, lock_path: Path, exclusive: bool, timeout: float = 15, cancel: threading.Event | None = None):
         self.lock_path = lock_path
         self.exclusive = exclusive
         self.timeout = timeout
+        self.cancel = cancel
         self._fd: int = -1
 
     def __enter__(self) -> FileLock:
@@ -118,7 +122,7 @@ class FileLock:
         lock_type = fcntl.LOCK_EX if self.exclusive else fcntl.LOCK_SH
         self._fd = os.open(str(self.lock_path), flags)
         deadline = time.monotonic() + self.timeout
-        while time.monotonic() < deadline:
+        while time.monotonic() < deadline and not (self.cancel is not None and self.cancel.is_set()):
             try:
                 fcntl.flock(self._fd, lock_type | fcntl.LOCK_NB)
                 return self

@@ -818,8 +818,7 @@ def test_compilation_does_not_launch_on_dummy_tensors(
 
     Every tensor dummy is filled with a distinct value; a launch would overwrite the
     output dummy with values computed from the inputs. The grid handed to the
-    cold-cache warmup subprocess must be empty too, because that process rebuilds
-    the dummies with ``torch.empty``.
+    cold-cache warmup subprocess stays empty too.
     """
     for cls in (MoveaxisPad, FusedSwiGLU, FusedLNProjMoveaxisPad, LNPairBias):
         monkeypatch.setattr(cls, "_global_cache", {})
@@ -852,6 +851,8 @@ def test_compilation_does_not_launch_on_dummy_tensors(
         "bionemo_ir.dsl_kernels.triton_cache._compile_in_subprocess",
         lambda jit_fn, dummy_args_by_dtype, grid, constexpr_kwargs: warmup_grids.append(grid),
     )
+    # No compiler worker: each cold configuration takes the one-shot path recorded above, with the same grid.
+    monkeypatch.setattr("bionemo_ir.dsl_kernels.triton_cache._CompilerPool.submit", lambda self, job: None)
     build()
     torch.cuda.synchronize()
 
@@ -983,6 +984,80 @@ def test_subprocess_float_constexpr_reuses_disk_cache(tmp_path: Path, monkeypatc
 
     assert sorted(tmp_path.rglob("*.cubin")) == warmed
     torch.testing.assert_close(output, torch.arange(16, device="cuda", dtype=torch.float32) + 1e-5)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+def test_session_worker_compiles_each_config_itself(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """One real session worker compiles two configurations from dtype placeholders; this process only loads them."""
+    from bionemo_ir.dsl_kernels import triton_cache
+
+    monkeypatch.setenv("TRITON_CACHE_DIR", str(tmp_path))
+    monkeypatch.setattr(triton_cache, "TRITON_CACHE_DIR", str(tmp_path))
+    monkeypatch.setattr(triton_cache, "_triton_cache_was_cold", lambda: True)
+    monkeypatch.setattr(triton_cache, "_session_worker_limit", lambda: 1)
+
+    def one_shot(*args: object) -> None:
+        pytest.fail("the session worker must compile every configuration itself")
+
+    monkeypatch.setattr(triton_cache, "_run_warm_subprocess", one_shot)
+    outputs = {block: torch.empty(block, device="cuda") for block in (16, 32)}
+    kernels = {}
+    with triton_cache.triton_warmup_session():
+        for block, output in outputs.items():
+            (kernels[block],) = (
+                TritonKernelCache()
+                .compile_for_dtypes(
+                    _constexpr_float_kernel,
+                    [torch.float32],
+                    lambda dtype, output=output: (output,),
+                    EPS=1e-5,
+                    BLOCK=block,
+                    ENABLED=True,
+                )
+                .values()
+            )
+            assert type(kernels[block]) is not CachedKernel
+        pool = triton_cache._warm_session.pool
+    assert len(pool._processes) == 1
+    assert [job.outcome for job in pool._jobs.values()] == [triton_cache._WARMED] * 2
+    warmed = sorted(tmp_path.rglob("*.cubin"))
+    assert len(warmed) == 2
+
+    for block, output in outputs.items():
+        assert type(kernels[block]) is CachedKernel
+        # The direct launcher exists only on the Triton versions its ABI supports.
+        assert (kernels[block].driver is not None) == _DRIVER_TRITON_OK
+        _constexpr_float_kernel[(1,)](output, EPS=1e-5, BLOCK=block, ENABLED=True)
+    torch.cuda.synchronize()
+
+    assert sorted(tmp_path.rglob("*.cubin")) == warmed
+    for block, output in outputs.items():
+        torch.testing.assert_close(output, torch.arange(block, device="cuda", dtype=torch.float32) + 1e-5)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+def test_compiler_process_never_initializes_cuda(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The compiler process takes the parent's target and so leaves CUDA, and the parent's GPU, alone."""
+    from bionemo_ir.dsl_kernels import triton_cache
+
+    monkeypatch.setenv("TRITON_CACHE_DIR", str(tmp_path))
+    monkeypatch.setattr(triton_cache, "TRITON_CACHE_DIR", str(tmp_path))
+    check = (
+        "import ctypes\n"
+        "count = ctypes.c_int()\n"
+        "# CUDA_ERROR_NOT_INITIALIZED: nothing in this process called cuInit.\n"
+        "assert ctypes.CDLL('libcuda.so.1').cuDeviceGetCount(ctypes.byref(count)) == 3\n"
+    )
+    monkeypatch.setattr(triton_cache, "_SUBPROCESS_SCRIPT", triton_cache._SUBPROCESS_SCRIPT + check)
+    # A kernel whose module, unlike this test module, initializes nothing on import.
+    op = MoveaxisPad.__new__(MoveaxisPad)
+    op._block_j, op._block_h = 128, 4
+    dummy_args = op._make_dummy_args(torch.bfloat16)
+    _compile_in_subprocess(_moveaxis_pad_kernel, {torch.bfloat16: dummy_args}, (0,), {"BLOCK_J": 128, "BLOCK_H": 4})
+
+    assert len(list(tmp_path.rglob("*.cubin"))) == 1
+    # The marker records a process that exited cleanly, past the check.
+    assert len([path for path in (tmp_path / "bioir_warm").iterdir() if path.suffix != ".lock"]) == 1
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")

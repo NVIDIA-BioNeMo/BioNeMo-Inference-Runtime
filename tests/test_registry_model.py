@@ -83,3 +83,15 @@ class TestModelRegistry:
         assert get_model_class(SupMat.Boltz2Affinity) == Boltz2Affinity
         assert get_model_class(SupMat.OpenFold2_FT2) == OpenFold2
         assert get_model_class(SupMat.AlphaFold2_1) == OpenFold2
+
+    def test_registered_models_scope_their_construction(self):
+        """FoldingEngine relies on the mixin to scope compilers and TriMul folds to construction."""
+        from bionemo_ir.models.optimize_module_setter import OptimizedModuleSetterMixin
+
+        register_all_factories()
+
+        for model_name in ModelRegistry._factories:
+            model_class = get_model_class(model_name)
+            assert issubclass(model_class, OptimizedModuleSetterMixin), model_name
+            # The constructor that runs must be the mixin's wrapper, not one inherited from outside the mixin.
+            assert getattr(model_class.__init__, "_bioir_scoped", False), model_name

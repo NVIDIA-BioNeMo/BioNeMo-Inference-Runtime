@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import threading
 from dataclasses import dataclass, field
 
 import torch
@@ -56,7 +57,65 @@ def centre_rows_bf16(w: torch.Tensor, passes: int = _CENTRE_PASSES) -> torch.Ten
     against the remaining sum, the largest steps that fit in it first, never further than 1.5 steps from
     the exact value. The pass count is fixed: no data-dependent control flow, so a fold under graph
     capture records no host synchronization.
+
+    A contiguous CUDA ``w`` outside a capture replays the passes as one CUDA graph per shape: they are
+    about two hundred tiny launches, which a model folding a hundred TriMul nodes would otherwise issue one
+    by one. The graph runs the same kernels on the same values, so the result is bit-identical. Calls from
+    several threads or streams take turns with the graph's buffers.
     """
+    if w.is_cuda and w.is_contiguous() and not torch.cuda.is_current_stream_capturing():
+        return _centre_rows_replayed(w, passes)
+    return _centre_rows(w, passes)
+
+
+# One captured centring per input shape, dtype, device and pass count: (graph, input, output, done), where
+# ``done`` follows the last call's read of the output. The buffers are created outside ``inference_mode``: a
+# call inside it may refill a normal tensor, but a call outside it may not refill an inference tensor.
+_centre_graphs: dict[tuple, tuple[torch.cuda.CUDAGraph, torch.Tensor, torch.Tensor, torch.cuda.Event]] = {}
+# Held while a call captures or enqueues its use of a graph's buffers.
+_centre_lock = threading.Lock()
+
+
+def _centre_rows_replayed(w: torch.Tensor, passes: int) -> torch.Tensor:
+    key = (tuple(w.shape), w.dtype, w.device, passes)
+    with torch.cuda.device(w.device), _centre_lock:
+        entry = _centre_graphs.get(key)
+        if entry is None:
+            entry = _centre_graphs[key] = _capture_centring(w, passes)
+        graph, static_in, static_out, done = entry
+        # A call on another stream may still be reading the output: wait for it before refilling the input.
+        torch.cuda.current_stream().wait_event(done)
+        static_in.copy_(w)
+        graph.replay()
+        centred = static_out.clone()
+        done.record()
+        return centred
+
+
+def _capture_centring(
+    w: torch.Tensor, passes: int
+) -> tuple[torch.cuda.CUDAGraph, torch.Tensor, torch.Tensor, torch.cuda.Event]:
+    # inference_mode(False) alone turns autograd back on; no_grad keeps the capture free of it.
+    with torch.inference_mode(False), torch.no_grad():
+        static_in = w.clone()
+        graph = torch.cuda.CUDAGraph()
+        stream = torch.cuda.Stream()
+        stream.wait_stream(torch.cuda.current_stream())
+        with torch.cuda.stream(stream):
+            # Load every kernel eagerly first: a capture records launches, not module loads.
+            _centre_rows(static_in, passes)
+            # capture_begin, unlike torch.cuda.graph, leaves the caching allocator and the GC alone; a
+            # thread-local capture leaves other threads' CUDA work alone too.
+            graph.capture_begin(capture_error_mode="thread_local")
+            try:
+                static_out = _centre_rows(static_in, passes)
+            finally:
+                graph.capture_end()
+        torch.cuda.current_stream().wait_stream(stream)
+    return graph, static_in, static_out, torch.cuda.Event()
+
+
+def _centre_rows(w: torch.Tensor, passes: int) -> torch.Tensor:
     exact = w.double() - w.double().mean(-1, keepdim=True)
     r = exact.to(torch.bfloat16)
     for _ in range(passes):

@@ -257,6 +257,16 @@ class Dummy:
         pass
 
 
+def _load_to_cpu(path: str | Path, **kwargs: object) -> object:
+    """``torch.load`` onto the CPU, mapping a zip checkpoint rather than reading it.
+
+    Mapping skips one full copy of the weights: each tensor reads its pages
+    from the page cache when the model copies it in. A legacy, non-zip file
+    cannot be mapped and is read as before.
+    """
+    return torch.load(path, map_location="cpu", mmap=zipfile.is_zipfile(path), **kwargs)
+
+
 def _load_of3_state_dict(local_checkpoint: str):
     unsafe_globals = [
         (Dummy, "openfold3.projects.of3_all_atom.model.OpenFold3"),
@@ -273,9 +283,7 @@ def _load_of3_state_dict(local_checkpoint: str):
         dict,
     ]
     with torch.serialization.safe_globals(unsafe_globals):
-        # Mapping skips one full weight copy.
-        mmap = zipfile.is_zipfile(local_checkpoint)
-        state_dict = torch.load(local_checkpoint, map_location="cpu", weights_only=True, mmap=mmap)
+        state_dict = _load_to_cpu(local_checkpoint, weights_only=True)
         if "ema" in state_dict:
             if "params" in state_dict["ema"]:
                 state_dict = state_dict["ema"]["params"]
@@ -301,12 +309,12 @@ def _load_boltz_state_dict(local_checkpoint: str):
         dict,
     ]
     with torch.serialization.safe_globals(unsafe_globals):
-        return torch.load(local_checkpoint, map_location="cpu", weights_only=True)
+        return _load_to_cpu(local_checkpoint, weights_only=True)
 
 
 def _load_protenix_state_dict(local_checkpoint: str):
     try:
-        checkpoint = torch.load(local_checkpoint, map_location="cpu", weights_only=True)
+        checkpoint = _load_to_cpu(local_checkpoint, weights_only=True)
     except (RuntimeError, ValueError, pickle.UnpicklingError) as exc:
         raise RuntimeError(
             "Failed to load Protenix checkpoint safely (unsafe or incompatible pickle contents)."
@@ -385,7 +393,7 @@ def load_local_weights(
         # Always land on CPU: a checkpoint saved from GPU otherwise restores
         # onto CUDA, which fails outright on a CPU-only host and silently
         # consumes VRAM everywhere else. The caller moves the weights.
-        state_dict = torch.load(filepath, weights_only=weights_only, map_location="cpu")
+        state_dict = _load_to_cpu(filepath, weights_only=weights_only)
         if state_dict_key is not None:
             state_dict = state_dict[state_dict_key]
     return state_dict

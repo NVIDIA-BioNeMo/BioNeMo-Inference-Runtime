@@ -22,8 +22,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from huggingface_hub import hf_hub_download
-
+from bionemo_ir.hubs.hf import hf_hub_download
 from bionemo_ir.hubs.integrity import HF_REVISIONS, verify_sha256
 from bionemo_ir.hubs.support_matrix import FoldingSupportMatrix as SupMat
 

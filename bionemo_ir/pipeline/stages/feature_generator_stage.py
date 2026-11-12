@@ -23,6 +23,7 @@ import torch
 from bionemo_ir.pipeline.base import FeatureCollatorBase, FeatureGeneratorBase, dict_context_merger
 from bionemo_ir.pipeline.stages.base import StatefulStage, StatefulStageUDF
 from bionemo_ir.pipeline.utils import RANDOM_SEED_COLUMN, SAMPLING_SEED_ARG, SAMPLING_SEED_COLUMN
+from bionemo_ir.pipeline.utils._mkl_vml import ensure_vml_initialized
 from bionemo_ir.pipeline.utils._rng import _feature_rng
 
 
@@ -73,6 +74,7 @@ class FeatureGeneratorUDF(StatefulStageUDF):
         context["_row"] = row
         features_dict = {}
 
+        ensure_vml_initialized()
         if self.pre_init is not None:
             context = self.pre_init(context=context)
 

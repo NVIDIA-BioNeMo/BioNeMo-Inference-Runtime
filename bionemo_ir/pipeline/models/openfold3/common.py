@@ -21,6 +21,7 @@ import numpy as np
 import torch
 
 from bionemo_ir._torch.layers.random_augmentation import _quaternion_components_to_matrix
+from bionemo_ir.pipeline.utils._mkl_vml import ensure_vml_initialized
 from bionemo_ir.pipeline.utils._rng import _torch_generator
 from bionemo_ir.pipeline.utils.atom import encode_atom_name_chars as _encode_atom_name_chars
 from bionemo_ir.pipeline.utils.atom import encode_atom_name_chars_one_hot as _encode_atom_name_chars_one_hot
@@ -99,6 +100,7 @@ def compute_deletion_value(deletion_matrix: torch.Tensor) -> torch.Tensor:
     Returns:
         [N_rows, N_tokens] float32 tensor in [0, 4).
     """
+    ensure_vml_initialized()
     return (torch.atan(deletion_matrix.float() / 3.0) * (8.0 / math.pi)).to(torch.float32)
 
 

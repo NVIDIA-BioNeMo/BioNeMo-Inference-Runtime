@@ -19,6 +19,7 @@ import numpy as np
 import torch
 
 from bionemo_ir.pipeline.base import FeatureCollatorBase
+from bionemo_ir.pipeline.utils._template_transfer import attach_template_slots
 
 from .const import MOL_TYPES
 from .feature_generators import structure_context
@@ -39,4 +40,5 @@ class ProtenixFeatureCollator(FeatureCollatorBase):
             atoms.hetero[centers], MOL_TYPES["ccd_ligand"], atoms.mol_type[centers]
         ).tolist()
         output["chain_ids"] = [c["chain_id"] for c in structure["chains"]]
+        attach_template_slots(output, context, add_batch_dim=True)
         return output

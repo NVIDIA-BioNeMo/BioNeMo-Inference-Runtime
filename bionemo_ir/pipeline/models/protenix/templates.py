@@ -25,6 +25,7 @@ from bionemo_ir.pipeline.models.openfold3.template_logic import (
     TemplateParsing,
     select_template_for_cif,
 )
+from bionemo_ir.pipeline.utils._template_transfer import record_template_slots
 from bionemo_ir.pipeline.utils.atom import ATOM_NAME_TO_FOLDING_INDEX
 from bionemo_ir.pipeline.utils.template import masked_distogram
 
@@ -201,4 +202,9 @@ class TemplateFeatureGenerator(FeatureGeneratorBase):
                             if label in coords:
                                 positions[tid, token, idx] = coords[label] - center
                                 masks[tid, token, idx] = 1
-        return template_geometry(restypes, positions, masks)
+        features = template_geometry(restypes, positions, masks)
+        active = tuple(int(slot) for slot in np.flatnonzero(masks.any(axis=(1, 2))))
+        for name, tensor in features.items():
+            if name != "template_aatype":
+                record_template_slots(context, name, tensor, active)
+        return features

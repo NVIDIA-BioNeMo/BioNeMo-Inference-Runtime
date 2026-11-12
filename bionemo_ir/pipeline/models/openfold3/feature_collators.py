@@ -24,6 +24,7 @@ import torch
 
 from bionemo_ir.configs.base import BaseConfig
 from bionemo_ir.pipeline.base import FeatureCollatorBase
+from bionemo_ir.pipeline.utils._template_transfer import attach_template_slots
 
 
 class OpenFold3FinalFeatureCollator(FeatureCollatorBase):
@@ -83,4 +84,5 @@ class OpenFold3FinalFeatureCollator(FeatureCollatorBase):
         if self.add_batch_dim:
             out = {k: v.unsqueeze(0) if isinstance(v, torch.Tensor) else v for k, v in out.items()}
 
+        attach_template_slots(out, context, add_batch_dim=self.add_batch_dim)
         return out

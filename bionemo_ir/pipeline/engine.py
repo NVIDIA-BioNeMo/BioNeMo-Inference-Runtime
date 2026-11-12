@@ -25,6 +25,7 @@ from bionemo_ir.data.schemas import FoldingOutput
 from bionemo_ir.logger import logger
 from bionemo_ir.pipeline.base import PostProcessorBase
 from bionemo_ir.pipeline.utils import SAMPLING_SEED_ARG, SAMPLING_SEED_COLUMN, STAGE_TIMING_COLUMN
+from bionemo_ir.pipeline.utils._template_transfer import TEMPLATE_TRANSFER_COLUMN, transfer_template_tensor
 
 
 def _is_model_column(name: str) -> bool:
@@ -85,7 +86,21 @@ class FoldingEngine:
     def transfer_batch_to_device(self, batch: dict[str, Any]) -> dict[str, Any]:
         """Transfer the batch to the device."""
         device_batch = {}
+        template_slots = batch.get(TEMPLATE_TRANSFER_COLUMN, {})
         for k, v in batch.items():
+            if k == TEMPLATE_TRANSFER_COLUMN:
+                continue
+            if (
+                k in template_slots
+                and torch.device(self.device_config.device).type == "cuda"
+                and (isinstance(v, np.ndarray) or isinstance(v, torch.Tensor) and v.device.type == "cpu")
+            ):
+                try:
+                    device_batch[k] = transfer_template_tensor(v, self.device_config.device, template_slots[k])
+                    continue
+                except ValueError as error:
+                    # The dense feature is still exact: copy it instead of failing the request.
+                    logger.warning(f"Copying {k} densely: {error}")
             if isinstance(v, torch.Tensor):
                 device_batch[k] = torch.as_tensor(v, device=self.device_config.device)
             elif isinstance(v, np.ndarray):

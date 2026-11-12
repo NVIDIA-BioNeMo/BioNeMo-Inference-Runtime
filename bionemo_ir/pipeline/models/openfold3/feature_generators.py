@@ -30,6 +30,7 @@ import torch
 import torch.nn.functional as F
 
 from bionemo_ir.pipeline.base import FeatureGeneratorBase
+from bionemo_ir.pipeline.utils._template_transfer import record_template_slots
 from bionemo_ir.pipeline.utils.msa import a3m_columns, code_points, map_code_points, ragged_mask, truncate_rows
 
 from .common import (
@@ -869,7 +870,11 @@ class TemplateFeatureGenerator(FeatureGeneratorBase):
         row = _get_row(context)
         templates_per_chain = row.get("templates_per_chain") or {}
         if not templates_per_chain:
-            return self._no_template_feats(n_tokens)
+            feats = self._no_template_feats(n_tokens)
+            for name, tensor in feats.items():
+                if name != "template_restype":
+                    record_template_slots(context, name, tensor, ())
+            return feats
 
         from .common import (
             _DISTOGRAM_MIN_TOKENS,
@@ -1009,6 +1014,10 @@ class TemplateFeatureGenerator(FeatureGeneratorBase):
         )
         feats["template_distogram"] = _pad_template_slots(distogram, dist_slots, n_templ)
         feats["template_unit_vector"] = _pad_template_slots(unit_vector, active_bb, n_templ)
+        # Both the native distogram path and padding leave absent slots at +0.
+        # Preserve all slots with coordinates, including their signed zero bytes.
+        for name, slots in (("template_distogram", active_pb), ("template_unit_vector", active_bb)):
+            record_template_slots(context, name, feats[name], tuple(int(slot) for slot in slots))
         return feats
 
 

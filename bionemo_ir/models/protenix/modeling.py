@@ -45,6 +45,7 @@ from bionemo_ir._torch.modules.protenix import (
     ProtenixDistogramHead,
     ProtenixDiffusionSampler,
     ProtenixInputFeatureEmbedder,
+    ProtenixTemplateEmbedder,
     ProtenixTrunk,
 )
 from bionemo_ir.configs import BaseConfig
@@ -552,8 +553,8 @@ class Protenix(nn.Module, OptimizedModuleSetterMixin):
         batch = batch if consume_input_features else {**batch}
         kept = {name: batch[name] for name in keep_input_features if name in batch} if consume_input_features else {}
         if batch["ref_pos"].ndim == 2:
-            batched = _batch_features(batch)
-            batch.update(batched)
+            batch.update(_batch_features(batch))
+        ProtenixTemplateEmbedder.drop_trailing_empty_slots(batch, owned=consume_input_features)
         attn_metadata = self.generate_attn_metadata(batch)
         if not all(name in batch for name in ("d_lm", "v_lm", "pad_info")):
             windows = atom_windows(batch["ref_pos"], batch["ref_space_uid"], attn_metadata, self.n_queries, self.n_keys)

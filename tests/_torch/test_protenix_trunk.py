@@ -18,7 +18,7 @@ import os
 
 import torch
 
-from bionemo_ir._torch.modules.protenix import ProtenixTrunk
+from bionemo_ir._torch.modules.protenix import ProtenixTemplateEmbedder, ProtenixTrunk
 from bionemo_ir.configs import PairformerConfig
 from bionemo_ir.models.protenix.config import (
     ProtenixMSAModuleConfig,
@@ -238,3 +238,52 @@ def test_protenix_trunk_pads_template_features_at_unaligned_token_counts():
         assert actual.shape == expected.shape
         # fp32 GEMMs over the padded shapes round differently (TF32 in the dev container).
         torch.testing.assert_close(actual, expected, rtol=1e-3, atol=1e-3)
+
+
+def test_protenix_trunk_captures_compacted_empty_templates_at_unaligned_token_counts():
+    """With no template hits, the compacted pair features pad and capture like their dense zeros."""
+    torch.manual_seed(0)
+    device = torch.device("cuda")
+    B, N, S, T = 1, 13, 6, 4
+    c_s, c_z, c_s_inputs = 64, 64, 449
+
+    trunk = ProtenixTrunk(_small_trunk_config(c_s, c_z, c_s_inputs)).to(device).eval()
+    assert trunk.use_template and trunk.enable_token_pad and N % 8 != 0
+    with torch.no_grad():
+        for name, p in trunk.named_parameters():
+            if p.ndim >= 2:
+                p.normal_(mean=0.0, std=0.05)
+            elif name.endswith("weight"):
+                p.fill_(1)
+            else:
+                p.zero_()
+
+    dense = {
+        "asym_id": (torch.arange(N, device=device) >= 7).long().unsqueeze(0),
+        "msa": torch.randint(0, 32, (B, S, N), device=device),
+        "has_deletion": (torch.randn(B, S, N, device=device) > 0).float(),
+        "deletion_value": torch.rand(B, S, N, device=device),
+        "template_aatype": torch.randint(0, 32, (B, T, N), device=device),
+        "template_distogram": torch.zeros(B, T, N, N, 39, device=device),
+        "template_unit_vector": torch.zeros(B, T, N, N, 3, device=device),
+        "template_pseudo_beta_mask": torch.zeros(B, T, N, N, device=device),
+        "template_backbone_frame_mask": torch.zeros(B, T, N, N, device=device),
+    }
+    compact = dict(dense)
+    ProtenixTemplateEmbedder.drop_trailing_empty_slots(compact, owned=True)
+    assert all(compact[name].shape[1] == 0 for name in ProtenixTemplateEmbedder.pair_features)
+    inputs = (
+        0.1 * torch.randn(B, N, c_s_inputs, device=device),
+        0.1 * torch.randn(B, N, c_s, device=device),
+        0.1 * torch.randn(B, N, N, c_z, device=device),
+    )
+
+    with torch.inference_mode():
+        expected = trunk(dict(dense), *inputs, num_cycles=2)
+        actual = trunk(dict(compact), *inputs, num_cycles=2)
+
+    # Each feature layout captures its own graph and replays it on the second recycle.
+    counts = dict(trunk.graph.tracker.execution_counts)
+    assert counts.get("capture") == 2 and counts.get("replay") == 2, counts
+    for result, reference in zip(actual, expected, strict=True):
+        assert torch.equal(result, reference)

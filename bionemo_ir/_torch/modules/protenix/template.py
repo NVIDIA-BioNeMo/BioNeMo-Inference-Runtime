@@ -58,6 +58,14 @@ class ProtenixTemplateEmbedder(nn.Module):
         "template_unit_vector",
         "template_backbone_frame_mask",
     )
+    # Per-template ``[B, N_templ, N, N, *]`` features. They may cover fewer slots than ``template_aatype``:
+    # a slot past their count has all-zero pair features (:meth:`drop_trailing_empty_slots`).
+    pair_features: tuple[str, ...] = (
+        "template_distogram",
+        "template_pseudo_beta_mask",
+        "template_unit_vector",
+        "template_backbone_frame_mask",
+    )
 
     # Checkpoint layout of linear_no_bias_a weight columns (split-projection path).
     _DGRAM_END: int = input_feature1["template_distogram"]
@@ -119,25 +127,32 @@ class ProtenixTemplateEmbedder(nn.Module):
         dtype = weight.dtype
         unit_w = self._UNIT_VECTOR.stop - self._UNIT_VECTOR.start
 
-        # These four feature groups all carry masked_by — project, sum, mask once.
-        projected = linear.apply_linear(
-            feat("template_distogram").to(dtype),
-            weight[:, : self._DGRAM_END],
-            None,
-        )
-        projected.addcmul_(
-            feat("template_pseudo_beta_mask").to(dtype).unsqueeze(-1),
-            weight[:, self._PSEUDO_BETA_COL],
-        )
-        projected.reshape(-1, projected.shape[-1]).addmm_(
-            feat("template_unit_vector").to(dtype).reshape(-1, unit_w),
-            weight[:, self._UNIT_VECTOR].t(),
-        )
-        projected.addcmul_(
-            feat("template_backbone_frame_mask").to(dtype).unsqueeze(-1),
-            weight[:, self._BACKBONE_COL],
-        )
-        projected.mul_(masked_by.to(dtype).unsqueeze(-1))
+        if template_id >= input_feature_dict["template_distogram"].shape[1]:
+            # All-zero pair features project to exact zeros; only the restype terms remain. Allocate in
+            # the dtype F.linear returns, so the restype adds round as they do on the projection.
+            autocast = weight.is_cuda and torch.is_autocast_enabled("cuda")
+            zeros_dtype = torch.get_autocast_dtype("cuda") if autocast else dtype
+            projected = weight.new_zeros((*masked_by.shape, weight.shape[0]), dtype=zeros_dtype)
+        else:
+            # These four feature groups all carry masked_by — project, sum, mask once.
+            projected = linear.apply_linear(
+                feat("template_distogram").to(dtype),
+                weight[:, : self._DGRAM_END],
+                None,
+            )
+            projected.addcmul_(
+                feat("template_pseudo_beta_mask").to(dtype).unsqueeze(-1),
+                weight[:, self._PSEUDO_BETA_COL],
+            )
+            projected.reshape(-1, projected.shape[-1]).addmm_(
+                feat("template_unit_vector").to(dtype).reshape(-1, unit_w),
+                weight[:, self._UNIT_VECTOR].t(),
+            )
+            projected.addcmul_(
+                feat("template_backbone_frame_mask").to(dtype).unsqueeze(-1),
+                weight[:, self._BACKBONE_COL],
+            )
+            projected.mul_(masked_by.to(dtype).unsqueeze(-1))
 
         # one_hot(restype) @ W == embedding(restype, W.T). restype_i varies on
         # the second pair axis, restype_j on the first.
@@ -146,6 +161,34 @@ class ProtenixTemplateEmbedder(nn.Module):
         projected.add_(F.embedding(aatype, weight[:, self._RESTYPE_J].t()).unsqueeze(2))
 
         return projected
+
+    @classmethod
+    def drop_trailing_empty_slots(cls, input_feature_dict: dict[str, Any], *, owned: bool) -> None:
+        """Shorten the pair features to the slots before their trailing all-zero ones.
+
+        The featurizer fills template hits from slot 0 and leaves the rest as dense zeros, so with
+        no hits every ``[B, N_templ, N, N, *]`` pair feature is zero. Embedding is unchanged: a slot
+        past the pair features' count embeds as all-zero pair features. ``owned`` copies the kept
+        slots so the dense originals free once the caller's references go. The copies are made while
+        the originals live, and a caller that still holds the originals (such as ``keep_input_features``
+        of ``Protenix.forward``) keeps both resident.
+
+        Args:
+            input_feature_dict: Batched features with pair tensors shaped ``[B, N_templ, N, N, ...]``.
+            owned: Copy retained slots when True; otherwise keep views into the original storage.
+        """
+        if not all(name in input_feature_dict for name in cls.pair_features):
+            return
+        features = [input_feature_dict[name] for name in cls.pair_features]
+        num_slots = features[0].shape[1]
+        if num_slots == 0:
+            return
+        nonzero = torch.stack([torch.stack([f[:, t].any() for f in features]).any() for t in range(num_slots)])
+        keep = max((t + 1 for t, used in enumerate(nonzero.tolist()) if used), default=0)
+        if keep == num_slots:
+            return
+        for name, value in zip(cls.pair_features, features, strict=True):
+            input_feature_dict[name] = value[:, :keep].clone() if owned else value[:, :keep]
 
     def template_representatives(self, input_feature_dict: dict[str, Any]) -> list[int]:
         """For each template, the first template whose features are bitwise identical to its own.
@@ -159,10 +202,17 @@ class ProtenixTemplateEmbedder(nn.Module):
         representatives = list(range(num_templates))
         if not pairs:
             return representatives
+
+        def same_slot(f: torch.Tensor, t: int, r: int) -> torch.Tensor:
+            # A slot past ``f``'s slot count holds all-zero pair features.
+            if t < f.shape[1] and r < f.shape[1]:
+                return (f[:, t] == f[:, r]).all()
+            if t < f.shape[1] or r < f.shape[1]:
+                return ~f[:, min(t, r)].any()
+            return torch.ones((), dtype=torch.bool, device=f.device)
+
         # One host sync for every pair.
-        same = torch.stack(
-            [torch.stack([(f[:, t] == f[:, r]).all() for f in features]).all() for t, r in pairs]
-        ).tolist()
+        same = torch.stack([torch.stack([same_slot(f, t, r) for f in features]).all() for t, r in pairs]).tolist()
         for (template_id, earlier), equal in zip(pairs, same, strict=True):
             # Pairs come in ascending ``earlier``, so the first match is the earliest.
             if equal and representatives[template_id] == template_id:

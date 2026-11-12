@@ -80,3 +80,48 @@ def test_template_dedupe_is_bitwise_exact(order: list[int]):
         every = model(features, z, representatives=list(range(len(order))))
 
     assert torch.equal(deduped, every)
+
+
+def _with_empty_slots(hits: int) -> dict[str, torch.Tensor]:
+    """Features whose slots from ``hits`` on carry no template, as the featurizer emits them."""
+    features = _features([0, 1, 2, 3])
+    for name in ProtenixTemplateEmbedder.pair_features:
+        features[name][:, hits:] = 0
+    features["template_aatype"][:, hits:] = 0
+    return features
+
+
+@pytest.mark.parametrize("hits", [0, 1, 2, 4])
+@pytest.mark.parametrize("owned", [False, True])
+def test_dropping_trailing_empty_slots_is_bitwise_exact(hits: int, owned: bool):
+    """Shortened pair features embed exactly as the dense zero slots, with the same representatives."""
+    torch.manual_seed(5)
+    model = _embedder(n_blocks=2)
+    dense = _with_empty_slots(hits)
+    compact = dict(dense)
+    ProtenixTemplateEmbedder.drop_trailing_empty_slots(compact, owned=owned)
+    for name in ProtenixTemplateEmbedder.pair_features:
+        assert compact[name].shape[1] == hits
+        if hits:
+            assert (compact[name].data_ptr() == dense[name].data_ptr()) == (not owned or hits == N_TEMPLATES)
+    assert compact["template_aatype"] is dense["template_aatype"]
+    # Compacting again, including an input that already has no slots, changes nothing.
+    again = dict(compact)
+    ProtenixTemplateEmbedder.drop_trailing_empty_slots(again, owned=owned)
+    assert all(again[name] is compact[name] for name in compact)
+    assert model.template_representatives(compact) == model.template_representatives(dense)
+    z = torch.randn(1, N_TOKEN, N_TOKEN, 128, device="cuda")
+    with torch.inference_mode():
+        expected = model(dense, z)
+        actual = model(compact, z)
+    assert torch.equal(actual, expected)
+
+
+def test_interior_empty_slot_is_kept():
+    """Only trailing empty slots are dropped; an empty slot before a hit stays dense."""
+    features = _features([0, 1, 2, 3])
+    for name in ProtenixTemplateEmbedder.pair_features:
+        features[name][:, 1] = 0
+        features[name][:, 3] = 0
+    ProtenixTemplateEmbedder.drop_trailing_empty_slots(features, owned=True)
+    assert all(features[name].shape[1] == 3 for name in ProtenixTemplateEmbedder.pair_features)

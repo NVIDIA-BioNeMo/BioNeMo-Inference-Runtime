@@ -20,6 +20,7 @@
 from __future__ import annotations
 
 import inspect
+import weakref
 from collections.abc import Callable
 from typing import Any
 
@@ -357,6 +358,65 @@ def _tiny_batch(n_token: int = 4, n_atom: int = 4) -> dict[str, torch.Tensor]:
         "ref_space_uid": torch.arange(n_atom).unsqueeze(0),
         "atom_to_token_idx": torch.arange(n_atom).unsqueeze(0) % n_token,
     }
+
+
+@pytest.mark.parametrize("hits", [0, 1, 4])
+@pytest.mark.parametrize("unbatched", [False, True])
+@pytest.mark.parametrize("consume", [False, True])
+def test_protenix_forward_releases_compacted_template_storage(
+    hits: int, unbatched: bool, consume: bool, structural_model: Callable[..., Protenix]
+) -> None:
+    """Owned template storage is freed before embedding, including for unbatched inputs.
+
+    Args:
+        hits: Number of template slots with nonzero pair features.
+        unbatched: Use inputs without a leading batch dimension.
+        consume: Transfer input feature ownership to the model.
+        structural_model: Fixture that builds the model without compiling unused kernels.
+    """
+    model = structural_model(Protenix, config=ProtenixConfig(), include_load_weights=False).cpu()
+    model.input_embedder = _StubEmbedder()
+    model.relative_position_encoding = _StubRPE()
+    model.constraint_embedder = _StubConstraint()
+    model.trunk = _StubTrunk()
+    model.distogram_head = _StubDistogram()
+    model.diffusion_sampler = _StubSampler()
+
+    batch = _tiny_batch()
+    if unbatched:
+        batch = {name: value[0] for name, value in batch.items()}
+    prefix = () if unbatched else (1,)
+    pair_shapes = {
+        "template_distogram": (4, 4, 4, 39),
+        "template_pseudo_beta_mask": (4, 4, 4),
+        "template_unit_vector": (4, 4, 4, 3),
+        "template_backbone_frame_mask": (4, 4, 4),
+    }
+    batch.update({name: torch.zeros(*prefix, *shape) for name, shape in pair_shapes.items()})
+    for name in pair_shapes:
+        if unbatched:
+            batch[name][:hits] = 1
+        else:
+            batch[name][:, :hits] = 1
+    batch["template_aatype"] = torch.zeros(*prefix, 4, 4, dtype=torch.long)
+    originals = {name: weakref.ref(batch[name]) for name in pair_shapes}
+    original_storages = {name: batch[name].untyped_storage().data_ptr() for name in pair_shapes}
+
+    def check_storage(module: nn.Module, args: tuple[dict[str, torch.Tensor], ...]) -> None:
+        features = args[0]
+        assert all((ref() is None) == (consume and hits < 4) for ref in originals.values())
+        for name in pair_shapes:
+            assert features[name].shape[1] == hits
+            assert torch.all(features[name] == 1)
+            if consume and hits < 4:
+                assert features[name].untyped_storage().data_ptr() != original_storages[name]
+
+    model.input_embedder.register_forward_pre_hook(check_storage)
+    model.forward(batch, recycling_steps=0, num_sampling_steps=1, compact_output=True, consume_input_features=consume)
+    if consume:
+        assert batch == {}
+    else:
+        assert all(batch[name] is ref() for name, ref in originals.items())
 
 
 @pytest.mark.parametrize("configured", [False, True])

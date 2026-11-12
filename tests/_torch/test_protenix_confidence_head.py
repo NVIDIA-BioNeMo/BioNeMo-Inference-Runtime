@@ -25,6 +25,7 @@ import pytest
 import torch
 
 from bionemo_ir._torch.modules.protenix import ProtenixConfidenceHead
+from bionemo_ir._torch.utils import ChunkPolicy
 from bionemo_ir.configs import PairformerConfig
 from bionemo_ir.hubs import FoldingSupportMatrix as SupMat
 from bionemo_ir.hubs import load_weights as load_weights_from_hubs
@@ -40,6 +41,7 @@ class Scenario:
     n_sample: int = 2
     dtype: str = "float32"  # head precision (fp32, matching OSS)
     pairformer_dtype: str = "float32"  # inner pairformer precision
+    logit_row_block: int | None = None  # force PAE / PDE logits a block of token rows at a time
 
 
 # Full protenix-v2 confidence dimensions.
@@ -153,8 +155,9 @@ def real_case():
     [
         Scenario(dtype="float32", pairformer_dtype="float32"),
         Scenario(dtype="float32", pairformer_dtype="bfloat16"),
+        Scenario(dtype="float32", pairformer_dtype="float32", logit_row_block=5),
     ],
-    ids=["fp32", "bf16_pairformer"],
+    ids=["fp32", "bf16_pairformer", "fp32_logit_row_blocks"],
 )
 def test_protenix_confidence_head(sc: Scenario, real_case):
     device = real_case["device"]
@@ -164,6 +167,8 @@ def test_protenix_confidence_head(sc: Scenario, real_case):
     converted = convert_confidence_head_torch(config, real_case["weights"], prefix="confidence_head")
     missing, unexpected = model.load_state_dict(converted, strict=False)
     assert not missing and not unexpected, (list(missing)[:5], list(unexpected)[:5])
+    if sc.logit_row_block is not None:
+        model.pair_logits_chunk_policy = ChunkPolicy(chunk_size=sc.logit_row_block, min_size=1)
 
     with torch.inference_mode():
         act = model(
@@ -181,3 +186,48 @@ def test_protenix_confidence_head(sc: Scenario, real_case):
         assert torch.isfinite(act[key]).all(), f"{key} non-finite ({sc.dtype})"
         r = _rmse_ratio(act[key], exp)
         assert r < tol, f"{key} rmse_ratio={r:.3e} exceeds {tol:.0e} ({sc.dtype})"
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
+def test_protenix_pair_logit_row_blocks_match_whole_pair() -> None:
+    """Row blocks of PAE / PDE logits, including a ragged last block, match projecting the whole pair."""
+    torch.manual_seed(0)
+    model = ProtenixConfidenceHead(_config(Scenario())).cuda().eval()
+    with torch.no_grad():
+        for parameter in (*model.pae_ln.parameters(), *model.pde_ln.parameters()):
+            parameter.normal_()
+        model.linear_no_bias_pae.weight.normal_(std=0.1)
+        model.linear_no_bias_pde.weight.normal_(std=0.1)
+    z_pair = torch.randn(1, 23, 23, _FULL["c_z"], device="cuda")
+
+    with torch.inference_mode():
+        expected = model._pair_logits(z_pair)
+        model.pair_logits_chunk_policy = ChunkPolicy(chunk_size=8, min_size=1)
+        actual = model._pair_logits(z_pair)
+
+    for got, want in zip(actual, expected, strict=True):
+        torch.testing.assert_close(got, want, rtol=1e-5, atol=1e-5)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
+@pytest.mark.parametrize("autocast_dtype", [torch.bfloat16, torch.float16], ids=["bf16", "fp16"])
+@pytest.mark.parametrize("tokens", [22, 23, 24, 27], ids=["below", "at", "above", "above_ragged"])
+def test_protenix_pair_logits_keep_autocast_dtype(autocast_dtype: torch.dtype, tokens: int) -> None:
+    """Under autocast the logits keep the dense projection's dtype on either side of the row-block switch."""
+    torch.manual_seed(0)
+    model = ProtenixConfidenceHead(_config(Scenario())).cuda().eval()
+    with torch.no_grad():
+        model.linear_no_bias_pae.weight.normal_(std=0.1)
+        model.linear_no_bias_pde.weight.normal_(std=0.1)
+    z_pair = torch.randn(1, tokens, tokens, _FULL["c_z"], device="cuda")
+
+    with torch.inference_mode(), torch.autocast("cuda", dtype=autocast_dtype):
+        model.pair_logits_chunk_policy = None
+        expected = model._pair_logits(z_pair)
+        model.pair_logits_chunk_policy = ChunkPolicy(chunk_size=8, min_size=23)
+        actual = model._pair_logits(z_pair)
+
+    assert model.pair_logits_chunk_policy.should_chunk_size(tokens, z_pair.device) == (tokens > 23)
+    for got, want in zip(actual, expected, strict=True):
+        assert got.dtype == want.dtype == autocast_dtype
+        torch.testing.assert_close(got, want, rtol=2e-2, atol=2e-2)

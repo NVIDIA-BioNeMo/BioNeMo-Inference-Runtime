@@ -23,6 +23,7 @@ from bionemo_ir._torch.graph_optimization import GraphRegion, eager_graphs
 from bionemo_ir._torch.layers.linear import Linear
 from bionemo_ir._torch.layers.token_padding import pad_trunk_tokens, unpad_trunk_tokens
 from bionemo_ir._torch.layers.transformers.pairformer import PairformerModule
+from bionemo_ir._torch.utils import CHUNK_REGISTRY, CONFIDENCE_PAIR_PROJECTION, iter_chunks
 from bionemo_ir.configs import BaseConfig
 from bionemo_ir.dsl_kernels.triton.distance_embedding import project_distance_bins
 from bionemo_ir.dsl_kernels.triton.indexed_projection import IndexedRows, indexed_projection, prepare_indexed_rows
@@ -89,6 +90,7 @@ class ProtenixConfidenceHead(nn.Module):
         self.input_strunk_ln = nn.LayerNorm(self.c_s, dtype=self.dtype)
         self.pae_ln = nn.LayerNorm(self.c_z, dtype=self.dtype)
         self.pde_ln = nn.LayerNorm(self.c_z, dtype=self.dtype)
+        self.pair_logits_chunk_policy = CHUNK_REGISTRY.get(CONFIDENCE_PAIR_PROJECTION)
         self.plddt_ln = nn.LayerNorm(self.c_s, dtype=self.dtype)
         self.resolved_ln = nn.LayerNorm(self.c_s, dtype=self.dtype)
 
@@ -105,6 +107,34 @@ class ProtenixConfidenceHead(nn.Module):
             euclidean=True,
         )
         return z_pair + embedding.to(z_pair.dtype)
+
+    def _pair_logits(self, z_pair: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        """PAE and PDE logits; above the policy's threshold, one block of token rows at a time.
+
+        A row block reads its rows of ``z_pair`` and, for the PDE's ``z + zᵀ``, the matching
+        columns, so neither the symmetric pair nor either normalized pair is ever whole.
+        """
+        policy = self.pair_logits_chunk_policy
+        rows = z_pair.shape[-3]
+        if policy is None or not policy.should_chunk_size(rows, z_pair.device if z_pair.is_cuda else None):
+            pae = self.linear_no_bias_pae(self.pae_ln(z_pair))
+            pde = self.linear_no_bias_pde(self.pde_ln(z_pair + z_pair.transpose(-2, -3)))
+            return pae, pde
+        pae = pde = None
+        for start, length in iter_chunks(rows, policy.chunk_size):
+            z_rows = z_pair.narrow(-3, start, length)
+            pae_rows = self.linear_no_bias_pae(self.pae_ln(z_rows))
+            symmetric = z_rows + z_pair.narrow(-2, start, length).transpose(-2, -3)
+            pde_rows = self.linear_no_bias_pde(self.pde_ln(symmetric))
+            del symmetric
+            if pae is None:
+                # Under autocast the projections return the autocast dtype, as the dense path does.
+                pae = pae_rows.new_empty((*z_pair.shape[:-1], self.b_pae))
+                pde = pde_rows.new_empty((*z_pair.shape[:-1], self.b_pde))
+            pae.narrow(-3, start, length).copy_(pae_rows)
+            pde.narrow(-3, start, length).copy_(pde_rows)
+            del pae_rows, pde_rows
+        return pae, pde
 
     def _per_sample(
         self,
@@ -133,8 +163,7 @@ class ProtenixConfidenceHead(nn.Module):
         z_pair = z_pair.to(self.dtype)
         s_single = s_single.to(self.dtype)
 
-        pae = self.linear_no_bias_pae(self.pae_ln(z_pair))
-        pde = self.linear_no_bias_pde(self.pde_ln(z_pair + z_pair.transpose(-2, -3)))
+        pae, pde = self._pair_logits(z_pair)
         a = s_single[..., atom_to_token_idx, :]  # [*, N_atom, c_s]
         normalized = self.plddt_ln(a)
         if plddt_rows is not None and not torch.is_autocast_enabled("cuda"):

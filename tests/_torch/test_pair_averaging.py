@@ -16,6 +16,7 @@ import importlib
 import json
 import os
 from dataclasses import dataclass
+from pathlib import Path
 
 import pytest
 import torch
@@ -46,10 +47,17 @@ from bionemo_ir._torch.utils.kernel import _cutedsl_kernel_library as library_ru
 from bionemo_ir.utils import str_dtype_to_torch
 from tests._torch import SM_VERSION, cutedsl_test_modes, require_cubin_library, skip_if_no_cutedsl
 
-_CUTEDSL_SM = (80, 90, 100, 103, 120, 121)
+_CUTEDSL_SM = (80, 90, 100, 103, 107, 120, 121)
 _PWA_SOURCE_MODULE = "bionemo_ir._torch.custom_ops.pair_weighted_averaging._source"
 _PWA_TEST_MODES = cutedsl_test_modes(_PWA_SOURCE_MODULE)
-
+_PWA_CUBIN_INDEX = (
+    Path(__file__).resolve().parents[2]
+    / "cpp"
+    / "kernels"
+    / "cutedsl_pair_weighted_averaging"
+    / "cubins"
+    / "index.json"
+)
 # (c_h, c_m) tuples with tuned configs and CUBINs, and the models behind them.
 _PWA_DIMS = [(32, 64), (8, 64), (8, 128)]
 _PWA_DIM_IDS = ["boltz-d32cm64", "of3-d8cm64", "protenix-d8cm128"]
@@ -59,12 +67,24 @@ _PWA_MODE_CACHES: dict[str, dict] = {
 }
 
 
+def _sm107_cubin_published() -> bool:
+    """Whether the committed corpus lists an SM107 pack.
+
+    The protected refresh adds ``sm_107a`` after this change lands. Until that
+    entry exists, CUBIN mode on SM107 has nothing to launch.
+    """
+    packs = json.loads(_PWA_CUBIN_INDEX.read_text())["packs"]
+    return "sm_107a" in packs
+
+
 def _configure_pwa_mode(mode: str, monkeypatch) -> None:
     """Force one PWA implementation without allowing silent fallback."""
     monkeypatch.delenv("CUTEDSL_FORCE_CUBIN", raising=False)
     monkeypatch.setattr(PairWeightedAveragingCuTe, "_compiled_cache", _PWA_MODE_CACHES[mode])
 
     if mode == "cubin":
+        if SM_VERSION == 107 and not _sm107_cubin_published():
+            pytest.skip("the SM107 CUBIN pack is not shipped yet; the protected refresh publishes it")
         require_cubin_library()
 
         try:
@@ -412,9 +432,9 @@ def test_pair_weighted_averaging_token_limit(D, c_m, tokens, expected):
 
 @pytest.mark.parametrize("dtype_str", ["bf16", "fp16"])
 @pytest.mark.parametrize("c_m", [64, 128])
-@pytest.mark.parametrize("sm", [100, 103])
+@pytest.mark.parametrize("sm", [100, 103, 107])
 def test_pair_weighted_averaging_blackwell_d8_runs_the_tcgen05_kernel(sm: int, c_m: int, dtype_str: str) -> None:
-    """SM100 and SM103 D=8 run the tcgen05 kernel at every anchor, in both dtypes, from 33 tokens to 12288."""
+    """SM100, SM103 and SM107 D=8 run the tcgen05 kernel at every anchor, in both dtypes, from 33 tokens to 12288."""
     try:
         source = importlib.import_module(_PWA_SOURCE_MODULE)
     except ImportError:  # a build without kernel sources still checks the selection
@@ -437,6 +457,7 @@ def test_pair_weighted_averaging_blackwell_d8_runs_the_tcgen05_kernel(sm: int, c
         (100, 32, 64, False),
         (90, 8, 64, False),
         (103, 8, 64, True),
+        (107, 8, 64, True),
         (80, 8, 128, False),
     ],
 )
@@ -520,11 +541,11 @@ def test_pair_weighted_averaging_other_sms_keep_the_default_limits(sm):
     assert max_fused_tokens(32, 64, sm_version=sm) == 1536
 
 
-@pytest.mark.parametrize("sm", [90, 100, 103])
+@pytest.mark.parametrize("sm", [90, 100, 103, 107])
 def test_pair_weighted_averaging_fuses_at_any_size_on_hopper_and_blackwell(sm: int) -> None:
-    """SM90, SM100 and SM103 run every shape fused in both dtypes, so none has a token limit.
+    """SM90, SM100, SM103 and SM107 run every shape fused in both dtypes, so none has a token limit.
 
-    The fused layer beats eager at every size eager fits on H100 and B200. SM103 runs the SM100 tables.
+    The fused layer beats eager at every size eager fits on H100, B200 and Vera Rubin. SM103 runs the SM100 tables.
     """
     for D, c_m in _PWA_DIMS:
         for dtype_str in ("bf16", "fp16"):
@@ -556,6 +577,14 @@ def test_pair_weighted_averaging_sm120_d32_reaches_the_measured_anchor(sm):
         assert max_fused_tokens(8, c_m, sm_version=sm) == 2048
 
 
+# (tokens, MSA rows) -> (TILE_I, TILE_S, num_threads) where the Vera Rubin sweep replaced the SM100 tile.
+_SM107_D32_SMALL_TOKEN_TILES = {
+    (128, 256): (128, 1, 192),
+    (128, 512): (128, 2, 320),
+    (256, 512): (128, 2, 320),
+}
+
+
 @pytest.mark.parametrize("dtype_str", ["bf16", "fp16"])
 @pytest.mark.parametrize(
     "tokens,msa_rows,tile_i,tile_s,num_threads",
@@ -576,7 +605,7 @@ def test_pair_weighted_averaging_sm120_d32_reaches_the_measured_anchor(sm):
         (16384, 2048, 128, 8, 192),
     ],
 )
-@pytest.mark.parametrize("sm", [100, 103])
+@pytest.mark.parametrize("sm", [100, 103, 107])
 def test_pair_weighted_averaging_blackwell_d32_tile_follows_tokens_and_msa_rows(
     sm, tokens, msa_rows, tile_i, tile_s, num_threads, dtype_str
 ):
@@ -584,8 +613,13 @@ def test_pair_weighted_averaging_blackwell_d32_tile_follows_tokens_and_msa_rows(
 
     A small launch has few CTAs, so fewer MSA rows per CTA spread it over more SMs. From 1024 tokens a two-CTA pair
     (TILE_I=256) shares each MMA's v rows; past 5120 tokens and 72 MSA rows the 8-row split tile, which leaves Wo
-    to a GEMM, does more work per joule while the power cap holds the clock.
+    to a GEMM, does more work per joule while the power cap holds the clock. SM107 has 212 SMs, so its sweep moved
+    three small-token anchors to a narrower tile (see ``_SM107_D32_SMALL_TOKEN_TILES``).
     """
+    if sm == 107:
+        tile_i, tile_s, num_threads = _SM107_D32_SMALL_TOKEN_TILES.get(
+            (tokens, msa_rows), (tile_i, tile_s, num_threads)
+        )
     params = select_pwa_config(sm, tokens, tokens, msa_rows, dtype_str, D=32, c_m=64)
     assert (params.TILE_I, params.TILE_S, params.num_threads) == (tile_i, tile_s, num_threads)
 
@@ -601,8 +635,8 @@ def test_pwa_sm100_pair_and_split_tiles_match_fp32(dtype, tile_i, tile_s, stages
     The split tile writes the gated value and the op applies Wo; a launch over blocks of 8 MSA rows matches one.
     """
     skip_if_no_cutedsl("pair_weighted_averaging")
-    if SM_VERSION not in (100, 103):
-        pytest.skip("tcgen05 tiles run on SM100 and SM103")
+    if SM_VERSION not in (100, 103, 107):
+        pytest.skip("tcgen05 tiles run on SM100, SM103 and SM107")
     _configure_pwa_mode("source", monkeypatch)
     torch.manual_seed(0)
     H, D, c_m = 8, 32, 64
@@ -727,7 +761,7 @@ def test_fused_pair_weighted_averaging_chunks_msa_rows(monkeypatch) -> None:
     assert seen == [4, 4]
 
 
-@pytest.mark.parametrize("sm", [100, 103, 120, 121])
+@pytest.mark.parametrize("sm", [100, 103, 107, 120, 121])
 def test_pair_weighted_averaging_supports_blackwell(monkeypatch, sm):
     sentinel = object()
     monkeypatch.setattr(pwa_ops, "get_sm_version", lambda: sm)
@@ -981,7 +1015,7 @@ def test_pwa_sm100_d8_cubin_matches_source_at_every_tile(dtype_str, c_m, S, N, t
     torch.testing.assert_close(cubin_vt, source, atol=0.0, rtol=0.0)
 
 
-@pytest.mark.parametrize("sm", [100, 103])
+@pytest.mark.parametrize("sm", [100, 103, 107])
 @pytest.mark.parametrize("D,c_m", _PWA_DIMS, ids=_PWA_DIM_IDS)
 def test_pwa_blackwell_images_match_python_at_every_anchor(sm: int, D: int, c_m: int) -> None:
     """At every anchor of a Blackwell config file the launcher accepts the image it picks, and an image of the selected
@@ -991,12 +1025,15 @@ def test_pwa_blackwell_images_match_python_at_every_anchor(sm: int, D: int, c_m:
     them needs SM103.
     """
     skip_if_no_cutedsl("pair_weighted_averaging")
+    if sm == 107 and not _sm107_cubin_published():
+        pytest.skip("the SM107 CUBIN pack is not shipped yet; the protected refresh publishes it")
     launcher = require_cubin_library().pair_weighted_averaging
     checked = 0
     for key in _config_entries(sm, D, c_m):
         n, s, dtype_str = pwa_config._parse_key(key)
         selected, _bucket = _select_pwa_config_selection_bucket(sm, n, n, s, dtype_str, D=D, c_m=c_m)
         dtype = launcher.DType.BFLOAT16 if dtype_str == "bf16" else launcher.DType.FLOAT16
+        # Once the pack is published, a missing anchor image is a failure, not a skip.
         config = launcher.make_kernel_config(sm, n, n, s, D, c_m, dtype)
         if (config.tile_i, config.tile_s, config.tile_j, config.num_threads) != pwa_cutedsl._expected_packaged_tile(
             selected

@@ -485,12 +485,13 @@ def _flatten_sample_ids(sample_ids: tuple) -> tuple[str, ...]:
 # ``sample_id_tuple`` parametrizations. Each tuple is one test invocation, a
 # tuple of per-batch tuples whose eager and cuda-graph runs fold exactly those
 # targets; the test id joins the flattened member sample ids with '-'.
+# Both orders share one worker. Two OpenFold3 captures at once on one GPU
+# make the later shape revert to eager, so the test records one graph.
 _SAMPLE_ID_TUPLE_PARAMS_ALL = [
     pytest.param(
         t,
         id="-".join(_flatten_sample_ids(t)),
-        # Keep eager baselines on one worker.
-        marks=pytest.mark.xdist_group("-".join(_flatten_sample_ids(t))),
+        marks=pytest.mark.xdist_group("cuda-graph-" + "-".join(sorted(_flatten_sample_ids(t)))),
     )
     for t in (SAMPLE_ID_TUPLE_D, SAMPLE_ID_TUPLE_E)
 ]

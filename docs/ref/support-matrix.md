@@ -105,23 +105,27 @@ rest of the table works and is not part of that set.
 
 Optimized CuTeDSL kernels cover Ampere through Hopper, plus SM100 / SM103 for
 outer-product mean, the attention epilogue and both dual GEMMs, plus SM100 /
-SM103 / SM120 / SM121 for pair-weighted averaging and AdaLN; the kernel table
-below lists the exact SMs per kernel. On SM90, pair-weighted averaging runs
-Hopper TMA + WGMMA kernels at `D=32` and `D=8` and fuses at every size in bf16
-and fp16. On a 96 GB H100 the fused layer beats eager at every size measured,
-through 12288 tokens, where eager runs out of memory at `D=32` and on Protenix.
-On SM100, both shapes run tcgen05 kernels and fuse at every size in bf16 and
-fp16, as on SM90. The Boltz shape (`D=32`, `c_m=64`) gives a CTA 1, 2 or 4 MSA
-rows. `D=8` uses CTA pairs and thread-block clusters that multicast `w` and `v`.
-The layer writes `v` transposed for it, so the kernel loads each head's values
-in 128-byte rows. On B200 the fused layer beats eager at 128-16384 tokens with
-1-4096 MSA rows, for both shapes and both dtypes, wherever eager fits in memory.
-SM103 runs the SM100 kernels and tables, also at every size; they were tuned on
-B200 and are not measured on B300. SM120 and SM121 fuse D=32 bf16 through 2048
-tokens, where the tables record a win. The committed CUBIN packs still have the
-previous SM90, SM100 and SM103 tiles and no SM120 or SM121 image, so a
-source-free launch with a missing or stale image uses PyTorch. Every SM120 and
-SM121 shape stays on the Ampere kernel. Outer-product mean runs CuTeDSL only
+SM103 / SM107 / SM120 / SM121 for pair-weighted averaging and AdaLN; the kernel
+table below lists the exact SMs per kernel. On SM90, pair-weighted averaging
+runs Hopper TMA + WGMMA kernels at `D=32` and `D=8` and fuses at every size in
+bf16 and fp16. On a 96 GB H100 the fused layer beats eager at every size
+measured, through 12288 tokens, where eager runs out of memory at `D=32` and on
+Protenix. On SM100, both shapes run tcgen05 kernels and fuse at every size in
+bf16 and fp16, as on SM90. The Boltz shape (`D=32`, `c_m=64`) gives a CTA 1, 2
+or 4 MSA rows. `D=8` uses CTA pairs and thread-block clusters that multicast `w`
+and `v`. The layer writes `v` transposed for it, so the kernel loads each head's
+values in 128-byte rows. On B200 the fused layer beats eager at 128-16384 tokens
+with 1-4096 MSA rows, for both shapes and both dtypes, wherever eager fits in
+memory. SM103 runs the SM100 kernels and tables, also at every size; they were
+tuned on B200 and are not measured on B300. SM107 (Vera Rubin) compiles the same
+tcgen05 kernels for `sm_107a` and has its own tile tables, tuned on a Rubin GPU,
+which has 212 SMs against 148 on B200; they were measured on one device. The
+shipped CUBIN pack has no SM107 image until the protected refresh publishes it,
+so a source-free launch there uses PyTorch. SM120 and SM121 fuse D=32 bf16
+through 2048 tokens, where the tables record a win. The committed CUBIN packs
+still have the previous SM90, SM100 and SM103 tiles and no SM120 or SM121 image,
+so a source-free launch with a missing or stale image uses PyTorch. Every SM120
+and SM121 shape stays on the Ampere kernel. Outer-product mean runs CuTeDSL only
 where it has a native kernel and Triton on every other SM80+ SKU. On **SM100**
 and **SM103**, triangle attention falls back to cuEquivariance; on **SM120** and
 **SM121**, triangle attention and both dual GEMMs do. The PyTorch backend still
@@ -137,6 +141,7 @@ and **SM103**, triangle attention falls back to cuEquivariance; on **SM120** and
 | **Blackwell**      | SM103              | B300, GB300                  | CuTeDSL CUBIN (PWA, OPM, AdaLN, both dual GEMMs, attention epilogue); cuEquivariance (triangle attention) |
 | **Blackwell**      | SM120              | RTX 5090, RTX 6000 Blackwell | CuTeDSL CUBIN (PWA, AdaLN); cuEquivariance (triangle attention, dual GEMM); Triton (OPM)                  |
 | **Blackwell**      | SM121              | DGX Spark (GB10)             | CuTeDSL CUBIN (PWA, AdaLN); cuEquivariance (triangle attention, dual GEMM); Triton (OPM)                  |
+| **Rubin**          | SM107              | Vera Rubin                   | CuTeDSL (PWA, AdaLN; the CUBIN pack ships after merge); Triton (OPM)                                      |
 
 Check the device:
 
@@ -146,7 +151,7 @@ python -c 'import torch; print(torch.cuda.get_device_capability())'
 
 `(8, 0)` is A100 / Ampere, `(8, 9)` is L40 / Ada, `(9, 0)` is H100 / Hopper,
 `(10, 0)` is B200 / SM100, `(10, 3)` is B300 / SM103, `(12, 0)` is SM120,
-`(12, 1)` is DGX Spark / SM121.
+`(12, 1)` is DGX Spark / SM121, `(10, 7)` is Vera Rubin / SM107.
 
 By default, for inputs up to 1024 tokens, Boltz-2, OpenFold3, and Protenix
 (`protenix-v2`) capture one trunk recycle, one diffusion step, and the
@@ -183,7 +188,7 @@ and `bionemo_ir._torch.custom_ops`). Layers wrap the same ops:
 | Dual-GEMM `x_x`                     | Triangle multiplication; SwiGLU projection    | CuTeDSL → CUBIN; else CUEQUIV / PyTorch                         | 80, 86, 89, 90, 100, 103; CUEQUIV on 120, 121 | [`get_dual_gemm_x_x_op`](../../bionemo_ir/_torch/custom_ops/dual_gemm_x_x/ops.py) / [`get_cute_dual_gemm_x_x_op`](../../bionemo_ir/_torch/custom_ops/dual_gemm_x_x/ops.py)                  |
 | Dual-GEMM `x0_x1`                   | Triangle multiplication                       | CuTeDSL → CUBIN; else CUEQUIV                                   | 80, 86, 89, 90, 100, 103; CUEQUIV on 120, 121 | [`get_dual_gemm_x0_x1_op`](../../bionemo_ir/_torch/custom_ops/dual_gemm_x0_x1/ops.py)                                                                                                       |
 | TriMul KF chain                     | Triangle multiplication on padded tokens      | CuTeDSL → CUBIN (bf16)                                          | 90, 100, 103                                  | [`get_trimul_kf_k1_op`](../../bionemo_ir/_torch/custom_ops/trimul_kf_k1/ops.py) → `get_trimul_kf_k2_op` → `get_trimul_kf_k3_op`                                                             |
-| Pair-weighted averaging (PWA)       | Pair → single update                          | CuTeDSL → CUBIN                                                 | 80, 90, 100, 103, 120, 121                    | [`get_pair_weighted_averaging_op`](../../bionemo_ir/_torch/custom_ops/pair_weighted_averaging/ops.py)                                                                                       |
+| Pair-weighted averaging (PWA)       | Pair → single update                          | CuTeDSL → CUBIN                                                 | 80, 90, 100, 103, 107, 120, 121               | [`get_pair_weighted_averaging_op`](../../bionemo_ir/_torch/custom_ops/pair_weighted_averaging/ops.py)                                                                                       |
 | Outer-product mean (OPM)            | Single → pair update                          | CuTeDSL → CUBIN on native SMs (90: bf16); else Triton / PyTorch | 80, 86, 89, 90, 100, 103; Triton on other 80+ | [`get_outer_product_mean_op`](../../bionemo_ir/_torch/custom_ops/outer_product_mean/ops.py)                                                                                                 |
 | Gated sigmoid                       | Attention output gate                         | CuTeDSL → CUBIN                                                 | 80, 86, 89, 90                                | [`get_gated_sigmoid_op`](../../bionemo_ir/_torch/custom_ops/gated_sigmoid/ops.py)                                                                                                           |
 | Attention epilogue                  | Attention gate + output projection + residual | CuTeDSL → CUBIN (bf16)                                          | 80, 86, 89, 90, 100, 103                      | [`get_attn_epilogue_op`](../../bionemo_ir/_torch/custom_ops/attn_epilogue/ops.py)                                                                                                           |

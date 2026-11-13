@@ -128,7 +128,7 @@ FROM deps AS devdeps
 # time.
 ENV BIOIR_CUBIN_COMPILE_ENVIRONMENT=sha256:6e8ccc607fc2a51e3741667b86316a0889418ba8b78ed0ba96e8d282b648a7a6
 # The dev group carries the CuTeDSL compiler. pyproject.toml excludes the
-# CUDA 12 libraries wheel; 4.8.1 would otherwise install it next to cu13.
+# CUDA 12 libraries wheel; 4.8.0 would otherwise install it next to cu13.
 RUN --mount=type=cache,target=/cache/uv \
     uv export --quiet --locked --only-group dev --no-emit-project \
         --prune torch --prune triton \

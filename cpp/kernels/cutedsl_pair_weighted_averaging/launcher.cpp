@@ -43,8 +43,9 @@ constexpr char kSM100LaunchAbi[] = "pair_weighted_averaging_sm100";
 constexpr std::int32_t kSM80KernelSM = 80;
 constexpr std::int32_t kSM90KernelSM = 90;
 constexpr std::int32_t kSM100KernelSM = 100;
-/* SM103 runs the SM100 kernels, built for its own architecture. */
+/* SM103 and SM107 run the SM100 kernels, each built for its own architecture. */
 constexpr std::int32_t kSM103TargetSM = 103;
+constexpr std::int32_t kSM107TargetSM = 107;
 /* The two Hopper kernels share kSM90LaunchAbi; each image records which one it holds. */
 constexpr std::int32_t kSM90D32Variant = 0;
 constexpr std::int32_t kSM90D8Variant = 1;
@@ -235,7 +236,8 @@ std::int32_t output_features(embedded::CubinImage const& image)
 bool has_valid_sm100_launch(embedded::CubinImage const& image)
 {
   embedded::SM100LaunchInfo const& launch = image.sm100;
-  bool const target = image.cubin.target_sm == kSM100KernelSM || image.cubin.target_sm == kSM103TargetSM;
+  bool const target = image.cubin.target_sm == kSM100KernelSM || image.cubin.target_sm == kSM103TargetSM
+    || image.cubin.target_sm == kSM107TargetSM;
   if (
     !equal_c_strings(image.cubin.launch_abi, kSM100LaunchAbi) || !target || !launch.enabled || image.sm90.enabled
     || launch.block_dims[0] != image.num_threads || launch.block_dims[1] != 1 || launch.block_dims[2] != 1)

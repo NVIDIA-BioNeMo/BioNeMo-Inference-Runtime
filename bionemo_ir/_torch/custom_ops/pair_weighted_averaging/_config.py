@@ -55,7 +55,7 @@ _MAX_FUSED_TOKENS_BY_DIMS: dict[tuple[int, int], int | None] = {
 }
 _FUSED_LIMIT_DTYPES = ("bf16", "fp16")
 
-_SUPPORTED_SM = (80, 90, 100, 103, 120, 121)
+_SUPPORTED_SM = (80, 90, 100, 103, 107, 120, 121)
 
 # Kernels that load v transposed, [B, S, H*D, N] with j contiguous, so the value GEMM's B operand arrives in 128-byte
 # rows. Every other kernel loads [B, S, N, H*D].

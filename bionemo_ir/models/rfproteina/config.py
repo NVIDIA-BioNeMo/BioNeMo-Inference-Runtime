@@ -13,15 +13,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from collections.abc import Callable
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, Field, model_validator
 
 from bionemo_ir._torch.graph_optimization.config import CUDAGraphOptimizationConfig, NamedDimTies
 from bionemo_ir._torch.graph_optimization.graph_policy import exact_graph_config
 from bionemo_ir._torch.modules.rfproteina.groups import GROUP_KEYS
-from bionemo_ir._torch.search import WeightedObjective, build_weighted_objective
 from bionemo_ir.configs import BaseConfig, TrunkPadSpec
 from bionemo_ir.hubs.support_matrix import GenerativeSupportMatrix as SupMat
 
@@ -50,7 +48,7 @@ def trunk_graph_config(max_tokens: int = TRUNK_GRAPH_MAX_TOKENS) -> CUDAGraphOpt
         ),
         max_tokens=max_tokens,
         repeated=True,
-        static_args=("metadata",),
+        static_args=("metadata", "return_pair"),
         workspace_kwargs=("buffers",),
         # A denoising step resolves these once and hands every recycle of that step the same
         # tensors. The runtime copies one in only when it is not what it last copied: a pass's own
@@ -72,52 +70,32 @@ def trunk_graph_config(max_tokens: int = TRUNK_GRAPH_MAX_TOKENS) -> CUDAGraphOpt
         # passed for them is copied, which is why they are not stable.
         borrowed_kwargs=("pair", "pair_init"),
     )
-    config.num_graphs_max_for_this_module = 1
+    config.num_graphs_max_for_this_module = 2
     return config
 
 
-class RFProteinaScheduleConfig(BaseModel):
-    """Time-grid configuration for one product-space modality."""
+class _StrictConfig(BaseModel):
+    """Numerical-parameter models refuse keys they do not define, so a stale or misspelled host key raises."""
 
-    mode: str
-    power: float = 2.0
-    #: Sample the final ``tail_steps`` intervals at ``tail_step_multiplier``
-    #: times the density, holding the total step count fixed. Zero keeps the
-    #: plain grid.
-    tail_steps: int = Field(default=0, ge=0)
-    tail_step_multiplier: int = 1
-
-    @model_validator(mode="after")
-    def _validate_tail(self) -> "RFProteinaScheduleConfig":
-        if self.tail_steps and self.tail_step_multiplier < 2:
-            raise ValueError("tail_step_multiplier must be an integer >= 2 when tail_steps is set")
-        return self
+    model_config = {"extra": "forbid"}
 
 
-class RFProteinaNoiseScheduleConfig(BaseModel):
-    """Stochastic forcing schedule for one modality."""
-
-    mode: str
-    power: float = 1.0
-    clamp: float | None = None
-
-
-class RFProteinaVFStepConfig(BaseModel):
+class RFProteinaVFStepConfig(_StrictConfig):
     """Velocity-flow integration parameters."""
 
     sampling_mode: str = "vf_tsr"
     score_scale: float = 1.0
-    noise_scale: float = 0.1
-    ode_upper: float = 0.98
-    ode_lower: float = 0.02
+    sc_scale_noise: float = 0.1
+    t_lim_ode: float = 0.98
+    t_lim_ode_below: float = 0.02
     center_every_step: bool = False
     tsr_k: float = 4.0
     tsr_sigma: float = 8.0
     #: Scale the injected noise to the score the TSR ratio already applied,
-    #: ``score_scale / ratio``, instead of the configured ``noise_scale``.
+    #: ``score_scale / ratio``, instead of the configured ``sc_scale_noise``.
     tsr_matched_noise: bool = False
     #: Drive the Langevin term with the TSR-scaled score (``score * ratio``) and
-    #: inject noise of variance ``2 * g(t) * noise_scale * dt``; ``score_scale``
+    #: inject noise of variance ``2 * g(t) * sc_scale_noise * dt``; ``score_scale``
     #: is then unused. This is the stochastic VF-TSR update RFD4-Proteina uses,
     #: and it divides the noise schedule ``g(t)`` by the TSR ratio squared
     #: where the other noise laws divide it by the ratio once.
@@ -130,7 +108,7 @@ class RFProteinaVFStepConfig(BaseModel):
         return self
 
 
-class RFProteinaReferenceConfig(BaseModel):
+class RFProteinaReferenceConfig(_StrictConfig):
     """Reference (``t = 0``) distribution for one product-space modality.
 
     Mirrors one entry of upstream's ``product_flowmatcher`` config. No
@@ -161,334 +139,43 @@ class RFProteinaReferenceConfig(BaseModel):
         return self
 
 
-class RFProteinaModalitySamplingConfig(BaseModel):
-    """Reference distribution, schedules, and integrator for one modality."""
+class RFProteinaModalitySimulationConfig(_StrictConfig):
+    """Reference distribution and numerical step parameters for one modality."""
 
-    schedule: RFProteinaScheduleConfig
-    noise_schedule: RFProteinaNoiseScheduleConfig
     step: RFProteinaVFStepConfig
     reference: RFProteinaReferenceConfig = Field(default_factory=RFProteinaReferenceConfig)
 
 
-def _backbone_sampling_config() -> RFProteinaModalitySamplingConfig:
-    return RFProteinaModalitySamplingConfig(
-        schedule=RFProteinaScheduleConfig(mode="log", power=2.0),
-        noise_schedule=RFProteinaNoiseScheduleConfig(mode="1/t", power=1.0),
-        step=RFProteinaVFStepConfig(noise_scale=0.3, tsr_k=16.0, tsr_sigma=3.0),
+def _backbone_simulation_config() -> RFProteinaModalitySimulationConfig:
+    return RFProteinaModalitySimulationConfig(
+        step=RFProteinaVFStepConfig(sc_scale_noise=0.3, tsr_k=16.0, tsr_sigma=3.0),
         reference=RFProteinaReferenceConfig(
             zero_com_noise=True, stochastic_centering_mode="x_0", stochastic_centering_scale=0.2
         ),
     )
 
 
-def _latent_sampling_config() -> RFProteinaModalitySamplingConfig:
-    return RFProteinaModalitySamplingConfig(
-        schedule=RFProteinaScheduleConfig(mode="power", power=2.0),
-        noise_schedule=RFProteinaNoiseScheduleConfig(mode="tan", power=1.0),
-        step=RFProteinaVFStepConfig(noise_scale=0.1, tsr_k=4.0, tsr_sigma=8.0),
+def _latent_simulation_config() -> RFProteinaModalitySimulationConfig:
+    return RFProteinaModalitySimulationConfig(
+        step=RFProteinaVFStepConfig(sc_scale_noise=0.1, tsr_k=4.0, tsr_sigma=8.0),
         reference=RFProteinaReferenceConfig(),
     )
 
 
-#: The released recycle strategies, as ``(steps, recycle depth)`` bands over a 60-step
-#: trajectory, which ``recycle_strategy`` selects upstream. Each peaks where the one above
-#: does, over the ten steps that decide the fold, and they differ in how much thinking they
-#: spend there: 110, 185 and 295 trunk passes against the 170 of the 50-step default.
-RECYCLE_SCHEDULES: dict[str, list[tuple[int, int]]] = {
-    "thinking_low": [(5, 1), (5, 1), (5, 2), (5, 3), (10, 3), (5, 3), (5, 2), (10, 1), (10, 1)],
-    "thinking_medium": [(5, 1), (5, 2), (5, 3), (5, 5), (10, 6), (5, 5), (5, 3), (10, 2), (10, 1)],
-    "thinking_high": [(5, 2), (5, 3), (5, 5), (5, 8), (10, 9), (5, 8), (5, 5), (10, 3), (10, 2)],
-}
+class RFProteinaSimulationConfig(_StrictConfig):
+    """Numerical integration parameters; callers supply all grids and recycle depths.
 
-
-def recycle_schedule(name: str) -> list[tuple[int, int]]:
-    """Return a released recycle schedule's bands by name.
-
-    Args:
-        name: One of :data:`RECYCLE_SCHEDULES`, as ``recycle_strategy`` selects upstream.
-
-    Returns:
-        A copy of the bands, safe for the caller to edit.
-
-    Raises:
-        KeyError: The name is not a released schedule.
+    The host owns these values, and ``RFProteina.from_reference_state_dicts`` requires
+    them. The defaults are for tests and toy examples. They are not the released sampler
+    settings: ``sc_scale_noise``, ``t_lim_ode`` and ``tsr_sigma`` differ and
+    ``tsr_scaled_score_drift`` is off, so a rollout that relies on them follows a
+    different trajectory.
     """
-    if name not in RECYCLE_SCHEDULES:
-        raise KeyError(f"unknown recycle schedule {name!r}; expected one of {sorted(RECYCLE_SCHEDULES)}")
-    return list(RECYCLE_SCHEDULES[name])
 
-
-class RFProteinaSamplingConfig(BaseModel):
-    """RFProteína product-space sampling and inference-recycling policy."""
-
-    num_steps: int = 50
     self_condition: bool = False
-    #: Decode against the trunk readout's predicted sequence on tokens the
-    #: caller left unspecified. Requires ``trunk.use_sequence_readout``.
-    condition_decoder_on_sequence_prediction: bool = False
-    n_recycle: int = Field(default=0, ge=0)
-    n_recycle_schedule: list[tuple[int, int]] | None = None
     state_dtype: str = "float32"
-    #: Consume random draws in the reference implementation's order, so a fixed
-    #: seed reproduces its noise and two backends' designs compare one to one.
-    #: The reference encodes the input before it draws the reference noise --
-    #: even for unconditional design, where the encoding goes unused -- and the
-    #: encoder's posterior sample takes one draw from the same stream; this mode
-    #: takes that draw too and routes the encoder's own sample through the
-    #: sampling stream. Off by default: production draws with plain
-    #: ``torch.randn`` and skips a draw nothing reads.
-    match_reference_rng: bool = False
-    backbone: RFProteinaModalitySamplingConfig = Field(default_factory=_backbone_sampling_config)
-    local_latents: RFProteinaModalitySamplingConfig = Field(default_factory=_latent_sampling_config)
-
-    @model_validator(mode="after")
-    def _validate_recycle_schedule(self) -> "RFProteinaSamplingConfig":
-        if self.num_steps <= 0:
-            raise ValueError("num_steps must be positive")
-        if self.n_recycle_schedule is None:
-            return self
-        if any(width <= 0 or depth < 0 for width, depth in self.n_recycle_schedule):
-            raise ValueError("n_recycle_schedule entries require a positive width and non-negative depth")
-        scheduled_steps = sum(width for width, _ in self.n_recycle_schedule)
-        if scheduled_steps != self.num_steps:
-            raise ValueError(
-                f"n_recycle_schedule expands to {scheduled_steps} steps, but num_steps is {self.num_steps}"
-            )
-        return self
-
-    def recycle_depths(self, num_steps: int | None = None) -> tuple[int, ...]:
-        """Expand the full schedule, taking its tail for a partial trajectory."""
-        actual_steps = self.num_steps if num_steps is None else num_steps
-        if not 0 < actual_steps <= self.num_steps:
-            raise ValueError(f"num_steps must be in [1, {self.num_steps}], got {actual_steps}")
-        if self.n_recycle_schedule is None:
-            return (self.n_recycle,) * actual_steps
-        depths = tuple(depth for width, depth in self.n_recycle_schedule for _ in range(width))
-        if len(depths) != self.num_steps:
-            raise ValueError(f"n_recycle_schedule expands to {len(depths)} steps, but num_steps is {self.num_steps}")
-        return depths[-actual_steps:]
-
-
-#: The released sampler densifies the last ten intervals of each modality.
-RELEASED_TAIL_STEPS, RELEASED_TAIL_STEP_MULTIPLIER = 10, 2
-
-
-def _latest_sampling_config() -> RFProteinaSamplingConfig:
-    """The released inference policy: ``thinking_medium`` over the densified tail.
-
-    This is what ``rfd4-generate`` runs by default, down to the tail grid and the decoder
-    conditioning, so a design taken straight from this config is the served one.
-    """
-    bands = recycle_schedule("thinking_medium")
-
-    def modality(build: "Callable[[], RFProteinaModalitySamplingConfig]") -> RFProteinaModalitySamplingConfig:
-        config = build()
-        config.schedule.tail_steps = RELEASED_TAIL_STEPS
-        config.schedule.tail_step_multiplier = RELEASED_TAIL_STEP_MULTIPLIER
-        return config
-
-    return RFProteinaSamplingConfig(
-        num_steps=sum(width for width, _ in bands),
-        n_recycle_schedule=bands,
-        condition_decoder_on_sequence_prediction=True,
-        backbone=modality(_backbone_sampling_config),
-        local_latents=modality(_latent_sampling_config),
-    )
-
-
-#: Upstream inverse-folding method: resample the target backbone from its
-#: forward marginal every step, then restore the clean backbone at the end.
-RESAMPLED_FORWARD_MARGINAL = "resampled_forward_marginal"
-INVERSE_FOLDING_METHODS = frozenset({RESAMPLED_FORWARD_MARGINAL})
-
-
-class RFProteinaPartialSimulationConfig(BaseModel):
-    """Runtime start-time contract for existing-structure redesign.
-
-    Explicit modality times run the configured full step count over shorter
-    schedule tails. Trajectory-fraction mode restarts on the configured
-    schedule itself, at the index that leaves ``round(fraction * num_steps)``
-    steps, and integrates that tail. Inverse folding is the special case that
-    keeps the backbone and redesigns only sequence latents.
-    """
-
-    partial_t_backbone: float | None = None
-    partial_t_latent: float | None = None
-    couple_partial_t: bool = False
-    partial_trajectory_fraction_steps: float | None = None
-    inverse_folding: bool = False
-    inverse_folding_method: str = RESAMPLED_FORWARD_MARGINAL
-    #: Resolution of the dense schedule that explicit and coupled start times are read from.
-    reference_num_steps: int = 10000
-
-    @model_validator(mode="after")
-    def _validate_partial_times(self) -> "RFProteinaPartialSimulationConfig":
-        backbone = self.partial_t_backbone
-        latent = self.partial_t_latent
-        fraction = self.partial_trajectory_fraction_steps
-        if self.reference_num_steps <= 0:
-            raise ValueError("reference_num_steps must be positive")
-        if self.inverse_folding:
-            if backbone is not None or latent is not None or self.couple_partial_t or fraction is not None:
-                raise ValueError(
-                    "inverse_folding is mutually exclusive with partial_t_backbone, "
-                    "partial_t_latent, couple_partial_t, and "
-                    "partial_trajectory_fraction_steps"
-                )
-            if self.inverse_folding_method not in INVERSE_FOLDING_METHODS:
-                raise ValueError(
-                    "inverse_folding_method must be one of "
-                    f"{sorted(INVERSE_FOLDING_METHODS)}, got {self.inverse_folding_method!r}"
-                )
-            return self
-        if fraction is not None:
-            if backbone is not None or latent is not None or self.couple_partial_t:
-                raise ValueError(
-                    "partial_trajectory_fraction_steps is mutually exclusive "
-                    "with partial_t_backbone, partial_t_latent, and "
-                    "couple_partial_t"
-                )
-            if not 0.0 < fraction <= 1.0:
-                raise ValueError("partial_trajectory_fraction_steps must be in (0, 1]")
-            return self
-
-        for name, value in (("partial_t_backbone", backbone), ("partial_t_latent", latent)):
-            if value is not None and not 0.0 <= value < 1.0:
-                raise ValueError(f"{name} must be in [0, 1)")
-        count = int(backbone is not None) + int(latent is not None)
-        if count == 2 and self.couple_partial_t:
-            raise ValueError("couple_partial_t=true requires exactly one explicit modality time")
-        if count == 1 and not self.couple_partial_t:
-            raise ValueError("one explicit modality time requires couple_partial_t=true; otherwise provide both times")
-        return self
-
-
-class RFProteinaMetricClipConfig(BaseModel):
-    """Bounds applied to a metric before its search weight."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    min: float | None = Field(default=None, description="Lower clip applied before weighting.")
-    max: float | None = Field(default=None, description="Upper clip applied before weighting.")
-
-    @model_validator(mode="after")
-    def _validate_bounds(self) -> "RFProteinaMetricClipConfig":
-        if self.min is None and self.max is None:
-            raise ValueError("clip_values entries must set min and/or max")
-        if self.min is not None and self.max is not None and self.min > self.max:
-            raise ValueError(f"clip has min={self.min} > max={self.max}")
-        return self
-
-
-class RFProteinaSearchRewardOverrideConfig(BaseModel):
-    """Per-checkpoint reward fields; each named field replaces the base wholesale."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    weights: dict[str, float] | None = Field(
-        default=None,
-        description="Replacement metric weights at this checkpoint. Negative weights minimize.",
-    )
-    clip_values: dict[str, RFProteinaMetricClipConfig] | None = Field(
-        default=None,
-        description="Replacement clips at this checkpoint, keyed like weights.",
-    )
-    reward_metrics_tags: list[str] | None = Field(
-        default=None,
-        description="Replacement tags for an injected metric manager. Local metrics ignore tags.",
-    )
-
-
-class RFProteinaSearchRewardConfig(BaseModel):
-    """Weighted local or injected metrics used to rank beam candidates."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    weights: dict[str, float] = Field(
-        description=(
-            "Maps a metric key such as clash_metrics.frac_atoms_clashing_1p5A to a weight. Negative minimizes."
-        )
-    )
-    clip_values: dict[str, RFProteinaMetricClipConfig] = Field(
-        default_factory=dict,
-        description="Optional per-key min/max applied before weighting. The reported metric stays raw.",
-    )
-    reward_metrics_tags: list[str] = Field(
-        default_factory=list,
-        description="Tags forwarded to an injected OSS metric manager. The local evaluator ignores them.",
-    )
-    checkpoint_overrides: dict[int, RFProteinaSearchRewardOverrideConfig] = Field(
-        default_factory=dict,
-        description="Maps a scored checkpoint step to replacement weights, clips, and/or tags.",
-    )
-
-    @field_validator("checkpoint_overrides", mode="before")
-    @classmethod
-    def _coerce_checkpoint_keys(cls, value: object) -> object:
-        if not isinstance(value, dict):
-            return value
-        coerced: dict[int, object] = {}
-        for key, spec in value.items():
-            if isinstance(key, bool) or not (isinstance(key, int) or (isinstance(key, str) and key.isdigit())):
-                raise ValueError(f"checkpoint_overrides keys must be integer steps; got {key!r}")
-            coerced[int(key)] = spec
-        return coerced
-
-    def to_weighted_objective(self) -> WeightedObjective:
-        """Build the runtime objective, resolving per-checkpoint replacements."""
-        overrides: dict[int, dict[str, object]] = {}
-        for step, spec in self.checkpoint_overrides.items():
-            replacement: dict[str, object] = {}
-            if spec.weights is not None:
-                replacement["weights"] = spec.weights
-            if spec.clip_values is not None:
-                replacement["clip_values"] = {key: value.model_dump() for key, value in spec.clip_values.items()}
-            if spec.reward_metrics_tags is not None:
-                replacement["reward_metrics_tags"] = spec.reward_metrics_tags
-            overrides[step] = replacement
-        return build_weighted_objective(
-            weights=self.weights,
-            clip_values={key: value.model_dump() for key, value in self.clip_values.items()},
-            reward_metrics_tags=self.reward_metrics_tags,
-            checkpoint_overrides=overrides,
-        )
-
-
-class RFProteinaBeamSearchConfig(BaseModel):
-    """Opt-in metric-weighted beam search over RFProteína product-space rollouts."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    step_checkpoints: list[int] = Field(
-        description=(
-            "Inclusive global steps to branch, score, and prune. Must increase. Starts at 0 for a fresh "
-            "search, or at the step a resumed beam was exported at. Ends at num_steps, or earlier when "
-            "export_states stops the beam there for a caller to prune."
-        )
-    )
-    n_branch: int = Field(default=4, ge=1, description="Stochastic continuations spawned from each survivor.")
-    beam_width: int = Field(default=4, ge=1, description="Candidates kept per input after each prune.")
-    scoring_chunk_size: int | None = Field(
-        default=None,
-        ge=1,
-        description="Maximum decoded rows per scoring chunk. None scores the full candidate tensor.",
-    )
-    intermediate_save_min_reward: float | None = Field(
-        default=None,
-        description="Keep non-survivor completions whose search.reward is at least this value. None keeps none.",
-    )
-    rewards: RFProteinaSearchRewardConfig = Field(description="Weighted objective used at each scored checkpoint.")
-
-    @model_validator(mode="after")
-    def _validate_checkpoints(self) -> "RFProteinaBeamSearchConfig":
-        checkpoints = self.step_checkpoints
-        if len(checkpoints) < 2:
-            raise ValueError("step_checkpoints must have at least 2 entries (start and end)")
-        if checkpoints[0] < 0:
-            raise ValueError("step_checkpoints must begin at 0, or at the step a resumed beam starts from")
-        if any(later <= earlier for earlier, later in zip(checkpoints, checkpoints[1:], strict=False)):
-            raise ValueError("step_checkpoints must be strictly increasing")
-        return self
+    bb_ca: RFProteinaModalitySimulationConfig = Field(default_factory=_backbone_simulation_config)
+    local_latents: RFProteinaModalitySimulationConfig = Field(default_factory=_latent_simulation_config)
 
 
 class RFProteinaTrunkConfig(BaseConfig):
@@ -859,18 +546,9 @@ class RFProteinaDecoderConfig(BaseConfig):
     token_type_embedding_dim: int = 32
     #: Token kinds the embedding table covers, read from the checkpoint.
     num_token_kinds: int = 5
-    #: Intersect the static occupancy table with a learned per-slot presence
-    #: head, which the unified release adds so a decoded residue can suppress
-    #: atoms its class would otherwise carry. The OSS autoencoder that has the
-    #: head also keeps a conditioned residue over the argmax and every
-    #: conditioned atom over the head, and so does the decoder.
+    #: Emit raw per-atom presence logits for the application's output policy.
     use_atom_presence: bool = False
-    #: Occupied atom37 slots per residue class, for a vocabulary wider than the
-    #: table the decoder carries. Resolved from
-    #: :mod:`bionemo_ir.data.schemas.vocabulary` when weights are converted.
-    atom37_occupancy: tuple[tuple[int, ...], ...] | None = None
-    #: Residue classes each token kind may decode as, for a vocabulary wider
-    #: than the table the decoder carries. Resolved with the occupancy.
+    #: Residue classes each token kind may decode as, resolved from the vocabulary.
     allowed_residue_classes: tuple[tuple[int, ...], ...] | None = None
     num_conditional_residue_types: int = 33
     sequence_separation_bins: int = 64
@@ -933,7 +611,7 @@ class RFProteinaConfig(BaseConfig):
     # omitted, keeping unconditional-generation memory unchanged.
     encoder: RFProteinaEncoderConfig | None = None
     decoder: RFProteinaDecoderConfig = Field(default_factory=RFProteinaDecoderConfig)
-    sampling: RFProteinaSamplingConfig = Field(default_factory=_latest_sampling_config)
+    simulation: RFProteinaSimulationConfig = Field(default_factory=RFProteinaSimulationConfig)
     checkpoint_path: str | None = None
     autoencoder_checkpoint_path: str | None = None
     dtype: str = "bfloat16"

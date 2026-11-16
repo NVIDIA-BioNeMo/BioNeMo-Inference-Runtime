@@ -14,7 +14,6 @@
 # limitations under the License.
 
 from collections.abc import Mapping, Sequence
-from dataclasses import replace
 from pathlib import Path
 
 import torch
@@ -27,68 +26,41 @@ from bionemo_ir._torch.graph_optimization.cuda_graph.runtime import (
     CUDAGraphPreparationState,
 )
 from bionemo_ir._torch.layers.normalization import replace_with_fused_layernorm, replace_with_fused_rmsnorm
-from bionemo_ir._torch.layers.transformers.local_latents_decoder import get_residue_atom_mask
+from bionemo_ir._torch.layers.transformers.local_latents_decoder import LEGACY_RESIDUE_TYPES, RFProteinaLatentDecoder
+from bionemo_ir._torch.layers.transformers.local_latents_encoder import RFProteinaLatentEncoder
 from bionemo_ir._torch.layers.transformers.local_latents_transformer import LocalLatentsTransformer, TrunkMasks
-from bionemo_ir._torch.modules.rfproteina import (
+from bionemo_ir._torch.modules.rfproteina.atom_utils import finite_atom_mask
+from bionemo_ir._torch.modules.rfproteina.contracts import (
+    RFProteinaCleanStateEncoding,
+    RFProteinaConversionReport,
+    RFProteinaDecodedOutput,
+    RFProteinaPredictFn,
+    RFProteinaRepresentations,
+    RFProteinaSimulationOutput,
+    RFProteinaState,
+)
+from bionemo_ir._torch.modules.rfproteina.groups import extract_groups
+from bionemo_ir._torch.modules.rfproteina.representation_builder import (
+    ATOM37_SIZE,
     ATOMIZED_TOKEN_TYPE,
+    CONDITION_COORDINATE,
+    CONDITION_COORDINATE_MASK,
     CONDITION_INDEX_MASK,
     DNA_TOKEN_TYPE,
     RNA_TOKEN_TYPE,
-    RFProteinaCleanStateEncoding,
-    RFProteinaConversionReport,
-    RFProteinaCorruptionOutput,
-    RFProteinaLatentDecoder,
-    RFProteinaLatentEncoder,
-    RFProteinaPartialRolloutSetup,
-    RFProteinaPartialSamplingOutput,
-    RFProteinaPredictFn,
-    RFProteinaPredictionOutput,
-    RFProteinaProductSpaceSampler,
     RFProteinaRepresentationBuilder,
-    RFProteinaRepresentationBuilderFn,
-    RFProteinaRepresentations,
-    RFProteinaSamplingOutput,
-    RFProteinaSearchOutput,
-    RFProteinaState,
-    apply_insertion_assignment,
-    assign_unindexed_tokens,
-    create_fraction_partial_schedules,
-    create_modality_schedule,
-    extract_groups,
-    materialize_atomized_output,
-    materialize_nucleic_acid_output,
-    materialize_partial_redesign_output,
-    partial_num_steps,
-    resolve_partial_times,
-    sample_reference_beam,
-    sample_reference_state,
-    validate_nucleic_acid_contract,
-)
-from bionemo_ir._torch.modules.rfproteina.atom_utils import finite_atom_mask
-from bionemo_ir._torch.modules.rfproteina.groups import CONDITION_COORDINATE_GROUP
-from bionemo_ir._torch.modules.rfproteina.metrics import RFProteinaLocalMetricEvaluator
-from bionemo_ir._torch.modules.rfproteina.representation_builder import (
-    ATOM37_SIZE,
-    CONDITION_COORDINATE,
-    CONDITION_COORDINATE_MASK,
-    CONDITION_SEQUENCE,
-    CONDITION_SEQUENCE_MASK,
-    UNSPECIFIED_RESIDUE_TOKEN,
     StaticTrackParts,
 )
-from bionemo_ir._torch.modules.rfproteina.search import run_rfproteina_beam_search
+from bionemo_ir._torch.modules.rfproteina.simulator import RFProteinaProductSpaceSimulator
 from bionemo_ir._torch.sampling.contracts import SamplingContext
 from bionemo_ir._torch.sampling.flow_matching import FlowMatchingSchedule
-from bionemo_ir._torch.search import CompositeMetricEvaluator, MetricEvaluatorLike, derive_search_seed
 from bionemo_ir.configs import AcceleratedConfig, BackendType, BaseConfig
 from bionemo_ir.hubs import resolve_rfproteina_autoencoder_checkpoint, resolve_rfproteina_checkpoint
 from bionemo_ir.hubs.support_matrix import GenerativeSupportMatrix as SupMat
 from bionemo_ir.models.rfproteina.config import (
     PRETRAINED_CONFIG_REGISTRY,
-    RFProteinaBeamSearchConfig,
     RFProteinaConfig,
-    RFProteinaPartialSimulationConfig,
-    RFProteinaSamplingConfig,
+    RFProteinaSimulationConfig,
     trunk_graph_config,
 )
 from bionemo_ir.models.rfproteina.convert import (
@@ -99,11 +71,13 @@ from bionemo_ir.models.rfproteina.convert import (
     load_rfproteina_representation_builder_checkpoint,
     load_rfproteina_trunk_checkpoint,
     merge_rfproteina_lora,
+    reject_unused_source,
     rfproteina_decoder_config_from_weights,
     rfproteina_encoder_config_from_checkpoint,
     rfproteina_encoder_config_from_weights,
     rfproteina_representation_config_from_weights,
     rfproteina_trunk_config_from_weights,
+    validate_reference_config,
 )
 from bionemo_ir.runtime.buffers import PreallocatedBuffers
 from bionemo_ir.utils import str_dtype_to_torch
@@ -155,6 +129,27 @@ def _first_feature(
     return None
 
 
+def _drop_undecodable_tokens(
+    can_be_encoded: torch.Tensor,
+    token_type: torch.Tensor,
+    padding_mask: torch.Tensor,
+    decoder_num_residue_types: int,
+) -> torch.Tensor:
+    """Remove from ``can_be_encoded`` the tokens the decoder cannot emit.
+
+    Atomized tokens never decode. A decoder with the 20 protein classes cannot name an RNA or DNA residue
+    either. The narrowing is out of place: a bool mask is its own ``.to(torch.bool)``, so ``&=`` would write
+    through to the caller's tensor.
+    """
+    if token_type.shape != padding_mask.shape:
+        raise ValueError(f"token_type must have shape {tuple(padding_mask.shape)}, got {tuple(token_type.shape)}")
+    token_type = token_type.to(device=padding_mask.device)
+    can_be_encoded = can_be_encoded & (token_type != ATOMIZED_TOKEN_TYPE)
+    if decoder_num_residue_types == LEGACY_RESIDUE_TYPES:
+        can_be_encoded = can_be_encoded & (token_type != RNA_TOKEN_TYPE) & (token_type != DNA_TOKEN_TYPE)
+    return can_be_encoded
+
+
 def _resolve_runtime_masks(
     static_features: Mapping[str, torch.Tensor],
     padding_mask: torch.Tensor,
@@ -190,12 +185,7 @@ def _resolve_runtime_masks(
         can_be_encoded &= _normalize_token_mask(FLOW_BACKBONE_MASK, static_features[FLOW_BACKBONE_MASK], padding_mask)
     token_type = static_features.get("token_type")
     if token_type is not None:
-        if token_type.shape != padding_mask.shape:
-            raise ValueError(f"token_type must have shape {tuple(padding_mask.shape)}, got {tuple(token_type.shape)}")
-        can_be_encoded &= token_type.to(device=padding_mask.device) != ATOMIZED_TOKEN_TYPE
-        if decoder_num_residue_types == 20:
-            token_type = token_type.to(device=padding_mask.device)
-            can_be_encoded &= (token_type != RNA_TOKEN_TYPE) & (token_type != DNA_TOKEN_TYPE)
+        can_be_encoded = _drop_undecodable_tokens(can_be_encoded, token_type, padding_mask, decoder_num_residue_types)
 
     if coordinate_condition_mask is None:
         coordinate_condition_mask = static_features.get("coord_cond_mask")
@@ -224,13 +214,8 @@ def _resolve_runtime_masks(
     return can_be_encoded, coordinate_condition_mask
 
 
-def _repeat_state(state: RFProteinaState, repeats: int) -> RFProteinaState:
-    """Tile a product-space state along the batch axis."""
-    return {name: tensor.repeat((repeats,) + (1,) * (tensor.ndim - 1)) for name, tensor in state.items()}
-
-
 class RFProteina(nn.Module, OptimizedModuleSetterMixin):
-    """Torch-only RFProteína model with a model-local VF-TSR sampler."""
+    """RFProteína encoder, velocity network, numerical integrator and decoder."""
 
     # Only the velocity trunk is graph-optimized. It runs once per sampling
     # step with stable shapes; the one-shot decoder is intentionally excluded.
@@ -244,12 +229,14 @@ class RFProteina(nn.Module, OptimizedModuleSetterMixin):
         flow_state: Mapping[str, torch.Tensor],
         autoencoder_state: Mapping[str, torch.Tensor],
         *,
-        sampling_config: RFProteinaSamplingConfig | None = None,
+        simulation_config: RFProteinaSimulationConfig,
         device: torch.device | str | None = None,
         attention_backend: str | None = None,
         noise_align_chirality: bool = True,
         noise_align_chirality_translate: bool = False,
         lora_alpha: float | None = RELEASED_LORA_ALPHA,
+        heads: torch.nn.Module | None = None,
+        reference_config: Mapping | None = None,
     ) -> "RFProteina":
         """Build a model from weights a host already holds, inferring every width.
 
@@ -260,9 +247,18 @@ class RFProteina(nn.Module, OptimizedModuleSetterMixin):
 
         Args:
             flow_state: Released score-network weights under the ``nn.`` prefix.
+            heads: Caller-owned PyTorch readouts; ``requires_pair`` declares pair use.
+                ``forward(single, pair, padding_mask, emit_masks)`` returns the prediction mapping. A rollout
+                passes the masks it integrates with: ``bb_ca`` holds the generated tokens and ``local_latents``
+                the tokens whose latents it emits. The engine loads their weights under ``nn.heads.`` in the
+                trunk dtype.
+            reference_config: Training network settings for feature-order and semantic compatibility checks.
+                When supplied, this config also determines chirality alignment instead of the defaults below.
             autoencoder_state: Released autoencoder weights under the
                 ``encoder.`` / ``decoder.`` prefixes.
-            sampling_config: Inference policy. Defaults to the released one.
+            simulation_config: Numerical step and reference-distribution parameters
+                from the host's own sampler configuration. Required: see
+                :class:`RFProteinaSimulationConfig` for why its defaults are no fallback.
             device: Where to place the built model.
             attention_backend: Pairwise attention backend for the trunk and,
                 when it has a pair track, the autoencoder. ``None`` selects the
@@ -293,17 +289,21 @@ class RFProteina(nn.Module, OptimizedModuleSetterMixin):
             reference.trunk.set_pairwise_attention_backend(attention_backend)
             if reference.decoder.use_pair_bias:
                 reference.decoder.set_pairwise_attention_backend(attention_backend)
-        trunk = rfproteina_trunk_config_from_weights(
-            flow,
-            dtype=reference.trunk.dtype,
-            pairwise_attention_backend=reference.trunk.pairwise_attention_backend,
-        )
         decoder = rfproteina_decoder_config_from_weights(
             autoencoder,
             dtype=reference.decoder.dtype,
             transformer_dtype=reference.decoder.transformer_dtype,
             pairwise_attention_backend=reference.decoder.pairwise_attention_backend,
         )
+        trunk = rfproteina_trunk_config_from_weights(
+            flow,
+            latent_dim=decoder.latent_dim,
+            dtype=reference.trunk.dtype,
+            pairwise_attention_backend=reference.trunk.pairwise_attention_backend,
+        )
+        if reference_config is not None:
+            noise_align_chirality = bool(reference_config.get("noise_align_chirality", False))
+            noise_align_chirality_translate = bool(reference_config.get("noise_align_chirality_translate", False))
         config = RFProteinaConfig(
             dtype=trunk.dtype,
             trunk=trunk,
@@ -322,9 +322,11 @@ class RFProteina(nn.Module, OptimizedModuleSetterMixin):
                 transformer_dtype=decoder.transformer_dtype,
                 pairwise_attention_backend=decoder.pairwise_attention_backend,
             ),
-            sampling=sampling_config or reference.sampling,
+            simulation=simulation_config,
         )
-        model = cls(config)
+        if reference_config is not None:
+            validate_reference_config(reference_config, config.trunk, config.representation)
+        model = cls(config, heads=heads)
         model.load_weights(flow)
         model.load_decoder_weights(autoencoder)
         model.load_encoder_weights(autoencoder)
@@ -347,8 +349,8 @@ class RFProteina(nn.Module, OptimizedModuleSetterMixin):
         cache evicts and recaptures instead of replaying.
 
         Args:
-            capacity: Graphs this trunk retains. Each one holds its own static
-                buffers, so this trades GPU memory for avoided recapture.
+            capacity: Input shapes this trunk retains. Pair-dependent heads need two graphs
+                per shape; other heads need one. Each graph holds its own static buffers.
             verify_capture: Compare the first replay against eager output.
             max_tokens: Refuse to capture past this token count, running eager
                 there instead. ``None`` keeps the trunk's declared limit.
@@ -358,7 +360,8 @@ class RFProteina(nn.Module, OptimizedModuleSetterMixin):
         # Release the previous policy's graphs: they replay the buffers they captured.
         self.reset_graphs()
         config = trunk_graph_config() if max_tokens is None else trunk_graph_config(max_tokens)
-        config.num_graphs_max_for_this_module = capacity
+        pair_heads = self.velocity_model.heads is not None and self.velocity_model.heads.requires_pair
+        config.num_graphs_max_for_this_module = capacity * (2 if pair_heads else 1)
         config.verify_capture = verify_capture
         self.optimize(
             {
@@ -455,6 +458,7 @@ class RFProteina(nn.Module, OptimizedModuleSetterMixin):
         include_load_weights: bool = False,
         autoencoder_checkpoint_path: str | Path | None = None,
         lora_alpha: float | None = RELEASED_LORA_ALPHA,
+        heads: torch.nn.Module | None = None,
     ) -> None:
         super().__init__()
         self.model_name = MODEL_NAME
@@ -484,13 +488,13 @@ class RFProteina(nn.Module, OptimizedModuleSetterMixin):
                 f"{self.config.decoder.latent_dim}"
             )
         self.dtype = self.config.trunk.torch_dtype
-        self.state_dtype = str_dtype_to_torch(self.config.sampling.state_dtype)
+        self.state_dtype = str_dtype_to_torch(self.config.simulation.state_dtype)
         self.representation_builder = RFProteinaRepresentationBuilder(self.config.representation, self.config.trunk)
-        self.velocity_model = LocalLatentsTransformer(self.config.trunk)
+        self.velocity_model = LocalLatentsTransformer(self.config.trunk, heads=heads)
         self.decoder = RFProteinaLatentDecoder(self.config.decoder)
         self.encoder = None if self.config.encoder is None else RFProteinaLatentEncoder(self.config.encoder)
-        self.sampler = RFProteinaProductSpaceSampler(
-            self.config.sampling,
+        self.simulator = RFProteinaProductSpaceSimulator(
+            self.config.simulation,
             latent_dim=self.config.trunk.latent_dim,
         )
         self.conversion_report: RFProteinaConversionReport | None = None
@@ -540,6 +544,7 @@ class RFProteina(nn.Module, OptimizedModuleSetterMixin):
             strict=True,
             lora_alpha=lora_alpha,
         )
+        reject_unused_source(self.conversion_report, self.representation_conversion_report, component="score network")
         return self.conversion_report
 
     def load_decoder_weights(self, checkpoint_path: str | Path) -> RFProteinaConversionReport:
@@ -549,6 +554,7 @@ class RFProteina(nn.Module, OptimizedModuleSetterMixin):
             checkpoint_path,
             strict=True,
         )
+        reject_unused_source(self.decoder_conversion_report, component="decoder")
         return self.decoder_conversion_report
 
     def load_encoder_weights(self, checkpoint_path: str | Path) -> RFProteinaConversionReport:
@@ -574,6 +580,7 @@ class RFProteina(nn.Module, OptimizedModuleSetterMixin):
             checkpoint_path,
             strict=True,
         )
+        reject_unused_source(self.encoder_conversion_report, component="encoder")
         # ``encoder`` may be constructed lazily after ``__init__`` performed
         # the model-wide rewrite.
         replace_with_fused_layernorm(self.encoder)
@@ -597,7 +604,7 @@ class RFProteina(nn.Module, OptimizedModuleSetterMixin):
         return self.encoder
 
     @torch.no_grad()
-    def encode_clean_state(
+    def encode(
         self,
         static_features: Mapping[str, torch.Tensor],
         coordinates: torch.Tensor | None = None,
@@ -637,7 +644,7 @@ class RFProteina(nn.Module, OptimizedModuleSetterMixin):
         )
         encoder = self._ensure_encoder(coordinates.device)
         encoder_residue_type = residue_type.to(device=coordinates.device)
-        if encoder.num_residue_types == 20:
+        if encoder.num_residue_types == LEGACY_RESIDUE_TYPES:
             # Model inputs use the pipeline's unified residue space
             # (<M>=0, ALA=1, ..., TYR=20), while the released protein-only
             # autoencoder was trained on ALA=0, ..., TYR=19.
@@ -647,7 +654,6 @@ class RFProteina(nn.Module, OptimizedModuleSetterMixin):
                 torch.zeros_like(encoder_residue_type),
             )
         output = encoder(
-            sampling_stream=self.config.sampling.match_reference_rng,
             coordinates=coordinates.to(dtype=encoder.dtype),
             atom_mask=atom_mask.to(device=coordinates.device),
             residue_type=encoder_residue_type,
@@ -701,257 +707,7 @@ class RFProteina(nn.Module, OptimizedModuleSetterMixin):
             encoding_mask=output["encoding_mask"],
         )
 
-    @torch.no_grad()
     def forward(
-        self,
-        static_features: Mapping[str, torch.Tensor],
-        representation_builder: RFProteinaRepresentationBuilderFn | None = None,
-        initial_state: RFProteinaState | None = None,
-        can_be_encoded: torch.Tensor | None = None,
-        coordinate_condition_mask: torch.Tensor | None = None,
-        generator: torch.Generator | None = None,
-        save_trajectory_every: int = 0,
-        metadata: AttentionMetadata | None = None,
-        buffers: PreallocatedBuffers | None = None,
-        seed: int | None = None,
-    ) -> RFProteinaPredictionOutput:
-        """Generate a design: draw a reference state, integrate it, decode it.
-
-        This is the whole inference path, so ``model(batch, seed=0)`` is a
-        complete call: the batch describes the tokens and everything else is
-        drawn or built internally. ``initial_state`` and
-        ``representation_builder`` exist for harnesses that need to pin one
-        stage against a reference implementation, not for normal use.
-
-        Shapes use ``B`` for batch and ``N`` for tokens; coordinates are in
-        nanometres.
-
-        Args:
-            static_features: Batch of per-token features, each leading with
-                ``[B, N, ...]``; :class:`RFProteinaRepresentationBuilder`
-                documents the keys it reads. Must carry ``padding_mask``
-                ``[B, N]``, marking real tokens. Lower-level :meth:`sample`
-                takes that mask separately because it can run from a
-                representation builder alone, with no batch at all. Tensorized
-                motif conditioning uses ``condition_coordinate_1_atom``. Finite
-                values mark the conditioned atoms when
-                ``mask_coordinate_1_atom`` is omitted. Internal coordinates use
-                ``condition_InternalCoordinate_1_atom`` /
-                ``mask_InternalCoordinate_1_atom``,
-                ``condition_sequence_1_residue`` /
-                ``mask_sequence_1_residue``, and
-                ``condition_index-group_1_token``. When
-                ``mask_index_1_residue`` is present, ``chain_iid`` enables
-                same-chain Hungarian assignment of unindexed tokens. Optional
-                ``can_be_encoded`` and ``coord_cond_mask`` provide token-level
-                sampler masks. ``flow_backbone_mask`` ``[B, N]`` names the
-                tokens whose backbone the flow generates; a token outside it
-                only conditions, as an unindexed motif residue does, so it holds
-                zero state, takes no step, and is left out of centering while the
-                trunk still attends to it. It defaults to every real token, and
-                narrows ``can_be_encoded`` to the same tokens. A checkpoint
-                trained with noise-aligned chirality
-                (``config.representation.noise_align_chirality``) also reads
-                ``chiral_frame_atoms`` ``[B, N, S, 2 + K]`` and
-                ``chiral_slot_owner`` ``[B, N, S]`` beside ``chirality``.
-                Atomized small-molecule atoms use
-                ``token_type == 3``, ``can_be_encoded == false``, exactly one
-                occupied ``atom37_mask`` slot (slot 1), unified
-                ``residue_type == 32``, and optional chemical/bond features.
-                RNA and DNA use ``token_type`` 1 and 2 plus unified residue
-                classes 22–26 and 27–31. A 33-class decoder can generate them;
-                a legacy 20-class decoder requires complete coordinate and
-                sequence conditions for every nucleic-acid token.
-            initial_state: Product-space state to start from instead of a fresh
-                reference draw: ``bb_ca`` ``[B, N, 3]`` and ``local_latents``
-                ``[B, N, latent_dim]``.
-            can_be_encoded: ``[B, N]``, false on tokens the autoencoder cannot
-                encode. Their latents are pinned to zero for the whole rollout,
-                so reference noise never reaches the trunk on those tokens.
-                Atomized tokens and DNA/RNA tokens used with the legacy
-                20-class decoder are forced false from ``token_type``.
-            coordinate_condition_mask: ``[B, N]``, true on tokens conditioned
-                on absolute coordinates. Stochastic centering leaves them at
-                the origin rather than translating them with the rest. When
-                omitted, it is read from ``coord_cond_mask``, reduced with
-                ``any`` over ``mask_coordinate_1_atom``, or taken from finite
-                values in ``condition_coordinate_1_atom``.
-
-        Returns:
-            A :class:`RFProteinaPredictionOutput`: decoded ``coordinates``
-            ``[B, N, 37, 3]``, ``sequence_logits``
-            ``[B, N, num_residue_types]``, ``residue_types`` ``[B, N]``, and
-            the :class:`RFProteinaSamplingOutput` the decode ran on. When index
-            and chain metadata are supplied, ``insertion_assignment [B, N]``
-            contains the generated token selected for each unindexed token;
-            ``coordinates_with_insertion`` and
-            ``residue_types_with_insertion`` materialize motif conditions
-            without changing the raw decoder outputs. For atomized tokens,
-            ``atomized`` preserves identity, chemistry, masks, and bond
-            topology; ``complex_coordinates`` combines sampled ligand atoms
-            with decoded polymers and restores fixed-ligand coordinate
-            conditions. ``nucleic_acid`` exposes canonical DNA/RNA rows with
-            fixed coordinate and sequence conditions restored;
-            ``complex_residue_types`` and ``complex_atom_mask`` provide the
-            matching unified identities and atom37 occupancy.
-
-        Raises:
-            ValueError: If the batch does not carry ``padding_mask``.
-        """
-        if "padding_mask" not in static_features:
-            raise ValueError(
-                "static_features must carry 'padding_mask'; it defines which "
-                "tokens are real and there is nothing to generate without it"
-            )
-        padding_mask = static_features["padding_mask"]
-        can_be_encoded, coordinate_condition_mask = _resolve_runtime_masks(
-            static_features,
-            padding_mask,
-            can_be_encoded,
-            coordinate_condition_mask,
-            self.decoder.num_residue_types,
-        )
-        token_type = static_features.get("token_type")
-        if token_type is not None and torch.any((token_type == 1) | (token_type == 2)):
-            validate_nucleic_acid_contract(
-                static_features,
-                can_be_encoded,
-                self.decoder.num_residue_types,
-                supports_na_secondary_structure=self.config.representation.supports_nucleic_acid_secondary_structure,
-            )
-        sampling = self.sample(
-            padding_mask=padding_mask,
-            representation_builder=representation_builder,
-            initial_state=initial_state,
-            can_be_encoded=can_be_encoded,
-            coordinate_condition_mask=coordinate_condition_mask,
-            generator=generator,
-            save_trajectory_every=save_trajectory_every,
-            metadata=metadata,
-            buffers=buffers,
-            seed=seed,
-            static_features=static_features,
-        )
-        return self._prediction_from_sampling(sampling, static_features, padding_mask, can_be_encoded)
-
-    def _condition_on_predicted_sequence(
-        self,
-        trunk_sequence_logits: torch.Tensor | None,
-        padding_mask: torch.Tensor,
-        can_be_encoded: torch.Tensor,
-        token_type: torch.Tensor | None,
-        conditional_residue_type: torch.Tensor | None,
-        conditional_residue_mask: torch.Tensor | None,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        """Fill unspecified decoded tokens with the trunk readout's argmax.
-
-        Caller-supplied sequence conditions win; only tokens the autoencoder
-        decodes and the caller left unspecified take a predicted class.
-        """
-        if trunk_sequence_logits is None:
-            raise ValueError(
-                "condition_decoder_on_sequence_prediction needs the trunk sequence readout; "
-                "the loaded checkpoint has none (trunk.use_sequence_readout is false)"
-            )
-        if conditional_residue_type is None:
-            conditional_residue_type = torch.full_like(padding_mask, UNSPECIFIED_RESIDUE_TOKEN, dtype=torch.long)
-            conditional_residue_mask = torch.zeros_like(padding_mask)
-        assert conditional_residue_mask is not None
-        logits = trunk_sequence_logits.to(device=padding_mask.device)
-        if logits.shape[-1] != self.decoder.num_residue_types:
-            raise ValueError(
-                f"trunk sequence readout emits {logits.shape[-1]} classes, but the decoder "
-                f"has {self.decoder.num_residue_types}"
-            )
-        allowed = self.decoder.allowed_residue_types(logits.device)
-        if allowed is not None and token_type is not None:
-            logits = logits.masked_fill(
-                ~allowed[token_type.clamp(min=0, max=allowed.shape[0] - 1).long()],
-                torch.finfo(logits.dtype).min,
-            )
-        predicted = logits.argmax(dim=-1)
-        fill = can_be_encoded & ~conditional_residue_mask
-        return (
-            torch.where(fill, predicted.to(conditional_residue_type.dtype), conditional_residue_type),
-            conditional_residue_mask | fill,
-        )
-
-    def _prediction_from_sampling(
-        self,
-        sampling: RFProteinaSamplingOutput,
-        static_features: Mapping[str, torch.Tensor],
-        padding_mask: torch.Tensor,
-        can_be_encoded: torch.Tensor,
-    ) -> RFProteinaPredictionOutput:
-        """Decode and materialize all model-level output views."""
-        token_type = static_features.get("token_type")
-        conditional_residue_type = static_features.get(CONDITION_SEQUENCE)
-        conditional_residue_mask = static_features.get(CONDITION_SEQUENCE_MASK)
-        if conditional_residue_type is not None and conditional_residue_mask is None:
-            conditional_residue_mask = conditional_residue_type != UNSPECIFIED_RESIDUE_TOKEN
-        if self.config.sampling.condition_decoder_on_sequence_prediction:
-            conditional_residue_type, conditional_residue_mask = self._condition_on_predicted_sequence(
-                sampling.trunk_sequence_logits,
-                padding_mask,
-                can_be_encoded,
-                token_type,
-                conditional_residue_type,
-                conditional_residue_mask,
-            )
-        coordinate_group = static_features.get(CONDITION_COORDINATE_GROUP)
-        decoded = self.decode(
-            sampling.state,
-            padding_mask,
-            token_type=token_type,
-            can_be_encoded=can_be_encoded,
-            conditional_residue_type=conditional_residue_type,
-            conditional_residue_mask=conditional_residue_mask,
-            required_atom_mask=None if coordinate_group is None else coordinate_group >= 0,
-        )
-        atomized = materialize_atomized_output(sampling.state["bb_ca"], static_features)
-        nucleic_acid = None
-        if token_type is not None:
-            nucleic_acid = materialize_nucleic_acid_output(
-                decoded["coords"],
-                decoded["residue_type"],
-                decoded["atom_mask"],
-                static_features,
-                self.decoder.num_residue_types,
-            )
-        insertion = None
-        if CONDITION_INDEX_MASK in static_features:
-            if "chain_iid" not in static_features:
-                raise ValueError(f"static_features must carry 'chain_iid' when '{CONDITION_INDEX_MASK}' is supplied")
-            if sampling.insertion_logits is None:
-                insertion_assignment = torch.full_like(padding_mask, -1, dtype=torch.long)
-            else:
-                insertion_assignment = assign_unindexed_tokens(
-                    sampling.insertion_logits,
-                    padding_mask,
-                    static_features[CONDITION_INDEX_MASK],
-                    static_features["chain_iid"],
-                    atom37_mask=static_features.get("atom37_mask"),
-                )
-            insertion = apply_insertion_assignment(
-                decoded["coords"],
-                decoded["residue_type"],
-                insertion_assignment,
-                static_features,
-                condition_sequence_offset=(-1 if self.decoder.num_residue_types == 20 else 0),
-            )
-        return RFProteinaPredictionOutput(
-            sampling=sampling,
-            coordinates=decoded["coords"],
-            sequence_logits=decoded["sequence_logits"],
-            residue_types=decoded["residue_type"],
-            atom_mask=decoded["atom_mask"],
-            atomized=atomized,
-            nucleic_acid=nucleic_acid,
-            insertion=insertion,
-            residue_type_offset=(1 if self.decoder.num_residue_types == 20 else 0),
-        )
-
-    def velocity(
         self,
         representations: RFProteinaRepresentations,
         padding_mask: torch.Tensor,
@@ -960,6 +716,7 @@ class RFProteina(nn.Module, OptimizedModuleSetterMixin):
         recycle_depth: int = 1,
         pair_in_buffers: bool = False,
         masks: TrunkMasks | None = None,
+        emit_masks: dict[str, torch.Tensor] | None = None,
     ) -> dict[str, dict[str, torch.Tensor]]:
         """Run one velocity-network evaluation.
 
@@ -991,25 +748,20 @@ class RFProteina(nn.Module, OptimizedModuleSetterMixin):
             recycle_depth=recycle_depth,
             pair_in_buffers=pair_in_buffers,
             masks=masks,
+            emit_masks=emit_masks,
         )
 
     def _make_predict_fn(
         self,
         *,
-        static_features: Mapping[str, torch.Tensor] | None,
+        static_features: Mapping[str, torch.Tensor],
         padding_mask: torch.Tensor,
-        representation_builder: RFProteinaRepresentationBuilderFn | None,
-        metadata: AttentionMetadata | None,
-        buffers: PreallocatedBuffers | None,
+        emit_masks: dict[str, torch.Tensor],
     ) -> RFProteinaPredictFn:
-        """Bind representation construction and velocity evaluation for a rollout.
+        """Bind static representations and velocity evaluation for integration.
 
-        The native builder gives one condition per trunk pass when the checkpoint has a recycle feature, and the
-        rollout's first step builds the tracks' static parts, which the later steps reuse. A caller-supplied
-        builder keeps the condition it returns.
+        ``emit_masks`` are the masks the sampler integrates with, which the readout receives as given.
         """
-        if representation_builder is None and static_features is None:
-            raise ValueError("static_features are required when no custom representation_builder is supplied")
         parts: StaticTrackParts | None = None
         masks: TrunkMasks | None = None
 
@@ -1025,563 +777,107 @@ class RFProteina(nn.Module, OptimizedModuleSetterMixin):
             if masks is None:
                 masks = self.velocity_model.prepare_masks(padding_mask)
             pair_out = None
-            if representation_builder is not None:
-                representations = representation_builder(state, times, self_conditioning, self_conditioning_active)
-            else:
-                if parts is None:
-                    parts = self.representation_builder.prepare(static_features, padding_mask)
-                # The builder writes the pair straight into the trunk's captured inputs when its dtype allows.
-                if self.representation_builder.output_dtype == self.representation_builder.pair_adaln_dtype:
-                    pair_out = self.velocity_model.initial_pair_buffers(*padding_mask.shape, padding_mask.device)
-                representations = self.representation_builder(
-                    static_features=static_features,
-                    state=state,
-                    times=times,
-                    self_conditioning=self_conditioning,
-                    self_conditioning_active=self_conditioning_active,
-                    padding_mask=padding_mask,
-                    parts=parts,
-                    recycle_depth=recycle_depth,
-                    pair_out=pair_out,
-                )
-            return self.velocity(
+            if parts is None:
+                parts = self.representation_builder.prepare(static_features, padding_mask)
+            # The builder writes the pair straight into the trunk's captured inputs when its dtype allows.
+            if self.representation_builder.output_dtype == self.representation_builder.pair_adaln_dtype:
+                pair_out = self.velocity_model.initial_pair_buffers(*padding_mask.shape, padding_mask.device)
+            representations = self.representation_builder(
+                static_features=static_features,
+                state=state,
+                times=times,
+                self_conditioning=self_conditioning,
+                self_conditioning_active=self_conditioning_active,
+                padding_mask=padding_mask,
+                parts=parts,
+                recycle_depth=recycle_depth,
+                pair_out=pair_out,
+            )
+            return self(
                 representations,
                 padding_mask,
-                metadata=metadata,
-                buffers=buffers,
                 recycle_depth=recycle_depth,
                 pair_in_buffers=pair_out is not None,
                 masks=masks,
+                emit_masks=emit_masks,
             )
 
         return predict
 
-    def sample(
-        self,
-        padding_mask: torch.Tensor,
-        representation_builder: RFProteinaRepresentationBuilderFn | None = None,
-        initial_state: RFProteinaState | None = None,
-        can_be_encoded: torch.Tensor | None = None,
-        coordinate_condition_mask: torch.Tensor | None = None,
-        generator: torch.Generator | None = None,
-        save_trajectory_every: int = 0,
-        metadata: AttentionMetadata | None = None,
-        buffers: PreallocatedBuffers | None = None,
-        seed: int | None = None,
-        static_features: Mapping[str, torch.Tensor] | None = None,
-    ) -> RFProteinaSamplingOutput:
-        """Sample product space using native or caller-supplied representations.
-
-        The rollout without the decode, for callers that want the latent state
-        itself. See :meth:`forward` for the tensor arguments it shares.
-
-        Args:
-            padding_mask: ``[B, N]`` mask of real tokens, which fixes ``B`` and
-                ``N`` for every tensor the rollout draws.
-            save_trajectory_every: Snapshot the state every this many steps
-                (plus the last), or 0 for none.
-
-        Returns:
-            A :class:`RFProteinaSamplingOutput`: the final ``state`` and the
-            network's ``clean_prediction``, both ``bb_ca`` ``[B, N, 3]`` and
-            ``local_latents`` ``[B, N, latent_dim]``, optional
-            ``insertion_logits`` ``[B, N, N]``, and the requested
-            ``trajectory`` snapshots.
-        """
-        padding_mask = padding_mask.to(torch.bool)
-        if static_features is not None:
-            can_be_encoded, coordinate_condition_mask = _resolve_runtime_masks(
-                static_features,
-                padding_mask,
-                can_be_encoded,
-                coordinate_condition_mask,
-                self.decoder.num_residue_types,
-            )
-
-        predict = self._make_predict_fn(
-            static_features=static_features,
-            padding_mask=padding_mask,
-            representation_builder=representation_builder,
-            metadata=metadata,
-            buffers=buffers,
-        )
-        # Only per-group stochastic centering reads these, so pay for the
-        # extraction only when the configuration asks for it.
-        groups = extract_groups(static_features) if static_features is not None and self.sampler.group_keys else None
-        return self.sampler.sample(
-            predict=predict,
-            padding_mask=_resolve_rollout_mask(static_features, padding_mask),
-            dtype=self.state_dtype,
-            initial_state=initial_state,
-            can_be_encoded=can_be_encoded,
-            coordinate_condition_mask=coordinate_condition_mask,
-            groups=groups,
-            generator=generator,
-            save_trajectory_every=save_trajectory_every,
-            seed=seed,
-        )
-
     @torch.no_grad()
-    def sample_partial(
+    def partial_simulation(
         self,
-        clean_state: RFProteinaState,
-        start_times: dict[str, float],
-        num_steps: int,
-        padding_mask: torch.Tensor,
-        representation_builder: RFProteinaRepresentationBuilderFn | None = None,
-        can_be_encoded: torch.Tensor | None = None,
-        coordinate_condition_mask: torch.Tensor | None = None,
-        generator: torch.Generator | None = None,
-        save_trajectory_every: int = 0,
-        metadata: AttentionMetadata | None = None,
-        buffers: PreallocatedBuffers | None = None,
-        seed: int | None = None,
-        static_features: Mapping[str, torch.Tensor] | None = None,
-        resample_target_backbone: bool = False,
-        target_backbone: torch.Tensor | None = None,
-        schedules: Mapping[str, FlowMatchingSchedule] | None = None,
-    ) -> RFProteinaPartialSamplingOutput:
-        """Corrupt a clean endpoint and sample over partial schedule tails.
-
-        ``schedules`` replaces the tails otherwise rebuilt from ``start_times``.
-        """
-        padding_mask = padding_mask.to(torch.bool)
-        if static_features is not None:
-            can_be_encoded, coordinate_condition_mask = _resolve_runtime_masks(
-                static_features,
-                padding_mask,
-                can_be_encoded,
-                coordinate_condition_mask,
-                self.decoder.num_residue_types,
-            )
-
-        predict = self._make_predict_fn(
-            static_features=static_features,
-            padding_mask=padding_mask,
-            representation_builder=representation_builder,
-            metadata=metadata,
-            buffers=buffers,
-        )
-        groups = extract_groups(static_features) if static_features is not None and self.sampler.group_keys else None
-        return self.sampler.sample_partial(
-            predict=predict,
-            clean_state=clean_state,
-            start_times=start_times,
-            num_steps=num_steps,
-            padding_mask=_resolve_rollout_mask(static_features, padding_mask),
-            dtype=self.state_dtype,
-            can_be_encoded=can_be_encoded,
-            coordinate_condition_mask=coordinate_condition_mask,
-            groups=groups,
-            generator=generator,
-            save_trajectory_every=save_trajectory_every,
-            seed=seed,
-            resample_target_backbone=resample_target_backbone,
-            target_backbone=target_backbone,
-            schedules=schedules,
-        )
-
-    @torch.no_grad()
-    def redesign(
-        self,
-        static_features: Mapping[str, torch.Tensor],
-        partial_config: RFProteinaPartialSimulationConfig,
-        coordinates: torch.Tensor | None = None,
-        clean_state: RFProteinaState | None = None,
-        representation_builder: RFProteinaRepresentationBuilderFn | None = None,
-        can_be_encoded: torch.Tensor | None = None,
-        coordinate_condition_mask: torch.Tensor | None = None,
-        generator: torch.Generator | None = None,
-        sample_latent: bool = True,
-        save_trajectory_every: int = 0,
-        metadata: AttentionMetadata | None = None,
-        buffers: PreallocatedBuffers | None = None,
-        seed: int | None = None,
-    ) -> RFProteinaPredictionOutput:
-        """Redesign an existing structure from an encoded or supplied endpoint.
-
-        The default path encodes ``coordinates`` (nanometres). Advanced callers
-        may instead supply ``clean_state``. Fixed coordinate conditions affect
-        centering and final materialization, but are not per-step clamps.
-        Inverse folding (``partial_config.inverse_folding``) keeps the encoded
-        backbone and redesigns only local latents.
-        """
-        if "padding_mask" not in static_features:
-            raise ValueError("static_features must carry 'padding_mask' for redesign")
-        if coordinates is not None and clean_state is not None:
-            raise ValueError("provide either coordinates or clean_state, not both")
-        padding_mask = static_features["padding_mask"].to(torch.bool)
-        can_be_encoded, coordinate_condition_mask = _resolve_runtime_masks(
-            static_features,
-            padding_mask,
-            can_be_encoded,
-            coordinate_condition_mask,
-            self.decoder.num_residue_types,
-        )
-        start_times = resolve_partial_times(partial_config, self.config.sampling, padding_mask.device)
-        if not start_times:
-            raise ValueError("redesign requires partial start times or partial_trajectory_fraction_steps")
-        num_steps = partial_num_steps(partial_config, self.config.sampling.num_steps)
-        fraction_schedules = (
-            None
-            if partial_config.partial_trajectory_fraction_steps is None
-            else create_fraction_partial_schedules(self.config.sampling, num_steps, padding_mask.device)
-        )
-
-        def run(active_generator: torch.Generator) -> RFProteinaPredictionOutput:
-            resolved_clean_state = clean_state
-            if resolved_clean_state is None:
-                encoding = self.encode_clean_state(
-                    static_features,
-                    coordinates=coordinates,
-                    can_be_encoded=can_be_encoded,
-                    generator=active_generator,
-                    sample_latent=sample_latent,
-                )
-                resolved_clean_state = encoding.clean_state
-            partial_sampling = self.sample_partial(
-                clean_state=resolved_clean_state,
-                start_times=start_times,
-                num_steps=num_steps,
-                padding_mask=padding_mask,
-                representation_builder=representation_builder,
-                can_be_encoded=can_be_encoded,
-                coordinate_condition_mask=coordinate_condition_mask,
-                generator=active_generator,
-                save_trajectory_every=save_trajectory_every,
-                metadata=metadata,
-                buffers=buffers,
-                static_features=static_features,
-                resample_target_backbone=partial_config.inverse_folding,
-                target_backbone=resolved_clean_state["bb_ca"] if partial_config.inverse_folding else None,
-                schedules=fraction_schedules,
-            )
-            prediction = self._prediction_from_sampling(
-                partial_sampling.sampling,
-                static_features,
-                padding_mask,
-                can_be_encoded,
-            )
-            partial_output = materialize_partial_redesign_output(
-                prediction.coordinates,
-                static_features,
-                partial_sampling,
-            )
-            return replace(prediction, partial_redesign=partial_output)
-
-        if generator is not None:
-            return run(generator)
-        with SamplingContext.graph_safe(padding_mask.device, seed) as context:
-            return run(context.generator)
-
-    @torch.no_grad()
-    def inverse_fold(
-        self,
-        static_features: Mapping[str, torch.Tensor],
-        coordinates: torch.Tensor | None = None,
-        clean_state: RFProteinaState | None = None,
-        representation_builder: RFProteinaRepresentationBuilderFn | None = None,
-        can_be_encoded: torch.Tensor | None = None,
-        coordinate_condition_mask: torch.Tensor | None = None,
-        generator: torch.Generator | None = None,
-        sample_latent: bool = True,
-        save_trajectory_every: int = 0,
-        metadata: AttentionMetadata | None = None,
-        buffers: PreallocatedBuffers | None = None,
-        seed: int | None = None,
-    ) -> RFProteinaPredictionOutput:
-        """Redesign sequence latents while holding the supplied backbone fixed.
-
-        This is upstream ``generation=inverse_folding``: full-noise start times
-        on both modalities, the backbone redrawn from the target's forward
-        marginal every step, and the clean backbone restored at the end.
-        """
-        return self.redesign(
-            static_features,
-            RFProteinaPartialSimulationConfig(inverse_folding=True),
-            coordinates=coordinates,
-            clean_state=clean_state,
-            representation_builder=representation_builder,
-            can_be_encoded=can_be_encoded,
-            coordinate_condition_mask=coordinate_condition_mask,
-            generator=generator,
-            sample_latent=sample_latent,
-            save_trajectory_every=save_trajectory_every,
-            metadata=metadata,
-            buffers=buffers,
-            seed=seed,
-        )
-
-    @torch.no_grad()
-    def search(
-        self,
-        static_features: Mapping[str, torch.Tensor],
-        search_config: RFProteinaBeamSearchConfig,
+        batch: Mapping[str, torch.Tensor],
+        x: RFProteinaState,
         *,
-        evaluators: Sequence[MetricEvaluatorLike] | None = None,
-        representation_builder: RFProteinaRepresentationBuilderFn | None = None,
-        can_be_encoded: torch.Tensor | None = None,
-        coordinate_condition_mask: torch.Tensor | None = None,
-        metadata: AttentionMetadata | None = None,
-        buffers: PreallocatedBuffers | None = None,
+        start_step: int = 0,
+        end_step: int | None = None,
+        initial_clean: RFProteinaState | None = None,
+        carry_self_condition: bool = True,
+        ts: Mapping[str, torch.Tensor],
+        gt: Mapping[str, torch.Tensor],
+        recycle_depths: Sequence[int],
+        context: SamplingContext | None = None,
         seed: int | None = None,
-        generator: torch.Generator | None = None,
-        partial_config: RFProteinaPartialSimulationConfig | None = None,
-        coordinates: torch.Tensor | None = None,
-        clean_state: RFProteinaState | None = None,
-        sample_latent: bool = True,
-        resume_states: Sequence[RFProteinaState] | None = None,
-        resume_clean: Sequence[RFProteinaState] | None = None,
-        resume_step: int = 0,
-        export_states: bool = False,
-    ) -> RFProteinaSearchOutput:
-        """Run metric-weighted beam search over product-space rollouts.
+        target_backbone: torch.Tensor | None = None,
+        save_trajectory_every: int = 0,
+    ) -> RFProteinaSimulationOutput:
+        """Advance tensor state over absolute schedule intervals ``[start_step, end_step)``.
 
-        Existing ``sample``, ``redesign``, and ``inverse_fold`` paths are
-        unchanged. Search is tensor-in / tensor-out: featurization, CIF I/O,
-        and oracle execution stay with the caller. Pass ``evaluators`` to
-        combine local, custom, and oracle-backed metrics.
+        The caller owns branching, scoring, selection, stopping, and persistence.
+        Inputs are not modified. Reuse ``context`` across intervals to continue
+        the same random stream; pass the previous ``clean_prediction`` to carry
+        self-conditioning. Set ``carry_self_condition=False`` to restart it.
 
         Args:
-            static_features: Native feature batch. Must include ``padding_mask``.
-            search_config: Checkpoints, beam width, branching, and reward weights.
-            evaluators: Ordered plain or contextual metric evaluators. Their
-                per-row metric mappings are merged and keys must not overlap.
-                Contextual evaluators receive the checkpoint, request IDs, and
-                ``reward_metrics_tags``. ``None`` uses the local clash, motif
-                RMSD, sequence, and ligand-contact evaluator. An explicit
-                sequence replaces that default.
-            partial_config: Optional redesign / inverse-fold start-time contract.
-                When set, the beam starts from a corrupted clean endpoint.
-            seed: Root seed. Child replica/branch/checkpoint streams are derived
-                from it and do not depend on chunk processing order.
-            generator: If given, only its ``initial_seed()`` is used as the root.
-            resume_states: One ``x_t`` per beam slot, exported by an earlier
-                search at ``resume_step``. When given, the beam is entered at
-                that step instead of being initialized, so a caller can prune
-                between checkpoints and continue the branches it kept.
-            resume_clean: The matching ``x_1`` per slot. Required with
-                ``resume_states``; the first resumed step self-conditions on it.
-            resume_step: Global step the exported states belong to. Must equal
-                ``search_config.step_checkpoints[0]``.
-            export_states: Attach ``state`` and ``clean_prediction`` to every
-                scored candidate, which is what makes a later resume possible.
-                Off by default because it holds one state pair per candidate.
-                It also permits a schedule that ends before the last sampling
-                step: such a search branches and scores its last checkpoint,
-                returns every candidate unpruned, and stops there.
+            batch: Model inputs, including boolean ``padding_mask``
+                ``[B, N]``. Conditioning tokens remain visible to the trunk.
+            x: ``bb_ca`` ``[B, N, 3]`` in nanometres and ``local_latents``
+                ``[B, N, latent_dim]`` at ``start_step``.
+            start_step: Inclusive index into the full schedule.
+            end_step: Exclusive index into the full schedule.
+            initial_clean: Previous clean prediction, required when resuming
+                with self-conditioning.
+            carry_self_condition: Continue self-conditioning across the boundary.
+            ts: Full per-modality time grids, with one more value than steps.
+            gt: Per-modality noise rates, one per interval.
+            recycle_depths: Explicit depths for every interval of the full schedule.
+            context: Caller-owned random stream; takes precedence over ``seed``.
+            seed: Seed for an independent stream when ``context`` is absent.
+            target_backbone: Fixed clean backbone for inverse folding, in nm.
+            save_trajectory_every: Snapshot interval, or zero to disable.
 
         Returns:
-            Intermediates (if a save threshold is set) followed by the final
-            beam, plus a cost report.
+            State and clean prediction at the interval end, logits, and snapshots.
         """
-        if "padding_mask" not in static_features:
-            raise ValueError("static_features must carry 'padding_mask' for search")
-        if coordinates is not None and clean_state is not None:
-            raise ValueError("provide either coordinates or clean_state, not both")
-        if (resume_states is None) != (resume_clean is None):
-            raise ValueError("resume_states and resume_clean must be given together")
-        if resume_states is None and resume_step != 0:
-            raise ValueError(f"resume_step={resume_step} requires resume_states")
-        if resume_states is not None:
-            if partial_config is not None:
-                raise ValueError(
-                    "resume_states cannot be combined with partial_config: the exported state already "
-                    "carries the corruption the partial schedule would re-apply"
-                )
-            if len(resume_states) != search_config.beam_width:
-                raise ValueError(
-                    f"resume_states must contain beam_width={search_config.beam_width} states, got {len(resume_states)}"
-                )
-            if resume_step != search_config.step_checkpoints[0]:
-                raise ValueError(
-                    f"resume_step={resume_step} must equal step_checkpoints[0]={search_config.step_checkpoints[0]}"
-                )
-        resolved_evaluators = (RFProteinaLocalMetricEvaluator(),) if evaluators is None else tuple(evaluators)
-        evaluator = CompositeMetricEvaluator(resolved_evaluators)
-        padding_mask = static_features["padding_mask"].to(torch.bool)
+        padding_mask = batch["padding_mask"].to(torch.bool)
+        rollout_mask = _resolve_rollout_mask(batch, padding_mask)
         can_be_encoded, coordinate_condition_mask = _resolve_runtime_masks(
-            static_features,
-            padding_mask,
-            can_be_encoded,
-            coordinate_condition_mask,
-            self.decoder.num_residue_types,
+            batch, padding_mask, None, None, self.decoder.num_residue_types
         )
-        token_type = static_features.get("token_type")
-        if token_type is not None and torch.any((token_type == 1) | (token_type == 2)):
-            validate_nucleic_acid_contract(
-                static_features,
-                can_be_encoded,
-                self.decoder.num_residue_types,
-                supports_na_secondary_structure=self.config.representation.supports_nucleic_acid_secondary_structure,
-            )
-        device = padding_mask.device
-        rollout_mask = _resolve_rollout_mask(static_features, padding_mask)
-        root_seed = (
-            int(generator.initial_seed()) if generator is not None else SamplingContext.create(device, seed).seed
-        )
-        groups = extract_groups(static_features) if self.sampler.group_keys else None
         predict = self._make_predict_fn(
-            static_features=static_features,
+            static_features=batch,
             padding_mask=padding_mask,
-            representation_builder=representation_builder,
-            metadata=metadata,
-            buffers=buffers,
+            emit_masks={"bb_ca": rollout_mask, "local_latents": can_be_encoded},
         )
-
-        start_times: dict[str, float] = {}
-        base_corruption: RFProteinaCorruptionOutput | None = None
-        target_backbone = None
-        if partial_config is not None:
-            start_times = resolve_partial_times(partial_config, self.config.sampling, device)
-            if not start_times:
-                raise ValueError("search with partial_config requires partial start times or inverse_folding")
-            num_steps = partial_num_steps(partial_config, self.config.sampling.num_steps)
-            resolved_clean = clean_state
-            if resolved_clean is None:
-                encoding = self.encode_clean_state(
-                    static_features,
-                    coordinates=coordinates,
-                    can_be_encoded=can_be_encoded,
-                    generator=SamplingContext.create(device, derive_search_seed(root_seed, 3)).generator,
-                    sample_latent=sample_latent,
-                )
-                resolved_clean = encoding.clean_state
-            partial_schedules: Mapping[str, FlowMatchingSchedule] | None = None
-            fraction_schedules = (
-                None
-                if partial_config.partial_trajectory_fraction_steps is None
-                else create_fraction_partial_schedules(self.config.sampling, num_steps, device)
-            )
-            initial_slots = []
-            for replica in range(search_config.beam_width):
-                replica_context = SamplingContext.create(device, derive_search_seed(root_seed, 0, replica))
-                setup: RFProteinaPartialRolloutSetup = self.sampler.prepare_partial_rollout(
-                    resolved_clean,
-                    start_times,
-                    num_steps,
-                    rollout_mask,
-                    self.state_dtype,
-                    replica_context.generator,
-                    can_be_encoded=can_be_encoded,
-                    coordinate_condition_mask=coordinate_condition_mask,
-                    groups=groups,
-                    schedules=partial_schedules if partial_schedules is not None else fraction_schedules,
-                    resample_target_backbone=partial_config.inverse_folding,
-                )
-                if partial_schedules is None:
-                    base_corruption = setup.corruption
-                    partial_schedules = setup.schedules
-                    target_backbone = setup.target_backbone
-                initial_slots.append(setup.corruption.corrupted_state)
-            if partial_schedules is None:
-                raise RuntimeError("beam_width must produce at least one partial rollout")
-            schedules = partial_schedules
-        else:
-            if coordinates is not None or clean_state is not None:
-                raise ValueError("coordinates and clean_state require partial_config")
-            num_steps = self.config.sampling.num_steps
-            schedules = {
-                "bb_ca": create_modality_schedule(self.config.sampling.backbone, num_steps, device),
-                "local_latents": create_modality_schedule(self.config.sampling.local_latents, num_steps, device),
-            }
-            if resume_states is not None:
-                initial_slots = list(resume_states)
-            elif self.config.sampling.match_reference_rng:
-                # The reference draws the whole beam at once, so one stream, not one per replica.
-                initial_slots = sample_reference_beam(
-                    rollout_mask,
-                    self.config.trunk.latent_dim,
-                    self.state_dtype,
-                    self.config.sampling,
-                    search_config.beam_width,
-                    generator=SamplingContext.create(device, derive_search_seed(root_seed, 0)).generator,
-                    can_be_encoded=can_be_encoded,
-                    coordinate_condition_mask=coordinate_condition_mask,
-                    groups=groups,
-                )
-            else:
-                initial_slots = []
-                for replica in range(search_config.beam_width):
-                    replica_context = SamplingContext.create(device, derive_search_seed(root_seed, 0, replica))
-                    initial_slots.append(
-                        sample_reference_state(
-                            rollout_mask,
-                            self.config.trunk.latent_dim,
-                            self.state_dtype,
-                            self.config.sampling,
-                            generator=replica_context.generator,
-                            can_be_encoded=can_be_encoded,
-                            coordinate_condition_mask=coordinate_condition_mask,
-                            groups=groups,
-                        )
-                    )
-
-        def decode_prediction(
-            sampling: RFProteinaSamplingOutput,
-            features: Mapping[str, torch.Tensor],
-        ) -> RFProteinaPredictionOutput:
-            batch_padding = features["padding_mask"].to(torch.bool)
-            encoded, _ = _resolve_runtime_masks(
-                features,
-                batch_padding,
-                None,
-                None,
-                self.decoder.num_residue_types,
-            )
-            prediction = self._prediction_from_sampling(sampling, features, batch_padding, encoded)
-            if base_corruption is None or not start_times:
-                return prediction
-            repeats = batch_padding.shape[0] // padding_mask.shape[0]
-            tiled_corruption = RFProteinaCorruptionOutput(
-                clean_state=_repeat_state(base_corruption.clean_state, repeats),
-                reference_state=_repeat_state(base_corruption.reference_state, repeats),
-                corrupted_state=_repeat_state(base_corruption.corrupted_state, repeats),
-                times={
-                    name: time.repeat(repeats) if time.ndim == 1 and time.shape[0] == padding_mask.shape[0] else time
-                    for name, time in base_corruption.times.items()
-                },
-            )
-            partial_sampling = RFProteinaPartialSamplingOutput(
-                sampling=sampling,
-                corruption=tiled_corruption,
-                start_times=dict(start_times),
-                num_steps=num_steps,
-            )
-            return replace(
-                prediction,
-                partial_redesign=materialize_partial_redesign_output(
-                    prediction.coordinates,
-                    features,
-                    partial_sampling,
-                ),
-            )
-
-        return run_rfproteina_beam_search(
-            sampler=self.sampler,
+        return self.simulator.partial_simulation(
             predict=predict,
-            decode_prediction=decode_prediction,
-            evaluator=evaluator,
-            objective=search_config.rewards.to_weighted_objective(),
-            static_features=static_features,
             padding_mask=rollout_mask,
             dtype=self.state_dtype,
-            initial_slots=initial_slots,
-            num_steps=num_steps,
-            step_checkpoints=search_config.step_checkpoints,
-            n_branch=search_config.n_branch,
-            beam_width=search_config.beam_width,
+            start_step=start_step,
+            end_step=end_step,
+            initial_state=x,
+            initial_clean=initial_clean,
+            carry_self_condition=carry_self_condition,
             can_be_encoded=can_be_encoded,
             coordinate_condition_mask=coordinate_condition_mask,
-            groups=groups,
-            schedules=schedules,
+            groups=extract_groups(batch) if self.simulator.group_keys else None,
+            schedules={mode: FlowMatchingSchedule(times=times, noise_rate=gt[mode]) for mode, times in ts.items()},
+            recycle_depths=recycle_depths,
             target_backbone=target_backbone,
-            scoring_chunk_size=search_config.scoring_chunk_size,
-            intermediate_save_min_reward=search_config.intermediate_save_min_reward,
-            initial_clean=None if resume_clean is None else list(resume_clean),
-            resume_step=resume_step,
-            export_states=export_states,
-            root_seed=root_seed,
+            save_trajectory_every=save_trajectory_every,
+            context=context,
+            seed=seed,
         )
 
     @torch.no_grad()
@@ -1593,33 +889,15 @@ class RFProteina(nn.Module, OptimizedModuleSetterMixin):
         can_be_encoded: torch.Tensor | None = None,
         conditional_residue_type: torch.Tensor | None = None,
         conditional_residue_mask: torch.Tensor | None = None,
-        required_atom_mask: torch.Tensor | None = None,
-    ) -> dict[str, torch.Tensor]:
-        """Decode a final product-space state into atom37 coordinates/sequence.
+    ) -> RFProteinaDecodedOutput:
+        """Return numerical decoder predictions in the original token layout.
 
-        Args:
-            state: Product-space state, ``bb_ca`` ``[B, N, 3]`` in nanometres
-                and ``local_latents`` ``[B, N, latent_dim]``.
-            padding_mask: ``[B, N]`` mask of real tokens.
-            token_type: Optional token-kind IDs ``[B, N]``. The unified
-                33-class decoder constrains sequence classes by token kind.
-            can_be_encoded: Optional ``[B, N]`` mask selecting tokens decoded
-                by the protein autoencoder. Other valid tokens retain their
-                product-space ``bb_ca`` in atom37 slot 1 and residue type -1.
-                Atomized tokens and legacy-decoder DNA/RNA are always excluded.
-            conditional_residue_type: Optional conditioned residue classes
-                ``[B, N]`` fed to the decoder. With ``conditional_residue_mask``,
-                a decoder with an atom-presence head also outputs them in place
-                of its own prediction.
-            conditional_residue_mask: Which tokens carry a residue condition.
-            required_atom_mask: Optional atoms ``[B, N, 37]`` the caller
-                conditions on. A decoder with an atom-presence head keeps those
-                its residue can have, whatever the head predicts.
-
-        Returns:
-            Dict with ``coords`` ``[B, N, 37, 3]`` in nanometres,
-            ``sequence_logits`` ``[B, N, num_residue_types]``, the argmax
-            ``residue_type`` ``[B, N]``, and the ``atom_mask`` ``[B, N, 37]``.
+        State holds ``bb_ca`` [B, N, 3] in nm and ``local_latents``
+        [B, N, latent_dim]. Masks and residue conditions have shape [B, N].
+        Sequence conditions are network inputs, not output overrides.
+        Coordinates are [B, N, 37, 3] in nm; sequence and optional atom-presence
+        logits are returned without atom selection or coordinate restoration.
+        Undecoded tokens have zero coordinates, residue ID -1 and presence -inf.
         """
         padding_mask = padding_mask.to(device=state["bb_ca"].device, dtype=torch.bool)
         if can_be_encoded is None:
@@ -1627,16 +905,10 @@ class RFProteina(nn.Module, OptimizedModuleSetterMixin):
         else:
             can_be_encoded = _normalize_token_mask("can_be_encoded", can_be_encoded, padding_mask)
         if token_type is not None:
-            if token_type.shape != padding_mask.shape:
-                raise ValueError(
-                    f"token_type must have shape {tuple(padding_mask.shape)}, got {tuple(token_type.shape)}"
-                )
+            can_be_encoded = _drop_undecodable_tokens(
+                can_be_encoded, token_type, padding_mask, self.decoder.num_residue_types
+            )
             token_type = token_type.to(device=padding_mask.device)
-            # Narrow out of place: a bool mask is its own ``.to(torch.bool)``, so
-            # ``&=`` here would write through to the caller's tensor.
-            can_be_encoded = can_be_encoded & (token_type != ATOMIZED_TOKEN_TYPE)
-            if self.decoder.num_residue_types == 20:
-                can_be_encoded = can_be_encoded & (token_type != RNA_TOKEN_TYPE) & (token_type != DNA_TOKEN_TYPE)
         if (conditional_residue_type is None) != (conditional_residue_mask is None):
             raise ValueError("conditional_residue_type and conditional_residue_mask must be supplied together")
         if conditional_residue_type is not None:
@@ -1648,14 +920,6 @@ class RFProteina(nn.Module, OptimizedModuleSetterMixin):
                 raise ValueError("conditional residue tensors must have the same shape as padding_mask")
             conditional_residue_type = conditional_residue_type.to(device=padding_mask.device)
             conditional_residue_mask = conditional_residue_mask.to(device=padding_mask.device)
-        if required_atom_mask is not None:
-            if required_atom_mask.shape != (*padding_mask.shape, ATOM37_SIZE):
-                raise ValueError(
-                    f"required_atom_mask must have shape {(*padding_mask.shape, ATOM37_SIZE)}, "
-                    f"got {tuple(required_atom_mask.shape)}"
-                )
-            required_atom_mask = required_atom_mask.to(device=padding_mask.device, dtype=torch.bool)
-
         if torch.equal(can_be_encoded, padding_mask):
             decoded = self.decoder(
                 backbone_ca=state["bb_ca"],
@@ -1664,14 +928,13 @@ class RFProteina(nn.Module, OptimizedModuleSetterMixin):
                 token_type=token_type,
                 conditional_residue_type=conditional_residue_type,
                 conditional_residue_mask=conditional_residue_mask,
-                required_atom_mask=required_atom_mask,
             )
-            if "atom_mask" not in decoded:
-                decoded["atom_mask"] = get_residue_atom_mask(
-                    decoded["residue_type"],
-                    self.decoder.num_residue_types,
-                    padding_mask,
+            if "atom_presence_logits" in decoded:
+                decoded["atom_presence_logits"] = decoded["atom_presence_logits"].masked_fill(
+                    ~padding_mask.unsqueeze(-1), -torch.inf
                 )
+            decoded["coords"] = decoded["coords"].masked_fill(~padding_mask[..., None, None], 0)
+            decoded["residue_type"] = decoded["residue_type"].masked_fill(~padding_mask, -1)
             return decoded
 
         batch, tokens = padding_mask.shape
@@ -1680,7 +943,13 @@ class RFProteina(nn.Module, OptimizedModuleSetterMixin):
             batch, tokens, self.decoder.num_residue_types, device=padding_mask.device, dtype=self.decoder.dtype
         )
         residue_types = torch.full((batch, tokens), -1, device=padding_mask.device, dtype=torch.long)
-        atom_mask = torch.zeros(batch, tokens, ATOM37_SIZE, device=padding_mask.device, dtype=torch.bool)
+        presence = (
+            torch.full(
+                (*padding_mask.shape, ATOM37_SIZE), -torch.inf, device=padding_mask.device, dtype=self.decoder.dtype
+            )
+            if self.config.decoder.use_atom_presence
+            else None
+        )
         for batch_index in range(batch):
             encoded = can_be_encoded[batch_index]
             if torch.any(encoded):
@@ -1700,29 +969,17 @@ class RFProteina(nn.Module, OptimizedModuleSetterMixin):
                         if conditional_residue_mask is None
                         else conditional_residue_mask[batch_index, encoded].unsqueeze(0)
                     ),
-                    required_atom_mask=(
-                        None if required_atom_mask is None else required_atom_mask[batch_index, encoded].unsqueeze(0)
-                    ),
                 )
                 coordinates[batch_index, encoded] = decoded["coords"][0]
                 sequence_logits[batch_index, encoded] = decoded["sequence_logits"][0]
                 residue_types[batch_index, encoded] = decoded["residue_type"][0]
-                decoded_atom_mask = decoded.get("atom_mask")
-                if decoded_atom_mask is None:
-                    decoded_atom_mask = get_residue_atom_mask(
-                        decoded["residue_type"],
-                        self.decoder.num_residue_types,
-                        torch.ones_like(decoded["residue_type"], dtype=torch.bool),
-                    )
-                atom_mask[batch_index, encoded] = decoded_atom_mask[0]
-
-            no_latent = padding_mask[batch_index] & ~encoded
-            coordinates[batch_index, no_latent, 1] = state["bb_ca"][batch_index, no_latent].to(coordinates.dtype)
-            atom_mask[batch_index, no_latent, 1] = True
-
-        return {
+                if presence is not None:
+                    presence[batch_index, encoded] = decoded["atom_presence_logits"][0]
+        output: RFProteinaDecodedOutput = {
             "coords": coordinates,
             "sequence_logits": sequence_logits,
             "residue_type": residue_types,
-            "atom_mask": atom_mask,
         }
+        if presence is not None:
+            output["atom_presence_logits"] = presence
+        return output

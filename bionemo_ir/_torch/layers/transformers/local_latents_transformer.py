@@ -14,6 +14,7 @@
 # limitations under the License.
 
 import dataclasses
+from collections.abc import Mapping
 from typing import NamedTuple
 
 import torch
@@ -128,7 +129,43 @@ class LocalLatentsTransformer(nn.Module):
     multiple of 8, and the heads read the trunk output sliced back to ``N``.
     """
 
-    def __init__(self, config: BaseConfig) -> None:
+    @classmethod
+    def from_reference_state_dict(
+        cls,
+        weights: Mapping[str, torch.Tensor],
+        *,
+        heads: nn.Module | None = None,
+        dtype: str = "bfloat16",
+        attention_backend: str = "SDPA",
+        device: torch.device | str | None = None,
+    ) -> "LocalLatentsTransformer":
+        """Load an inference trunk without an autoencoder, feature builder or simulator.
+
+        Args:
+            weights: Native score-network tensors under ``nn.``; merge adapters first.
+            heads: Optional caller-owned readouts with ``requires_pair`` and
+                ``forward(single, pair, padding_mask, emit_masks)``. Omit to use released heads.
+            dtype: Numerical precision of the trunk and its readouts.
+            attention_backend: BioIR pairwise-attention backend.
+            device: Optional device to place the loaded module on.
+        """
+        from bionemo_ir.models.rfproteina.convert import (
+            FEATURE_BUILDER_PREFIXES,
+            load_rfproteina_trunk_checkpoint,
+            reject_unused_source,
+            rfproteina_trunk_config_from_weights,
+        )
+
+        config = rfproteina_trunk_config_from_weights(
+            weights, dtype=dtype, pairwise_attention_backend=attention_backend
+        )
+        module = cls(config, heads=heads)
+        report = load_rfproteina_trunk_checkpoint(module, weights)
+        reject_unused_source(report, component="trunk", expected_unused=FEATURE_BUILDER_PREFIXES)
+        module.eval()
+        return module if device is None else module.to(device)
+
+    def __init__(self, config: BaseConfig, heads: nn.Module | None = None) -> None:
         """
         Args:
             config: a :class:`~bionemo_ir.configs.BaseConfig` carrying the
@@ -144,6 +181,7 @@ class LocalLatentsTransformer(nn.Module):
         self.config = config
         self.dtype = config.torch_dtype
         self.token_dim = config.token_dim
+        self.heads = None if heads is None else heads.to(dtype=self.dtype)
 
         cond_hidden = int(config.condition_dim * config.condition_transition_expansion)
         self.transition_c_1 = Transition(
@@ -236,6 +274,22 @@ class LocalLatentsTransformer(nn.Module):
             self.s_cycle_proj = nn.Linear(config.token_dim, config.token_dim, bias=False, dtype=self.dtype)
             self.z_cycle_proj = nn.Linear(config.pair_dim, config.pair_dim, bias=False, dtype=self.dtype)
 
+        if heads is None:
+            self._init_heads(config)
+
+        self.enable_token_pad = config.enable_token_pad
+        self.token_pad_spec = config.token_pad_spec
+        spec = config.token_pad_spec
+        self._pad_spec_per_call = dataclasses.replace(
+            spec,
+            pair_channel=tuple(k for k in spec.pair_channel if k != "pair"),
+            single_last=tuple(k for k in spec.single_last if k != "padding_mask"),
+        )
+        set_trimul_token_padding(self, self.enable_token_pad)
+        self.trunk_graph = GraphRegion(self, "trunk_step", config.graph_optimization_config)
+
+    def _init_heads(self, config: BaseConfig) -> None:
+        """Released-checkpoint readouts for standalone use without caller-owned heads."""
         self.local_latents_linear = nn.Sequential(
             nn.RMSNorm(config.token_dim, eps=config.norm_epsilon, dtype=self.dtype),
             nn.Linear(config.token_dim, config.latent_dim, bias=False, dtype=self.dtype),
@@ -255,22 +309,6 @@ class LocalLatentsTransformer(nn.Module):
             self.insertion_q_proj = nn.Linear(config.token_dim, config.token_dim, bias=False, dtype=self.dtype)
             self.insertion_k_proj = nn.Linear(config.token_dim, config.token_dim, bias=False, dtype=self.dtype)
             self._insertion_head_scale = config.token_dim**-0.5
-
-        self.enable_token_pad = config.enable_token_pad
-        self.token_pad_spec = config.token_pad_spec
-        # forward() pads the pair while it masks it, and prepare_masks() the token mask, so the shared padding
-        # pads the rest.
-        spec = config.token_pad_spec
-        self._pad_spec_per_call = dataclasses.replace(
-            spec,
-            pair_channel=tuple(k for k in spec.pair_channel if k != "pair"),
-            single_last=tuple(k for k in spec.single_last if k != "padding_mask"),
-        )
-        # forward() pads the tokens before any layer runs.
-        set_trimul_token_padding(self, self.enable_token_pad)
-        # One capture serves every recycle depth, because the repeated computation is the step
-        # rather than the whole forward. The config enables capture by default.
-        self.trunk_graph = GraphRegion(self, "trunk_step", config.graph_optimization_config)
 
     def _padded_tokens(self, tokens: int) -> int:
         """The token count the layers run at: ``tokens`` rounded up to the TriMul alignment when padding is on."""
@@ -444,6 +482,7 @@ class LocalLatentsTransformer(nn.Module):
         metadata: AttentionMetadata | None,
         buffers: PreallocatedBuffers | None,
         recycles: torch.Tensor | None = None,
+        return_pair: bool = False,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Run one pass of the layer stack between the recycles of its single and its pair.
 
@@ -503,12 +542,12 @@ class LocalLatentsTransformer(nn.Module):
                         precomputed_masks=precomputed_masks,
                         precomputed_single_masks=precomputed_single_masks,
                     )
-        if self.recycle_enabled:
+        if self.recycle_enabled and not return_pair:
             initial = carried.untyped_storage().data_ptr() == pair_init.untyped_storage().data_ptr()
             pair = self._recycle_pair(pair, pair_init, pair_sumsq, out=None if initial else carried, active=recycles)
         return single, pair
 
-    def forward(
+    def forward_features(
         self,
         single: torch.Tensor,
         pair: torch.Tensor,
@@ -519,8 +558,9 @@ class LocalLatentsTransformer(nn.Module):
         recycle_depth: int = 1,
         pair_in_buffers: bool = False,
         masks: TrunkMasks | None = None,
-    ) -> dict[str, dict[str, torch.Tensor]]:
-        """Predict product-space velocities.
+        return_pair: bool = True,
+    ) -> tuple[torch.Tensor, torch.Tensor | None]:
+        """Return final trunk features for caller-owned PyTorch readouts.
 
         Args:
             single: Initial token representation ``[B, N, token_dim]``.
@@ -537,6 +577,12 @@ class LocalLatentsTransformer(nn.Module):
             pair_in_buffers: ``pair`` is the first of :meth:`initial_pair_buffers` cut to ``[B, N, N, C]``, and
                 both buffers already hold the masked pair, zero-padded.
             masks: :meth:`prepare_masks` of ``padding_mask``, which a rollout builds once; built here when omitted.
+            return_pair: Return the final pair track before recycling, with both token axes unpadded.
+                False avoids retaining/copying that track when heads only consume single features.
+
+        Returns:
+            Single ``[B, N, token_dim]`` and pair ``[B, N, N, pair_dim]`` (or ``None``).
+            Outputs remain valid after subsequent calls, including CUDA graph replay.
         """
         if recycle_depth < 0:
             raise ValueError(f"recycle_depth must be non-negative, got {recycle_depth}")
@@ -613,10 +659,45 @@ class LocalLatentsTransformer(nn.Module):
                 pair=pair,
                 condition=conditions[cycle if condition.ndim == 4 else 0],
                 recycles=recycles,
+                return_pair=return_pair and cycle + 1 == passes,
                 **step,
             )
 
         single, padding_mask = unpad_trunk_tokens(single, padding_mask, n_true=n_true, kinds=("single", "single_last"))
+        if not return_pair:
+            return single, None
+        (pair,) = unpad_trunk_tokens(pair, n_true=n_true, kinds=("pair",))
+        return single, pair
+
+    def forward(
+        self,
+        single: torch.Tensor,
+        pair: torch.Tensor,
+        condition: torch.Tensor,
+        padding_mask: torch.Tensor,
+        metadata: AttentionMetadata | None = None,
+        buffers: PreallocatedBuffers | None = None,
+        recycle_depth: int = 1,
+        pair_in_buffers: bool = False,
+        masks: TrunkMasks | None = None,
+        emit_masks: dict[str, torch.Tensor] | None = None,
+    ) -> dict[str, dict[str, torch.Tensor]]:
+        """Apply ordinary PyTorch heads to accelerated trunk features in the caller's token layout."""
+        padding_mask = padding_mask.to(torch.bool)
+        single, pair = self.forward_features(
+            single,
+            pair,
+            condition,
+            padding_mask,
+            metadata,
+            buffers,
+            recycle_depth,
+            pair_in_buffers,
+            masks,
+            return_pair=self.heads is not None and self.heads.requires_pair,
+        )
+        if self.heads is not None:
+            return self.heads(single, pair, padding_mask, emit_masks)
         valid = padding_mask.unsqueeze(-1).to(single.dtype)
         output = {
             "bb_ca": {"v": self.ca_linear(single) * valid},

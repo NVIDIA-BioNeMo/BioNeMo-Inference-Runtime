@@ -19,17 +19,15 @@ code is imported or modified.
 
 ## Architecture
 
-The public mechanism has four parts:
+The public mechanism has three parts:
 
 - `OracleProvider` is the provider base class and lifecycle contract.
 - `OracleRequest` and `OracleResponse` are the batch boundary.
 - residue and atom resolvers translate source-model integer vocabularies into
-  canonical identities without guessing from vocabulary size;
-- adapters translate a model output into requests and an oracle response into
-  a consumer contract.
+  canonical identities without guessing from vocabulary size.
 
 Oracle data contracts live beside BioIR's existing molecular schemas. Runtime
-providers and adapters remain separate from `_torch`, model implementations,
+providers remain separate from `_torch`, model implementations,
 and the data pipeline:
 
 ```text
@@ -41,15 +39,12 @@ bionemo_ir/oracles/
   providers/
     base.py
     callable.py
-  adapters/
-    rfproteina.py
-    search.py
 ```
 
 Import schemas from `bionemo_ir.data.schemas`. `bionemo_ir.oracles` also
 re-exports them for compatibility alongside the resolvers and
-custom-callable provider. Import adapters explicitly from
-`bionemo_ir.oracles.adapters`.
+custom-callable provider. Applications translate model outputs into requests
+and interpret the returned metrics.
 
 ## Provider contract
 
@@ -130,9 +125,8 @@ provider = CallableOracleProvider("my_structure_oracle", my_oracle_function)
 
 The function has the same batch contract as `run`.
 
-Search may split candidates according to `scoring_chunk_size`. A provider used
-for search should therefore make each response depend on its request, not on
-batch order or batch size.
+Applications may split requests into batches. Providers should make each
+response depend on its request, not on batch order or batch size.
 
 ## Request and response data
 
@@ -157,13 +151,13 @@ oracle-specific vocabulary.
 any resolved residue lacks `one_letter_code`; providers supporting ligands or
 other non-sequence entities should consume the resolved records directly.
 
-`OracleResponse.metrics` contains scalar metric names and values. Search uses
-only metrics from `OracleStatus.OK` responses. `input_request` optionally
-carries the shared `InputRequest` schema on a request, and `folding_output`
-optionally carries the shared `FoldingOutput` schema on a response. These
-fields are the typed bridge for a future BioIR pipeline-backed provider.
-`output` remains available for a custom provider-native prediction, while
-`artifacts` maps names to paths or URIs for post-hoc consumers.
+`OracleResponse.metrics` contains scalar metric names and values. Consumers
+should use only metrics from `OracleStatus.OK` responses. `input_request`
+optionally carries the shared `InputRequest` schema on a request, and
+`folding_output` optionally carries the shared `FoldingOutput` schema on a
+response. These fields are the typed bridge for a future BioIR pipeline-backed
+provider. `output` remains available for a custom provider-native prediction,
+while `artifacts` maps names to paths or URIs for post-hoc consumers.
 
 Providers must return an explicit status for every request:
 
@@ -179,7 +173,7 @@ Source integer vocabularies are not inferred from their width. In particular,
 RFProteína's 20-class and unified 33-class outputs have different index
 origins, and a custom checkpoint may use another ordering.
 
-Every RFProteína request adapter therefore requires both a
+An application constructing requests should supply both a
 `ResidueTypeResolver` and `AtomTypeResolver`:
 
 ```python
@@ -221,99 +215,12 @@ all ligand tokens may occupy atom slot 1 while their identities come from
 metadata such as `element`, `charge`, or `molecule_iid`.
 
 A resolver should raise `OracleResolutionError` for an unsupported source
-index. The RFProteína adapter converts that row into an `UNSUPPORTED`
-response and does not call the provider for it. Other exceptions propagate as
-implementation errors.
-
-## RFProteína search
-
-Compose a provider, source adapter, and search metric adapter:
-
-```python
-from bionemo_ir.models.rfproteina import (
-    RFProteinaBeamSearchConfig,
-    RFProteinaLocalMetricEvaluator,
-    RFProteinaSearchRewardConfig,
-)
-from bionemo_ir.oracles.adapters import (
-    OracleMetricEvaluator,
-    RFProteinaOracleRequestAdapter,
-)
-
-request_adapter = RFProteinaOracleRequestAdapter(
-    residue_type_resolver=residue_resolver,
-    atom_type_resolver=atom_resolver,
-)
-oracle_metrics = OracleMetricEvaluator(
-    provider,
-    request_adapter,
-    required_tags_any={"refolding"},
-)
-
-search_config = RFProteinaBeamSearchConfig(
-    step_checkpoints=[0, 25, 50, 75, 100],
-    n_branch=4,
-    beam_width=4,
-    rewards=RFProteinaSearchRewardConfig(
-        weights={"clash_metrics.frac_atoms_clashing_1p5A": -1.0},
-        reward_metrics_tags=["local"],
-        checkpoint_overrides={
-            100: {
-                "weights": {"my_oracle.plddt": 1.0},
-                "reward_metrics_tags": ["refolding"],
-            },
-        },
-    ),
-)
-
-with provider:
-    result = model.search(
-        static_features,
-        search_config,
-        evaluators=[
-            RFProteinaLocalMetricEvaluator(),
-            oracle_metrics,
-        ],
-        seed=1234,
-    )
-```
-
-This example uses inexpensive local metrics at intermediate checkpoints and
-runs the custom oracle only at step 100. The generic composite evaluator
-merges each evaluator's disjoint metric keys row by row. Passing an explicit
-`evaluators` list replaces the default local evaluator, so this example
-includes `RFProteinaLocalMetricEvaluator` in the list. `reward_metrics_tags`
-are delivered through `MetricEvaluationContext`; the search adapter checks tag
-conditions before it builds requests or calls the provider.
-
-The RFProteína adapter:
-
-- uses the prediction's final coordinate, residue, and atom-mask views;
-- removes padding tokens;
-- converts coordinates from nanometres to ångströms;
-- provides stable candidate IDs from the search context;
-- preserves selected static features as CPU NumPy arrays in
-  `EncodedStructure.metadata`.
-
-By default it preserves identity and topology fields such as `element`,
-`charge`, `chain_iid`, `molecule_iid`, and bond features. Pass
-`metadata_keys=None` to preserve every static feature, or provide an explicit
-key collection. Metadata remains aligned to the original source row; use
-`encoded.source_token_indices` to address it.
-
-Atom slots are the source atom indices by default. If the input carries a
-different atom vocabulary, set `atom_type_indices_key` to a static feature
-with shape `[batch, tokens, atom_slots]`.
-
-A failed, timed-out, skipped, or unsupported response contributes no oracle
-metric keys. If the active weighted objective requires one of those keys,
-that candidate receives `-inf`. Search raises if every candidate for a
-request receives `-inf`.
+index. Applications can report that row as `UNSUPPORTED` without calling
+the provider. Other exceptions indicate implementation errors.
 
 ## Use outside search
 
-Search is only a consumer adapter. Other tasks can build `OracleRequest`
-objects and call the same provider directly:
+Applications build `OracleRequest` objects and call the provider directly:
 
 ```python
 responses = provider.evaluate(requests)

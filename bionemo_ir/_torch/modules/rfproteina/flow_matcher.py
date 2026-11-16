@@ -16,8 +16,11 @@
 
 Flow matching integrates from a reference distribution at ``t = 0`` toward the
 data distribution at ``t = 1``. This module owns the ``t = 0`` end: it draws the
-product-space noise the sampler starts from. The integration itself belongs to
-the shared sampling runtime, so nothing here iterates or touches a schedule.
+product-space reference noise, and resamples a backbone from its forward marginal
+for inverse folding. A host that starts a rollout from noise can call
+:meth:`~RFProteinaProductSpaceFlowMatcher.sample_noise`; the model's simulator takes
+its start state from the caller. The integration itself belongs to the shared
+sampling runtime, so nothing here iterates or touches a schedule.
 
 The draw is more than a Gaussian because RFProteína centers it. The backbone is
 projected onto the zero-center-of-mass subspace, since a translated backbone is
@@ -43,11 +46,11 @@ import torch
 
 from bionemo_ir._torch.sampling.random import randn
 
-from .contracts import ModalityReference, RFProteinaCorruptionOutput, RFProteinaState
+from .contracts import ModalityReference, RFProteinaState
 from .groups import compose_group_ids
 
 if TYPE_CHECKING:
-    from bionemo_ir.models.rfproteina.config import RFProteinaSamplingConfig
+    from bionemo_ir.models.rfproteina.config import RFProteinaSimulationConfig
 
 #: Product-space modalities in the order upstream draws them. Changing the
 #: order changes every seeded rollout.
@@ -77,9 +80,9 @@ class RFProteinaProductSpaceFlowMatcher:
             than the config so the two cannot disagree.
     """
 
-    def __init__(self, config: RFProteinaSamplingConfig, latent_dim: int) -> None:
+    def __init__(self, config: RFProteinaSimulationConfig, latent_dim: int) -> None:
         self.modalities: dict[str, ModalityReference] = {
-            "bb_ca": ModalityReference(BACKBONE_DIM, config.backbone.reference),
+            "bb_ca": ModalityReference(BACKBONE_DIM, config.bb_ca.reference),
             "local_latents": ModalityReference(latent_dim, config.local_latents.reference),
         }
 
@@ -103,7 +106,6 @@ class RFProteinaProductSpaceFlowMatcher:
         generator: torch.Generator | None = None,
         coordinate_condition_mask: torch.Tensor | None = None,
         groups: Mapping[str, torch.Tensor | None] | None = None,
-        training: bool = False,
     ) -> RFProteinaState:
         """Draw one reference state for every product-space modality.
 
@@ -130,7 +132,6 @@ class RFProteinaProductSpaceFlowMatcher:
                 generator,
                 coordinate_condition_mask,
                 groups,
-                apply_inference_offset=not training,
             )
             for name in PRODUCT_SPACE_MODALITIES
         }
@@ -159,115 +160,6 @@ class RFProteinaProductSpaceFlowMatcher:
             )
         return noise
 
-    def corrupt_state(
-        self,
-        clean_state: Mapping[str, torch.Tensor],
-        times: Mapping[str, torch.Tensor | float],
-        padding_mask: torch.Tensor,
-        dtype: torch.dtype = torch.float32,
-        generator: torch.Generator | None = None,
-        can_be_encoded: torch.Tensor | None = None,
-        coordinate_condition_mask: torch.Tensor | None = None,
-        groups: Mapping[str, torch.Tensor | None] | None = None,
-    ) -> RFProteinaCorruptionOutput:
-        """Sample and interpolate the forward marginal used by redesign.
-
-        Random draws deliberately follow upstream corruption order: draw every
-        modality's base noise first, then apply interpolation-time stochastic
-        centering in product-modality order.
-        """
-        padding_mask = padding_mask.to(torch.bool)
-        batch, tokens = padding_mask.shape
-        missing = set(PRODUCT_SPACE_MODALITIES) - set(clean_state)
-        if missing:
-            raise ValueError(f"clean_state is missing modalities {sorted(missing)}")
-        missing_times = set(PRODUCT_SPACE_MODALITIES) - set(times)
-        if missing_times:
-            raise ValueError(f"times are missing modalities {sorted(missing_times)}")
-
-        clean: RFProteinaState = {}
-        resolved_times: dict[str, torch.Tensor] = {}
-        for name in PRODUCT_SPACE_MODALITIES:
-            value = clean_state[name]
-            expected = (batch, tokens, self.modalities[name].dim)
-            if value.shape != expected:
-                raise ValueError(f"clean_state[{name!r}] must have shape {expected}, got {tuple(value.shape)}")
-            clean[name] = value.to(device=padding_mask.device, dtype=dtype) * padding_mask.unsqueeze(-1).to(dtype)
-            time = times[name]
-            if not isinstance(time, torch.Tensor):
-                time = torch.full((batch,), float(time), device=padding_mask.device, dtype=dtype)
-            else:
-                time = time.to(device=padding_mask.device, dtype=dtype)
-                if time.ndim == 0:
-                    time = time.expand(batch)
-            if time.shape != (batch,):
-                raise ValueError(f"times[{name!r}] must be scalar or shape {(batch,)}, got {tuple(time.shape)}")
-            if torch.any((time < 0) | (time >= 1)):
-                raise ValueError(f"times[{name!r}] must contain values in [0, 1)")
-            resolved_times[name] = time
-
-        latent_mask = padding_mask
-        if can_be_encoded is not None:
-            if can_be_encoded.shape != padding_mask.shape:
-                raise ValueError(
-                    f"can_be_encoded must have shape {tuple(padding_mask.shape)}, got {tuple(can_be_encoded.shape)}"
-                )
-            latent_mask = padding_mask & can_be_encoded.to(torch.bool)
-        clean["local_latents"] *= latent_mask.unsqueeze(-1).to(dtype)
-
-        reference = self.sample_noise(
-            padding_mask,
-            dtype=dtype,
-            generator=generator,
-            coordinate_condition_mask=coordinate_condition_mask,
-            groups=groups,
-            training=True,
-        )
-        reference["local_latents"] *= latent_mask.unsqueeze(-1).to(dtype)
-        corrupted: RFProteinaState = {}
-        for name in PRODUCT_SPACE_MODALITIES:
-            modality = self.modalities[name]
-            x_0 = reference[name]
-            x_1 = clean[name]
-            mode = modality.config.stochastic_centering_mode
-            if mode == "x_0" and modality.config.stochastic_centering_scale:
-                x_0 = self._add_stochastic_offset(
-                    x_0,
-                    modality,
-                    padding_mask,
-                    generator,
-                    coordinate_condition_mask,
-                    groups,
-                )
-            elif mode == "x_1" and modality.config.stochastic_centering_scale:
-                x_1 = self._add_stochastic_offset(
-                    x_1,
-                    modality,
-                    padding_mask,
-                    generator,
-                    coordinate_condition_mask,
-                    groups,
-                )
-            time = resolved_times[name].unsqueeze(-1).unsqueeze(-1)
-            x_t = (1.0 - time) * x_0 + time * x_1
-            if mode == "x_t" and modality.config.stochastic_centering_scale:
-                x_t = self._add_stochastic_offset(
-                    x_t,
-                    modality,
-                    padding_mask,
-                    generator,
-                    coordinate_condition_mask,
-                    groups,
-                )
-            corrupted[name] = x_t
-        corrupted["local_latents"] *= latent_mask.unsqueeze(-1).to(dtype)
-        return RFProteinaCorruptionOutput(
-            clean_state=clean,
-            reference_state=reference,
-            corrupted_state=corrupted,
-            times=resolved_times,
-        )
-
     def sample_noised_backbone(
         self,
         target_backbone: torch.Tensor,
@@ -280,10 +172,10 @@ class RFProteinaProductSpaceFlowMatcher:
         """Draw the target backbone from its forward marginal at ``time``.
 
         Only the backbone matcher is evaluated. Sampling uses the same
-        centering inputs and one-time centering behavior as
-        :meth:`corrupt_state`. Inverse folding calls this every step so the
-        network sees a noised copy of the supplied backbone rather than its
-        own backbone update.
+        centering inputs as :meth:`sample_noise`, and applies the stochastic
+        centering once, at the mode's own point of the interpolation. Inverse
+        folding calls this every step so the network sees a noised copy of the
+        supplied backbone rather than its own backbone update.
         """
         padding_mask = padding_mask.to(torch.bool)
         batch = padding_mask.shape[0]

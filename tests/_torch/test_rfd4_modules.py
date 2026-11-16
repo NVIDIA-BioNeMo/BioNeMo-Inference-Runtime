@@ -26,8 +26,11 @@ import pytest
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from pydantic import ValidationError
 
 import bionemo_ir._torch.graph_optimization.cuda_graph.runtime as graph_runtime
+import bionemo_ir._torch.modules.rfproteina.chirality as chirality
+import bionemo_ir._torch.modules.rfproteina.representation_builder as representation_builder
 from bionemo_ir._torch.attention_backend.utils import precompute_pair_masks, precompute_single_masks
 from bionemo_ir._torch.custom_ops.fused_ln_proj_moveaxis_pad import LNProjMoveaxisPad
 from bionemo_ir._torch.layers.attention import AttentionPairBias
@@ -41,21 +44,20 @@ from bionemo_ir._torch.layers.transformers import (
     local_latents_transformer,
 )
 from bionemo_ir._torch.layers.transformers.blocks import PairUpdateBlock
+from bionemo_ir._torch.layers.transformers.local_latents_decoder import RFProteinaLatentDecoder
+from bionemo_ir._torch.layers.transformers.local_latents_encoder import RFProteinaLatentEncoder
+from bionemo_ir._torch.layers.transformers.local_latents_transformer import (
+    LocalLatentsTransformer,
+    RFProteinaPairUpdate,
+)
 from bionemo_ir._torch.layers.transition import PairTransition
 from bionemo_ir._torch.layers.triangle_nodes import (
     TriangleMultiplicationNode,
     TriangleMultiplicationNodeType,
     precompute_trimul_metadata,
 )
-from bionemo_ir._torch.modules.rfproteina import (
-    LocalLatentsTransformer,
-    RFProteinaLatentDecoder,
-    RFProteinaLatentEncoder,
-    RFProteinaPairUpdate,
-    RFProteinaRepresentationBuilder,
-    chirality,
-    representation_builder,
-)
+from bionemo_ir._torch.modules.rfproteina.contracts import RFProteinaConversionReport
+from bionemo_ir._torch.modules.rfproteina.representation_builder import RFProteinaRepresentationBuilder
 from bionemo_ir.hubs import resolve_rfproteina_autoencoder_checkpoint, resolve_rfproteina_checkpoint
 from bionemo_ir.hubs.local import LOCAL_CHECKPOINTS
 from bionemo_ir.hubs.support_matrix import FoldingSupportMatrix
@@ -63,11 +65,26 @@ from bionemo_ir.hubs.support_matrix import GenerativeSupportMatrix as SupMat
 from bionemo_ir.models.rfproteina import (
     RFProteina,
     RFProteinaConfig,
-    RFProteinaConversionReport,
+)
+from bionemo_ir.models.rfproteina import (
+    modeling as rfproteina_modeling,
+)
+from bionemo_ir.models.rfproteina.config import (
     RFProteinaDecoderConfig,
     RFProteinaEncoderConfig,
     RFProteinaRepresentationConfig,
+    RFProteinaSimulationConfig,
     RFProteinaTrunkConfig,
+    trunk_graph_config,
+)
+from bionemo_ir.models.rfproteina.convert import (
+    RELEASED_LORA_ALPHA,
+    _check_architecture,
+    _convert_attention,
+    _convert_encoder_inputs,
+    convert_rfproteina_representation_builder_torch,
+    fold_atom_chemistry,
+    load_rfproteina_checkpoint_state,
     load_rfproteina_decoder_checkpoint,
     load_rfproteina_encoder_checkpoint,
     load_rfproteina_representation_builder_checkpoint,
@@ -79,18 +96,8 @@ from bionemo_ir.models.rfproteina import (
     rfproteina_representation_config_from_weights,
     rfproteina_trunk_config_from_weights,
 )
-from bionemo_ir.models.rfproteina import modeling as rfproteina_modeling
-from bionemo_ir.models.rfproteina.config import trunk_graph_config
-from bionemo_ir.models.rfproteina.convert import (
-    RELEASED_LORA_ALPHA,
-    _check_architecture,
-    _convert_attention,
-    _convert_encoder_inputs,
-    convert_rfproteina_representation_builder_torch,
-    fold_atom_chemistry,
-    load_rfproteina_checkpoint_state,
-)
 from tests._torch import SM_VERSION, init_module_weights, skip_if_cutedsl, skip_if_no_cutedsl
+from tests._torch.rfproteina_utils import get_residue_atom_mask
 
 # The parity tests below import the upstream ``rfproteina`` package. Read it from
 # the 3rdparty/RFD4-Proteina submodule when it is checked out, and leave the path
@@ -99,48 +106,6 @@ from tests._torch import SM_VERSION, init_module_weights, skip_if_cutedsl, skip_
 _RFD4_PROTEINA_SRC = Path(__file__).resolve().parents[2] / "3rdparty" / "RFD4-Proteina" / "src"
 if _RFD4_PROTEINA_SRC.is_dir() and str(_RFD4_PROTEINA_SRC) not in sys.path:
     sys.path.append(str(_RFD4_PROTEINA_SRC))
-
-
-def test_rfproteina_runtime_contracts_have_one_canonical_definition() -> None:
-    from bionemo_ir._torch.modules.rfproteina import (
-        atomized,
-        contracts,
-        flow_matcher,
-        insertion,
-        nucleic_acid,
-        partial_redesign,
-        representation_builder,
-        rollout,
-        sampler,
-        search,
-    )
-    from bionemo_ir.models.rfproteina import convert, modeling
-
-    compatibility_exports = (
-        (atomized, "RFProteinaAtomizedOutput"),
-        (flow_matcher, "ModalityReference"),
-        (flow_matcher, "RFProteinaCorruptionOutput"),
-        (insertion, "RFProteinaInsertionOutput"),
-        (nucleic_acid, "RFProteinaNucleicAcidOutput"),
-        (partial_redesign, "RFProteinaCleanStateEncoding"),
-        (partial_redesign, "RFProteinaPartialRedesignOutput"),
-        (representation_builder, "RFProteinaRepresentations"),
-        (sampler, "RFProteinaSamplingOutput"),
-        (sampler, "RFProteinaPartialSamplingOutput"),
-        (search, "RFProteinaSearchCandidate"),
-        (search, "RFProteinaSearchOutput"),
-        (modeling, "RFProteinaPredictionOutput"),
-        (modeling, "RFProteinaSearchOutput"),
-        (convert, "RFProteinaConversionReport"),
-    )
-    for module, name in compatibility_exports:
-        canonical = getattr(contracts, name)
-        assert getattr(module, name) is canonical
-        assert canonical.__module__ == contracts.__name__
-    for module in (flow_matcher, rollout, sampler):
-        assert module.RFProteinaState is contracts.RFProteinaState
-    assert rollout.RFProteinaPrediction is contracts.RFProteinaPrediction
-    assert sampler.RFProteinaPredictFn is contracts.RFProteinaPredictFn
 
 
 def _rfproteina_attention(
@@ -400,15 +365,10 @@ def test_rfproteina_released_config() -> None:
     assert (config.representation.single_input_dim, config.representation.pair_input_dim) == (744, 107)
     assert config.decoder.input_schema == "unified"
     assert (config.decoder.single_input_dim, config.decoder.pair_input_dim) == (80, 0)
-    # The released policy: thinking_medium over the densified tail, as rfd4-generate runs it.
-    assert config.sampling.num_steps == 60
-    assert not config.sampling.self_condition
-    assert len(config.sampling.recycle_depths()) == 60
-    assert sum(config.sampling.recycle_depths()) == 185
-    assert config.sampling.condition_decoder_on_sequence_prediction
-    for modality in (config.sampling.backbone, config.sampling.local_latents):
-        assert (modality.schedule.tail_steps, modality.schedule.tail_step_multiplier) == (10, 2)
-    assert config.sampling.backbone.step.sampling_mode == "vf_tsr"
+    assert not config.simulation.self_condition
+    assert config.simulation.bb_ca.step.sampling_mode == "vf_tsr"
+    with pytest.raises(ValidationError):
+        type(config.simulation)(num_steps=60)
 
 
 def test_sequence_probability_representation_matches_340k_widths() -> None:
@@ -501,7 +461,7 @@ def test_coordinate_group_permutation_draws_from_the_sampling_stream() -> None:
     the draws and shows up only in a design.
     """
     from bionemo_ir._torch.modules.rfproteina.groups import CONDITION_COORDINATE_GROUP
-    from bionemo_ir._torch.sampling.random import normal_draws, permutations, randn
+    from bionemo_ir._torch.sampling.random import randn, use_generator
 
     device = torch.device("cuda")
     builder = RFProteinaRepresentationBuilder(
@@ -512,12 +472,7 @@ def test_coordinate_group_permutation_draws_from_the_sampling_stream() -> None:
 
     def consume(stream: torch.Generator) -> torch.Tensor:
         """The permutation, then a noise draw, from one generator."""
-        with (
-            normal_draws(
-                lambda shape, *, device, dtype: torch.randn(shape, device=device, dtype=dtype, generator=stream)
-            ),
-            permutations(lambda n, *, device: torch.randperm(n, device=device, generator=stream)),
-        ):
+        with use_generator(stream):
             builder._coordinate_group(builder._coordinate_groups(static))
             return randn((4,), device=device, dtype=torch.float32)
 
@@ -937,6 +892,24 @@ def test_noise_aligned_chirality_is_a_checkpoint_setting_the_weights_cannot_carr
 
     parameters = inspect.signature(RFProteina.from_reference_state_dicts).parameters
     assert {"noise_align_chirality", "noise_align_chirality_translate"} <= parameters.keys()
+
+
+def test_sampler_settings_have_no_fallback_in_the_builder() -> None:
+    """The built-in simulation defaults are not the released sampler settings, so the host must pass its own."""
+    parameter = inspect.signature(RFProteina.from_reference_state_dicts).parameters["simulation_config"]
+    assert parameter.default is inspect.Parameter.empty and parameter.kind is inspect.Parameter.KEYWORD_ONLY
+    with pytest.raises(TypeError, match="simulation_config"):
+        RFProteina.from_reference_state_dicts({}, {})
+
+
+def test_token_type_ids_match_the_schema_vocabulary() -> None:
+    """The builder keeps its own copies of the token-type ids to avoid importing the data layer; they must not drift."""
+    from bionemo_ir.data.schemas.vocabulary import TOKEN_TYPE_IDS
+
+    assert representation_builder.ATOMIZED_TOKEN_TYPE == TOKEN_TYPE_IDS["atomized"]
+    assert representation_builder.RNA_TOKEN_TYPE == TOKEN_TYPE_IDS["rna"]
+    assert representation_builder.DNA_TOKEN_TYPE == TOKEN_TYPE_IDS["dna"]
+    assert RFProteinaRepresentationConfig().atomized_token_type == TOKEN_TYPE_IDS["atomized"]
 
 
 def _representation_factory_weights(schema: str, latent_dim: int) -> dict[str, torch.Tensor]:
@@ -2010,7 +1983,8 @@ def test_rfproteina_local_latents_transformer_token_padding_fuses_trimul_residua
         torch.testing.assert_close(actual[head][key], expected[head][key], atol=2e-3, rtol=1.6e-2)
 
 
-def test_rfproteina_load_weights_folds_released_lora_by_path() -> None:
+@pytest.mark.parametrize("alignment", [None, False, True])
+def test_rfproteina_load_weights_folds_released_lora_by_path(alignment: bool | None) -> None:
     flow = resolve_rfproteina_checkpoint()
     autoencoder = resolve_rfproteina_autoencoder_checkpoint()
     if flow is None or not flow.is_file() or autoencoder is None or not autoencoder.is_file():
@@ -2018,7 +1992,19 @@ def test_rfproteina_load_weights_folds_released_lora_by_path() -> None:
 
     # The in-memory entry point sizes the model from the weights; the path loader must then reach the same tensors.
     flow_state = load_rfproteina_checkpoint_state(flow)
-    model = RFProteina.from_reference_state_dicts(flow_state, load_rfproteina_checkpoint_state(autoencoder))
+    training_config = (
+        None
+        if alignment is None
+        else {"noise_align_chirality": alignment, "noise_align_chirality_translate": alignment}
+    )
+    model = RFProteina.from_reference_state_dicts(
+        flow_state,
+        load_rfproteina_checkpoint_state(autoencoder),
+        simulation_config=RFProteinaSimulationConfig(),
+        reference_config=training_config,
+    )
+    assert model.config.representation.noise_align_chirality == (True if alignment is None else alignment)
+    assert model.config.representation.noise_align_chirality_translate == (False if alignment is None else alignment)
     expected = {key: value.clone() for key, value in model.velocity_model.state_dict().items()}
     with torch.no_grad():
         for value in model.velocity_model.parameters():
@@ -2033,7 +2019,8 @@ def test_rfproteina_load_weights_folds_released_lora_by_path() -> None:
         model.load_weights(flow, lora_alpha=None)
 
 
-def test_rfproteina_released_checkpoint_conversion() -> None:
+@pytest.mark.parametrize("custom_heads", [False, True])
+def test_rfproteina_released_checkpoint_conversion(custom_heads: bool) -> None:
     checkpoint = resolve_rfproteina_checkpoint()
     if checkpoint is None or not checkpoint.is_file():
         pytest.skip("RFPROTEINA_LDM_CKPT is not set to the released checkpoint")
@@ -2058,17 +2045,61 @@ def test_rfproteina_released_checkpoint_conversion() -> None:
     assert not representation_report.missing_target_keys
     assert len(representation_report.loaded_keys) == len(representation_builder.state_dict())
 
-    module = module.cuda().eval()
-    config = module.config
-    with torch.inference_mode():
-        output = module(
-            torch.randn(1, 8, config.token_dim, device="cuda", dtype=config.torch_dtype),
-            torch.randn(1, 8, 8, config.pair_dim, device="cuda", dtype=config.torch_dtype),
-            torch.randn(1, 8, config.condition_dim, device="cuda", dtype=config.torch_dtype),
-            torch.ones(1, 8, device="cuda", dtype=torch.bool),
+    from bionemo_ir.models.rfproteina import RFProteinaTrunk
+
+    class Readout(nn.Module):
+        requires_pair = False
+
+        def __init__(self) -> None:
+            super().__init__()
+            self.register_buffer("channels", torch.tensor([1, 257, trunk_config.token_dim - 1]))
+            self.projection = nn.Linear(3, 7, bias=False, dtype=torch.bfloat16)
+
+        def forward(self, single, pair, padding_mask, emit_masks=None):
+            return {"custom": {"logits": self.projection(single.index_select(-1, self.channels))}}
+
+    heads = Readout() if custom_heads else None
+    if custom_heads:
+        # Replace every released readout, with no released head name/shape left.
+        released = (
+            "local_latents_linear.",
+            "ca_linear.",
+            "sequence_readout.",
+            "insertion_q_proj.",
+            "insertion_k_proj.",
         )
-    assert torch.isfinite(output["bb_ca"]["v"]).all()
-    assert torch.isfinite(output["local_latents"]["v"]).all()
+        state = {k: v for k, v in state.items() if not k.removeprefix("nn.").startswith(released)}
+        state.update({"nn.heads." + k: v for k, v in heads.state_dict().items()})
+    del module
+    module = RFProteinaTrunk.from_reference_state_dict(state, heads=heads, device="cuda")
+    config = module.config
+    if custom_heads:
+        assert module.heads.channels.tolist() == [1, 257, trunk_config.token_dim - 1]
+    # The frontend owns these features; no optimized feature builder is invoked.
+    inputs = (
+        torch.randn(1, 13, config.token_dim, device="cuda", dtype=config.torch_dtype),
+        torch.randn(1, 13, 13, config.pair_dim, device="cuda", dtype=config.torch_dtype),
+        torch.randn(1, 13, config.condition_dim, device="cuda", dtype=config.torch_dtype),
+        torch.ones(1, 13, device="cuda", dtype=torch.bool),
+    )
+    module.trunk_graph.enable(trunk_graph_config())
+    with torch.inference_mode():
+        for offset in (0.0, 0.5):
+            changed = (inputs[0] + offset, *inputs[1:])
+            single, pair = module.forward_features(*changed, recycle_depth=3)
+            assert single.shape == inputs[0].shape and pair.shape == inputs[1].shape
+            assert torch.isfinite(single).all() and torch.isfinite(pair).all()
+            output = module(*changed, recycle_depth=3)
+            if custom_heads:
+                torch.testing.assert_close(output, heads(single, pair, inputs[3]), rtol=0, atol=0)
+            else:
+                assert torch.isfinite(output["bb_ca"]["v"]).all()
+                assert torch.isfinite(output["local_latents"]["v"]).all()
+        saved = single.clone(), pair.clone()
+        module.forward_features(inputs[0] + 2, *inputs[1:], recycle_depth=3)
+        torch.testing.assert_close((single, pair), saved, rtol=0, atol=0)
+    assert module.trunk_graph.tracker.execution_counts["replay"] > 0
+    assert not module.trunk_graph.tracker.fallback_to_eager_by_key
 
 
 def test_rfproteina_decoder_shapes_and_ca_anchoring() -> None:
@@ -2098,60 +2129,13 @@ def test_rfproteina_decoder_shapes_and_ca_anchoring() -> None:
 
     assert output["coords"].shape == (2, 12, 37, 3)
     assert output["sequence_logits"].shape == (2, 12, config.num_residue_types)
-    assert output["atom_mask"].shape == (2, 12, 37)
     assert torch.isfinite(output["coords"]).all()
     assert len(attention_mask_biases) == config.num_layers
     assert all(mask_bias is attention_mask_biases[0] for mask_bias in attention_mask_biases[1:])
 
     # The generated CA is authoritative and the padded tail stays empty.
     torch.testing.assert_close(output["coords"][..., 1, :], backbone_ca)
-    torch.testing.assert_close(
-        output["atom_mask"],
-        local_latents_decoder.get_residue_atom_mask(
-            output["residue_type"],
-            config.num_residue_types,
-            mask,
-        ),
-    )
     assert torch.count_nonzero(output["sequence_logits"][1, 7:]) == 0
-
-
-def test_rfproteina_atom37_masks_match_unified_contract() -> None:
-    unified = local_latents_decoder.get_atom37_mask_table(n_residue_types=33)
-    legacy = local_latents_decoder.get_atom37_mask_table(n_residue_types=20)
-
-    assert unified.shape == (33, 37)
-    torch.testing.assert_close(legacy, unified[1:21])
-    assert torch.equal(
-        torch.where(unified[19])[0],
-        torch.tensor([0, 1, 2, 3, 4, 5, 12, 13, 20, 21, 31, 32]),
-    )
-    assert torch.all(unified[22:26, 36])
-    assert torch.all(unified[27:31, 36])
-    assert not unified[26, 36]
-    assert not unified[31, 36]
-    assert torch.equal(torch.where(unified[32])[0], torch.tensor([1]))
-
-
-def test_rfproteina_atom37_table_takes_a_vocabulary_from_the_schemas() -> None:
-    """A wider vocabulary is a schema the caller resolves, not something the layer loads."""
-    from bionemo_ir.data.schemas import residue_vocabulary
-
-    vocabulary = residue_vocabulary(147)
-    assert vocabulary is not None and vocabulary.num_residue_types == 147
-
-    table = local_latents_decoder.get_atom37_mask_table(n_residue_types=147, occupancy=vocabulary.atom37_occupancy())
-    assert table.shape == (147, 37)
-    # The unified vocabulary extends the released one: the shared classes keep
-    # their meaning, and the amino acids gain the OXT slot the wider table adds.
-    unified = local_latents_decoder.get_atom37_mask_table(n_residue_types=33)
-    torch.testing.assert_close(table[:33, :36], unified[:, :36])
-    assert torch.equal(torch.where(table[32])[0], torch.tensor([1]))
-
-    with pytest.raises(ValueError, match="bionemo_ir.data.schemas.residue_vocabulary"):
-        local_latents_decoder.get_atom37_mask_table(n_residue_types=147)
-    with pytest.raises(ValueError, match="describes 147 residue types, expected 33"):
-        local_latents_decoder.get_atom37_mask_table(n_residue_types=33, occupancy=vocabulary.atom37_occupancy())
 
 
 def test_rfproteina_unified_decoder_restricts_residue_classes_by_token_type() -> None:
@@ -2171,10 +2155,6 @@ def test_rfproteina_unified_decoder_restricts_residue_classes_by_token_type() ->
     allowed = local_latents_decoder.get_allowed_residue_type_mask(device=torch.device("cuda"), n_residue_types=33)
     observed = output["sequence_logits"] != torch.finfo(torch.float32).min
     torch.testing.assert_close(observed, allowed[token_type])
-    torch.testing.assert_close(
-        output["atom_mask"],
-        local_latents_decoder.get_residue_atom_mask(output["residue_type"], 33, mask),
-    )
     assert output["residue_type"][0, 3] == 32
     assert torch.all(
         (output["residue_type"][0, :3] >= torch.tensor([1, 22, 27], device="cuda"))
@@ -2200,7 +2180,7 @@ class _FixedHead(nn.Module):
 
 #: Unified residue classes and atom37 slots the native-rule tests refer to.
 _ALA, _GLY, _TYR = 1, 8, 19
-_N, _CA, _C, _CB, _O = 0, 1, 2, 3, 4
+_N, _CA, _C, _CB = 0, 1, 2, 3
 
 
 def _native_rule_decoder(with_presence_head: bool) -> RFProteinaLatentDecoder:
@@ -2229,9 +2209,6 @@ def _native_rule_decoder(with_presence_head: bool) -> RFProteinaLatentDecoder:
 
 def _native_rule_inputs() -> dict[str, torch.Tensor]:
     """Token 0 is conditioned on GLY against a TYR prediction, token 1 is free, token 2 agrees on ALA."""
-    required = torch.zeros(1, 4, 37, dtype=torch.bool, device="cuda")
-    required[0, 0, [_N, _CA, _C, _CB, _O]] = True  # CB is not an atom of GLY.
-    required[0, 2, _O] = True
     return {
         "backbone_ca": torch.randn(1, 4, 3, device="cuda"),
         "local_latents": torch.randn(1, 4, 12, device="cuda"),
@@ -2239,71 +2216,22 @@ def _native_rule_inputs() -> dict[str, torch.Tensor]:
         "token_type": torch.zeros(1, 4, dtype=torch.long, device="cuda"),
         "conditional_residue_type": torch.tensor([[_GLY, 0, _ALA, 0]], device="cuda"),
         "conditional_residue_mask": torch.tensor([[True, False, True, False]], device="cuda"),
-        "required_atom_mask": required,
     }
 
 
-def _atoms(*slots: int) -> torch.Tensor:
-    atoms = torch.zeros(37, dtype=torch.bool, device="cuda")
-    atoms[list(slots)] = True
-    return atoms
-
-
-def test_rfproteina_presence_decoder_follows_the_native_output_rules() -> None:
-    unified = local_latents_decoder.get_atom37_mask_table(torch.device("cuda"), 33)
-    assert torch.equal(unified[_GLY], _atoms(_N, _CA, _C, _O))
-    assert torch.equal(unified[_ALA], _atoms(_N, _CA, _C, _CB, _O))
-    module = _native_rule_decoder(with_presence_head=True)
+@pytest.mark.parametrize("presence", [False, True])
+def test_rfproteina_decoder_returns_raw_predictions(presence: bool) -> None:
+    module = _native_rule_decoder(with_presence_head=presence)
     inputs = _native_rule_inputs()
-
     with torch.inference_mode():
         output = module(**inputs)
-        without_required = module(**{**inputs, "required_atom_mask": None})
-        free = module(
-            **{**inputs, "conditional_residue_type": None, "conditional_residue_mask": None, "required_atom_mask": None}
-        )
-
-    # A conditioned token keeps its residue and a free one keeps the decoder's.
-    assert output["residue_type"].tolist() == [[_GLY, _ALA, _ALA, 0]]
-    assert free["residue_type"].tolist() == [[_TYR, _ALA, _ALA, 0]]
-    # Conditioned GLY: its legal atoms, which the head denies, are all required but CB, which GLY lacks.
-    assert torch.equal(output["atom_mask"][0, 0], _atoms(_N, _CA, _C, _O))
-    # Free ALA: the head's atoms, so no O although ALA could carry one.
-    assert torch.equal(output["atom_mask"][0, 1], _atoms(_N, _CA, _C, _CB))
-    # Conditioned ALA: the reference atom and the required O.
-    assert torch.equal(output["atom_mask"][0, 2], _atoms(_CA, _O))
-    assert not output["atom_mask"][0, 3].any()
-    # Without the requirement only the reference atom survives the head, and the predicted
-    # coordinates of a required atom are the ones the decoder gave all along.
-    assert torch.equal(without_required["atom_mask"][0, 0], _atoms(_CA))
-    assert torch.equal(without_required["atom_mask"][0, 2], _atoms(_CA))
-    torch.testing.assert_close(output["coords"], without_required["coords"], atol=0, rtol=0)
-    torch.testing.assert_close(output["sequence_logits"], without_required["sequence_logits"], atol=0, rtol=0)
-
-
-def test_rfproteina_decoder_without_presence_head_keeps_what_it_predicts() -> None:
-    module = _native_rule_decoder(with_presence_head=False)
-    inputs = _native_rule_inputs()
-
-    with torch.inference_mode():
-        output = module(**inputs)
-
-    # The first-release 33-class autoencoder has no presence head, and the native decode it
-    # matches has neither rule: the argmax and its full atom table stand.
+    # Conditions enter the network, but do not overwrite its chosen class or logits.
     assert output["residue_type"].tolist() == [[_TYR, _ALA, _ALA, 0]]
-    torch.testing.assert_close(
-        output["atom_mask"],
-        local_latents_decoder.get_residue_atom_mask(output["residue_type"], 33, inputs["mask"]),
-    )
-
-
-def test_rfproteina_decoder_rejects_a_misshapen_required_atom_mask() -> None:
-    module = _native_rule_decoder(with_presence_head=True)
-    inputs = _native_rule_inputs()
-    inputs["required_atom_mask"] = inputs["required_atom_mask"][..., :36]
-
-    with pytest.raises(ValueError, match="required_atom_mask must have shape"):
-        module(**inputs)
+    assert "atom_mask" not in output
+    assert ("atom_presence_logits" in output) == presence
+    if presence:
+        expected = module.atom_presence_linear.value
+        torch.testing.assert_close(output["atom_presence_logits"], expected, rtol=0, atol=0)
 
 
 def test_rfproteina_decoder_pair_features_are_head_count_safe() -> None:
@@ -2509,7 +2437,7 @@ def test_rfproteina_encoder_pair_projection_matches_dense_features() -> None:
     init_module_weights(encoder)
     residue_type = torch.tensor([[0, 1, 7, 18, 3, 4]], device="cuda")
     mask = torch.tensor([[True, True, True, True, True, False]], device="cuda")
-    atom_mask = local_latents_decoder.get_residue_atom_mask(residue_type, 20, mask)
+    atom_mask = get_residue_atom_mask(residue_type, 20, mask)
     coordinates = torch.randn(1, 6, 37, 3, device="cuda") * atom_mask.unsqueeze(-1)
     token_index = torch.arange(1, 7, device="cuda").unsqueeze(0)
 
@@ -2567,7 +2495,7 @@ def test_rfproteina_encoder_masks_unsupported_rows_and_owns_sampling_rng() -> No
         [[True, True, False, True, False], [False, True, True, False, True]],
         device="cuda",
     )
-    atom_mask = local_latents_decoder.get_residue_atom_mask(residue_type, 20, padding_mask)
+    atom_mask = get_residue_atom_mask(residue_type, 20, padding_mask)
     coordinates = torch.randn(2, 5, 37, 3, device="cuda") * atom_mask.unsqueeze(-1)
 
     outputs = []
@@ -2630,7 +2558,7 @@ def test_rfproteina_encoder_left_aligns_interior_mask_for_cutedsl() -> None:
         [[True, True, False, True, False], [False, True, True, False, True]],
         device="cuda",
     )
-    atom_mask = local_latents_decoder.get_residue_atom_mask(residue_type, 20, padding_mask)
+    atom_mask = get_residue_atom_mask(residue_type, 20, padding_mask)
     torch.manual_seed(7)
     coordinates = torch.randn(2, 5, 37, 3, device="cuda") * 0.2 * atom_mask.unsqueeze(-1)
 
@@ -3040,7 +2968,7 @@ def test_rfproteina_autoencoder_encoder_conversion(transformer_dtype: str) -> No
     assert module.transformer_layers[0].mha.in_proj.weight.dtype == getattr(torch, transformer_dtype)
     residue_type = torch.tensor([[1, 2, 8, 19]], device="cuda")
     mask = torch.ones_like(residue_type, dtype=torch.bool)
-    atom_mask = local_latents_decoder.get_residue_atom_mask(residue_type, 33, mask)
+    atom_mask = get_residue_atom_mask(residue_type, 33, mask)
     coordinates = torch.randn(1, 4, 37, 3, device="cuda") * atom_mask.unsqueeze(-1)
     with torch.inference_mode():
         output = module(
@@ -3086,7 +3014,7 @@ def test_rfproteina_encoder_matches_oss_release(monkeypatch: pytest.MonkeyPatch)
 
     residue_type = torch.tensor([[1, 2, 3, 4, 5, 6, 8, 19]], device="cuda")
     mask = torch.ones_like(residue_type, dtype=torch.bool)
-    atom_mask = local_latents_decoder.get_residue_atom_mask(residue_type, 33, mask)
+    atom_mask = get_residue_atom_mask(residue_type, 33, mask)
     torch.manual_seed(31)
     coordinates_nm = torch.randn(1, 8, 37, 3, device="cuda") * 0.2 * atom_mask.unsqueeze(-1)
     token_index = torch.tensor([[1, 2, 3, 4, 1, 2, 3, 4]], device="cuda")
@@ -3287,3 +3215,84 @@ def test_in_memory_state_still_passes_through_untouched() -> None:
 
     assert load_rfproteina_checkpoint_state({"state_dict": state}) is state
     assert load_rfproteina_checkpoint_state(state) is state
+
+
+@pytest.mark.parametrize("depth", [1, 3])
+@pytest.mark.parametrize("graphs", [False, True])
+def test_frontend_pair_heads_read_final_unpadded_features(depth: int, graphs: bool) -> None:
+    """A new PyTorch head sees the final pair, not the next recycle's buffer, on every replay."""
+
+    class PairHeads(nn.Module):
+        requires_pair = True
+
+        def __init__(self) -> None:
+            super().__init__()
+            self.bias = nn.Linear(64, 1, bias=False, dtype=torch.bfloat16)
+
+        def forward(self, single, pair, mask, emit_masks=None):
+            return {"insertion": {"logits": self.bias(pair).squeeze(-1)}, "features": {"single": single}}
+
+    torch.manual_seed(19)
+    config = _small_config(
+        token_dim=128, pair_dim=64, num_layers=4, pair_update_every=2, recycle_enabled=True, dtype="bfloat16"
+    )
+    module = LocalLatentsTransformer(config, heads=PairHeads()).cuda().eval()
+    init_module_weights(module)
+    inputs = tuple(
+        t[:, :21, :21].contiguous() if t.ndim == 4 else t[:, :21].contiguous() for t in _trunk_inputs(config)
+    )
+    final_pairs = []
+    handle = module.pair_update_layers[2].register_forward_hook(
+        lambda _m, _a, output: final_pairs.append(output.detach().clone())
+    )
+    with torch.inference_mode():
+        expected = module(*inputs, recycle_depth=depth)
+        torch.testing.assert_close(
+            expected["insertion"]["logits"], module.heads.bias(final_pairs[-1][:, :21, :21]).squeeze(-1), rtol=0, atol=0
+        )
+    handle.remove()
+    if graphs:
+        policy = trunk_graph_config()
+        policy.num_graphs_max_for_this_module = 2
+        module.trunk_graph.enable(policy)
+    with torch.inference_mode():
+        for _ in range(3):
+            actual = module(*inputs, recycle_depth=depth)
+            torch.testing.assert_close(actual, expected, rtol=1e-4, atol=1e-5)
+        saved = {name: {key: value.clone() for key, value in fields.items()} for name, fields in actual.items()}
+        module(inputs[0] + 1, *inputs[1:], recycle_depth=depth)
+        torch.testing.assert_close(actual, saved, rtol=0, atol=0)
+    if graphs:
+        assert module.trunk_graph.tracker.execution_counts["replay"] > 0
+        assert not module.trunk_graph.tracker.fallback_to_eager_by_key
+
+
+def test_checkpoint_coverage_rejects_weights_ignored_by_all_components() -> None:
+    from bionemo_ir.models.rfproteina.convert import FEATURE_BUILDER_PREFIXES, reject_unused_source
+
+    trunk = RFProteinaConversionReport((), ("init_repr_factory.weight", "new_pair_bias.weight"), ())
+    features = RFProteinaConversionReport((), ("transformer.weight", "new_pair_bias.weight"), ())
+    with pytest.raises(ValueError, match="new_pair_bias.weight"):
+        reject_unused_source(trunk, features, component="score network")
+    reject_unused_source(trunk, RFProteinaConversionReport((), ("transformer.weight",), ()), component="score network")
+    # A trunk-only load expects the feature builder's keys to go unused and rejects the rest.
+    with pytest.raises(ValueError, match="new_pair_bias.weight") as raised:
+        reject_unused_source(trunk, component="trunk", expected_unused=FEATURE_BUILDER_PREFIXES)
+    assert "init_repr_factory.weight" not in str(raised.value)
+
+
+def test_feature_contract_rejects_parameter_free_semantic_changes() -> None:
+    from bionemo_ir.models.rfproteina.convert import validate_reference_config
+
+    with pytest.raises(ValueError, match="feats_cond_seq"):
+        validate_reference_config(
+            {"feats_cond_seq": ["time_emb_local_latents", "time_emb_bb_ca", "cath_code"]},
+            _small_config(),
+            RFProteinaRepresentationConfig(),
+        )
+    with pytest.raises(ValueError, match="noise_align_internal_coords"):
+        validate_reference_config(
+            {"noise_align_internal_coords": True}, _small_config(), RFProteinaRepresentationConfig()
+        )
+    with pytest.raises(ValueError, match="xt_pair_dist_max"):
+        validate_reference_config({"xt_pair_dist_max": 30.0}, _small_config(), RFProteinaRepresentationConfig())

@@ -16,417 +16,235 @@
 {}
 ---
 
-# Design proteins with RFProteína
+# RFProteína numerical engine
 
-RFProteína (RFD4) addresses a long catalogue of design tasks with one
-conditional sampler. This guide starts from how such a model is controlled,
-derives the task catalogue from it, then shows the runnable commands. For the
-networks and kernels underneath, see
-[RFProteína architecture](../ref/rfproteina.md).
+BioIR runs RFProteína's encoder, velocity network, numerical integration and
+decoder. The host application owns generation workflows, search, scoring,
+sequence constraints, atom selection, motif assignment and structure output,
+and runs the same application code on every backend. Both execution boundaries
+are public:
 
-## How a design model is controlled
+- `RFProteina.partial_simulation(...)` advances an existing state with the
+  optimized feature builder and integrator. A host's BioIR backend uses this
+  API for generation, partial diffusion and search.
+- `RFProteinaTrunk.forward_features(...)` runs the numerical trunk on
+  caller-built representations. Use it to change feature preparation,
+  integration, autoencoders or readouts independently of BioIR.
 
-The task catalogue looks long, but every task is a choice of position along
-three orthogonal axes. Internalizing this reduction is the point: it is why
-BioIR exposes a handful of entry points rather than one function per
-biological task.
-
-**Axis A — conditioning features.** Tensors consumed by the representation
-builder and folded into the single, pair, and condition representations before
-the trunk runs. They *bias the velocity field*; they never constrain the
-state. A hotspot mask makes contact more likely; it does not pin an atom.
-Because they are static across the trajectory, all purely feature-derived work
-is loop-invariant and can be hoisted.
-
-**Axis B — state clamping and partial noising.** Choices about the initial
-condition and about what is overwritten at each step. Starting from an
-intermediate time $t_0 > 0$ with part of the state initialized from a
-reference structure gives partial redesign; holding the backbone at its clean
-value while the latents run the full trajectory gives inverse folding. This
-axis constrains the state directly, so it is strictly stronger than Axis A.
-
-**Axis C — trajectory search.** An outer loop that branches the trajectory at
-chosen checkpoints, scores partial rollouts with a metric ensemble, and keeps
-the best beam. It changes neither the velocity field nor the state update,
-only *which* sampled trajectories survive.
-
-Axis A is soft and cheap, Axis B is hard and cheap, Axis C is soft and
-expensive — it multiplies network evaluations by the branching factor. When an
-objective can be expressed on Axis A or B, expressing it on Axis C instead is
-the most common way to waste a GPU-hour.
-
-## Design workflows
-
-Each task below is a position on those axes.
-
-**Unconditional de novo generation.** Supply only a length and a chain layout.
-Both modalities initialize from the reference distribution and integrate to
-$t = 1$. This is the base case against which every conditional task is a
-restriction.
-
-**Fold-class and secondary-structure conditioning.** Supply a CATH label or a
-per-residue secondary-structure assignment. Pure Axis A: the state is still
-fully sampled, but the field is steered toward a topology class or an
-$\alpha/\beta$ pattern. This is the cheapest way to control global topology
-and should be preferred over search whenever it suffices.
-
-**Motif scaffolding.** Supply a functional motif and ask for a protein that
-presents it. The motif enters as atom37 coordinates and their mask, internal
-coordinates, and optionally a fixed sequence. *Indexed* scaffolding fixes
-which generated residue indices carry the motif; *unindexed* scaffolding
-supplies the motif as a set and lets the model place it, with
-`condition_index-group_1_token` grouping residues that must stay contiguous
-and correctly ordered. Unindexed is the harder and more useful mode, and it is
-why motif RMSD must be evaluated under an index assignment rather than
-positionally.
-
-**Protein–protein binder design.** Supply a target chain as motif-style
-coordinate conditioning plus a hotspot mask marking target residues the binder
-should engage, then generate a new chain. The target is conditioning, not
-state: it biases the field and is not itself re-generated.
-`mask_not-cysteine_1_residue` is commonly set on the binder to suppress
-unpaired cysteines.
-
-**Small-molecule binder and enzyme design.** Supply ligand atoms in the
-atomized token representation together with interaction conditioning —
-hydrogen bonds, relative accessible surface area, and, in the tensor schema,
-$\pi$-stacking and $\pi$-cation channels. Enzyme design is this task with a
-catalytic-site motif added on Axis A, so the two share an implementation path
-and differ only in which tensors are populated. Treat the $\pi$-stacking and
-$\pi$-cation channels as plumbed, not as validated controls: they are consumed
-by the representation builder but are not exercised as active constraints in
-the released validation set.
-
-**Nucleic-acid complex design.** Protein binders for DNA or RNA targets. The
-residue vocabulary is unified across protein, RNA, and DNA, and nucleic-acid
-secondary structure enters through per-token state (`na_ss_state`) and a
-pairwise channel (`na_ss_pair`) that expresses base pairing, which is
-intrinsically a pair-level rather than token-level constraint.
-
-**Partial redesign.** Supply an existing structure and ask for a variation.
-The clean state is encoded, noised to an intermediate time $t_0$, and
-integrated over the schedule tail $[t_0, 1]$. This is Axis B, and $t_0$ is a
-continuous similarity dial: small $1 - t_0$ keeps the input nearly intact,
-large $1 - t_0$ approaches unconditional generation.
-
-**Inverse folding.** Supply a backbone and ask for a sequence that folds to
-it. This is not simply partial redesign with the backbone frozen. Both
-modalities start at full noise and the backbone is not integrated at all: at
-every step it is *resampled* from the forward marginal of the supplied clean
-backbone at the current time, so the latents always see a backbone noised
-consistently with where they are on the trajectory. The clean backbone is
-restored at the end. Freezing the backbone at its clean value instead would
-present the latents with an out-of-distribution input at every early step.
-
-### Task-to-API mapping
-
-BioIR exposes the tasks through a small tensor-only surface on `RFProteina`.
-The boundary is deliberate: inputs are already-tensorized dictionaries, and
-structure parsing, tokenization, and file writing live outside the model
-package.
-
-- `forward` — unconditional and conditioned design: `sample` plus decode and
-  materialization.
-- `sample` — product-space trajectory only, no decoding.
-- `redesign` — encodes the input, noises to $t_0$, runs the tail.
-- `sample_partial` — redesign from an already-encoded clean state.
-- `inverse_fold` — backbone resampled from its forward marginal each step.
-- `search` — beam search over any of the above.
-- `encode_clean_state` and `decode` — the autoencoder boundary.
-- `velocity` — a single trunk evaluation, for parity checks and profiling.
-
-Because that boundary is tensor-only, RFProteína has no pipeline factory, so
-it cannot yet be driven through `build_processor` the way the folding models
-are. Callers assemble the feature dictionary themselves, as the example below
-does, and own structure parsing and file writing. Running a design workflow
-under `build_processor` — with its batching, Ray executor, and writer stages —
-is future work.
-
-### Conditioning tensor contract
-
-These are the Axis A tensors as they appear in the serialized batch contract.
-Atom-level entries use the dense atom37 layout. BioIR consumes these keys
-directly and performs no parsing, tokenization, or annotation — those stay
-upstream of the model boundary. Every one of them is constant over the
-trajectory.
-
-- `condition_coordinate_1_atom` (atom37) — motif or target geometry.
-- `condition_InternalCoordinate_1_atom` (atom37) — motif internal geometry.
-- `condition_sequence_1_residue` (residue) — fixed or preferred identities.
-- `condition_index-group_1_token` (token) — contiguity groups for unindexed
-  motifs.
-- `condition_cath-label_1_residue` (residue) — fold-class steering.
-- `condition_secondary-structure_1_residue` (residue) — per-residue
-  $\alpha$/$\beta$/loop.
-- `mask_hotspot_1_atom` (atom) — interface residues to engage.
-- `mask_not-cysteine_1_residue` (residue) — suppress cysteine.
-- `condition_hbond_1_atom` (atom) — hydrogen-bond intent.
-- `condition_rasa-binned_1_atom` (atom) — burial and exposure.
-- `condition_ChainCentroid_1_atom` (atom) — coarse chain placement.
-- `na_ss_state` (token) and `na_ss_pair` (pair) — nucleic-acid secondary
-  structure.
-- `flow_backbone_mask` (token) — the tokens whose backbone the flow generates.
-  A token outside it, such as an unindexed motif residue, only conditions: the
-  trunk attends to it, but it holds zero state, takes no step, and is left out
-  of centering. It defaults to every real token.
-- `chirality` (token) with `chiral_frame_atoms` and `chiral_slot_owner` —
-  stereochemical vectors for atomized ligands. A checkpoint trained with
-  noise-aligned chirality needs all three, because the vectors are re-expressed
-  in the noisy state's frame at every step. The weights do not record that
-  training choice, so the host that holds the checkpoint's configuration sets
-  `noise_align_chirality` when it builds the model.
-
-## Oracles and metric-weighted search
-
-Search is Axis C. At configured step checkpoints the sampler branches each
-surviving trajectory, scores the branches with a weighted objective, and
-prunes back to the beam width. Scoring can use cheap local metrics — clashes,
-motif RMSD, sequence adherence, ligand contact — or an external structure
-oracle you supply.
-
-Local metrics need no external service:
+## Public API
 
 ```python
-from bionemo_ir._torch.modules.rfproteina.metrics import evaluate_local_metrics
+from bionemo_ir.models.rfproteina import RFProteina, SamplingContext
+
+model = RFProteina.from_reference_state_dicts(
+    flow_weights,
+    ae_weights,
+    simulation_config=simulation_config,
+    reference_config=training_nn_config,
+    device="cuda",
+)
+model.configure_graphs()
+
+with SamplingContext.graph_safe(features["padding_mask"].device, seed=42) as rng:
+    result = model.partial_simulation(
+        features,
+        state,
+        start_step=0,
+        end_step=20,
+        ts=ts,
+        gt=gt,
+        recycle_depths=recycle_depths,
+        context=rng,
+    )
+    resumed = model.partial_simulation(
+        features,
+        result.state,
+        start_step=20,
+        end_step=60,
+        ts=ts,
+        gt=gt,
+        recycle_depths=recycle_depths,
+        initial_clean=result.clean_prediction,
+        context=rng,
+    )
+
+decoded = model.decode(resumed.state, features["padding_mask"], can_be_encoded=emit_mask)
 ```
 
-For an oracle-backed reward, implement the `OracleProvider` contract and wrap
-it with the search adapter. A provider owns its model, service, container,
-retries, and resource allocation; BioIR imports and modifies no upstream
-oracle code:
+`features` is the already-tensorized batch. `state` contains `bb_ca` [B, N, 3]
+in nanometres and `local_latents` [B, N, latent_dim]. The caller initializes
+that state and supplies one time grid `ts` and noise-rate array `gt` per
+modality, plus explicit `recycle_depths`. Interval indices are absolute. The
+same context continues the random stream across segments. Inputs are not
+modified, so branches can share their starting tensors.
+
+Pass the preceding clean prediction to continue self-conditioning. Set
+`carry_self_condition=False` when the application intentionally restarts it.
+For inverse folding, `target_backbone` supplies the clean backbone whose
+forward marginal is resampled during integration.
+
+`partial_simulation` integrates a supplied state, as the host's own simulation
+method does. It does not initialize partial diffusion. For that workflow the
+application takes the clean state from
+`encode(features, generator=rng.generator)`, corrupts it, and chooses the
+schedule, then calls this numerical operation. The full interval is the
+default; `start_step` and `end_step` allow resuming.
+
+BioIR has no `sample()` or `sample_partial()` workflow, schedule builder,
+recycle strategy, or automatic sample-and-decode call. `model(...)` evaluates
+the velocity network from prepared representations.
+
+## Sampler settings
+
+`RFProteinaSimulationConfig` contains numerical parameters only, and the host
+supplies it: `from_reference_state_dicts` requires `simulation_config` and has
+no fallback. The built-in defaults serve tests and toy examples. They are not
+the released sampler settings (`sc_scale_noise`, `t_lim_ode` and `tsr_sigma`
+differ, and `tsr_scaled_score_drift` is off), so a rollout that relies on them
+follows a different trajectory. Modality and step-parameter names follow the
+host's configuration (`bb_ca`, `local_latents`, `sc_scale_noise`, `t_lim_ode`,
+`t_lim_ode_below`), so build the config from the host's own mappings:
 
 ```python
-from bionemo_ir.oracles.adapters.search import OracleMetricEvaluator
-```
+from bionemo_ir.models.rfproteina.config import (
+    RFProteinaModalitySimulationConfig,
+    RFProteinaReferenceConfig,
+    RFProteinaSimulationConfig,
+    RFProteinaVFStepConfig,
+)
 
-Configure the beam with `RFProteinaBeamSearchConfig` and pass it to
-`RFProteina.search`:
-
-```python
-from bionemo_ir.models.rfproteina import RFProteinaBeamSearchConfig
-```
-
-Budget search deliberately. It multiplies loop cost by the branching factor at
-every checkpoint, and an external oracle can cost more than the entire
-sampling budget. Search also cannot create quality that the field does not
-already produce — it re-ranks trajectories, it does not redirect them. See
-[Custom structure oracles](../ref/oracles.md) for the full provider contract,
-the request and response schemas, and the residue and atom resolvers.
-
-## Run the example
-
-`examples/design/rfproteina.py` runs one design end to end and prints the
-designed sequence with the elapsed time. It needs a CUDA device and the two
-released checkpoints — the flow (LDM) checkpoint and the autoencoder
-checkpoint.
-
-The script builds its configuration from the checkpoints themselves rather
-than hard-coding shapes, using `RFProteina.get_pretrained_config` for the
-optimized defaults (BF16 trunk, auto-selected attention backend) and the
-`rfproteina_*_config_from_weights` helpers for the architecture:
-
-```python
-from bionemo_ir.models.rfproteina import (
-    RFProteina,
-    RFProteinaConfig,
-    rfproteina_decoder_config_from_weights,
-    rfproteina_representation_config_from_weights,
-    rfproteina_trunk_config_from_weights,
+simulation_config = RFProteinaSimulationConfig(
+    **{
+        modality: RFProteinaModalitySimulationConfig(
+            step=RFProteinaVFStepConfig(**step_params[modality]),
+            reference=RFProteinaReferenceConfig(**reference_params[modality]),
+        )
+        for modality in ("bb_ca", "local_latents")
+    }
 )
 ```
 
-Each subcommand corresponds to one workflow above:
+`step_params[modality]` holds that modality's step parameters: `sampling_mode`,
+`sc_scale_noise`, `t_lim_ode`, `t_lim_ode_below`, `tsr_k`, `tsr_sigma` and, for
+the stochastic VF-TSR update, `tsr_scaled_score_drift`.
+`reference_params[modality]` holds its reference-noise settings. Keys the
+configs do not define raise an error.
+
+## Decoder contract
+
+`decode()` returns `coords` [B, N, 37, 3] in nanometres, `sequence_logits`
+[B, N, classes], their `residue_type` argmax [B, N], and, when the checkpoint
+has the head, raw `atom_presence_logits` [B, N, 37]. Undecoded tokens have
+zero coordinates, residue ID -1 and presence logits of negative infinity.
+
+Sequence conditions remain inputs to the decoder network. The application
+applies residue overrides, legal-atom tables, presence thresholds and required
+atoms. It also restores conditioned coordinates and formats ligand and motif
+outputs. BioIR does not return alternative "complex" or "final" structure views.
+
+## Numerical example
 
 ```bash
-# Unconditional de novo generation.
 python examples/design/rfproteina.py \
-  --flow "$RFPROTEINA_LDM_CKPT" --autoencoder "$RFPROTEINA_AE_CKPT" \
-  --length 128 unconditional
-
-# Motif scaffolding around a fixed helical CA motif.
-python examples/design/rfproteina.py \
-  --flow "$RFPROTEINA_LDM_CKPT" --autoencoder "$RFPROTEINA_AE_CKPT" \
-  --length 128 motif --motif-length 16
-
-# Protein-protein binder against a fixed target, with hotspots.
-python examples/design/rfproteina.py \
-  --flow "$RFPROTEINA_LDM_CKPT" --autoencoder "$RFPROTEINA_AE_CKPT" \
-  --length 96 ppi --target-length 48 --hotspot-residues 8
-
-# Small-molecule binder around a fixed atomized ligand pose.
-python examples/design/rfproteina.py \
-  --flow "$RFPROTEINA_LDM_CKPT" --autoencoder "$RFPROTEINA_AE_CKPT" \
-  --length 96 small-molecule --ligand-atoms 8
-
-# Nucleic-acid binder against a fixed DNA sequence.
-python examples/design/rfproteina.py \
-  --flow "$RFPROTEINA_LDM_CKPT" --autoencoder "$RFPROTEINA_AE_CKPT" \
-  --length 96 nucleic-acid --dna-length 16 --structure
-
-# Partial redesign of an existing backbone.
-python examples/design/rfproteina.py \
-  --flow "$RFPROTEINA_LDM_CKPT" --autoencoder "$RFPROTEINA_AE_CKPT" \
-  --length 128 partial-redesign --partial-t 0.6
+  --flow /path/to/flow.ckpt --autoencoder /path/to/autoencoder.ckpt \
+  --length 128 --seed 42
 ```
 
-`--steps` overrides the sampling-step count; omit it to use the model's
-released schedule. `--seed` fixes the draw.
+This supplies a toy state and explicit ODE grids, then prints tensor shapes. A
+host application provides assembled structures, partial redesign, inverse
+folding and search.
 
-The velocity trunk captures exact-shape CUDA graphs by default in evaluation
-under `torch.inference_mode()`. One cached graph serves every recycle depth;
-the sampler, representation builder, and decoder stay eager. Token counts
-above 511 after the trunk's 8-token alignment run eagerly. The first design
-includes warmup and capture; later designs with the same shape replay it.
-Set `config.trunk.graph_optimization_config = None` before constructing the
-model, or call `model.reset_graphs()`, to run eagerly. Use
-`model.configure_graphs(capacity=...)` to retain more than one shape.
+## Graphs and reproducibility
 
-Two flags map directly onto the axes. `--hotspot-residues` is Axis A: it marks
-target residues without pinning anything, so raising it biases the interface
-rather than enforcing it. `--partial-t` is Axis B: it is the similarity dial,
-where values near 1 keep the input backbone nearly intact and values near 0
-approach unconditional generation.
+`configure_graphs()`, `graph_status()` and `reset_graphs()` control and inspect
+the numerical trunk cache. Recycle steps share captured graphs; workflow and
+search logic stay outside capture.
 
-### Run beam search
+Paired backend comparisons require the same seed, input shape, schedule and
+recycle depths. Every backend receives the same unbucketed sampling shapes:
+compiler length buckets pad inside the native trunk, after random draws and
+features, and BioIR pads inside its trunk only for kernel alignment.
+Floating-point kernels can still produce different trajectories and search
+selections after identical random draws.
 
-`examples/design/search.py` is the Axis C counterpart. It reuses the feature
-builders from `rfproteina.py`, wraps them in `RFProteina.search`, and scores
-with BioIR's built-in `RFProteinaLocalMetricEvaluator` — no external oracle
-and no extra dependency:
+## Migration
 
-```bash
-python examples/design/search.py \
-  --flow "$RFPROTEINA_LDM_CKPT" --autoencoder "$RFPROTEINA_AE_CKPT" \
-  --length 64 --steps 6 --beam-width 2 --n-branch 2 \
-  motif --motif-length 8
-```
+The removed `redesign()` and `inverse_fold()` workflows and structure-output
+helpers belong to the host application. Replace `RFProteinaPredictionOutput`
+and its materialized views with simulation results and raw decoder tensors.
+Replace `advance_segment` with `partial_simulation` and `encode_clean_state`
+with `encode`; supply `ts`, `gt` and `recycle_depths` explicitly. Replace
+imports from the internal RFProteina package root with imports from the
+module that defines each symbol. The public entry points remain under
+`bionemo_ir.models.rfproteina`; detailed configuration and weight conversion
+remain in its `config` and `convert` modules.
 
-```text
-motif: beam 2 x branch 2 over 3 checkpoints -> 8 rollouts, 36 velocity steps in 62.45s
-weights: {'clash_metrics.frac_atoms_clashing_1p5A': -1.0, 'design_motif_allatom_rmsd.rmsd': -0.1}
-  slot 0  reward -0.5688  frac_atoms_clashing_1p5A=0.1801 rmsd=3.8866
-  slot 1  reward -0.6115  frac_atoms_clashing_1p5A=0.1917 rmsd=4.1974
-best (slot 0, seed 6978676964798891550):
-SYWWWTWYPSNDTSIVITFRSCWWQEAKWIQPDDYRQQEQSDFNPLYINAPWGEYFESMWSQKY
-```
+## Frontend-owned heads and features
 
-That run uses six sampling steps so it finishes quickly; the clash fraction is
-correspondingly poor and is not representative of a real design budget.
+Pass a PyTorch `heads` module to `RFProteina.from_reference_state_dicts` to keep
+readout computation in the frontend. It implements
+`forward(single, pair, padding_mask, emit_masks)` and declares `requires_pair`.
+A rollout passes the masks it integrates with as `emit_masks`: `bb_ca` marks the
+generated tokens and `local_latents` the tokens whose latents it emits, so the
+readout and the sampler cannot disagree. The module receives unpadded features;
+a requested pair is the final trunk pair, before recycle projection. Heads run
+outside the captured trunk. Single-only heads do not retain or copy the final
+pair. The engine owns and loads the supplied module in the trunk dtype,
+preserving integer and boolean buffers. Its source weights live under
+`nn.heads.`. Caller-owned readouts can replace every released head; trunk shape
+inference does not require released head parameter names.
 
-The four subcommands — `unconditional`, `motif`, `ppi`, and `small-molecule` —
-differ only in which metrics the features make available, and the script
-weights exactly those. This matters because a weighted key that the features
-cannot produce scores minus infinity and rejects every candidate, so motif
-RMSD is weighted only when coordinates are pinned and ligand contact only when
-an atomized ligand is present. Clash applies everywhere.
+Pass `reference_config` with the training network configuration when using the
+optimized feature builder. Conversion rejects source parameters consumed by none
+of the responsible components, and checks supported feature order and numerical
+settings. Arbitrary code changes with identical weights/configuration still
+require numerical parity tests.
 
-Two fields of the printed beam are easy to misread. `reward` is the weighted
-sum, where negative weights mean "minimize", so a less negative reward is
-better. `slot` is the beam position, not a quality rank — the script sorts by
-reward and reports the best first.
+### Trunk-only API
 
-### Pruning the beam yourself
-
-`RFProteina.search` owns the beam: it branches, scores, and prunes at every
-checkpoint. A caller that wants to apply its own judgement between checkpoints
-— a human review, a slow oracle, a scheduler that reorders work — has to stop
-the search and start it again, and a search cannot be restarted from a
-structure. The structure a candidate carries is decoded from a completion
-rollout to the end of the schedule, not from the point the beam had reached.
-
-Pass `export_states=True` to get the resumable point instead. Every scored
-candidate then also carries `state`, the noisy `x_t` the branch holds at
-`checkpoint`, and `clean_prediction`, its `x_1` at the same step.
-
-`export_states` also lets `step_checkpoints` end before `num_steps`. Such a
-search branches and scores its last checkpoint, returns every candidate there
-instead of the top `beam_width`, and stops. That is the shape to reach for: a
-caller who is going to replace the prune should not pay for the rest of the
-schedule first. Each returned candidate still carries a `prediction`, decoded
-from a completion rollout, because an external scorer ranks finished
-structures rather than mid-trajectory states.
-
-Hand the chosen ones back as `resume_states` and `resume_clean`, with
-`resume_step` set to the checkpoint they came from and `step_checkpoints`
-starting there:
+A frontend can supply representations directly, without constructing the full
+engine. Construct the trunk once, then call it at each denoising step:
 
 ```python
-stopped = model.search(
-    features,
-    replace(config, step_checkpoints=[0, 2]),
-    seed=11,
-    export_states=True,
-)
-kept = choose(stopped.final_candidates)  # your judgement, your metric
+import torch
+from bionemo_ir.models.rfproteina import RFProteinaTrunk
+from bionemo_ir.models.rfproteina.config import trunk_graph_config
 
-resumed = model.search(
-    features,
-    replace(config, step_checkpoints=[2, num_steps]),
-    seed=11,
-    resume_states=[c.state for c in kept],
-    resume_clean=[c.clean_prediction for c in kept],
-    resume_step=2,
-)
+trunk = RFProteinaTrunk.from_reference_state_dict(flow_weights, heads=heads, device="cuda")
+trunk.trunk_graph.enable(trunk_graph_config())
+with torch.inference_mode():
+    single_out, pair_out = trunk.forward_features(
+        single.to(trunk.dtype), pair.to(trunk.dtype), condition.to(trunk.dtype),
+        padding_mask, recycle_depth=3, return_pair=trunk.heads.requires_pair,
+    )
+    output = trunk.heads(single_out, pair_out, padding_mask, emit_masks)
 ```
 
-A search that runs the whole schedule can export too. Set
-`intermediate_save_min_reward` to keep the candidates at checkpoints before
-the last one, which are otherwise dropped once the prune has run. Use that to
-inspect a beam, not to drive an external prune: it has already spent the
-compute the prune was meant to redirect.
+`flow_weights` holds merged native `nn.*` weights; `heads` is the caller's
+readout module. Inputs are CUDA tensors: `single` [B, N, token_dim], `pair`
+[B, N, N, pair_dim], and boolean `padding_mask` [B, N]. The widths are in
+`trunk.config`. `condition` is the raw factory output before the two condition
+transitions: [B, N, condition_dim], or [recycle_depth, B, N, condition_dim]
+for different conditions at each recycle.
+Outputs remain valid after later graph replays. Use `return_pair=False` when the
+frontend consumes only single features. Pair output needs two graph variants for
+multiple recycles; the standard single-only path uses one per shape.
 
-`resume_states` is a keep list. Branches that are not in it do not continue,
-and the list's length is the width of the resumed beam, so a caller may narrow
-four slots to one, or widen, part-way through a run.
+Feature semantics, integration and readouts are caller-owned here. The tensor
+contract and supported trunk architecture still apply. Rebuild the trunk after
+changing its weights or architecture.
 
-Four things decide whether the result is the beam you cut or a different one.
+### Why a host uses partial simulation
 
-**Both tensors are required.** The first resumed step self-conditions on
-`clean_prediction`. A resume given only `state` would be fed zeros and
-continue a different trajectory while still returning plausible structures, so
-the call is refused rather than allowed to do that quietly.
+The full engine prepares static feature contributions and attention masks once
+per interval, then reuses them across steps. Its feature builder writes pairs
+directly into the trunk's input buffers. A trunk-only frontend must perform that
+work itself. Both APIs expose the same numerical trunk; partial simulation adds
+these optimizations without taking ownership of the host's workflow.
 
-**Order is meaningful.** The branch seed is derived from the slot index, so
-the same survivor placed in slot 0 and in slot 1 draws different noise.
-`select_beam_indices` returns survivors rank-major, slot 0 being the highest
-reward, and a caller reproducing the internal prune must send them back in
-that order.
-
-**A slot spans every request.** An exported candidate carries one row, which
-is one request; a slot carries all of them. With a batch, pick one candidate
-per request per slot and stack them in request order. Stacking them wrongly
-keeps the shapes valid and silently mixes results between requests.
-
-**A resumed schedule still ends at `num_steps`.** Resuming shortens the
-schedule rather than leaving it unfinished, so every returned survivor is as
-fully denoised as one from an uninterrupted run. Only an export-and-stop may
-end early, and what it returns is explicitly part-denoised.
-
-With those held, a cut-and-resumed beam is not merely similar to the
-uninterrupted one, it is identical:
-`test_rfproteina_search_resume_matches_the_server_prune_exactly` reproduces the
-internal top-k on a `beam_width=2`, `n_branch=2` beam, compares the finals at
-`rtol=0, atol=0`, and then sends the same survivors back reversed to show the
-comparison is not vacuous. That works because the per-interval seed is keyed on
-the interval's start step rather than on how many intervals preceded it, so a
-resumed interval draws the noise the uninterrupted one would have drawn. The
-generator itself is not restored; resuming continues the beam, not an RNG
-stream.
-
-`test_rfproteina_search_exports_and_stops_without_pruning` makes the same
-claim about the cheap path: an export-and-stop at step 2 plus a resume of the
-survivors the internal prune would have chosen reproduces the uninterrupted
-beam at `rtol=0, atol=0`, for fewer velocity steps than the full search.
-
-Nothing requires the caller to use one metric throughout. Each stop is scored
-by whoever holds the candidates, so a run may filter on clashes at the first
-checkpoint and on designability at the second. `search()` itself cannot do
-that: it takes one objective for the whole rollout.
-
-## Related pages
-
-- [RFProteína architecture](../ref/rfproteina.md) — networks, shapes, kernels,
-  and measured results.
-- [Custom structure oracles](../ref/oracles.md) — the oracle provider
-  contract.
-- [Sampling architecture](../ref/sampling.md) — the shared rollout runtime.
+In the released-checkpoint H200 comparison, partial simulation reduced warm
+request time by 15.7–35.3% at batch 1 and 1.9–7.8% at batch 8 versus a
+trunk-only frontend with compiled native features. Six cases covered 100–250
+tokens, protein-only, PPI, DNA and enzyme inputs, each with 60 steps and 180
+trunk passes. Each pair used the same GPU and inputs, two warmups and four timed
+requests, repeated in reverse order. Benefits depend on the frontend and shape.

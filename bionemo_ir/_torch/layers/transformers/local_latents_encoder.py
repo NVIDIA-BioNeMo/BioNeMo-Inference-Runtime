@@ -606,16 +606,11 @@ class RFProteinaLatentEncoder(nn.Module):
         sample: bool = True,
         metadata: AttentionMetadata | None = None,
         buffers: PreallocatedBuffers | None = None,
-        sampling_stream: bool = False,
     ) -> dict[str, torch.Tensor]:
         """Encode nanometre atom37 coordinates.
 
         ``z_latent`` is sampled from the encoder posterior by default. Pass a
         generator for reproducibility or ``sample=False`` to use its mean.
-        ``sampling_stream`` draws that sample through
-        :func:`bionemo_ir._torch.sampling.random.randn`, so a caller replaying a
-        reference implementation's random sequence sees it; production leaves it
-        off and draws with ``torch.randn`` directly.
         """
         single, pair, encoding_mask = self.build_representations(
             coordinates,
@@ -690,16 +685,7 @@ class RFProteinaLatentEncoder(nn.Module):
         flat = flat * valid
         mean, log_scale = torch.chunk(flat, chunks=2, dim=-1)
         if sample:
-            if sampling_stream:
-                # A caller replaying a reference implementation's random sequence
-                # installs a draw this call must take its turn in.
-                noise = randn(log_scale.shape, device=log_scale.device, dtype=log_scale.dtype, generator=generator)
-            elif generator is None:
-                noise = torch.randn_like(log_scale)
-            else:
-                noise = torch.randn(
-                    log_scale.shape, device=log_scale.device, dtype=log_scale.dtype, generator=generator
-                )
+            noise = randn(log_scale.shape, device=log_scale.device, dtype=log_scale.dtype, generator=generator)
             latent_pre_mask = mean + noise * torch.exp(log_scale)
         else:
             latent_pre_mask = mean

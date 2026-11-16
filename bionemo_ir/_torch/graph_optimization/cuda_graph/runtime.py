@@ -83,6 +83,18 @@ def eager_graphs(enabled: bool = True) -> Iterator[None]:
 
 
 @contextmanager
+def _defer_cyclic_gc() -> Iterator[None]:
+    """Keep cyclic finalizers from unloading CUDA resources during capture."""
+    enabled = gc.isenabled()
+    gc.disable()
+    try:
+        yield
+    finally:
+        if enabled:
+            gc.enable()
+
+
+@contextmanager
 def graph_owned_cublas_workspace() -> Iterator[None]:
     """Make a capture allocate its cuBLAS workspace in its own pool, out of reach of later work.
 
@@ -113,8 +125,12 @@ def _capture_without_barrier(graph: torch.cuda.CUDAGraph, stream: Stream) -> Ite
     The private pool allocates fresh segments either way, and the capacity
     check reads driver-free memory, which excludes cached blocks; flushing the
     cache would only make later eager allocations pay ``cudaMalloc`` again.
+
+    Cyclic garbage collection is deferred until capture ends: an automatic
+    collection partway through capture would run finalizers that unload CUDA
+    resources.
     """
-    with torch.cuda.stream(stream):
+    with _defer_cyclic_gc(), torch.cuda.stream(stream):
         graph.capture_begin(capture_error_mode="global")
         try:
             yield

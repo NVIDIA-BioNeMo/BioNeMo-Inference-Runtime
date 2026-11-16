@@ -31,14 +31,12 @@ from bionemo_ir._torch.sampling.flow_matching import (
     FlowMatchingStep,
 )
 
-# ``RFProteinaPrediction`` is re-exported for callers that used to import the
-# velocity-network return type from here; ``contracts`` owns the definition.
-from .contracts import RFProteinaPrediction, RFProteinaState  # noqa: F401
+from .contracts import RFProteinaState, RFProteinaTrajectoryFrame
 from .flow_matcher import RFProteinaProductSpaceFlowMatcher
 from .vf_tsr import velocity_flow_step, velocity_to_clean
 
 if TYPE_CHECKING:
-    from bionemo_ir.models.rfproteina.config import RFProteinaSamplingConfig
+    from bionemo_ir.models.rfproteina.config import RFProteinaSimulationConfig
 
 
 class RFProteinaFlowMatchingIntegrator(FlowMatchingIntegrator):
@@ -56,7 +54,7 @@ class RFProteinaFlowMatchingIntegrator(FlowMatchingIntegrator):
 
     def __init__(
         self,
-        config: RFProteinaSamplingConfig,
+        config: RFProteinaSimulationConfig,
         initial_value: Mapping[str, torch.Tensor],
         padding_mask: torch.Tensor,
         can_be_encoded: torch.Tensor | None = None,
@@ -77,7 +75,6 @@ class RFProteinaFlowMatchingIntegrator(FlowMatchingIntegrator):
         )
         if target_backbone is not None and flow_matcher is None:
             raise ValueError("inverse folding requires the product-space flow matcher to resample the backbone")
-        self.sampling_config = config
         self.padding_mask = padding_mask
         self.can_be_encoded = can_be_encoded
         self.save_trajectory_every = save_trajectory_every
@@ -86,14 +83,15 @@ class RFProteinaFlowMatchingIntegrator(FlowMatchingIntegrator):
         self.coordinate_condition_mask = coordinate_condition_mask
         self.groups = groups
         self.modality_configs = {
-            "bb_ca": config.backbone,
+            "bb_ca": config.bb_ca,
             "local_latents": config.local_latents,
         }
-        self.trajectory: list[dict[str, RFProteinaState]] = []
+        self.trajectory: list[RFProteinaTrajectoryFrame] = []
+        self.sequence_logits: torch.Tensor | None = None
         self._generator: torch.Generator | None = None
-        self._num_steps = config.num_steps
+        self._num_steps = 0
         self._plan: FlowMatchingRolloutPlan | None = None
-        self._resume_state = None if resume_state is None else resume_state.clone()
+        self._resume_state = resume_state
 
     def initialize(self, plan: FlowMatchingRolloutPlan, context: SamplingContext) -> FlowMatchingState:
         # The stochastic VF-TSR update draws inside complete_step, which the
@@ -181,5 +179,6 @@ class RFProteinaFlowMatchingIntegrator(FlowMatchingIntegrator):
             {
                 "x_t": {key: tensor.detach().clone() for key, tensor in value.items()},
                 "x_1": {key: tensor.detach().clone() for key, tensor in clean.items()},
+                "sequence_logits": None if self.sequence_logits is None else self.sequence_logits.detach().clone(),
             }
         )

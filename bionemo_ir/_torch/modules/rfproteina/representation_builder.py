@@ -39,12 +39,15 @@ if TYPE_CHECKING:
     from bionemo_ir.models.rfproteina.config import RFProteinaRepresentationConfig, RFProteinaTrunkConfig
 
 # Atomworks/RFProteína condition names are part of the serialized tensor-batch
-# contract. Keeping the strings here avoids importing either package.
+# contract. Keeping the strings here avoids importing either package. The token-type
+# ids mirror ``bionemo_ir.data.schemas.vocabulary.TOKEN_TYPE_IDS``, and a test pins them.
+ATOMIZED_TOKEN_TYPE = 3
+RNA_TOKEN_TYPE = 1
+DNA_TOKEN_TYPE = 2
+CONDITION_INDEX_MASK = "mask_index_1_residue"
+
 CONDITION_SEQUENCE = "condition_sequence_1_residue"
 CONDITION_SEQUENCE_MASK = "mask_sequence_1_residue"
-# Unified encoding stores unspecified residues as the mask token and omits
-# mask_sequence_1_residue.
-UNSPECIFIED_RESIDUE_TOKEN = 0
 CONDITION_COORDINATE = "condition_coordinate_1_atom"
 CONDITION_COORDINATE_MASK = "mask_coordinate_1_atom"
 CONDITION_INTERNAL_COORDINATE = "condition_InternalCoordinate_1_atom"

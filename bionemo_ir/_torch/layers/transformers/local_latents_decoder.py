@@ -54,137 +54,8 @@ ATOM37_SIZE = 37
 #: something enormous.
 _MAX_FUSED_TABLE_BYTES = 128 * 1024**2
 
-# Occupied atom37 slots in the unified residue space. Class 0 is the mask
-# token; 1..20 are amino acids, 21 is unknown protein, 22..26 are RNA,
-# 27..31 are DNA, and 32 is an atomized token. Protein OXT is omitted while
-# standard RNA/DNA retain terminal O3P, matching the OSS decoder contract.
-_UNIFIED_ATOM37_INDICES = (
-    (),
-    (0, 1, 2, 3, 4),
-    (0, 1, 2, 3, 4, 5, 11, 23, 29, 30, 32),
-    (0, 1, 2, 3, 4, 5, 15, 16),
-    (0, 1, 2, 3, 4, 5, 16, 17),
-    (0, 1, 2, 3, 4, 10),
-    (0, 1, 2, 3, 4, 5, 11, 25, 26),
-    (0, 1, 2, 3, 4, 5, 11, 26, 27),
-    (0, 1, 2, 4),
-    (0, 1, 2, 3, 4, 5, 13, 14, 20, 25),
-    (0, 1, 2, 3, 4, 6, 7, 12),
-    (0, 1, 2, 3, 4, 5, 12, 13),
-    (0, 1, 2, 3, 4, 5, 11, 19, 35),
-    (0, 1, 2, 3, 4, 5, 18, 19),
-    (0, 1, 2, 3, 4, 5, 12, 13, 20, 21, 32),
-    (0, 1, 2, 3, 4, 5, 11),
-    (0, 1, 2, 3, 4, 8),
-    (0, 1, 2, 3, 4, 7, 9),
-    (0, 1, 2, 3, 4, 5, 12, 13, 21, 22, 24, 28, 33, 34),
-    (0, 1, 2, 3, 4, 5, 12, 13, 20, 21, 31, 32),
-    (0, 1, 2, 3, 4, 6, 7),
-    (),
-    (*range(22), 36),
-    (*range(12), *range(24, 32), 36),
-    (*range(21), 22, 23, 36),
-    (*range(12), *range(24, 31), 32, 36),
-    tuple(range(12)),
-    (0, 1, 2, *range(4, 22), 36),
-    (0, 1, 2, *range(4, 12), *range(24, 32), 36),
-    (0, 1, 2, *range(4, 21), 22, 23, 36),
-    (0, 1, 2, *range(4, 12), *range(24, 31), 32, 33, 36),
-    (0, 1, 2, *range(4, 12)),
-    (1,),
-)
-
-
-#: Classes in the legacy protein-only vocabulary, which omits the unified
-#: vocabulary's mask class and its nucleic-acid and atomized tokens.
+#: Residue classes of the protein-only decoder and encoder, which have no nucleic-acid classes.
 LEGACY_RESIDUE_TYPES = 20
-
-
-def built_in_atom37_classes() -> int:
-    """Residue classes the occupancy table carried here covers."""
-    return len(_UNIFIED_ATOM37_INDICES)
-
-
-@cache
-def _atom37_mask_table(
-    device: torch.device | None,
-    n_residue_types: int,
-    occupancy: tuple[tuple[int, ...], ...] | None,
-) -> torch.Tensor:
-    """Build the occupancy table once per device, class count and vocabulary.
-
-    The table is a constant, and filling it row by row costs one host
-    synchronization per populated residue type. Sampling asks for it on every
-    decode, so building it per call put those syncs in the rollout's inner loop.
-    """
-    if occupancy is not None:
-        indices = occupancy
-    elif n_residue_types == LEGACY_RESIDUE_TYPES:
-        # The legacy vocabulary is the unified one without its mask class or any
-        # non-protein token, so it starts at index 1 rather than truncating.
-        indices = _UNIFIED_ATOM37_INDICES[1 : 1 + LEGACY_RESIDUE_TYPES]
-    elif 0 < n_residue_types <= len(_UNIFIED_ATOM37_INDICES):
-        indices = _UNIFIED_ATOM37_INDICES[:n_residue_types]
-    else:
-        raise ValueError(
-            f"no atom37 occupancy rows for a {n_residue_types}-class vocabulary; this module "
-            f"carries the {len(_UNIFIED_ATOM37_INDICES)}-class table a released checkpoint uses. "
-            "Resolve the checkpoint's vocabulary with bionemo_ir.data.schemas.residue_vocabulary "
-            "and pass its atom37_occupancy()."
-        )
-    if len(indices) != n_residue_types:
-        raise ValueError(f"occupancy describes {len(indices)} residue types, expected {n_residue_types}")
-    rows = torch.zeros((len(indices), ATOM37_SIZE), dtype=torch.bool)
-    for residue_type, atom_indices in enumerate(indices):
-        if atom_indices:
-            rows[residue_type, list(atom_indices)] = True
-    return rows.to(device=device)
-
-
-def get_atom37_mask_table(
-    device: torch.device | None = None,
-    n_residue_types: int = 20,
-    occupancy: tuple[tuple[int, ...], ...] | None = None,
-) -> torch.Tensor:
-    """Return the decoder's atom37 occupancy table.
-
-    The legacy decoder emits 0-based amino-acid IDs, while the unified decoder
-    emits the 33-class IDs described by :data:`_UNIFIED_ATOM37_INDICES`. Both
-    are carried here, because they are the released checkpoints' own constant.
-    A checkpoint written against a wider vocabulary supplies its rows through
-    ``occupancy``; the vocabularies themselves are schemas, and live in
-    :mod:`bionemo_ir.data.schemas.vocabulary` where weight conversion resolves
-    them.
-
-    Args:
-        device: Where to place the table.
-        n_residue_types: Residue classes the decoder emits.
-        occupancy: Occupied atom37 slots per class, overriding the built-in
-            table. One row per class, in the decoder's class order.
-
-    Returns:
-        A ``[n_residue_types, 37]`` boolean table, shared and not to be mutated.
-    """
-    return _atom37_mask_table(device, n_residue_types, occupancy)
-
-
-def get_residue_atom_mask(
-    residue_type: torch.Tensor,
-    n_residue_types: int,
-    valid: torch.Tensor | None = None,
-    occupancy: tuple[tuple[int, ...], ...] | None = None,
-) -> torch.Tensor:
-    """Map decoder residue IDs to atom37 occupancy, preserving ``-1`` as empty."""
-    decoded = residue_type >= 0
-    if valid is not None:
-        if valid.shape != residue_type.shape:
-            raise ValueError(f"valid must have shape {tuple(residue_type.shape)}, got {tuple(valid.shape)}")
-        decoded &= valid.to(device=residue_type.device, dtype=torch.bool)
-    if torch.any(residue_type[decoded] >= n_residue_types):
-        invalid = torch.unique(residue_type[decoded & (residue_type >= n_residue_types)]).detach().cpu().tolist()
-        raise ValueError(f"residue_type contains values outside [0, {n_residue_types - 1}]: {invalid}")
-    table = get_atom37_mask_table(residue_type.device, n_residue_types, occupancy)
-    return table[residue_type.clamp(min=0, max=n_residue_types - 1)] & decoded.unsqueeze(-1)
 
 
 @cache
@@ -365,7 +236,6 @@ class RFProteinaLatentDecoder(nn.Module):
             if config.use_atom_presence
             else None
         )
-        self._atom37_occupancy = config.atom37_occupancy
         self._allowed_residue_classes = config.allowed_residue_classes
 
         self.precompute_bias = config.precompute_bias
@@ -520,7 +390,6 @@ class RFProteinaLatentDecoder(nn.Module):
         token_type: torch.Tensor | None = None,
         conditional_residue_type: torch.Tensor | None = None,
         conditional_residue_mask: torch.Tensor | None = None,
-        required_atom_mask: torch.Tensor | None = None,
     ) -> dict[str, torch.Tensor]:
         """Decode a product-space state.
 
@@ -538,27 +407,13 @@ class RFProteinaLatentDecoder(nn.Module):
                 ``[B, N]`` of the unified decoder.
             conditional_residue_mask: Which tokens ``conditional_residue_type``
                 holds a condition for, ``[B, N]``.
-            required_atom_mask: Optional atoms ``[B, N, 37]`` the caller
-                conditions on and so needs in the output.
-
         Returns:
-            Dict with ``coords`` ``[B, N, 37, 3]`` in nanometres,
-            ``sequence_logits`` ``[B, N, num_residue_types]``, the argmax
-            ``residue_type`` ``[B, N]``, and the ``atom_mask`` ``[B, N, 37]``.
-
-            A decoder with an atom-presence head follows the OSS autoencoder's
-            output rules. A conditioned token keeps its conditioned residue in
-            place of the argmax, and the atoms it carries are the slots that
-            residue can have, intersected with the head's prediction and
-            extended by ``required_atom_mask``. The coordinates are the
-            decoder's own for every slot, including a required one. A decoder
-            without the head leaves both as predicted.
+            Coordinates [B, N, 37, 3] in nm, sequence logits and their argmax,
+            and raw presence logits [B, N, 37] when the checkpoint has that head.
+            Sequence conditions affect network inputs only. The caller owns
+            residue overrides, atom selection and structure assembly.
         """
         mask = mask.to(torch.bool)
-        if required_atom_mask is not None and required_atom_mask.shape != (*mask.shape, ATOM37_SIZE):
-            raise ValueError(
-                f"required_atom_mask must have shape {(*mask.shape, ATOM37_SIZE)}, got {tuple(required_atom_mask.shape)}"
-            )
         valid = mask.unsqueeze(-1).to(self.dtype)
         single, pair = self._build_representations(
             backbone_ca,
@@ -651,35 +506,10 @@ class RFProteinaLatentDecoder(nn.Module):
             coords = coords + backbone_ca.to(coords.dtype).unsqueeze(-2)
 
         residue_type = torch.argmax(sequence_logits, dim=-1) * mask
-        predicted = None
+        output = {"coords": coords, "sequence_logits": sequence_logits, "residue_type": residue_type}
         if self.atom_presence_linear is not None:
-            # The class table says which atoms the residue could carry; the head
-            # says which of them this one does. Its reference atom is always kept,
-            # and so is every atom the caller conditions on.
-            predicted = self.atom_presence_linear(single) > 0
-            predicted[..., ATOM37_CA_INDEX] = True
-            if required_atom_mask is not None:
-                predicted = predicted | required_atom_mask.to(device=predicted.device, dtype=torch.bool)
-            if (
-                self.config.input_schema == "unified"
-                and conditional_residue_type is not None
-                and conditional_residue_mask is not None
-            ):
-                # A conditioned token keeps the residue it was conditioned on,
-                # which also picks the atom table below.
-                conditioned = conditional_residue_mask.to(device=mask.device, dtype=torch.bool) & mask
-                residue_type = torch.where(
-                    conditioned, conditional_residue_type.to(device=mask.device, dtype=residue_type.dtype), residue_type
-                )
-        atom_mask = get_residue_atom_mask(residue_type, self.num_residue_types, mask, occupancy=self._atom37_occupancy)
-        if predicted is not None:
-            atom_mask = atom_mask & predicted
-        return {
-            "coords": coords,
-            "sequence_logits": sequence_logits,
-            "residue_type": residue_type,
-            "atom_mask": atom_mask,
-        }
+            output["atom_presence_logits"] = self.atom_presence_linear(single)
+        return output
 
 
 class _LinearFactory(nn.Module):

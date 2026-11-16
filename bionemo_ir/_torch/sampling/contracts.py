@@ -25,6 +25,7 @@ from typing import Protocol, TypeVar
 
 import torch
 
+from bionemo_ir._torch.sampling.random import use_generator
 from bionemo_ir._torch.utils.common import safe_generator
 
 StateT = TypeVar("StateT")
@@ -113,6 +114,27 @@ class SamplingContext:
 
         with safe_generator(device) as generator:
             yield cls(generator=generator, seed=generator.initial_seed())
+
+    @classmethod
+    @contextlib.contextmanager
+    def resolve(
+        cls,
+        device: torch.device,
+        *,
+        context: SamplingContext | None = None,
+        generator: torch.Generator | None = None,
+        seed: int | None = None,
+    ) -> Iterator[SamplingContext]:
+        """Bind one stream to all rollout draws; context takes precedence.
+
+        A supplied context or generator is advanced in place. Otherwise use
+        the graph-safe default stream, or an independent explicit seed.
+        """
+        if context is None and generator is not None:
+            context = cls(generator=generator, seed=generator.initial_seed())
+        scope = cls.graph_safe(device, seed) if context is None else contextlib.nullcontext(context)
+        with scope as resolved, use_generator(resolved.generator):
+            yield resolved
 
 
 @dataclass(frozen=True)

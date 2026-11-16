@@ -141,12 +141,11 @@ flowchart TB
     end
     U --> C["Clean state at t = 1"] --> D["AE decoder"] --> O["Sequence + all-atom structure"]
     IF["Resample backbone each step<br/>inverse folding"] --> U
-    BS["Branch, score, prune<br/>beam search"] --> LOOP
 ```
 
 Only the boxed region repeats, and only the representation builder and the
 trunk are network evaluations. The loop does not contain the encoder, the
-decoder, structure writing, or metric evaluation — except under search, where
+decoder, structure writing, or metric evaluation. In an application search,
 scoring runs at configured checkpoints. Profiling a design run and finding
 autoencoder time on the critical path indicates a configuration bug, not a
 performance problem.
@@ -160,79 +159,35 @@ which BioIR precomputes once.
 
 One unconditional design costs one representation build and $d_i$ trunk passes
 per sampling step, plus exactly one decoder pass. The step count and the
-recycling depth schedule come from the chosen *thinking mode*, which is the
-quality-versus-latency dial: upstream ships low, medium, and high, all at 60
-sampling steps but totalling 110, 185, and 295 trunk passes respectively, with
-medium as the default. Trunk passes, not steps, are what the runtime actually
-spends.
+recycling depth schedule come from the caller. A front-loaded medium recycling
+schedule, for example, uses 60 sampling steps and 180 trunk passes. Other task
+schedules differ. Trunk passes, not steps alone, determine the runtime.
 
-Partial redesign and inverse folding add one encoder pass. Beam search
+Partial redesign and inverse folding add one encoder pass. A host's beam search
 multiplies the loop cost by the branching factor at each checkpoint and adds
 the evaluator cost, which for an external structure oracle can exceed the
 entire sampling budget.
 
-## Metric-weighted beam search
+## Numerical simulation
 
-Search wraps the loop above without changing the velocity field or the state
-update. It branches at configured step checkpoints, scores the branches, and
-keeps the best ones:
+`RFProteina.partial_simulation` integrates a supplied product-space state over
+`[start_step, end_step)` using full time grids. It returns numerical state,
+clean prediction, optional logits, and trajectory tensors. Applications can
+compose these calls with their own scoring, branching, and selection.
+Reuse the random context and carry the clean prediction to resume a trajectory.
+The method does not decode or evaluate rewards.
 
-```text
-given checkpoints 0 = c[0] < c[1] < ... < c[K] = N,
-      branch factor B, beam width M, weighted objective W
-
-for m in 0..M-1:
-    slot[m] <- initial state          # reference draw, or a clean state noised to t0
-
-for k in 1..K:
-    # branch: every surviving slot spawns B continuations of this interval
-    for m in 0..M-1, b in 0..B-1:
-        cand[b][m] <- segment(slot[m], from c[k-1] to c[k])
-
-    # score: a candidate must be clean before it can be decoded
-    if c[k] < N:
-        scored <- segment(cand, from c[k] to N)   # completion, thrown away after scoring
-    else:
-        scored <- cand                            # already at t = 1
-
-    metrics <- evaluate(decode(scored))
-    reward  <- sum over weighted keys of w[i] * clip(metrics[i])
-
-    # prune: keep the noisy branch point, not the completion that scored it
-    slot <- top-M cand by reward, independently per request
-
-return the surviving candidates
-```
-
-Four details are load-bearing rather than incidental:
-
-- **The last interval is special.** Because the final checkpoint is the last
-  step, its branched candidates are already denoised. No completion rollout
-  runs and the survivors are not decoded twice — the predictions produced
-  while scoring *are* the returned designs. At every earlier checkpoint the
-  decoded prediction is discarded.
-- **Scoring decodes a completion, not the branch point.** Candidates are
-  ranked on what they would become, then the search rewinds and keeps the
-  noisy state. That is what makes the completion rollouts pure overhead and
-  why the branching factor multiplies cost so directly.
-- **An invalid candidate scores minus infinity, not zero.** The objective sums
-  weighted keys only; a weighted key that is missing, non-numeric, or
-  non-finite rejects the whole candidate. Weighting a metric the features
-  cannot produce — motif RMSD on an unconditioned chain, say — therefore
-  rejects every candidate rather than ignoring the term. Zero-weight keys are
-  skipped, so a metric can be disabled without being removed.
-- **Selection is per request and stable.** Each row of the batch picks its own
-  top M, and equal rewards keep the lower candidate index.
-
-Search cannot create quality the field does not already produce; it re-ranks
-trajectories rather than redirecting them. For the evaluator contract and the
-runnable example, see
-[Design Proteins with RFProteína](../advanced/design-with-rfproteina.md).
+`RFProteinaTrunk.forward_features(single, pair, condition, padding_mask, ...)`
+exposes the same trunk without the feature builder, autoencoder or integrator.
+The caller can replace those components and all readouts. A host's BioIR backend
+uses `partial_simulation` to reuse static features and masks across steps;
+the trunk-only API is the extension point for caller-built representations.
+See the [two API examples](../advanced/design-with-rfproteina.md).
 
 ## Kernel support
 
-Counts are per trunk pass, so multiply by the thinking mode's trunk-pass total
-— 185 at the default medium setting — for a full design.
+Counts are per trunk pass, so multiply by the caller's total trunk passes
+— 180 for that front-loaded medium schedule — for a full design.
 
 | Component                       | Backend           | Per pass  | Fused work                                   |
 | ------------------------------- | ----------------- | --------- | -------------------------------------------- |
@@ -357,17 +312,19 @@ cover.
 measured in milliseconds per sampling step across thirty sequence lengths,
 together with the memory profile and the caveats that go with both.
 
-**Design quality.** Three unconditional monomer inputs with 50 replicates each
-give 150 designs per implementation, with zero failures on both sides. The two
-distributions agree to well under a percentage point on secondary-structure
-content and to parts in $10^5$ on geometry violations. These are unpaired
-distributional summaries, not a matched-sample test: equal integer seeds do
-not produce equal random tensors across two implementations.
+**Earlier design-quality benchmark.** Three unconditional monomer inputs with 50
+replicates each give 150 designs per implementation, with zero failures on both
+sides. The two distributions agree to well under a percentage point on
+secondary-structure content and to parts in $10^5$ on geometry violations. These
+are unpaired distributional summaries, not a matched-sample test: equal integer
+seeds did not produce equal random tensors in that benchmark. The current
+backends share the random stream and unbucketed sampling shapes; numerical
+kernel differences can still change trajectories.
 
 ## Related pages
 
-- [Design Proteins with RFProteína](../advanced/design-with-rfproteina.md) —
-  tasks, conditioning contract, and runnable examples.
+- [RFProteína numerical engine](../advanced/design-with-rfproteina.md) —
+  API, tensor contracts, and a runnable numerical example.
 - [Sampling architecture](sampling.md) — the shared rollout runtime the
   flow-matching integrator plugs into.
 - [Custom structure oracles](oracles.md) — the provider contract used for

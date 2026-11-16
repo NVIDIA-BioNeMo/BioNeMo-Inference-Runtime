@@ -281,7 +281,10 @@ def _convert_pair_update(
 
 
 def convert_rfproteina_trunk_torch(
-    config: BaseConfig, weights: Mapping[str, torch.Tensor], prefix: str = _SOURCE_PREFIX
+    config: BaseConfig,
+    weights: Mapping[str, torch.Tensor],
+    prefix: str = _SOURCE_PREFIX,
+    heads: nn.Module | None = None,
 ) -> dict:
     """Convert released RFProteína trunk weights to a TRT-BNM state_dict.
 
@@ -323,16 +326,29 @@ def convert_rfproteina_trunk_torch(
         for name in ("s_cycle_norm", "z_cycle_norm", "s_cycle_proj", "z_cycle_proj"):
             _copy(out, weights, _join(prefix, f"{name}.weight"), f"{name}.weight", dtype)
 
-    # Output heads (RMSNorm + bias-free projection, identical names).
-    heads = ["local_latents_linear", "ca_linear"]
-    if config.use_sequence_readout:
-        heads.append("sequence_readout")
-    for head in heads:
-        _copy(out, weights, _join(prefix, f"{head}.0.weight"), f"{head}.0.weight", dtype)
-        _copy(out, weights, _join(prefix, f"{head}.1.weight"), f"{head}.1.weight", dtype)
-    if config.use_insertion_head:
-        for proj in ("insertion_q_proj", "insertion_k_proj"):
-            _copy(out, weights, _join(prefix, f"{proj}.weight"), f"{proj}.weight", dtype)
+    head_prefix = _head_prefix(weights, prefix)
+    if heads is not None:
+        # The frontend owns these parameters and their computation. Strict target
+        # loading checks the whole supplied module, including new head parameters.
+        for key in weights:
+            if key.startswith(head_prefix + "."):
+                name = key[len(head_prefix) + 1 :]
+                if head_prefix != prefix or name.split(".")[0] in _RELEASED_HEADS:
+                    value = weights[key]
+                    # Integer/bool buffers belong to the head too; casting an
+                    # index buffer through BF16 can silently change its indices.
+                    out["heads." + name] = value.to(dtype) if value.is_floating_point() else value
+    else:
+        for head in (
+            "local_latents_linear",
+            "ca_linear",
+            *(["sequence_readout"] if config.use_sequence_readout else []),
+        ):
+            for suffix in ("0.weight", "1.weight"):
+                _copy(out, weights, _join(head_prefix, f"{head}.{suffix}"), f"{head}.{suffix}", dtype)
+        if config.use_insertion_head:
+            for proj in ("insertion_q_proj", "insertion_k_proj"):
+                _copy(out, weights, _join(head_prefix, f"{proj}.weight"), f"{proj}.weight", dtype)
 
     return out
 
@@ -705,6 +721,33 @@ def _block_indices(weights: Mapping[str, torch.Tensor], prefix: str, group: str)
     return sorted({int(m.group(1)) for key in weights if (m := pattern.match(key))})
 
 
+_RELEASED_HEADS = ("local_latents_linear", "ca_linear", "sequence_readout", "insertion_q_proj", "insertion_k_proj")
+
+
+def _head_prefix(weights: Mapping[str, torch.Tensor], prefix: str) -> str:
+    return _join(prefix, "heads") if any(key.startswith(_join(prefix, "heads.")) for key in weights) else prefix
+
+
+#: Source-key prefixes of the feature builder, which a trunk-only load does not consume.
+FEATURE_BUILDER_PREFIXES = ("init_repr_factory.", "cond_factory.", "pair_repr_builder.")
+
+
+def reject_unused_source(
+    *reports: RFProteinaConversionReport, component: str, expected_unused: tuple[str, ...] = ()
+) -> None:
+    """Reject source tensors consumed by none of the loaders responsible for this component.
+
+    Keys that start with one of ``expected_unused`` belong to a part this load does not cover.
+    """
+    ignored = set.intersection(*(set(report.ignored_source_keys) for report in reports))
+    unused = {key for key in ignored if not key.startswith(expected_unused)}
+    if unused:
+        raise ValueError(
+            f"Unsupported RFProteína {component} weights: {sorted(unused)}. "
+            "Update the BioIR conversion/implementation or run this component in the frontend."
+        )
+
+
 def rfproteina_trunk_config_from_weights(
     weights: Mapping[str, torch.Tensor], prefix: str = _SOURCE_PREFIX, **overrides
 ) -> RFProteinaTrunkConfig:
@@ -738,11 +781,11 @@ def rfproteina_trunk_config_from_weights(
     token_dim = shape("transformer_layers.0.mhba.mha.to_qkv.weight")[1]
     condition_dim = shape("transformer_layers.0.mhba.adaln.to_gamma.0.weight")[1]
     recycle_enabled = _join(prefix, "s_cycle_proj.weight") in weights
+    heads = _head_prefix(weights, prefix)
     derived = {
         "token_dim": token_dim,
         "pair_dim": pair_dim,
         "condition_dim": condition_dim,
-        "latent_dim": shape("local_latents_linear.1.weight")[0],
         "num_layers": max(layers) + 1,
         "num_heads": num_heads,
         "condition_transition_expansion": shape("transition_c_1.linear_out.weight")[1] // condition_dim,
@@ -755,11 +798,16 @@ def rfproteina_trunk_config_from_weights(
         "pair_write": "hadamard" if recycle_enabled else "sum",
         "recycle_enabled": recycle_enabled,
         "use_qk_norm": _join(prefix, "transformer_layers.0.mhba.mha.q_layer_norm.weight") in weights,
-        "use_insertion_head": _join(prefix, "insertion_q_proj.weight") in weights,
-        "use_sequence_readout": _join(prefix, "sequence_readout.1.weight") in weights,
+        "use_insertion_head": _join(heads, "insertion_q_proj.weight") in weights,
+        "use_sequence_readout": _join(heads, "sequence_readout.1.weight") in weights,
     }
+    # Readout dimensions are not trunk dimensions. A caller-owned head may
+    # replace all released readouts; the raw-feature trunk does not need them.
+    latent_head = _join(heads, "local_latents_linear.1.weight")
+    if latent_head in weights:
+        derived["latent_dim"] = weights[latent_head].shape[0]
     if derived["use_sequence_readout"]:
-        derived["sequence_readout_classes"] = shape("sequence_readout.1.weight")[0]
+        derived["sequence_readout_classes"] = weights[_join(heads, "sequence_readout.1.weight")].shape[0]
     return RFProteinaTrunkConfig(**{**derived, **overrides})
 
 
@@ -817,6 +865,68 @@ def _recycle_conditioning(config: RFProteinaRepresentationConfig, condition_widt
     )
 
 
+def validate_reference_config(
+    reference: Mapping,
+    trunk: RFProteinaTrunkConfig,
+    representation: RFProteinaRepresentationConfig,
+) -> None:
+    """Check parameter-free feature order and trunk semantics before optimized execution.
+
+    Shapes cannot detect swapped features or changed distance bins. The frontend
+    supplies the training configuration; heads are deliberately outside this
+    contract because their live PyTorch module implements their semantics.
+    """
+    common = "token_type cond_residue_type cond_a37coors_nm cond_a37coors_internal_nm rasa_binned secondary_structure"
+    tail = "atom_charge atomic_element coord_group_seq chirality chain_centroid_xyz"
+    schema = representation.input_schema
+    if schema == "sequence_probability":
+        single = (
+            common.replace("cond_residue_type", "sequence_probabilities")
+            + " hbond_modernized pistack pication saltbridge hydrophobic metal_coord na_ss_state hotspot "
+            + tail
+        )
+    elif schema == "latest":
+        single = common + " hbond_modernized pistack pication na_ss_state hotspot not_cysteine " + tail
+    else:
+        single = "sc_bb_ca sc_local_latents " + common + " hbond hotspot not_cysteine " + tail
+    pair = "xt_bb_ca_pair_dists bond_mask bond_order is_aromatic index_group_pair molecule_idx_pair"
+    if schema != "legacy_self_conditioned":
+        pair += " molecule_entity_pair"
+    pair += " token_bond_path_length canonical_polymer_ordering"
+    if schema != "legacy_self_conditioned":
+        pair += " na_ss_pair"
+    condition = "time_emb_bb_ca time_emb_local_latents cath_code"
+    if representation.recycle_feature is not None:
+        condition += " " + representation.recycle_feature
+    expected = {
+        "feats_seq": ("xt_bb_ca xt_local_latents " + single).split(),
+        "feats_cond_seq": condition.split(),
+        "feats_pair_repr": pair.split(),
+        "feats_pair_cond": ["time_emb_bb_ca", "time_emb_local_latents"],
+        "pair_write": trunk.pair_write,
+        "xt_pair_dist_min": representation.pair_distance_min,
+        "xt_pair_dist_max": representation.pair_distance_max,
+        "xt_pair_dist_dim": representation.pair_distance_bins,
+        "seq_sep_dim": representation.token_bond_path_bins,
+        "noise_align_internal_coords": False,
+        "noise_align_internal_coords_translate": False,
+        "output_parameterization": {"bb_ca": "v", "local_latents": "v"},
+    }
+    mismatched = [
+        f"{key}={reference[key]!r} (supported {value!r})"
+        for key, value in expected.items()
+        if key in reference and reference[key] != value
+    ]
+    if reference.get("norm_type", "rmsnorm_torch") not in ("rmsnorm_torch", "rmsnorm_torch_fused", "rmsnorm_apex"):
+        mismatched.append(f"norm_type={reference['norm_type']!r} (trunk requires RMSNorm)")
+    if mismatched:
+        raise ValueError(
+            "Unsupported RFProteína model semantics: "
+            + "; ".join(mismatched)
+            + ". Update the optimized implementation, or use RFProteinaTrunk.forward_features() with frontend features/heads."
+        )
+
+
 def rfproteina_representation_config_from_weights(
     weights: Mapping[str, torch.Tensor], prefix: str = _SOURCE_PREFIX, **overrides
 ) -> RFProteinaRepresentationConfig:
@@ -828,7 +938,7 @@ def rfproteina_representation_config_from_weights(
     _reject_unmerged_lora(weights)
     latent_dim = overrides.pop("latent_dim", None)
     if latent_dim is None:
-        latent_dim = int(weights[_join(prefix, "local_latents_linear.1.weight")].shape[0])
+        latent_dim = int(weights[_join(_head_prefix(weights, prefix), "local_latents_linear.1.weight")].shape[0])
     schema = overrides.pop("input_schema", None) or _representation_schema(weights, prefix)
     pair_norm_bias = _join(prefix, "pair_repr_builder.init_repr_factory.ln_out.bias") in weights
     condition_norm_bias = _join(prefix, "pair_repr_builder.cond_factory.ln_out.bias") in weights
@@ -968,27 +1078,15 @@ def rfproteina_encoder_config_from_checkpoint(
     return rfproteina_encoder_config_from_weights(load_rfproteina_checkpoint_state(checkpoint), prefix, **overrides)
 
 
-def _decoder_atom37_occupancy(num_residue_types: int) -> tuple[tuple[int, ...], ...] | None:
-    """Occupancy rows for a vocabulary the decoder does not carry a table for.
-
-    The decoder ships the table the released checkpoints use. A wider
-    vocabulary is a schema, so it is resolved here, where the checkpoint that
-    fixes it is already open, rather than inside the layer.
-    """
-    vocabulary = _decoder_vocabulary(num_residue_types)
-    return None if vocabulary is None else vocabulary.atom37_occupancy()
-
-
 def _decoder_vocabulary(num_residue_types: int):
     """The vocabulary a decoder of this width needs, or ``None`` for the built-in one."""
-    from bionemo_ir._torch.layers.transformers.local_latents_decoder import built_in_atom37_classes
     from bionemo_ir.data.schemas import residue_vocabulary, vendored_residue_vocabularies
 
-    if num_residue_types <= built_in_atom37_classes():
+    if num_residue_types <= 33:
         return None
     vocabulary = residue_vocabulary(num_residue_types)
     if vocabulary is None:
-        available = sorted({built_in_atom37_classes(), *vendored_residue_vocabularies()})
+        available = sorted({33, *vendored_residue_vocabularies()})
         raise ValueError(
             f"no residue vocabulary for a {num_residue_types}-class decoder; this build carries {available}. "
             "Add the checkpoint's vocabulary under bionemo_ir/data/schemas/vocabularies/."
@@ -1066,7 +1164,6 @@ def rfproteina_decoder_config_from_weights(
             shape("init_repr_factory.feat_creators.2.embedding.weight")[0] if input_schema == "unified" else 5
         ),
         "use_atom_presence": _join(prefix, "atom_presence_linear.1.weight") in weights,
-        "atom37_occupancy": _decoder_atom37_occupancy(int(shape("logit_linear.1.weight")[0])),
         "allowed_residue_classes": _decoder_allowed_classes(
             int(shape("logit_linear.1.weight")[0]),
             shape("init_repr_factory.feat_creators.2.embedding.weight")[0] if input_schema == "unified" else 5,
@@ -1112,7 +1209,7 @@ def _check_architecture(config: BaseConfig, weights: Mapping[str, torch.Tensor],
     mismatched = [
         (field, getattr(config, field), getattr(derived, field))
         for field in _ARCHITECTURE_FIELDS
-        if getattr(config, field) != getattr(derived, field)
+        if field in derived.model_fields_set and getattr(config, field) != getattr(derived, field)
     ]
     if mismatched:
         detail = ", ".join(f"{field} (config {have}, checkpoint {want})" for field, have, want in mismatched)
@@ -1285,7 +1382,7 @@ def load_rfproteina_trunk_checkpoint(
     _check_architecture(module.config, state, _SOURCE_PREFIX)
 
     weights = _AccessTrackingDict(state)
-    converted = convert_rfproteina_trunk_torch(module.config, weights)
+    converted = convert_rfproteina_trunk_torch(module.config, weights, heads=module.heads)
     return _load_converted(module, weights, converted, _SOURCE_PREFIX, "trunk", strict)
 
 

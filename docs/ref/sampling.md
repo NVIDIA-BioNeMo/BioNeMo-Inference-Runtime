@@ -350,8 +350,8 @@ step 0.
 explicit state. Continuation setup restores the caller's generator after
 integrator initialization, and the first resumed prediction receives either
 the parent's clean endpoint or explicit zeros according to
-`carry_self_condition`. This makes checkpointed search independent of how
-scoring work is chunked.
+`carry_self_condition`. A caller that checkpoints a search can therefore resume
+any branch from its saved state.
 
 Sampling is *product-space*: a model may evolve several modalities on their own
 time grids through one shared network evaluation, so states, times, and
@@ -370,9 +370,10 @@ the transport from `t = 0` to `t = 1`, and the model owns what `t = 0` means.
 
 ### RFProteína
 
-RFProteína uses:
+The host application owns initialization and workflow policy.
+`RFProteina.partial_simulation` uses:
 
-- `RFProteinaProductSpaceFlowMatcher` for the `t = 0` draw;
+- Caller-supplied initial state, time/noise grids, and recycle depths;
 - `FlowMatchingRolloutPlan` with one `FlowMatchingSchedule` per modality
   (`bb_ca` and `local_latents`), each carrying its own stochastic forcing rate;
 - `RFProteinaFlowMatchingIntegrator`;
@@ -407,7 +408,7 @@ comes from the checkpoint rather than the config, so the two cannot disagree.
 
 #### Interval update
 
-The sampler's prediction closure converts
+The simulator's prediction closure converts
 `{modality: {"v": velocity}}` into the integrator's
 `{modality: velocity}` contract and captures the optional insertion head.
 `RFProteinaFlowMatchingIntegrator` specializes mask-aware clean endpoints, the
@@ -437,10 +438,9 @@ Model-specific rollout code lives directly beside its model. For RFProteína:
 
 ```text
 bionemo_ir/_torch/modules/rfproteina/
-  sampler.py               RFProteinaProductSpaceSampler
+  simulator.py             RFProteinaProductSpaceSimulator
   flow_matcher.py          product-space reference distribution and centering
   groups.py                token groupings for per-group centering
-  schedules.py             per-modality time grids and forcing rates
   vf_tsr.py                velocity/score conversions and the VF-TSR step
   rollout.py               RFProteinaFlowMatchingIntegrator
 ```

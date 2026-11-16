@@ -22,10 +22,14 @@ import torch
 from bionemo_ir._torch.sampling.flow_matching import velocity_to_clean_endpoint
 from bionemo_ir._torch.sampling.random import randn
 
-from .schedules import compute_tsr_ratio
-
 if TYPE_CHECKING:
     from bionemo_ir.models.rfproteina.config import RFProteinaVFStepConfig
+
+
+def compute_tsr_ratio(t: torch.Tensor, k: float, sigma: float) -> torch.Tensor:
+    """Compute the temporal score-rescaling ratio."""
+    snr = t.square() / (1.0 - t).square()
+    return (snr * sigma**2 + 1.0) / (snr * sigma**2 / k + 1.0)
 
 
 def velocity_to_clean(
@@ -98,18 +102,18 @@ def velocity_flow_step(
         score = _velocity_to_score(state, velocity, time)
         ratio = compute_tsr_ratio(time, config.tsr_k, config.tsr_sigma)
         scaled_velocity = _score_to_velocity(state, score * ratio[..., None, None], time)
-        if time_value > config.ode_upper or time_value < config.ode_lower:
+        if time_value > config.t_lim_ode or time_value < config.t_lim_ode_below:
             delta = scaled_velocity * delta_time
         else:
             noise = randn(state.shape, dtype=state.dtype, device=state.device, generator=generator)
             # Matched noise tracks the score the TSR ratio already scaled, so the
             # injected noise follows the temperature instead of a fixed setting.
-            noise_scale = config.score_scale / ratio if config.tsr_matched_noise else config.noise_scale
+            sc_scale_noise = config.score_scale / ratio if config.tsr_matched_noise else config.sc_scale_noise
             if config.tsr_scaled_score_drift:
                 drift_score = score * ratio[..., None, None]
             else:
                 drift_score = score * config.score_scale
-            variance = 2.0 * noise_rate * noise_scale * delta_time
+            variance = 2.0 * noise_rate * sc_scale_noise * delta_time
             std = torch.sqrt(variance.to(state.device, torch.float32)).to(state.dtype)
             if std.ndim:
                 std = std.reshape(*std.shape, *((1,) * (state.ndim - std.ndim)))

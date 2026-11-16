@@ -19,6 +19,7 @@ replay failure — plus the grad/training guard — and asserts the captured
 path matches eager.
 """
 
+import gc
 import os
 import re
 from contextlib import AbstractContextManager
@@ -71,6 +72,47 @@ def _early_config(**overrides: object) -> CUDAGraphOptimizationConfig:
 
 # A capacity check that refuses: far more needed than free.
 _REFUSED_CAPACITY = gc_mem.MemoryCheck(False, "forced-low-mem", 1 << 40, 1 << 20)
+
+
+@pytest.mark.parametrize("initially_enabled", [False, True])
+@pytest.mark.parametrize("fail_capture", [False, True])
+def test_capture_defers_cyclic_gc_and_restores_policy(initially_enabled: bool, fail_capture: bool) -> None:
+    """Automatic collection must not invoke CUDA resource finalizers inside capture."""
+    original, thresholds = gc.isenabled(), gc.get_threshold()
+    collected_in_capture = []
+
+    def observe(phase: str, info: dict) -> None:
+        if phase == "start":
+            collected_in_capture.append(torch.cuda.is_current_stream_capturing())
+
+    class GarbageRegion(nn.Module):
+        def forward(self, value: torch.Tensor) -> torch.Tensor:
+            if torch.cuda.is_current_stream_capturing():
+                gc.set_threshold(1, 1, 1)
+                for _ in range(200):
+                    cycle = {}
+                    cycle["self"] = cycle
+                if fail_capture:
+                    raise RuntimeError("injected capture failure")
+            return value.relu()
+
+    tracker = CUDAGraphOptimizationTracker(_early_config(), GarbageRegion().cuda()).eval()
+    value = torch.randn(2, 8, device="cuda")
+    try:
+        gc.enable() if initially_enabled else gc.disable()
+        gc.callbacks.append(observe)
+        with torch.inference_mode():
+            torch.testing.assert_close(tracker(value), value.relu())
+        assert gc.isenabled() == initially_enabled
+        assert tracker.execution_counts["capture"] == (0 if fail_capture else 1)
+        assert bool(tracker.fallback_to_eager_by_key) == fail_capture
+        gc.collect()
+        assert collected_in_capture and not any(collected_in_capture)
+    finally:
+        gc.callbacks.remove(observe)
+        gc.set_threshold(*thresholds)
+        gc.enable() if original else gc.disable()
+        tracker.reset()
 
 
 @pytest.mark.parametrize("verify", [False, True])

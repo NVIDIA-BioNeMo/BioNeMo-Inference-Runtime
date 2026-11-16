@@ -182,7 +182,6 @@ public_sha256() {
 
 NGC_RETRY_ATTEMPTS=3
 NGC_RETRY_DELAY_SECONDS=5
-NGC_CLI_SHA256="ff554b11edac202f5b8198f4bdd2543f25f35e6cbf7c55ff78c6a1a080b41267"
 
 verify_sha256() {
   local file="$1" expected="$2"
@@ -355,24 +354,53 @@ fi
 NGC=""
 
 ngc_is_usable() {
-  # Prefer an already-installed, working CLI; only fetch the bundled Linux build
-  # when none is usable. `ngc --version` gates on "usable", not just "present".
+  # Reuse a working CLI before bootstrapping.
   if command -v ngc >/dev/null 2>&1 && ngc --version >/dev/null 2>&1; then
     NGC="ngc"
   elif [[ -n "${NGC_API_KEY:-}" ]]; then
     # Extract into a temp dir, not the CWD: in the dev container the CWD is the
     # bind-mounted repo, so unzipping here would litter the host working tree.
-    local ngc_tmp
-    ngc_tmp=$(mktemp -d)
-    wget -q --content-disposition \
-      https://api.ngc.nvidia.com/v2/resources/nvidia/ngc-apps/ngc_cli/versions/4.21.0/files/ngccli_linux.zip \
-      -O "${ngc_tmp}/ngccli_linux.zip" || return 1
-    verify_sha256 "${ngc_tmp}/ngccli_linux.zip" "${NGC_CLI_SHA256}" || return 1
-    mkdir "${ngc_tmp}/unpacked"
-    unzip -q "${ngc_tmp}/ngccli_linux.zip" -d "${ngc_tmp}/unpacked" || return 1
-    [[ -f "${ngc_tmp}/unpacked/ngc-cli/ngc" ]] || return 1
-    chmod u+x "${ngc_tmp}/unpacked/ngc-cli/ngc"
-    NGC="${ngc_tmp}/unpacked/ngc-cli/ngc"
+    local ngc_tmp platform archive sha256 binary
+    platform="$(uname -s)-$(uname -m)"
+    case "${platform}" in
+      Linux-x86_64 | Linux-amd64)
+        archive=ngccli_linux.zip
+        sha256=ff554b11edac202f5b8198f4bdd2543f25f35e6cbf7c55ff78c6a1a080b41267
+        ;;
+      Linux-aarch64 | Linux-arm64)
+        archive=ngccli_arm64.zip
+        sha256=e13bf909e41c34d50d47d7a31714b0620c428e83a6988a8e16960c248b5c391b
+        ;;
+      Darwin-arm64)
+        archive=ngccli_mac_arm.pkg
+        sha256=23ac1cbcc329aa29e9b12441e933bcd1c08bcbff91f6771c8c8760270690ce07
+        ;;
+      Darwin-x86_64)
+        archive=ngccli_mac_intel.pkg
+        sha256=d5abbcd001a78d5714808f18abe425e9baf38f0fad887eb0933b238562846e40
+        ;;
+      *)
+        echo "unsupported NGC CLI platform: ${platform}" >&2
+        return 1
+        ;;
+    esac
+    ngc_tmp=$(mktemp -d) || return 1
+    curl -fLsS --retry 3 --connect-timeout 30 \
+      "https://api.ngc.nvidia.com/v2/resources/nvidia/ngc-apps/ngc_cli/versions/4.21.0/files/${archive}" \
+      -o "${ngc_tmp}/${archive}" || return 1
+    verify_sha256 "${ngc_tmp}/${archive}" "${sha256}" || return 1
+    if [[ "${archive}" == *.pkg ]]; then
+      # Extract without installing or requiring sudo.
+      pkgutil --expand-full "${ngc_tmp}/${archive}" "${ngc_tmp}/unpacked" || return 1
+      binary="${ngc_tmp}/unpacked/ngc.pkg/Payload/ngc-cli/ngc"
+    else
+      unzip -q "${ngc_tmp}/${archive}" -d "${ngc_tmp}/unpacked" || return 1
+      binary="${ngc_tmp}/unpacked/ngc-cli/ngc"
+    fi
+    [[ -f "${binary}" ]] || return 1
+    chmod u+x "${binary}" || return 1
+    "${binary}" --version >/dev/null 2>&1 || return 1
+    NGC="${binary}"
   else
     return 1
   fi

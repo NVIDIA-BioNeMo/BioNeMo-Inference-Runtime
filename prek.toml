@@ -10,14 +10,15 @@ default_install_hook_types = ["pre-commit", "commit-msg"]
 
 # Never touch vendored submodules or the CuTeDSL kernel package (the DSL
 # resolves names through its own tracing machinery, so ruff reports them as
-# undefined). Generated CUBIN build inputs are not excluded because they are no
-# longer written into the checkout; the materializer emits them into the build
-# tree.
+# undefined), nor the files NVCARPS CI writes into skill directories. Generated
+# CUBIN build inputs are not excluded because they are no longer written into
+# the checkout; the materializer emits them into the build tree.
 exclude = '''(?x)^(
     3rdparty/.*
   | .*\.(a|lib|so|dll|a3m)
   | examples/data/samples/templates/templates/.*\.cif
   | bionemo_ir/dsl_kernels/cute/.*
+  | skills/[^/]+/(skill-card\.md|BENCHMARK\.md|SIGN\.md|skill\.oms\.sig)
 )$'''
 
 [[repos]]

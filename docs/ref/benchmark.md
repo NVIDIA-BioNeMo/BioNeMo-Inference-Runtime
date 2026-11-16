@@ -566,7 +566,7 @@ distributional rather than a per-sample score.
 
 These numbers are not tied to a build artifact: they come from `main`, on one
 GPU, with public inputs and upstream baselines at pinned tags. The procedure is
-the [`bench-perf-oss`](../../.agents/skills/bench-perf-oss/SKILL.md) agent skill
+the [`bench-perf-oss`](../../skills/bench-perf-oss/SKILL.md) agent skill
 -- point an agent at it rather than following steps by hand. It installs BioIR
 and each pinned baseline in isolation, runs one warmup and one timed forward per
 sample, scores the output, and aggregates the geomeans above.

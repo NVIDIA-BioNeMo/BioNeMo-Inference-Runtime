@@ -75,6 +75,7 @@ def query_gpu_snapshot() -> dict[str, Any]:
     raw = subprocess.check_output(
         ["nvidia-smi", f"--query-gpu={_QUERY}", "--format=csv,noheader,nounits"],
         text=True,
+        shell=False,
         timeout=SMI_TIMEOUT_S,
     ).strip()
     parts = [p.strip() for p in raw.split(",")]

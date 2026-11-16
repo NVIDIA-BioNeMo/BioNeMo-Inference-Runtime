@@ -219,7 +219,9 @@ BioIR needs Python 3.12+, CUDA, and the editable / wheel install
 (`docs/dev.md`).
 
 ```bash
-BIOIR_PYTHON=${BIOIR_PYTHON:-$(command -v python)}
+if [ -z "${BIOIR_PYTHON:-}" ]; then
+  BIOIR_PYTHON=$(command -v python)
+fi
 "$BIOIR_PYTHON" - <<'PY'
 import sys, torch, bionemo_ir
 from bionemo_ir.pipeline.processor.engine_proc import build_processor
@@ -256,8 +258,8 @@ Resolve the tree from this table, then probe it (Step 2).
 
 | BioIR key                                      | OSS tree                                                                               | How to get it                                                                      |
 | ---------------------------------------------- | -------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------- |
-| `openfold3`                                    | [`3rdparty/openfold-3`](../../../3rdparty/openfold-3)                                  | checkpoint-compatible commit from its registry; see [models/of3.md](models/of3.md) |
-| `protenix-v2`                                  | [`3rdparty/protenix`](../../../3rdparty/protenix)                                      | gitlink SHA from `git ls-tree HEAD 3rdparty/protenix`                              |
+| `openfold3`                                    | [`3rdparty/openfold-3`](../../3rdparty/openfold-3)                                     | checkpoint-compatible commit from its registry; see [models/of3.md](models/of3.md) |
+| `protenix-v2`                                  | [`3rdparty/protenix`](../../3rdparty/protenix)                                         | gitlink SHA from `git ls-tree HEAD 3rdparty/protenix`                              |
 | `boltz-1`, `boltz-2`                           | [jwohlwend/boltz](https://github.com/jwohlwend/boltz) **`v2.2.1`**                     | clone that tag into `$WORKDIR/oss/boltz`                                           |
 | `openfold2_*` (and AF2 e2e that uses OpenFold) | [aqlaboratory/openfold `v2.2.0`](https://github.com/aqlaboratory/openfold/tree/v2.2.0) | clone that tag into `$WORKDIR/oss/openfold`                                        |
 
@@ -398,7 +400,9 @@ These require a second environment:
 - `numpy` major (1 vs 2) when either side imports compiled extensions
 
 **`flash-attn` is optional.** Neither BioIR nor the OSS bench needs
-it. Uninstall it from any interpreter if it is present or conflicts:
+it. If it conflicts, remove it only from an environment created for this
+benchmark. For an existing or shared interpreter, explain the conflict and
+obtain the user's approval before uninstalling:
 
 ```bash
 "$BIOIR_PYTHON" -m pip uninstall -y flash-attn
@@ -581,16 +585,24 @@ chmod +x "$WORKDIR/ref_data/apt_install.sh"
 cat "$WORKDIR/ref_data/apt_install.sh"
 ```
 
-### Step D — try to install it yourself
+### Step D — confirm the privileged install scope
 
-Two rungs, **in this order**. Do not hang on a password prompt
-(`sudo -n` is non-interactive).
+Show the generated script and explain which missing dependency requires
+each package. Run it only when the user has authorized this system change
+in the current session. Root access or passwordless elevation alone does
+not establish authorization. Otherwise use the hand-off in Step E.
+
+After authorization, choose the available rung. Run the update and install
+as separate commands, and stop if the update fails. Do not prompt for a
+password (`sudo -n` is non-interactive).
 
 ```bash
 if [ "$(id -u)" -eq 0 ] && command -v apt-get >/dev/null; then
-  apt-get update && apt-get install -y "${pkgs[@]}"          # apt
-elif command -v sudo >/dev/null && sudo -n true 2>/dev/null; then
-  sudo -n apt-get update && sudo -n apt-get install -y "${pkgs[@]}"   # sudo
+  apt-get update || exit 1
+  apt-get install -y "${pkgs[@]}"
+elif command -v sudo >/dev/null; then
+  sudo -n apt-get update || exit 1
+  sudo -n apt-get install -y "${pkgs[@]}"
 fi
 ```
 
@@ -621,18 +633,18 @@ around the missing library and not to stop silently.
 Reply template — fill the placeholders from Steps A and B, keep the
 shape:
 
-> `<oss dependency>` needs `<soname(s)>`, which `<why it is absent —
-> e.g. not installed in this image>`, so `<the import or compile that
-> failed>` fails with `<the exact error line>`. I can't install
-> distro packages here (`<which rung failed — not root / no
-> passwordless sudo / apt-get blocked by policy>`), so please run:
->
-> ```bash
-> sudo apt-get update && sudo apt-get install -y <pkgs>
-> ```
->
-> Same thing saved at `$WORKDIR/ref_data/apt_install.sh`. Reply when
-> it finishes and I'll re-scan and carry on.
+The OSS dependency needs the missing sonames, so the import or compile
+fails with the recorded error. Explain why package installation is
+unavailable, then give the user the commands with the actual package names:
+
+```bash
+sudo apt-get update
+# Continue only if the update succeeded.
+sudo apt-get install -y <pkgs>
+```
+
+Mention the script saved at `$WORKDIR/ref_data/apt_install.sh` and ask the
+user to reply after running it so the scan can resume.
 
 Keep it to the failing import, the sonames, the reason the agent
 cannot install, and the command. Do not paste the whole traceback.
@@ -768,7 +780,7 @@ git clone --depth 1 https://github.com/deepspeedai/DeepSpeed.git \
 # Uninstall the PyPI wheel first if OSS already pulled it.
 "$OSS_PYTHON" -m pip uninstall -y deepspeed || true
 
-# Non-editable, -v, one arch. `pip install -e` silently builds
+# Non-editable, -v, one arch. An editable pip install silently builds
 # nothing — see deepspeed-evoformer.md.
 export TORCH_CUDA_ARCH_LIST=$("$OSS_PYTHON" -c 'import torch; print("%d.%d" % torch.cuda.get_device_capability(0))') MAX_JOBS=16
 DS_BUILD_OPS=0 DS_BUILD_EVOFORMER_ATTN=1 \
@@ -913,7 +925,8 @@ lDDT.
 OST_ENV=${OST_ENV:-$WORKDIR/envs/ost}
 if [ -x "$OST_ENV/bin/ost" ]; then
     OST_CMD="$OST_ENV/bin/ost"
-    echo "OpenStructure found: $("$OST_CMD" --version)"
+    echo "OpenStructure found:"
+    "$OST_CMD" --version
 else
     echo "OpenStructure NOT found — creating dedicated env"
 fi
@@ -950,10 +963,11 @@ if [ -z "$CONDA_BIN" ]; then
 fi
 if [ -z "$CONDA_BIN" ]; then
     MINIFORGE_DIR=${MINIFORGE_DIR:-$WORKDIR/miniforge3}
+    MINIFORGE_INSTALLER=$(mktemp "$WORKDIR/ref_data/miniforge.XXXXXX.sh")
     wget -q https://github.com/conda-forge/miniforge/releases/latest/download/Miniforge3-Linux-x86_64.sh \
-        -O /tmp/miniforge.sh
-    bash /tmp/miniforge.sh -b -p "$MINIFORGE_DIR"
-    rm /tmp/miniforge.sh
+        -O "$MINIFORGE_INSTALLER"
+    bash "$MINIFORGE_INSTALLER" -b -p "$MINIFORGE_DIR"
+    # Retain the installer in the benchmark workspace for provenance.
     CONDA_BIN="$MINIFORGE_DIR/bin/conda"
 fi
 

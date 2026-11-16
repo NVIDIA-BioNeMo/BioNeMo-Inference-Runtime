@@ -44,6 +44,13 @@ DOCKQ_UNSUPPORTED_TYPES = frozenset({"rna", "dna"})
 _STDERR_TAIL = 2000
 
 
+def _scorer_env() -> dict[str, str]:
+    """Pass runtime settings without API keys or an OSS Python import path."""
+    env = {name: os.environ[name] for name in ("PATH", "HOME", "TMPDIR", "LANG", "LC_ALL") if name in os.environ}
+    env["PYTHONNOUSERSITE"] = "1"
+    return env
+
+
 def score_lddt(ost_cmd: str, model_cif: str | Path, native_cif: str | Path, out_json: str | Path) -> dict[str, Any]:
     """Global lDDT from `ost compare-structures`.
 
@@ -72,7 +79,7 @@ def score_lddt(ost_cmd: str, model_cif: str | Path, native_cif: str | Path, out_
         "--min-nuc-length",
         "4",
     ]
-    proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
+    proc = subprocess.run(cmd, capture_output=True, text=True, check=False, shell=False, env=_scorer_env())
     row: dict[str, Any] = {"lddt": None, "lddt_json": str(out_json)}
     if proc.returncode != 0:
         row["lddt_stderr"] = proc.stderr[-_STDERR_TAIL:]
@@ -148,10 +155,8 @@ def score_dockq(
     if row["dockq_status"] is not None:
         return row
 
-    # An OSS source tree on PYTHONPATH must not leak into the scorer's env.
-    env = {k: v for k, v in os.environ.items() if k != "PYTHONPATH"}
     cmd = [dockq_cmd, str(model_cif), str(native_cif), "--json", str(out_json), *args]
-    proc = subprocess.run(cmd, capture_output=True, text=True, check=False, env=env)
+    proc = subprocess.run(cmd, capture_output=True, text=True, check=False, shell=False, env=_scorer_env())
     if proc.returncode != 0:
         output = proc.stdout + proc.stderr
         row["dockq_status"] = "no_native_interfaces" if NO_NATIVE_INTERFACES in output else "failed"

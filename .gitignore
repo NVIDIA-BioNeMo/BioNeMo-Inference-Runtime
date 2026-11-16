@@ -68,7 +68,7 @@ bionemo_ir/bindings/**/*.pyi
 # build/debug
 *.safetensors
 *.patch
-!.agents/skills/bench-perf-oss/models/misc/*.patch
+!skills/bench-perf-oss/models/misc/*.patch
 
 # User config files
 CMakeUserPresets.json

@@ -47,7 +47,7 @@ Do not merge these claims. In particular:
 - an allocator-diagnostic pass is not a production capacity result; and
 - finite, deterministic outputs do not establish folding quality.
 
-Use [bench-perf-oss](../../bench-perf-oss/SKILL.md) for a complete
+Use [bench-perf-oss](../../../../skills/bench-perf-oss/SKILL.md) for a complete
 BioIR-versus-OSS folding latency and quality comparison.
 
 ## Freeze the experiment contract

@@ -173,7 +173,7 @@ BioIR documentation lives under [`docs/`](docs/) and is published with Fern:
 ### Methodology
 
 Folding benchmarks over a bench set the shipped
-[`rebuild_dataset.py`](.agents/skills/bench-perf-oss/dataset/) builds from RCSB
+[`rebuild_dataset.py`](skills/bench-perf-oss/dataset/) builds from RCSB
 and NVIDIA's MSA Search NIM — there is no dataset release to download.
 Template-bearing samples included: both sides load every bundled MSA and attach
 every listed template.
@@ -214,7 +214,7 @@ and peak memory, and how to reproduce any of it:
 
 <!-- END generated: benchmark summary -->
 
-The [`bench-perf-oss` agent skill](.agents/skills/bench-perf-oss/SKILL.md) has
+The [`bench-perf-oss` agent skill](skills/bench-perf-oss/SKILL.md) has
 the full gates, environment isolation, result schema, and charting protocol.
 
 [github-ssh]:

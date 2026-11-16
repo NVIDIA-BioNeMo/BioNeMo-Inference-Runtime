@@ -82,7 +82,8 @@ Daily loop is in [`docs/dev.md`][dev]. See also
 
 ## Agent skills
 
-Task-specific playbooks live in `.agents/skills/`
+The `bench-perf-oss` playbook lives in `skills/bench-perf-oss/`. The other
+task-specific playbooks live in `.agents/skills/`.
 
 - `make-data-pipeline` — porting an open-source data pipeline into the BioIR
   pipeline architecture. The procedure lives in

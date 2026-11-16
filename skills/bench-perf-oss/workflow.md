@@ -349,7 +349,7 @@ custom-template case is documented in [models/boltz2.md](models/boltz2.md).
 `graph_activation="default"` for the BioIR column, or
 `"disable_cuda_graphs()"` for an eager arm. Follow
 [measurement.md](measurement.md#cuda-graphs) for the eager config, caches,
-and the audit; [`docs/ref/api.md`](../../../docs/ref/api.md#cuda-graphs)
+and the audit; [`docs/ref/api.md`](../../docs/ref/api.md#cuda-graphs)
 lists each model's regions and policy.
 
 **OSS scenarios.** Always run **eager**. Protenix-v2 is an explicit

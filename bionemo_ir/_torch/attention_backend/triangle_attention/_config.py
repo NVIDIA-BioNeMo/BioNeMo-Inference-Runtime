@@ -81,7 +81,7 @@ def get_nearest_bucket(sm_version: int, head_dim: int, S: int) -> int:
 
 
 #: The options an SM100-ABI anchor may name; the kernel's schedule otherwise has no tunable parameters.
-SM100_OPTIONS = ("split_mma", "bias_pipe_gates")
+SM100_OPTIONS = ("split_mma", "bias_pipe_gates", "split_p", "reduce_before_wait")
 
 
 def sm100_options(tile_params: dict[str, Any]) -> dict[str, bool]:

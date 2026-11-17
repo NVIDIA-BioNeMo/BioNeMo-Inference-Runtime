@@ -45,11 +45,14 @@ constexpr char kSM90NullableLseLaunchAbi[] = "triangle_attention_sm90_nullable_l
 constexpr char kSM100NullableLseLaunchAbi[] = "triangle_attention_sm100_nullable_lse_v1";
 /* The SM100 bank plus the bias MMA of images that fold the bias on the tensor core. */
 constexpr char kSM100BiasMmaNullableLseLaunchAbi[] = "triangle_attention_sm100_bias_mma_nullable_lse_v1";
+constexpr char kSM100DynamicLaunchAbi[] = "triangle_attention_sm100_dynamic_nullable_lse_v1";
+constexpr char kSM100DynamicBiasMmaLaunchAbi[] = "triangle_attention_sm100_dynamic_bias_mma_nullable_lse_v1";
 
 bool uses_sm100_bias_mma(KernelConfig const& config)
 {
   return config.cubin.launch_abi != nullptr
-    && std::strcmp(config.cubin.launch_abi, kSM100BiasMmaNullableLseLaunchAbi) == 0;
+    && (std::strcmp(config.cubin.launch_abi, kSM100BiasMmaNullableLseLaunchAbi) == 0
+        || std::strcmp(config.cubin.launch_abi, kSM100DynamicBiasMmaLaunchAbi) == 0);
 }
 
 bool accepts_null_lse(KernelConfig const& config)
@@ -57,7 +60,8 @@ bool accepts_null_lse(KernelConfig const& config)
   char const* abi = config.cubin.launch_abi;
   return abi != nullptr
     && (std::strcmp(abi, kSM80NullableLseLaunchAbi) == 0 || std::strcmp(abi, kSM90NullableLseLaunchAbi) == 0
-        || std::strcmp(abi, kSM100NullableLseLaunchAbi) == 0 || uses_sm100_bias_mma(config));
+        || std::strcmp(abi, kSM100NullableLseLaunchAbi) == 0 || std::strcmp(abi, kSM100DynamicLaunchAbi) == 0
+        || uses_sm100_bias_mma(config));
 }
 
 /* Older images store LSE unconditionally, so they still need a buffer. */
@@ -87,7 +91,7 @@ void validate_launch(KernelConfig const& config, LaunchParams const& params)
   bool const known_abi = config.cubin.launch_abi != nullptr
     && (std::strcmp(config.cubin.launch_abi, expected_abi) == 0
         || std::strcmp(config.cubin.launch_abi, expected_nullable_lse_abi) == 0
-        || (is_sm100 && uses_sm100_bias_mma(config)));
+        || (is_sm100 && (std::strcmp(config.cubin.launch_abi, kSM100DynamicLaunchAbi) == 0 || uses_sm100_bias_mma(config))));
   if (config.cubin.kernel_sm != expected_kernel_sm || !known_abi)
   {
     throw std::invalid_argument("triangle-attention CUBIN has an incompatible launch ABI");
@@ -248,17 +252,15 @@ cubin_launch_config_t make_sm100_launch_config(
   embedded::SM100LaunchInfo const& metadata,
   LaunchParams const& params,
   CUcontext context,
-  std::uint32_t tile_m,
+  std::uint64_t total_blocks,
+  bool dynamic_scheduler,
   std::uint32_t smem_bytes)
 {
-  std::uint64_t const m_tiles
-    = ceil_div(static_cast<std::uint64_t>(params.q.shape[1]), static_cast<std::uint64_t>(tile_m));
-  std::uint64_t const total_blocks
-    = m_tiles * static_cast<std::uint64_t>(params.q.shape[2]) * static_cast<std::uint64_t>(params.q.shape[0]);
   std::uint64_t const active_sms = static_cast<std::uint64_t>(cuda_multiprocessor_count_for_context(context));
 
   cubin_launch_config_t launch_config{};
-  launch_config.grid_x = checked_u32(std::min(active_sms, total_blocks), "triangle-attention SM100 grid.x");
+  launch_config.grid_x = checked_u32(
+    dynamic_scheduler ? total_blocks : std::min(active_sms, total_blocks), "triangle-attention SM100 grid.x");
   launch_config.grid_y = 1;
   launch_config.grid_z = 1;
   launch_config.block_x = metadata.block_dims[0];
@@ -406,7 +408,9 @@ void launch_sm100(
   bool bias_mma,
   LaunchParams const& params,
   CUcontext context,
-  std::uint32_t smem_bytes)
+  std::uint32_t smem_bytes,
+  std::int32_t kernel_variant = 0,
+  std::int32_t regular_blocks = 0)
 {
   validate_operand_devices(params, cuda_device_for_context(context));
 
@@ -442,26 +446,45 @@ void launch_sm100(
     = ceil_div(static_cast<std::uint64_t>(params.q.shape[1]), static_cast<std::uint64_t>(spec.tile_m));
   if (scheduler_num_blocks_u64 > static_cast<std::uint64_t>(std::numeric_limits<std::int32_t>::max()))
     throw std::overflow_error("triangle-attention SM100 scheduler M tile count overflow");
-  std::int32_t const scheduler_num_blocks = static_cast<std::int32_t>(scheduler_num_blocks_u64);
+  std::int32_t const scheduler_num_blocks = kernel_variant == 2 || kernel_variant == 3 ? 1
+    : regular_blocks > 0                                                               ? regular_blocks
+                         : static_cast<std::int32_t>(scheduler_num_blocks_u64);
+  std::int32_t const scheduler_heads = kernel_variant == 3 ? params.q.shape[2] / 2 : params.q.shape[2];
+  bool const dynamic_scheduler = kernel_variant == 1 || kernel_variant == 4;
   device_params.scheduler_num_blocks = make_sm100_fast_divmod(scheduler_num_blocks);
-  device_params.scheduler_num_heads = make_sm100_fast_divmod(params.q.shape[2]);
-  std::uint64_t const total_blocks = scheduler_num_blocks_u64 * static_cast<std::uint64_t>(params.q.shape[2])
+  std::int32_t head_group = scheduler_heads;
+  if (dynamic_scheduler)
+  {
+    std::uint64_t const bias_bytes = static_cast<std::uint64_t>(params.bias.shape[2]) * params.bias.shape[3] * 2;
+    constexpr std::uint64_t budget = 20ULL << 20;
+    if (bias_bytes * scheduler_heads > budget)
+      head_group = scheduler_heads % 2 == 0 && bias_bytes * (scheduler_heads / 2) <= budget ? scheduler_heads / 2 : 1;
+  }
+  device_params.scheduler_num_heads = make_sm100_fast_divmod(head_group);
+  device_params.scheduler_num_batch = make_sm100_fast_divmod(params.q.shape[0]);
+  device_params.scheduler_head_group = head_group;
+  std::uint64_t const total_blocks = static_cast<std::uint64_t>(scheduler_num_blocks) * scheduler_heads
     * static_cast<std::uint64_t>(params.q.shape[0]);
   if (total_blocks > static_cast<std::uint64_t>(std::numeric_limits<std::int32_t>::max()))
     throw std::overflow_error("triangle-attention SM100 scheduler total block count overflow");
   device_params.scheduler_total_blocks = static_cast<std::int32_t>(total_blocks);
 
-  void* kernel_params[abi::kSM100BiasMmaParameterCount];
-  abi::pack_sm100_kernel_params(&device_params, bias_mma, kernel_params);
+  void* kernel_params[abi::kSM100BiasMmaParameterCount + 2];
+  abi::pack_sm100_kernel_params(&device_params, bias_mma, kernel_params, dynamic_scheduler);
   cubin_launch_config_t const launch_config
-    = make_sm100_launch_config(metadata, params, context, spec.tile_m, smem_bytes);
+    = make_sm100_launch_config(metadata, params, context, total_blocks, dynamic_scheduler, smem_bytes);
   check_cuda_driver(
     launch_cubin_kernel(loaded, &launch_config, kernel_params, nullptr),
     "launch_cubin_kernel(triangle_attention_sm100)");
 }
 
-embedded::CubinImage const&
-find_embedded_cubin(std::int32_t target_sm, std::int32_t head_dim, std::int32_t S, DType dtype, bool packed_output)
+embedded::CubinImage const& find_embedded_cubin(
+  std::int32_t target_sm,
+  std::int32_t head_dim,
+  std::int32_t S,
+  DType dtype,
+  bool packed_output,
+  std::int32_t kernel_variant = 0)
 {
   if (S < 0)
     throw std::invalid_argument("triangle-attention S must be non-negative");
@@ -475,7 +498,7 @@ find_embedded_cubin(std::int32_t target_sm, std::int32_t head_dim, std::int32_t 
     embedded::CubinImage const& image = registry.images[index];
     if (
       !cubin_supports_sm(image.cubin, target_sm) || image.head_dim != head_dim || image.is_bfloat16 != is_bfloat16
-      || image.packed_output != packed_output)
+      || image.packed_output != packed_output || image.kernel_variant != kernel_variant)
       continue;
 
     std::int64_t const delta = static_cast<std::int64_t>(image.bucket) - static_cast<std::int64_t>(S);
@@ -552,6 +575,42 @@ void launch(KernelConfig const& config, LaunchParams const& params)
 
   if (auto const* spec = std::get_if<KernelSpecSM100>(&config.spec))
   {
+    if (configured_sm == 107 && config.embedded_image->scheduler_variants)
+    {
+      bool const split_mma = spec->head_dim == 32 && config.embedded_image->split_mma;
+      std::int32_t const keys = params.q.shape[1];
+      std::int32_t const blocks = (keys - 1) / 256 + 1;
+      bool const tail = keys - (blocks - 1) * 256 <= 128;
+      std::int32_t const regular = blocks - (tail ? 1 : 0);
+      auto const run_variant = [&](std::int32_t variant)
+      {
+        embedded::CubinImage const& image = find_embedded_cubin(
+          configured_sm, spec->head_dim, spec->bucket, config.dtype, config.packed_output, variant);
+        bool const dynamic = variant == 1 || variant == 4;
+        bool const bias_mma = uses_sm100_bias_mma(config);
+        char const* expected = dynamic ? (bias_mma ? kSM100DynamicBiasMmaLaunchAbi : kSM100DynamicLaunchAbi)
+                                       : (bias_mma ? kSM100BiasMmaNullableLseLaunchAbi : kSM100NullableLseLaunchAbi);
+        if (image.cubin.launch_abi == nullptr || std::strcmp(image.cubin.launch_abi, expected) != 0)
+          throw std::invalid_argument("SM107 specialization has an incompatible launch ABI");
+        cubin_kernel_t const kernel = load_embedded_kernel(context, image.cubin);
+        launch_sm100(
+          kernel,
+          *spec,
+          image.sm100,
+          config.dtype,
+          uses_sm100_bias_mma(config),
+          params,
+          context,
+          image.cubin.dynamic_smem_bytes,
+          variant,
+          regular);
+      };
+      if (regular > 0)
+        run_variant(keys <= 128 ? 0 : split_mma && keys <= 384 ? 4 : 1);
+      if (tail)
+        run_variant(split_mma && keys > 384 && params.q.shape[2] % 2 == 0 ? 3 : 2);
+      return;
+    }
     launch_sm100(
       loaded,
       *spec,

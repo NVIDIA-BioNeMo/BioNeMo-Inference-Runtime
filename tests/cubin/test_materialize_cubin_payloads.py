@@ -680,6 +680,29 @@ def test_adaln_norm_kind_is_a_distinct_runtime_key(tmp_path: Path) -> None:
     assert source.count('"adaln_layernorm_sigmoid_sm80"') == 2
 
 
+def test_triangle_scheduler_key(tmp_path: Path) -> None:
+    family = "triangle_attention"
+    index = _write_case(tmp_path / "source", family, kernel_sm=100)
+
+    def add_scheduler_variant(value: dict[str, object]) -> None:
+        variants = value["variants"]
+        assert isinstance(variants, list)
+        dynamic = json.loads(json.dumps(variants[0]))
+        dynamic["runtime_metadata"]["kernel_variant"] = 1
+        dynamic["runtime_metadata"]["scheduler_variants"] = True
+        dynamic["variant_id"] = hashlib.sha256(b"triangle-dynamic").hexdigest()[:20]
+        variants.append(dynamic)
+        variants.sort(key=lambda variant: variant["variant_id"])
+
+    _mutate_records(index, add_scheduler_variant)
+    result = materializer.materialize([(family, index)], tmp_path / "build")
+    header = (result.output_dir / f"{family}_registry.h").read_text()
+    source = (result.output_dir / f"{family}_registry.cpp").read_text()
+    assert "std::int32_t kernel_variant;" in header
+    assert "bool scheduler_variants;" in header
+    assert source.count('"triangle_attention_sm100"') == 2
+
+
 def test_sm90_registry_renders_tma_metadata(tmp_path: Path) -> None:
     family = "triangle_attention"
     index = _write_case(tmp_path / "source", family, kernel_sm=90)

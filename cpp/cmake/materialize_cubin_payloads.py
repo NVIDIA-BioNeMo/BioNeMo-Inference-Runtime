@@ -366,7 +366,17 @@ _FAMILY_SPECS: dict[str, _FamilySpec] = {
         ),
     ),
     "pairwise_attention": _ATTENTION_SPEC,
-    "triangle_attention": _ATTENTION_SPEC,
+    "triangle_attention": _FamilySpec(
+        fields=(
+            *_ATTENTION_SPEC.fields,
+            _Field("kernel_variant", _INDEX, "std::int32_t kernel_variant;", default=0),
+            _Field("split_mma", _BOOL, "bool split_mma;", default=False),
+            _Field("scheduler_variants", _BOOL, "bool scheduler_variants;", default=False),
+        ),
+        runtime_key=(*_ATTENTION_SPEC.runtime_key, "kernel_variant"),
+        sm90=_ATTENTION_SPEC.sm90,
+        sm100=_ATTENTION_SPEC.sm100,
+    ),
     "dual_gemm_x_x": _FamilySpec(
         fields=(
             _Field("K", _POSITIVE, "std::int32_t K;"),

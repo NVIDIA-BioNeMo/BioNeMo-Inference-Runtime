@@ -198,13 +198,15 @@ struct SM100Params
   SM100FastDivmod scheduler_num_blocks;
   SM100FastDivmod scheduler_num_heads;
   std::int32_t scheduler_total_blocks;
+  SM100FastDivmod scheduler_num_batch;
+  std::int32_t scheduler_head_group;
 };
 
 /* The kernel declares the bias MMA, when it has one, between the PV MMA and the
  * scheduler, which shifts the three scheduler parameters one slot later.
  */
 inline void
-pack_sm100_kernel_params(SM100Params* params, bool bias_mma, void* kernel_params[kSM100BiasMmaParameterCount])
+pack_sm100_kernel_params(SM100Params* params, bool bias_mma, void** kernel_params, bool dynamic_scheduler = false)
 {
   kernel_params[0] = &params->q_coord;
   kernel_params[1] = &params->k_coord;
@@ -228,7 +230,14 @@ pack_sm100_kernel_params(SM100Params* params, bool bias_mma, void* kernel_params
     kernel_params[17] = &params->bias_tiled_mma;
   kernel_params[scheduler] = &params->scheduler_num_blocks;
   kernel_params[scheduler + 1] = &params->scheduler_num_heads;
-  kernel_params[scheduler + 2] = &params->scheduler_total_blocks;
+  if (dynamic_scheduler)
+  {
+    kernel_params[scheduler + 2] = &params->scheduler_num_batch;
+    kernel_params[scheduler + 3] = &params->scheduler_head_group;
+    kernel_params[scheduler + 4] = &params->scheduler_total_blocks;
+  }
+  else
+    kernel_params[scheduler + 2] = &params->scheduler_total_blocks;
 }
 
 static_assert(sizeof(CUtensorMap) == 128);

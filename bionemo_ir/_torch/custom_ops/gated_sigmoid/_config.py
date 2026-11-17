@@ -233,7 +233,7 @@ def _params_from_json(raw: dict) -> dict:
 # kernel, which the Blackwell targets also run.
 _DEFAULT_KERNEL_ABI = "sm80"
 # The ``sm100`` kernel is a ``tcgen05`` kernel and needs tensor memory, which SM120 and SM121 lack.
-_TCGEN05_SMS = (100, 103)
+_TCGEN05_SMS = (100, 103, 107)
 
 
 # Heuristic tiles must also appear in the builder's shipped tile set.
@@ -268,6 +268,13 @@ _HEURISTIC_TILES: dict[int, dict[str, tuple[int, int, int, int]]] = {
         "short": (32, 32, 64, 3),
         "medium": (64, 64, 64, 3),
         "long": (64, 64, 64, 3),
+    },
+    # SM107: the same rule applied to its own Vera Rubin sweep.
+    107: {
+        "small_n": (32, 32, 64, 3),
+        "short": (64, 64, 32, 4),
+        "medium": (32, 64, 64, 2),
+        "long": (128, 64, 32, 3),
     },
     # SM120: the same rule applied to its own RTX PRO 6000 Blackwell sweep. Its 99 KB of shared memory rules out
     # the 128x128 tiles once a residual is staged.

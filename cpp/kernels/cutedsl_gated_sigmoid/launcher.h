@@ -232,7 +232,7 @@ enum class LaunchAbi : std::uint8_t
 {
   kSM80,
   kSM90,
-  /* Blackwell, SM100 and SM103: the persistent TMA + tcgen05 kernel. The other Blackwell targets run kSM80. */
+  /* Blackwell, SM100, SM103 and SM107: the persistent TMA + tcgen05 kernel. The other Blackwell targets run kSM80. */
   kSM100,
 };
 

@@ -49,7 +49,7 @@ def _skip_cubin_without_an_image(mode: str) -> None:
 
 
 _SUPPORTED_SMS = tuple(sorted(gated_ops._SUPPORTED_SM))
-_BLACKWELL_SMS = (100, 103, 120, 121)
+_BLACKWELL_SMS = (100, 103, 107, 120, 121)
 
 
 @pytest.fixture
@@ -268,8 +268,8 @@ def test_gated_sigmoid_blackwell_config_selects_sm100_kernel(sm, source_free_sel
         for M in (65, 1500, 4096):
             abi = gated_config.get_kernel_config(sm, K, N, M).kernel_abi
             assert abi == gated_config.get_kernel_abi(sm, K, N, M)
-            # SM120 and SM121 have no tensor memory; SM100 and SM103 may run the TMA source where a bucket says so.
-            assert abi in (("sm80", "sm100") if sm in (100, 103) else ("sm80",))
+            # SM120 and SM121 have no tensor memory; SM100, SM103 and SM107 may run the TMA source where a bucket says so.
+            assert abi in (("sm80", "sm100") if sm in (100, 103, 107) else ("sm80",))
 
 
 @pytest.mark.parametrize("sm", _BLACKWELL_SMS)

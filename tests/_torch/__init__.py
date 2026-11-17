@@ -103,7 +103,7 @@ _CUTEDSL_SUPPORTED_SM = (80, 86, 89, 90)
 # gate like ``skip_if_not_sm90`` instead -- that's a test requirement, not an
 # op-support fact.)
 _CUTEDSL_OP_SUPPORTED_SM: "dict[str, tuple[int, ...]]" = {
-    "gated_sigmoid": (80, 86, 89, 90, 100, 103, 120, 121),
+    "gated_sigmoid": (80, 86, 89, 90, 100, 103, 107, 120, 121),
     "dual_gemm_x0_x1": (80, 86, 89, 90, 100, 103),
     "dual_gemm_x_x": (80, 86, 89, 90, 100, 103),
     "outer_product_mean": (80, 86, 89, 90, 100, 103),

@@ -1,5 +1,16 @@
 {
   "executables": {
+    "e658a1acf60fa6ce237997f0191a6913a4c0a2416c6fae01bf23e81e6ec5cc48": {
+      "dtype": "fp16",
+      "dynamic_smem_bytes": 32768,
+      "image_sha256": "abb90d6864547ca434055f7e3e3a4b41552721c4b959a909644f2224682479b4",
+      "image_size": 57224,
+      "kernel_sm": 80,
+      "kernel_symbol": "f2815d718eede462c311b48d9e1b666b3ca9a0b5c2eb237f264e1bf75fef14c7",
+      "launch_abi": "pairwise_attention_sm80_nullable_lse_v1",
+      "target_arch": "sm_107a",
+      "target_sm": 107
+    },
     "e82cd4486290bc23529a1c6c0550c760e726bcb2ddca141031a81aaf74be4540": {
       "dtype": "bf16",
       "dynamic_smem_bytes": 57344,
@@ -11,6 +22,17 @@
       "target_arch": "sm_100a",
       "target_sm": 100
     },
+    "e8d864c5de8b080f9671167dc6d0e45ec9ae7e1a47bcbc9cc3fb51cee2abe4fa": {
+      "dtype": "bf16",
+      "dynamic_smem_bytes": 32768,
+      "image_sha256": "c4f01281cea6c4cfb8e63229579a185f433b9bfe291d0a51ef279714268dedbc",
+      "image_size": 57416,
+      "kernel_sm": 80,
+      "kernel_symbol": "2633baa2b0a71946ecb74c6c7c31d0ba4ed82aaeabf4f7e66dd340ed59727d2a",
+      "launch_abi": "pairwise_attention_sm80_nullable_lse_v1",
+      "target_arch": "sm_107a",
+      "target_sm": 107
+    },
     "ecddcb1000d0e21f77ac24d5d5a3d08e60f4959c4f2d6314ac004697b90becbd": {
       "dtype": "fp16",
       "dynamic_smem_bytes": 20480,
@@ -21,6 +43,17 @@
       "launch_abi": "pairwise_attention_sm80_nullable_lse_v1",
       "target_arch": "sm_103a",
       "target_sm": 103
+    },
+    "ed5b4863d327fcc2ccd4867095b0bbafe460134b62f34d310e87ea9fb0622e22": {
+      "dtype": "bf16",
+      "dynamic_smem_bytes": 36864,
+      "image_sha256": "76f4e3e0fbf035933dd8da418ae8d693e906acd4eb2639b2a82f99ab92a67518",
+      "image_size": 71848,
+      "kernel_sm": 80,
+      "kernel_symbol": "24995ada98ab0db9ab7e8d337910fce7d13ad94cf09dd0dfeb296fa5e74d7c44",
+      "launch_abi": "pairwise_attention_sm80_nullable_lse_v1",
+      "target_arch": "sm_107a",
+      "target_sm": 107
     }
   },
   "kernel_symbols": {},
@@ -321,6 +354,16 @@
       "variant_id": "e09d4b0c8bcd36af1a8a"
     },
     {
+      "executable": "6b5e87de0aa0c9b347b18668dea51c2c17e8129d61a2050413e843b0281bcd4e",
+      "runtime_metadata": {
+        "bucket": 80,
+        "head_dim": 32,
+        "packed_output": true,
+        "sm100_launch": null
+      },
+      "variant_id": "e1c51fbf1ebb75ddc0ba"
+    },
+    {
       "executable": "1b42a49445f741c86609a4b4d2f20f2d3128dd670d8cd9949ff1cad2116a8d9d",
       "runtime_metadata": {
         "bucket": 0,
@@ -371,6 +414,16 @@
       "variant_id": "e5c3a1e5909adf326486"
     },
     {
+      "executable": "6b5e87de0aa0c9b347b18668dea51c2c17e8129d61a2050413e843b0281bcd4e",
+      "runtime_metadata": {
+        "bucket": 128,
+        "head_dim": 32,
+        "packed_output": true,
+        "sm100_launch": null
+      },
+      "variant_id": "e6b9cf9098235fe937d8"
+    },
+    {
       "executable": "fd97a6c85baebfe4c35a8e6b39dffca06cb8294b0f87015e7b0372dd36efa486",
       "runtime_metadata": {
         "bucket": 112,
@@ -379,6 +432,16 @@
         "sm100_launch": null
       },
       "variant_id": "e6bb8ab9a6c025f01ab2"
+    },
+    {
+      "executable": "175a89d20f6edf8bd788a6f490e2d0d48c29ca9fd3d5653626c8799cdb2c0521",
+      "runtime_metadata": {
+        "bucket": 144,
+        "head_dim": 32,
+        "packed_output": true,
+        "sm100_launch": null
+      },
+      "variant_id": "e73b6400419a2170c62b"
     },
     {
       "executable": "41d68caf978f74f8fda0bda341f04549b294b756ff8382437adf682bfdee4ba6",
@@ -409,6 +472,16 @@
         "sm100_launch": null
       },
       "variant_id": "e847e1dd244b0cf1bcd6"
+    },
+    {
+      "executable": "10414d1ebc966f2a0ee01b58ca7c4621408392a097979cb47edea9e19abe8749",
+      "runtime_metadata": {
+        "bucket": 128,
+        "head_dim": 64,
+        "packed_output": false,
+        "sm100_launch": null
+      },
+      "variant_id": "e8a723a18400f6388171"
     },
     {
       "executable": "c5f468b1eeb67bcb8d79b2b2d1f95c4a25f0b16f1319c79a6adb1ce470d98c45",

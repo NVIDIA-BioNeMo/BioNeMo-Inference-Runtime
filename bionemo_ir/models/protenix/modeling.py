@@ -392,11 +392,9 @@ class Protenix(nn.Module, OptimizedModuleSetterMixin):
         has run, so the tensor is freed at the earliest possible point.
         """
         head, summ = self.confidence_head, self.confidence_summary
-        # Reduce and release the raw distogram before constructing the
-        # confidence pair state.
-        contact_probs = summ.contact_probs(_unbatch(held["distogram_logits"], 3))
-        if compact_output:
-            del held["distogram_logits"]
+        contact_probs = None
+        if not compact_output:
+            contact_probs = summ.contact_probs(_unbatch(held["distogram_logits"], 3))
 
         asym_id = _unbatch(batch["asym_id"], 1).long()
         atom_to_token_idx = _unbatch(batch["atom_to_token_idx"], 1).long()
@@ -421,12 +419,14 @@ class Protenix(nn.Module, OptimizedModuleSetterMixin):
         full_list = [] if return_full_data else None
         for i in range(coordinate_ub.shape[0]):
             with eager_graphs(coordinate_ub.shape[0] == 1):
-                plddt_i, pae_i, pde_i, _resolved_i = head.per_sample_logits(ctx, coordinate[..., i, :, :])
+                plddt_i, pae_i, pde_i, _resolved_i = head.per_sample_logits(
+                    ctx, coordinate[..., i, :, :], compact_output=compact_output
+                )
             summary_i, full_i = summ.summary_one_sample(
                 contact_probs,
                 _unbatch(plddt_i, 2),
                 _unbatch(pae_i, 3),
-                _unbatch(pde_i, 3),
+                _unbatch(pde_i, 3) if pde_i is not None else None,
                 coordinate_ub[i],
                 asym_id,
                 has_frame,
@@ -436,6 +436,7 @@ class Protenix(nn.Module, OptimizedModuleSetterMixin):
                 num_cycles,
                 return_full_data=return_full_data,
                 chain_index=chain_index,
+                compact_output=compact_output,
             )
             summary_list.append(summary_i)
             if full_list is not None:
@@ -519,7 +520,7 @@ class Protenix(nn.Module, OptimizedModuleSetterMixin):
             recycling_steps: trunk recycle count (cycles = this + 1)
             num_sampling_steps: EDM steps (``None`` → config default)
             diffusion_samples: ``N_sample`` / ``S``
-            compact_output: drop trunk tensors from the return dict
+            compact_output: Keep pipeline outputs; skip unused heads and chain metrics.
             return_full_data: include per-sample ``full_data`` when summarizing
             keep_input_features: ``batch`` keys a consuming call leaves in place,
                 such as the caller's postprocessing inputs
@@ -535,7 +536,9 @@ class Protenix(nn.Module, OptimizedModuleSetterMixin):
 
             Compact / summary path: ``coordinate`` is unbatched to
             ``[N_sample, N_atom, 3]``; adds ``summary_confidence`` (list of
-            per-sample dicts) and optionally ``full_data`` / ``contact_probs``.
+            per-sample dicts) and optionally ``full_data``. Compact summaries
+            retain pTM, ipTM, clashes, and ranking; full data retains pLDDT
+            and PAE. Full mode also returns ``contact_probs``.
             Confidence-only (no summary masks): also ``plddt_logits`` /
             ``pae_logits`` / ``pde_logits`` / ``resolved_logits``.
         """
@@ -591,7 +594,7 @@ class Protenix(nn.Module, OptimizedModuleSetterMixin):
             "template_backbone_frame_mask",
         )
 
-        distogram_logits = self.distogram_head(z)
+        distogram_logits = None if compact_output else self.distogram_head(z)
 
         coordinate = self.sample_diffusion(
             batch,
@@ -631,14 +634,13 @@ class Protenix(nn.Module, OptimizedModuleSetterMixin):
         have_conf = "distogram_rep_atom_mask" in batch and "atom_to_tokatom_idx" in batch
         have_summary = have_conf and "has_frame" in batch and "is_ligand" in batch
         if have_summary:
-            # Transfer trunk/distogram refs into held so compact mode can drop
-            # forward locals at the same pop boundaries as the original dels.
             held = {
                 "s_inputs": s_inputs,
                 "s": s,
                 "z": z,
-                "distogram_logits": distogram_logits,
             }
+            if not compact_output:
+                held["distogram_logits"] = distogram_logits
             if compact_output:
                 del s_inputs, s, z, distogram_logits
             self._streaming_confidence(batch, out, held, coordinate, num_cycles, compact_output, return_full_data)

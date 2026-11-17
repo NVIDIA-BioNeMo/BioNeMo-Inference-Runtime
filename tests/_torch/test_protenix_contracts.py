@@ -455,6 +455,10 @@ def test_protenix_forward_output_modes_and_feature_ownership(
     assert {"d_lm", "v_lm", "pad_info"} <= stub_sampler.last_kwargs["batch_keys"]
     assert stub_sampler.last_kwargs["drop_consumed_features"] is False
 
+    def unused_distogram(*args: object) -> None:
+        raise AssertionError("Compact output ran distogram")
+
+    monkeypatch.setattr(model.distogram_head, "forward", unused_distogram)
     batch2 = _tiny_batch()
     compact = model.forward(
         batch2,

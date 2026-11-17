@@ -444,7 +444,9 @@ class ConfidenceSummaryConfig(BaseConfig):
 class ProtenixConfig(BaseConfig):
     """Top-level protenix-v2 model config."""
 
-    compact_output: bool = Field(default=False, description="Return confidence summaries without trunk archives.")
+    compact_output: bool = Field(
+        default=False, description="Keep pipeline outputs; skip unused heads and chain metrics."
+    )
     skip_zero_update_nodes: bool = Field(
         default=True,
         description=(

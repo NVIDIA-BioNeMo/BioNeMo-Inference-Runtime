@@ -417,10 +417,10 @@ class ProtenixConfidenceSummary(nn.Module):
     @torch.no_grad()
     def summary_one_sample(
         self,
-        contact_probs: torch.Tensor,
+        contact_probs: torch.Tensor | None,
         plddt_logits: torch.Tensor,
         pae_logits: torch.Tensor,
-        pde_logits: torch.Tensor,
+        pde_logits: torch.Tensor | None,
         coordinate: torch.Tensor,
         asym_id: torch.Tensor,
         has_frame: torch.Tensor,
@@ -430,10 +430,12 @@ class ProtenixConfidenceSummary(nn.Module):
         num_recycles: int,
         return_full_data: bool = True,
         chain_index: ChainIndex | None = None,
+        compact_output: bool = False,
     ) -> tuple[dict[str, Any], dict[str, Any] | None]:
         """Summary (+ full data) for one diffusion sample (RAII over heavy logits).
 
         Args:
+            compact_output: Keep pipeline scores, pLDDT, and PAE only.
             contact_probs: ``[N_token, N_token]``
             plddt_logits: ``[N_atom, b_plddt]``
             pae_logits: ``[N_token, N_token, b_pae]``
@@ -456,27 +458,35 @@ class ProtenixConfidenceSummary(nn.Module):
         n_token = asym_id.shape[-1]
 
         atom_plddt = logits_to_score(plddt_logits.float(), *plddt_bins)
-        token_pair_pde = logits_to_score(pde_logits.float(), *pde_bins)
         token_pair_pae, pae_prob = logits_to_score(pae_logits.float(), *pae_bins, return_prob=True)
 
         summary: dict[str, Any] = {}
-        summary["plddt"] = atom_plddt.mean(dim=-1) * 100
-        summary["gpde"] = (token_pair_pde * contact_probs).sum(dim=[-1, -2]) / contact_probs.sum(dim=[-1, -2])
         everything = chain_index.all_tokens()
         summary["ptm"] = calculate_ptm(pae_prob, everything, n_token, *pae_bins)
         summary["iptm"] = calculate_iptm(pae_prob, chain_index.asym, everything, n_token, *pae_bins)
-        summary.update(calculate_chain_based_gpde(token_pair_pde, contact_probs, chain_index))
-        summary.update(calculate_chain_based_ptm(pae_prob, chain_index, *pae_bins))
-        summary.update(calculate_chain_based_plddt(atom_plddt, chain_index))
         summary["has_clash"] = calculate_clash(coordinate.unsqueeze(0), chain_index, cfg.af3_clash_threshold)[0]
-        summary["disorder"] = torch.zeros_like(summary["ptm"])
-        summary["num_recycles"] = torch.full((), num_recycles, dtype=torch.long, device=coordinate.device)
+        disorder = torch.zeros_like(summary["ptm"])
         summary["ranking_score"] = (
             cfg.iptm_weight * summary["iptm"]
             + cfg.ptm_weight * summary["ptm"]
-            + cfg.disorder_weight * summary["disorder"]
+            + cfg.disorder_weight * disorder
             - cfg.clash_penalty * summary["has_clash"]
         )
+
+        if compact_output:
+            full = {"atom_plddt": atom_plddt, "token_pair_pae": token_pair_pae} if return_full_data else None
+            return summary, full
+
+        if pde_logits is None or contact_probs is None:
+            raise ValueError("Full confidence requires PDE logits and contact probabilities")
+        token_pair_pde = logits_to_score(pde_logits.float(), *pde_bins)
+        summary["plddt"] = atom_plddt.mean(dim=-1) * 100
+        summary["gpde"] = (token_pair_pde * contact_probs).sum(dim=[-1, -2]) / contact_probs.sum(dim=[-1, -2])
+        summary.update(calculate_chain_based_gpde(token_pair_pde, contact_probs, chain_index))
+        summary.update(calculate_chain_based_ptm(pae_prob, chain_index, *pae_bins))
+        summary.update(calculate_chain_based_plddt(atom_plddt, chain_index))
+        summary["disorder"] = disorder
+        summary["num_recycles"] = torch.full((), num_recycles, dtype=torch.long, device=coordinate.device)
 
         full = None
         if return_full_data:

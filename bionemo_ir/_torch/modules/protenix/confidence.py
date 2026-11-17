@@ -108,7 +108,9 @@ class ProtenixConfidenceHead(nn.Module):
         )
         return z_pair + embedding.to(z_pair.dtype)
 
-    def _pair_logits(self, z_pair: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    def _pair_logits(
+        self, z_pair: torch.Tensor, compact_output: bool = False
+    ) -> tuple[torch.Tensor, torch.Tensor | None]:
         """PAE and PDE logits; above the policy's threshold, one block of token rows at a time.
 
         A row block reads its rows of ``z_pair`` and, for the PDE's ``z + zᵀ``, the matching
@@ -118,22 +120,27 @@ class ProtenixConfidenceHead(nn.Module):
         rows = z_pair.shape[-3]
         if policy is None or not policy.should_chunk_size(rows, z_pair.device if z_pair.is_cuda else None):
             pae = self.linear_no_bias_pae(self.pae_ln(z_pair))
-            pde = self.linear_no_bias_pde(self.pde_ln(z_pair + z_pair.transpose(-2, -3)))
+            pde = None
+            if not compact_output:
+                pde = self.linear_no_bias_pde(self.pde_ln(z_pair + z_pair.transpose(-2, -3)))
             return pae, pde
         pae = pde = None
         for start, length in iter_chunks(rows, policy.chunk_size):
             z_rows = z_pair.narrow(-3, start, length)
             pae_rows = self.linear_no_bias_pae(self.pae_ln(z_rows))
-            symmetric = z_rows + z_pair.narrow(-2, start, length).transpose(-2, -3)
-            pde_rows = self.linear_no_bias_pde(self.pde_ln(symmetric))
-            del symmetric
             if pae is None:
                 # Under autocast the projections return the autocast dtype, as the dense path does.
                 pae = pae_rows.new_empty((*z_pair.shape[:-1], self.b_pae))
-                pde = pde_rows.new_empty((*z_pair.shape[:-1], self.b_pde))
             pae.narrow(-3, start, length).copy_(pae_rows)
-            pde.narrow(-3, start, length).copy_(pde_rows)
-            del pae_rows, pde_rows
+            if not compact_output:
+                symmetric = z_rows + z_pair.narrow(-2, start, length).transpose(-2, -3)
+                pde_rows = self.linear_no_bias_pde(self.pde_ln(symmetric))
+                del symmetric
+                if pde is None:
+                    pde = pde_rows.new_empty((*z_pair.shape[:-1], self.b_pde))
+                pde.narrow(-3, start, length).copy_(pde_rows)
+                del pde_rows
+            del pae_rows
         return pae, pde
 
     def _per_sample(
@@ -146,6 +153,7 @@ class ProtenixConfidenceHead(nn.Module):
         pair_mask: torch.Tensor,
         x_rep: torch.Tensor,
         plddt_rows: IndexedRows | None = None,
+        compact_output: bool = False,
     ) -> tuple:
         """AF3 Alg. 31 for one diffusion sample (memory-efficient path)."""
         z_pair = self._distance_embed(z_pair, x_rep)
@@ -163,14 +171,16 @@ class ProtenixConfidenceHead(nn.Module):
         z_pair = z_pair.to(self.dtype)
         s_single = s_single.to(self.dtype)
 
-        pae, pde = self._pair_logits(z_pair)
+        pae, pde = self._pair_logits(z_pair, compact_output)
         a = s_single[..., atom_to_token_idx, :]  # [*, N_atom, c_s]
         normalized = self.plddt_ln(a)
         if plddt_rows is not None and not torch.is_autocast_enabled("cuda"):
             plddt = indexed_projection(normalized, self.plddt_weight, plddt_rows)
         else:
             plddt = torch.einsum("...nc,ncb->...nb", normalized, self.plddt_weight[atom_to_tokatom_idx])
-        resolved = torch.einsum("...nc,ncb->...nb", self.resolved_ln(a), self.resolved_weight[atom_to_tokatom_idx])
+        resolved = None
+        if not compact_output:
+            resolved = torch.einsum("...nc,ncb->...nb", self.resolved_ln(a), self.resolved_weight[atom_to_tokatom_idx])
         return plddt, pae, pde, resolved
 
     def prepare(
@@ -231,12 +241,15 @@ class ProtenixConfidenceHead(nn.Module):
             "atom_to_tokatom_idx": atom_slots,
         }
 
-    def per_sample_logits(self, ctx: dict[str, Any], x_pred_coords_i: torch.Tensor) -> tuple:
+    def per_sample_logits(
+        self, ctx: dict[str, Any], x_pred_coords_i: torch.Tensor, compact_output: bool = False
+    ) -> tuple:
         """PAE / PDE / pLDDT / resolved logits for one diffusion sample.
 
         Args:
             ctx: :meth:`prepare` context
             x_pred_coords_i: ``[B, N_atom, 3]`` (one sample)
+            compact_output: Skip PDE and resolved projections; return ``None`` for both.
 
         Returns:
             ``plddt`` ``[B, N_atom, b_plddt]``,
@@ -254,6 +267,7 @@ class ProtenixConfidenceHead(nn.Module):
             ctx["pair_mask"],
             x_rep,
             ctx.get("plddt_rows"),
+            compact_output,
         )
 
     def forward(

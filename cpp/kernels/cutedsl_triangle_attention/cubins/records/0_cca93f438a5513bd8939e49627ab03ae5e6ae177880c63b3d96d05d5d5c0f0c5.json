@@ -1,5 +1,28 @@
 {
   "executables": {
+    "023d64cf86ad190ae5021ad15e65be9a2ac523143864f98d716bf45d31f65545": {
+      "dtype": "fp16",
+      "dynamic_smem_bytes": 8192,
+      "image_sha256": "4b05e61c9ea90f386e820344ebba073a6971b945327ad42178e0830ffa33ceca",
+      "image_size": 36936,
+      "kernel_sm": 80,
+      "kernel_symbol": "acb3526d2ebb18601b49cd9d1e7776b3c4ba7926edd5c79dfa0491260c2b8d32",
+      "launch_abi": "triangle_attention_sm80_nullable_lse_v1",
+      "target_arch": "sm_107a",
+      "target_sm": 107
+    },
+    "03128e52046956ba6c7ff6772b17d3407fa61b8c8108517ca1909be2c9818525": {
+      "dtype": "fp16",
+      "dynamic_smem_bytes": 217088,
+      "image_sha256": "6838cbd6bce94fcbbdc017e71cc66929a88a5d6dad1eb30396278fdba247d4ea",
+      "image_size": 152664,
+      "kernel_sm": 100,
+      "kernel_symbol": "70605b5ff1a9f0cfccb3ed4e9d987ae145ab0c302563c466bc9aef1a9590ca60",
+      "launch_abi": "triangle_attention_sm100_bias_mma_nullable_lse_v1",
+      "non_portable_cluster_size_allowed": true,
+      "target_arch": "sm_107a",
+      "target_sm": 107
+    },
     "03a67afa4675e809d20461c7a937365af5aacbda988d73ed6107a35a538f1ab1": {
       "dtype": "fp16",
       "dynamic_smem_bytes": 225280,
@@ -79,6 +102,16 @@
         "sm100_launch": null
       },
       "variant_id": "0788d1818d637601ce9b"
+    },
+    {
+      "executable": "16b3065bfb3ae33451aa7761ab6f9bdb129e70923c0397295ef9b79add4467f9",
+      "runtime_metadata": {
+        "bucket": 192,
+        "head_dim": 64,
+        "packed_output": false,
+        "sm100_launch": null
+      },
+      "variant_id": "07c1ed0aae37f8dd1140"
     },
     {
       "executable": "60d570d0f3e4e487a557980727003a87e38ba9e37b7b26b9c3a75d619d2c1a63",
@@ -277,6 +310,16 @@
         "sm100_launch": null
       },
       "variant_id": "0e5eaa4bc51d686ddd03"
+    },
+    {
+      "executable": "4616161828b1e13ec3225949f0458ae6e8a2b1452a842c6158156ab023f6b69b",
+      "runtime_metadata": {
+        "bucket": 64,
+        "head_dim": 128,
+        "packed_output": false,
+        "sm100_launch": null
+      },
+      "variant_id": "0f55e7fdf157fbde18a0"
     }
   ]
 }

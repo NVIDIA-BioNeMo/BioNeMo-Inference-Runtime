@@ -90,7 +90,7 @@ def test_triangle_auto_select_falls_back_to_sdpa(monkeypatch):
     assert attention_backend.auto_select_triangle_attention_backend(torch.float32) == "SDPA"
 
 
-@pytest.mark.parametrize("sm", [80, 86, 89, 90, 100, 103])
+@pytest.mark.parametrize("sm", [80, 86, 89, 90, 100, 103, 107])
 def test_triangle_auto_select_uses_heur_on_supported_sm(monkeypatch, sm):
     monkeypatch.setattr(attention_utils, "get_sm_version", lambda: sm)
 
@@ -106,7 +106,7 @@ def test_pairwise_auto_select_uses_cutedsl_where_cubins_ship(monkeypatch: pytest
     assert attention_backend.auto_select_pairwise_attention_backend(torch.float32) == "SDPA"
 
 
-@pytest.mark.parametrize("sm", [100, 103])
+@pytest.mark.parametrize("sm", [100, 103, 107])
 def test_triangle_auto_select_rejects_unsupported_blackwell_head_dim(monkeypatch, sm):
     monkeypatch.setattr(attention_utils, "get_sm_version", lambda: sm)
     monkeypatch.setitem(sys.modules, "cuequivariance_ops_torch", None)
@@ -114,7 +114,7 @@ def test_triangle_auto_select_rejects_unsupported_blackwell_head_dim(monkeypatch
     assert attention_backend.auto_select_triangle_attention_backend(torch.bfloat16, head_dim=256) == "SDPA"
 
 
-@pytest.mark.parametrize("sm", [100, 103])
+@pytest.mark.parametrize("sm", [100, 103, 107])
 @pytest.mark.parametrize(
     ("head_dim", "expected"),
     [(None, "Heuristic"), (32, "Heuristic"), (64, "Heuristic"), (128, "Heuristic"), (96, "CUEQUIV"), (256, "SDPA")],

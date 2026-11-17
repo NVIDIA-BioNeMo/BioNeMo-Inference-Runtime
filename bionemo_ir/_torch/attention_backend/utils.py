@@ -42,7 +42,7 @@ def auto_select_triangle_attention_backend(
 
     Selection priority (highest to lowest):
       1. **Heuristic** — optimized router on
-         SM80/SM86/SM89/SM90/SM100/SM103, fp16/bf16 only. It selects
+         SM80/SM86/SM89/SM90/SM100/SM103/SM107, fp16/bf16 only. It selects
          ``ClaudeKit`` for SM90 BF16 D=32 calls of at least 23M attention
          scores and CuTeDSL otherwise. A layer whose head dimension CuTeDSL
          cannot pad to falls through to the backends below, as here.
@@ -60,10 +60,10 @@ def auto_select_triangle_attention_backend(
     if head_dim is not None and head_dim < 1:
         raise ValueError(f"head_dim must be positive; got {head_dim}")
     padded_head_dim = None if head_dim is None else ((head_dim + 31) // 32) * 32
-    supported_head_dims = {32, 64, 128} if sm in (100, 103) else {32, 64, 128, 256}
+    supported_head_dims = {32, 64, 128} if sm in (100, 103, 107) else {32, 64, 128, 256}
     supports_head_dim = padded_head_dim is None or padded_head_dim in supported_head_dims
 
-    if sm in (80, 86, 89, 90, 100, 103) and is_half and supports_head_dim:
+    if sm in (80, 86, 89, 90, 100, 103, 107) and is_half and supports_head_dim:
         return "Heuristic"
     if cuequiv_supports(dtype, head_dim):
         return "CUEQUIV"

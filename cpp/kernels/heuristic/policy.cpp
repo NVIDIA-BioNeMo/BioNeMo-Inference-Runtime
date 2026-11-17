@@ -49,9 +49,10 @@ bool cutedsl_supports(TriangleAttentionRequest const& request)
 {
   bool const half = request.dtype == DType::kFloat16 || request.dtype == DType::kBFloat16;
   bool const sm_supported = request.target_sm == 80 || request.target_sm == 86 || request.target_sm == 89
-    || request.target_sm == 90 || request.target_sm == 100 || request.target_sm == 103;
-  bool const head_dim_supported
-    = request.head_dim == 32 || request.head_dim == 64 || request.head_dim == 128 || request.head_dim == 256;
+    || request.target_sm == 90 || request.target_sm == 100 || request.target_sm == 103 || request.target_sm == 107;
+  bool const sm100_family = request.target_sm == 100 || request.target_sm == 103 || request.target_sm == 107;
+  bool const head_dim_supported = request.head_dim == 32 || request.head_dim == 64 || request.head_dim == 128
+    || (!sm100_family && request.head_dim == 256);
   return half && sm_supported && head_dim_supported && request.tokens > 0 && request.i_dim > 0;
 }
 

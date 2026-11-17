@@ -96,7 +96,7 @@ _CUTEDSL_SUPPORTED_SM = (80, 86, 89, 90)
 #                                 80/86/89/90, and a native Blackwell kernel
 #                                 for SM100/103.
 #   * triangle_attention        -- additionally ships a native Blackwell
-#                                 implementation for SM100/103.
+#                                 implementation for SM100/103/107.
 # Add an entry only when an op's kernel support genuinely diverges from the
 # generic range; ``skip_if_no_cutedsl`` / ``skip_if_cutedsl`` then honor it.
 # (Tests that assert an SM-specific *kernel path* should use a direct SM
@@ -109,7 +109,7 @@ _CUTEDSL_OP_SUPPORTED_SM: "dict[str, tuple[int, ...]]" = {
     "outer_product_mean": (80, 86, 89, 90, 100, 103),
     "pair_weighted_averaging": (80, 90, 100, 103),
     "pairwise_attention": (80, 86, 89, 90, 100, 103),
-    "triangle_attention": (80, 86, 89, 90, 100, 103),
+    "triangle_attention": (80, 86, 89, 90, 100, 103, 107),
     "transition_mlp": (80, 86, 89, 90, 100, 103),
 }
 

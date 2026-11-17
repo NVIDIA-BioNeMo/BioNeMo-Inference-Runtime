@@ -81,10 +81,10 @@ class _RouteKey:
 def _cutedsl_supports(sm_version: int, dtype: torch.dtype, head_dim: int, tokens: int, i_dim: int) -> bool:
     if dtype not in (torch.float16, torch.bfloat16) or tokens <= 0 or i_dim <= 0:
         return False
-    if sm_version not in (80, 86, 89, 90, 100, 103):
+    if sm_version not in (80, 86, 89, 90, 100, 103, 107):
         return False
     padded_head_dim = ((head_dim + 31) // 32) * 32
-    supported_head_dims = {32, 64, 128} if sm_version in (100, 103) else {32, 64, 128, 256}
+    supported_head_dims = {32, 64, 128} if sm_version in (100, 103, 107) else {32, 64, 128, 256}
     return head_dim > 0 and padded_head_dim in supported_head_dims
 
 
@@ -260,7 +260,7 @@ class HeuristicTriangleAttention(AttentionBackend[HeuristicTriangleAttentionMeta
     (``batch * i_dim * tokens**2 * num_heads``) use ``ClaudeKit`` when its
     native launcher is installed; every other CuTeDSL-supported call uses
     ``CuTeDSL``. A call neither kernel serves, such as a head dimension above
-    128 on SM100 and SM103, runs on ``CUEQUIV`` where its kernels take the
+    128 on SM100, SM103 and SM107, runs on ``CUEQUIV`` where its kernels take the
     head dimension and key count, else on SDPA over row chunks, and raises a
     ``RuntimeWarning`` once per layer and route. That route skips the LSE
     store. Routes are chosen on the first call per shape and reused by later

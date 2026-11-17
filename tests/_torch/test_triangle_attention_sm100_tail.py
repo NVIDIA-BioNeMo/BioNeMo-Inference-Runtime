@@ -32,14 +32,14 @@ _SOURCE_MODULE = "bionemo_ir._torch.attention_backend.triangle_attention._source
 _HEAD_DIM = 32
 
 pytestmark = pytest.mark.skipif(
-    SM_VERSION not in (100, 103) or not source_module_available(_SOURCE_MODULE),
-    reason="the SM100 split-issue and paired-tail launches exist in the source kernel on SM100/SM103",
+    SM_VERSION not in (100, 103, 107) or not source_module_available(_SOURCE_MODULE),
+    reason="the SM100 split-issue and paired-tail launches exist in the source kernel on SM100/SM103/SM107",
 )
 
 
 def _rows_for_sm100_bucket(tokens: int) -> int:
-    """Rows I that put S = sqrt(I * J) on the SM100 anchor (S >= 193) with few rows."""
-    return max(8, math.ceil(200**2 / tokens))
+    """Rows I that put S = sqrt(I * J) on the native anchor (SM100/SM103: S >= 193, SM107: S >= 233) with few rows."""
+    return max(8, math.ceil(250**2 / tokens))
 
 
 def _lengths(i_dim: int, tokens: int) -> torch.Tensor:

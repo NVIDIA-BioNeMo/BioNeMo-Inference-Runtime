@@ -363,7 +363,7 @@ constexpr KernelSpecSM100 make_sm100_spec(std::int32_t target_sm, std::int32_t h
  * configuration. Dtype and packed output select distinct CUBINs but do not
  * change launch geometry.
  */
-inline std::array<KernelSpec, 47> const kKernelSpecs = {
+inline std::array<KernelSpec, 55> const kKernelSpecs = {
   /* SM80 */
   make_sm80_spec(80, 32, 0, 64, 64, 128),
   make_sm80_spec(80, 32, 384, 64, 64, 128),
@@ -418,13 +418,23 @@ inline std::array<KernelSpec, 47> const kKernelSpecs = {
   make_sm80_spec(103, 32, 145, 32, 32, 64),
   make_sm80_spec(103, 64, 64, 32, 64, 64),
 
-  /* Native Blackwell entries use the same device ABI on SM100 and SM103. */
+  /* SM107 takes the Ampere ABI below every native anchor, D128 included. */
+  make_sm80_spec(107, 32, 32, 32, 32, 64),
+  make_sm80_spec(107, 32, 48, 32, 64, 64),
+  make_sm80_spec(107, 32, 224, 32, 64, 64),
+  make_sm80_spec(107, 64, 192, 32, 64, 64),
+  make_sm80_spec(107, 128, 64, 64, 64, 128),
+
+  /* Native Blackwell entries use the same device ABI on SM100, SM103 and SM107. */
   make_sm100_spec(100, 32, 240),
   make_sm100_spec(100, 64, 65),
   make_sm100_spec(100, 128, 0),
   make_sm100_spec(103, 32, 240),
   make_sm100_spec(103, 64, 65),
   make_sm100_spec(103, 128, 0),
+  make_sm100_spec(107, 32, 240),
+  make_sm100_spec(107, 64, 208),
+  make_sm100_spec(107, 128, 80),
 };
 
 inline std::int32_t spec_target_sm(KernelSpec const& spec)

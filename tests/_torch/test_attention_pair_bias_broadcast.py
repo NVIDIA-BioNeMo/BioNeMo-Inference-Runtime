@@ -685,7 +685,7 @@ def test_cutedsl_layer_matches_sdpa_under_force_cubin(token_dim: int, s_shape: t
     torch.testing.assert_close(actual, expected, atol=5e-2, rtol=5e-2)
 
 
-@pytest.mark.skipif(SM_VERSION not in (100, 103), reason="requires an SM100 or SM103 CUBIN")
+@pytest.mark.skipif(SM_VERSION not in (100, 103, 107), reason="requires an SM100, SM103 or SM107 CUBIN")
 @pytest.mark.parametrize(("head_dim", "mult", "seqlen"), [(32, 4, 35), (48, 5, 129), (64, 5, 384)])
 def test_pairwise_cubin_mult_inner_scheduler(head_dim: int, mult: int, seqlen: int) -> None:
     """The static CUBIN scheduler must decode multiplicity and its parameter bank correctly."""

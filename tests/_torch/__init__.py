@@ -94,7 +94,7 @@ _CUTEDSL_SUPPORTED_SM = (80, 86, 89, 90)
 #   * pairwise_attention        -- left-mask kernels ship Ampere (SM80) +
 #                                 Hopper (SM90) classes with configs for
 #                                 80/86/89/90, and a native Blackwell kernel
-#                                 for SM100/103.
+#                                 for SM100/103/107.
 #   * triangle_attention        -- additionally ships a native Blackwell
 #                                 implementation for SM100/103/107.
 # Add an entry only when an op's kernel support genuinely diverges from the
@@ -108,7 +108,7 @@ _CUTEDSL_OP_SUPPORTED_SM: "dict[str, tuple[int, ...]]" = {
     "dual_gemm_x_x": (80, 86, 89, 90, 100, 103),
     "outer_product_mean": (80, 86, 89, 90, 100, 103),
     "pair_weighted_averaging": (80, 90, 100, 103),
-    "pairwise_attention": (80, 86, 89, 90, 100, 103),
+    "pairwise_attention": (80, 86, 89, 90, 100, 103, 107),
     "triangle_attention": (80, 86, 89, 90, 100, 103, 107),
     "transition_mlp": (80, 86, 89, 90, 100, 103),
 }

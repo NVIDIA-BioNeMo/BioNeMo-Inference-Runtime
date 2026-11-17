@@ -22,8 +22,8 @@ instead.
 Requires the KV-side mask to be left-aligned (``1...1 0...0``). The kernel takes
 one ``actual_s_kv`` count of leading 1s per batch instead of a ``[B, Sk]`` mask.
 
-SM100 and SM103 run the Blackwell FMHA kernel, and the Ampere kernel for short
-sequences, from source or from CUBINs. On both, measured square BF16 problems
+SM100, SM103 and SM107 run the Blackwell FMHA kernel, and the Ampere kernel for short
+sequences, from source or from CUBINs. On each, measured square BF16 problems
 with batch 1 and 16 heads use tuned source kernels when LSE is not requested;
 forced CUBIN and source-free installations keep the general route. A kernel
 library without a matching CUBIN falls back to SDPA.
@@ -89,7 +89,7 @@ __all__ = [
 _DTYPES = (torch.float16, torch.bfloat16)
 # SMs whose CUBINs shipped after earlier kernel libraries: a library without
 # them runs the call on SDPA rather than failing.
-_SDPA_FALLBACK_SMS = frozenset({100, 103})
+_SDPA_FALLBACK_SMS = frozenset({100, 103, 107})
 
 
 class PairwiseAttentionCuTeLeftMaskMetadata(AttentionMetadata):
@@ -287,7 +287,7 @@ class PairwiseAttentionCuTeLeftMask(CuteKernelCache, AttentionBackend[PairwiseAt
         self._last_executable = None
         self._last_abi: str | None = None
         self._last_call: tuple | None = None
-        # The measured SM100/SM103 kernels were tuned for 16 heads.
+        # The measured SM100/SM103/SM107 kernels were tuned for 16 heads.
         self._tunable = self._sm_version in TUNED_SMS and num_heads == 16 and head_dim in TUNED_HEAD_DIMS
         self._last_variant_slot: tuple[tuple, _PairwiseAttentionVariant] | None = None
         self._null_lse: tuple[tuple, torch.Tensor] | None = None
@@ -309,7 +309,7 @@ class PairwiseAttentionCuTeLeftMask(CuteKernelCache, AttentionBackend[PairwiseAt
             variant.bucket,
             variant.kv_packed,
         )
-        # SM100 and SM103 anchors name their kernel, which also sets the
+        # SM100, SM103 and SM107 anchors name their kernel, which also sets the
         # actual_s_kv layout; keying on it and the tile keeps a retuned anchor
         # from reloading a stale kernel.
         if self._sm_version in _SDPA_FALLBACK_SMS:
@@ -461,7 +461,7 @@ class PairwiseAttentionCuTeLeftMask(CuteKernelCache, AttentionBackend[PairwiseAt
         )
 
     def _get_tuned_executable(self, key: tuple, inputs: _PairwiseAttentionLaunchInputs) -> tuple[Any, str]:
-        """Load or compile a measured SM100 or SM103 source kernel and return it with its ABI.
+        """Load or compile a measured SM100, SM103 or SM107 source kernel and return it with its ABI.
 
         Raises ``ImportError`` on a source-free installation.
         """
@@ -623,12 +623,12 @@ class PairwiseAttentionCuTeLeftMask(CuteKernelCache, AttentionBackend[PairwiseAt
             output_lse: Optional ``[B_flat, Sq, H, 1]`` float32 buffer written
                 in place, honored by every kernel.
                 ``None`` or a shape/dtype/device mismatch skips the LSE store,
-                as does the SDPA route on SM100 and SM103 (see below).
+                as does the SDPA route on SM100, SM103 and SM107 (see below).
 
         Returns:
             Output tensor ``[*, Sq, H, D]``.
 
-        On SM100 and SM103, a call that cannot compile the kernel, under
+        On SM100, SM103 and SM107, a call that cannot compile the kernel, under
         ``CUTEDSL_FORCE_CUBIN=1`` or without the sources, runs on SDPA when
         the kernel library predates their CUBINs.
         """

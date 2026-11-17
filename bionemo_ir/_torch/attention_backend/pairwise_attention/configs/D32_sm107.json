@@ -1,0 +1,345 @@
+{
+  "kernel_abi": "sm100",
+  "note": "Measured on Vera Rubin (SM107), 16 heads, bf16, packed QKV. General kernels: Ampere 64x64 S=32-64, Ampere 64x128 S=80-128, Ampere 64x64 S=144-448, Blackwell S=464-4096.",
+  "configs": {
+    "S=32": {
+      "source_variants": {
+        "splitn_1_1_32_true_1": {"kernel": "splitn", "params": [1, 1, 32, true, 1], "mult_ranges": [[1, 5]]},
+        "splitn_2_1_32_true_1": {"kernel": "splitn", "params": [2, 1, 32, true, 1], "mult_ranges": [[6, 7]]},
+        "splitn_2_1_32_true_2": {"kernel": "splitn", "params": [2, 1, 32, true, 2], "mult_ranges": [[8, 15]]}
+      }
+    },
+    "S=48": {
+      "source_variants": {
+        "splitn_1_1_48_true_1_exact": {"kernel": "splitn", "params": [1, 1, 48, true, 1], "mult_ranges": [[1, 3]], "min_sequence": 48},
+        "splitn_1_1_48_false_2_below": {"kernel": "splitn", "params": [1, 1, 48, false, 2], "mult_ranges": [[1, 13]], "max_sequence": 47},
+        "splitn_3_1_48_true_2_exact": {"kernel": "splitn", "params": [3, 1, 48, true, 2], "mult_ranges": [[4, 13]], "min_sequence": 48},
+        "splitn_1_1_48_false_2": {"kernel": "splitn", "params": [1, 1, 48, false, 2], "mult_ranges": [[14, 15]]}
+      }
+    },
+    "S=64": {
+      "kernel_abi": "sm80",
+      "m_block_size": 64,
+      "n_block_size": 64,
+      "num_threads": 128,
+      "swizzle_b": 3,
+      "load_bias_before_gemm": true,
+      "source_variants": {
+        "splitn_1_1_64_true_1_exact": {"kernel": "splitn", "params": [1, 1, 64, true, 1], "mult_ranges": [[1, 1]], "min_sequence": 64},
+        "splitn_1_2_64_false_1_below": {"kernel": "splitn", "params": [1, 2, 64, false, 1], "mult_ranges": [[1, 2]], "max_sequence": 63},
+        "splitn_1_1_64_true_2_exact": {"kernel": "splitn", "params": [1, 1, 64, true, 2], "mult_ranges": [[2, 6]], "min_sequence": 64},
+        "splitn_2_2_64_false_2_below": {"kernel": "splitn", "params": [2, 2, 64, false, 2], "mult_ranges": [[3, 6]], "max_sequence": 63},
+        "splitn_4_1_64_true_2": {"kernel": "splitn", "params": [4, 1, 64, true, 2], "mult_ranges": [[7, 13]]},
+        "splitn_2_1_64_false_2": {"kernel": "splitn", "params": [2, 1, 64, false, 2], "mult_ranges": [[14, 15]]}
+      }
+    },
+    "S=80": {
+      "kernel_abi": "sm80",
+      "m_block_size": 64,
+      "n_block_size": 128,
+      "num_threads": 128,
+      "swizzle_b": 3,
+      "load_bias_before_gemm": true,
+      "source_variants": {
+        "splitn_1_1_80_true_2": {"kernel": "splitn", "params": [1, 1, 80, true, 2], "mult_ranges": [[1, 2], [9, 10]]},
+        "splitn_2_1_80_false_2": {"kernel": "splitn", "params": [2, 1, 80, false, 2], "mult_ranges": [[3, 8], [11, 15]]}
+      }
+    },
+    "S=96": {
+      "source_variants": {
+        "splitn_1_1_96_true_1_exact": {"kernel": "splitn", "params": [1, 1, 96, true, 1], "mult_ranges": [[1, 1]], "min_sequence": 96},
+        "splitn_1_2_96_false_2_below": {"kernel": "splitn", "params": [1, 2, 96, false, 2], "mult_ranges": [[1, 4]], "max_sequence": 95},
+        "splitn_2_1_96_true_2_exact": {"kernel": "splitn", "params": [2, 1, 96, true, 2], "mult_ranges": [[2, 4], [7, 8], [14, 15]], "min_sequence": 96},
+        "splitn_3_1_96_true_2": {"kernel": "splitn", "params": [3, 1, 96, true, 2], "mult_ranges": [[5, 6]]},
+        "splitn_2_2_96_false_1_below": {"kernel": "splitn", "params": [2, 2, 96, false, 1], "mult_ranges": [[7, 15]], "max_sequence": 95},
+        "splitn_3_1_96_true_2_exact": {"kernel": "splitn", "params": [3, 1, 96, true, 2], "mult_ranges": [[9, 13]], "min_sequence": 96}
+      }
+    },
+    "S=112": {
+      "source_variants": {
+        "splitn_1_1_112_true_2": {"kernel": "splitn", "params": [1, 1, 112, true, 2], "mult_ranges": [[1, 1], [7, 7]]},
+        "splitn_2_1_112_false_2": {"kernel": "splitn", "params": [2, 1, 112, false, 2], "mult_ranges": [[2, 6]]},
+        "splitn_2_1_112_false_2_exact": {"kernel": "splitn", "params": [2, 1, 112, false, 2], "mult_ranges": [[8, 15]], "min_sequence": 112},
+        "splitn_1_1_112_false_2_below": {"kernel": "splitn", "params": [1, 1, 112, false, 2], "mult_ranges": [[14, 15]], "max_sequence": 111}
+      }
+    },
+    "S=128": {
+      "kernel_abi": "sm80",
+      "m_block_size": 64,
+      "n_block_size": 128,
+      "num_threads": 128,
+      "swizzle_b": 3,
+      "load_bias_before_gemm": true,
+      "source_variants": {
+        "splitn_2_2_128_true_2": {"kernel": "splitn", "params": [2, 2, 128, true, 2], "mult_ranges": [[1, 3]]},
+        "splitn_4_1_128_true_2_exact": {"kernel": "splitn", "params": [4, 1, 128, true, 2], "mult_ranges": [[4, 15]], "min_sequence": 128},
+        "splitn_2_2_128_false_2_below": {"kernel": "splitn", "params": [2, 2, 128, false, 2], "mult_ranges": [[4, 15]], "max_sequence": 127}
+      }
+    },
+    "S=144": {
+      "kernel_abi": "sm80",
+      "m_block_size": 64,
+      "n_block_size": 64,
+      "num_threads": 128,
+      "swizzle_b": 3,
+      "load_bias_before_gemm": true,
+      "source_variants": {
+        "splitn_1_1_144_true_2_exact": {"kernel": "splitn", "params": [1, 1, 144, true, 2], "mult_ranges": [[1, 2]], "min_sequence": 144},
+        "splitn_3_1_144_true_2_exact": {"kernel": "splitn", "params": [3, 1, 144, true, 2], "mult_ranges": [[3, 4], [6, 8], [11, 13]], "min_sequence": 144},
+        "splitn_2_1_144_false_2_exact": {"kernel": "splitn", "params": [2, 1, 144, false, 2], "mult_ranges": [[5, 5]], "min_sequence": 144},
+        "splitn_2_1_144_false_2": {"kernel": "splitn", "params": [2, 1, 144, false, 2], "mult_ranges": [[9, 10]]},
+        "splitn_2_1_144_false_1_exact": {"kernel": "splitn", "params": [2, 1, 144, false, 1], "mult_ranges": [[14, 15]], "min_sequence": 144}
+      }
+    },
+    "S=160": {
+      "source_variants": {
+        "splitn_2_2_160_true_2_exact": {"kernel": "splitn", "params": [2, 2, 160, true, 2], "mult_ranges": [[1, 2], [11, 13]], "min_sequence": 160},
+        "splitn_2_2_160_false_1_below": {"kernel": "splitn", "params": [2, 2, 160, false, 1], "mult_ranges": [[1, 15]], "max_sequence": 159},
+        "splitn_4_1_160_false_2_exact": {"kernel": "splitn", "params": [4, 1, 160, false, 2], "mult_ranges": [[3, 4]], "min_sequence": 160},
+        "splitn_2_1_160_true_2_exact": {"kernel": "splitn", "params": [2, 1, 160, true, 2], "mult_ranges": [[5, 7]], "min_sequence": 160},
+        "splitn_2_1_160_false_1_exact": {"kernel": "splitn", "params": [2, 1, 160, false, 1], "mult_ranges": [[8, 10], [14, 15]], "min_sequence": 160}
+      }
+    },
+    "S=176": {
+      "source_variants": {
+        "splitn_2_1_176_false_2_exact": {"kernel": "splitn", "params": [2, 1, 176, false, 2], "mult_ranges": [[1, 6]], "min_sequence": 176},
+        "splitn_2_1_176_false_1_exact": {"kernel": "splitn", "params": [2, 1, 176, false, 1], "mult_ranges": [[7, 12]], "min_sequence": 176}
+      }
+    },
+    "S=192": {
+      "source_variants": {
+        "splitn_2_2_192_false_2": {"kernel": "splitn", "params": [2, 2, 192, false, 2], "mult_ranges": [[1, 2]]},
+        "splitn_3_1_192_true_2_exact": {"kernel": "splitn", "params": [3, 1, 192, true, 2], "mult_ranges": [[3, 3]], "min_sequence": 192},
+        "splitn_2_2_192_false_2_below": {"kernel": "splitn", "params": [2, 2, 192, false, 2], "mult_ranges": [[3, 7], [9, 9]], "max_sequence": 191},
+        "splitn_4_1_192_false_2_exact": {"kernel": "splitn", "params": [4, 1, 192, false, 2], "mult_ranges": [[4, 4]], "min_sequence": 192},
+        "splitn_3_1_192_true_1_exact": {"kernel": "splitn", "params": [3, 1, 192, true, 1], "mult_ranges": [[5, 6]], "min_sequence": 192},
+        "splitn_4_1_192_false_1_exact": {"kernel": "splitn", "params": [4, 1, 192, false, 1], "mult_ranges": [[7, 15]], "min_sequence": 192}
+      }
+    },
+    "S=208": {
+      "source_variants": {
+        "splitn_1_1_208_true_2_exact": {"kernel": "splitn", "params": [1, 1, 208, true, 2], "mult_ranges": [[1, 4]], "min_sequence": 208},
+        "splitn_2_1_208_false_2_exact": {"kernel": "splitn", "params": [2, 1, 208, false, 2], "mult_ranges": [[5, 15]], "min_sequence": 208}
+      }
+    },
+    "S=224": {
+      "source_variants": {
+        "splitn_2_2_224_true_2_exact": {"kernel": "splitn", "params": [2, 2, 224, true, 2], "mult_ranges": [[1, 1]], "min_sequence": 224},
+        "splitn_2_2_224_false_1_below": {"kernel": "splitn", "params": [2, 2, 224, false, 1], "mult_ranges": [[1, 5], [7, 8], [10, 11], [14, 15]], "max_sequence": 223},
+        "splitn_4_1_224_false_2_exact": {"kernel": "splitn", "params": [4, 1, 224, false, 2], "mult_ranges": [[2, 3]], "min_sequence": 224},
+        "splitn_4_1_224_false_1_exact": {"kernel": "splitn", "params": [4, 1, 224, false, 1], "mult_ranges": [[4, 6], [8, 9], [12, 13]], "min_sequence": 224},
+        "splitn_2_1_224_false_1_exact": {"kernel": "splitn", "params": [2, 1, 224, false, 1], "mult_ranges": [[7, 7], [10, 11], [14, 15]], "min_sequence": 224}
+      }
+    },
+    "S=240": {
+      "source_variants": {
+        "splitn_1_1_240_true_2_exact": {"kernel": "splitn", "params": [1, 1, 240, true, 2], "mult_ranges": [[1, 1]], "min_sequence": 240},
+        "splitn_3_1_240_true_2_exact": {"kernel": "splitn", "params": [3, 1, 240, true, 2], "mult_ranges": [[2, 2], [7, 7]], "min_sequence": 240},
+        "splitn_2_1_240_false_2_exact": {"kernel": "splitn", "params": [2, 1, 240, false, 2], "mult_ranges": [[3, 3]], "min_sequence": 240},
+        "splitn_3_1_240_true_1_exact": {"kernel": "splitn", "params": [3, 1, 240, true, 1], "mult_ranges": [[4, 5], [10, 10], [14, 15]], "min_sequence": 240},
+        "splitn_2_1_240_false_1_exact": {"kernel": "splitn", "params": [2, 1, 240, false, 1], "mult_ranges": [[6, 6]], "min_sequence": 240}
+      }
+    },
+    "S=256": {
+      "source_variants": {
+        "splitn_2_2_256_true_2": {"kernel": "splitn", "params": [2, 2, 256, true, 2], "mult_ranges": [[1, 1]]},
+        "splitn_4_1_256_true_2_exact": {"kernel": "splitn", "params": [4, 1, 256, true, 2], "mult_ranges": [[2, 3]], "min_sequence": 256},
+        "splitn_4_2_256_false_1_below": {"kernel": "splitn", "params": [4, 2, 256, false, 1], "mult_ranges": [[2, 3]], "max_sequence": 255},
+        "splitn_2_2_256_true_1": {"kernel": "splitn", "params": [2, 2, 256, true, 1], "mult_ranges": [[4, 4]]},
+        "splitn_4_1_256_true_1_exact": {"kernel": "splitn", "params": [4, 1, 256, true, 1], "mult_ranges": [[5, 15]], "min_sequence": 256}
+      }
+    },
+    "S=272": {
+      "source_variants": {
+        "splitn_1_1_272_true_2_exact": {"kernel": "splitn", "params": [1, 1, 272, true, 2], "mult_ranges": [[1, 3]], "min_sequence": 272}
+      }
+    },
+    "S=288": {
+      "source_variants": {
+        "splitn_2_2_288_true_2": {"kernel": "splitn", "params": [2, 2, 288, true, 2], "mult_ranges": [[1, 1]]},
+        "splitn_3_1_288_true_2_exact": {"kernel": "splitn", "params": [3, 1, 288, true, 2], "mult_ranges": [[2, 2]], "min_sequence": 288},
+        "splitn_3_2_288_false_2_below": {"kernel": "splitn", "params": [3, 2, 288, false, 2], "mult_ranges": [[2, 2]], "max_sequence": 287},
+        "splitn_2_2_288_false_1": {"kernel": "splitn", "params": [2, 2, 288, false, 1], "mult_ranges": [[3, 4]]},
+        "splitn_4_1_288_false_2_exact": {"kernel": "splitn", "params": [4, 1, 288, false, 2], "mult_ranges": [[5, 5]], "min_sequence": 288},
+        "splitn_2_2_288_false_1_exact": {"kernel": "splitn", "params": [2, 2, 288, false, 1], "mult_ranges": [[6, 9], [11, 14]], "min_sequence": 288},
+        "splitn_2_2_288_false_2_below": {"kernel": "splitn", "params": [2, 2, 288, false, 2], "mult_ranges": [[8, 8], [11, 13]], "max_sequence": 287}
+      }
+    },
+    "S=304": {
+      "source_variants": {
+        "splitn_1_1_304_true_2_exact": {"kernel": "splitn", "params": [1, 1, 304, true, 2], "mult_ranges": [[1, 1]], "min_sequence": 304}
+      }
+    },
+    "S=320": {
+      "source_variants": {
+        "splitn_2_2_320_true_2": {"kernel": "splitn", "params": [2, 2, 320, true, 2], "mult_ranges": [[1, 1]]},
+        "splitn_4_2_320_true_1": {"kernel": "splitn", "params": [4, 2, 320, true, 1], "mult_ranges": [[2, 2]]},
+        "splitn_2_2_320_false_1": {"kernel": "splitn", "params": [2, 2, 320, false, 1], "mult_ranges": [[3, 3]]}
+      }
+    },
+    "S=336": {
+      "source_variants": {
+        "splitn_3_1_336_true_2_exact": {"kernel": "splitn", "params": [3, 1, 336, true, 2], "mult_ranges": [[1, 1]], "min_sequence": 336}
+      }
+    },
+    "S=352": {
+      "source_variants": {
+        "splitn_2_2_352_true_2": {"kernel": "splitn", "params": [2, 2, 352, true, 2], "mult_ranges": [[1, 1]]},
+        "splitn_2_2_352_false_1": {"kernel": "splitn", "params": [2, 2, 352, false, 1], "mult_ranges": [[2, 3]]},
+        "splitn_2_2_352_false_1_exact": {"kernel": "splitn", "params": [2, 2, 352, false, 1], "mult_ranges": [[7, 7], [9, 10]], "min_sequence": 352}
+      }
+    },
+    "S=384": {
+      "source_variants": {
+        "splitn_2_2_384_true_2": {"kernel": "splitn", "params": [2, 2, 384, true, 2], "mult_ranges": [[1, 1]]},
+        "splitn_4_2_384_true_1": {"kernel": "splitn", "params": [4, 2, 384, true, 1], "mult_ranges": [[2, 2]]},
+        "splitn_2_2_384_false_1": {"kernel": "splitn", "params": [2, 2, 384, false, 1], "mult_ranges": [[3, 3]]},
+        "splitn_2_2_384_false_1_exact": {"kernel": "splitn", "params": [2, 2, 384, false, 1], "mult_ranges": [[4, 5]], "min_sequence": 384},
+        "tensor_bias_true_exact": {"kernel": "tensor_bias", "params": [true], "mult_ranges": [[9, 15]], "min_sequence": 384}
+      }
+    },
+    "S=416": {
+      "source_variants": {
+        "splitn_2_2_416_true_2": {"kernel": "splitn", "params": [2, 2, 416, true, 2], "mult_ranges": [[1, 1]]},
+        "splitn_2_2_416_false_1": {"kernel": "splitn", "params": [2, 2, 416, false, 1], "mult_ranges": [[2, 4]]},
+        "tensor_bias_true": {"kernel": "tensor_bias", "params": [true], "mult_ranges": [[6, 6], [8, 15]]}
+      }
+    },
+    "S=432": {
+      "source_variants": {
+        "native_true_2_true_exact": {"kernel": "native", "params": [true, 2, true], "mult_ranges": [[1, 1]], "min_sequence": 432},
+        "tensor_bias_true": {"kernel": "tensor_bias", "params": [true], "mult_ranges": [[6, 6], [9, 10], [12, 15]]}
+      }
+    },
+    "S=448": {
+      "kernel_abi": "sm80",
+      "m_block_size": 64,
+      "n_block_size": 64,
+      "num_threads": 128,
+      "swizzle_b": 3,
+      "load_bias_before_gemm": true,
+      "source_variants": {
+        "splitn_2_2_448_false_1_exact": {"kernel": "splitn", "params": [2, 2, 448, false, 1], "mult_ranges": [[1, 4]], "min_sequence": 448},
+        "splitn_2_2_448_false_2_below": {"kernel": "splitn", "params": [2, 2, 448, false, 2], "mult_ranges": [[1, 2]], "max_sequence": 447},
+        "tensor_bias_true": {"kernel": "tensor_bias", "params": [true], "mult_ranges": [[6, 6], [8, 10], [12, 15]]},
+        "tensor_bias_true_exact": {"kernel": "tensor_bias", "params": [true], "mult_ranges": [[11, 11]], "min_sequence": 448}
+      }
+    },
+    "S=464": {
+      "kernel_abi": "sm100",
+      "source_variants": {
+        "native_true_2_true": {"kernel": "native", "params": [true, 2, true], "mult_ranges": [[1, 1]]},
+        "native_false_2_true_exact": {"kernel": "native", "params": [false, 2, true], "mult_ranges": [[2, 3]], "min_sequence": 464}
+      }
+    },
+    "S=480": {
+      "source_variants": {
+        "splitn_3_2_480_true_1": {"kernel": "splitn", "params": [3, 2, 480, true, 1], "mult_ranges": [[1, 1]]},
+        "splitn_2_2_480_false_1_exact": {"kernel": "splitn", "params": [2, 2, 480, false, 1], "mult_ranges": [[2, 3]], "min_sequence": 480}
+      }
+    },
+    "S=496": {
+      "source_variants": {
+        "native_true_2_true": {"kernel": "native", "params": [true, 2, true], "mult_ranges": [[1, 1]]},
+        "native_false_2_true_exact": {"kernel": "native", "params": [false, 2, true], "mult_ranges": [[2, 3]], "min_sequence": 496}
+      }
+    },
+    "S=512": {
+      "source_variants": {
+        "splitn_4_2_512_true_1": {"kernel": "splitn", "params": [4, 2, 512, true, 1], "mult_ranges": [[1, 1]]},
+        "splitn_2_2_512_true_1_exact": {"kernel": "splitn", "params": [2, 2, 512, true, 1], "mult_ranges": [[2, 3]], "min_sequence": 512}
+      }
+    },
+    "S=576": {
+      "source_variants": {
+        "native_true_2_true": {"kernel": "native", "params": [true, 2, true], "mult_ranges": [[1, 1]]}
+      }
+    },
+    "S=640": {
+      "source_variants": {
+        "native_true_2_true": {"kernel": "native", "params": [true, 2, true], "mult_ranges": [[1, 1]]}
+      }
+    },
+    "S=768": {
+      "source_variants": {
+        "native_true_2_true": {"kernel": "native", "params": [true, 2, true], "mult_ranges": [[1, 1]]},
+        "native_true_0_true_below": {"kernel": "native", "params": [true, 0, true], "mult_ranges": [[2, 2]], "max_sequence": 767}
+      }
+    },
+    "S=896": {
+      "source_variants": {
+        "native_true_0_true": {"kernel": "native", "params": [true, 0, true], "mult_ranges": [[1, 1]]}
+      }
+    },
+    "S=1024": {
+      "source_variants": {
+        "native_true_0_true": {"kernel": "native", "params": [true, 0, true], "mult_ranges": [[1, 1]]}
+      }
+    },
+    "S=1152": {
+      "source_variants": {
+        "native_true_0_true": {"kernel": "native", "params": [true, 0, true], "mult_ranges": [[1, 1]]},
+        "tensor_bias_false_exact": {"kernel": "tensor_bias", "params": [false], "mult_ranges": [[8, 8]], "min_sequence": 1152}
+      }
+    },
+    "S=1280": {
+      "source_variants": {
+        "native_true_0_true": {"kernel": "native", "params": [true, 0, true], "mult_ranges": [[1, 1]]},
+        "tensor_bias_false_exact": {"kernel": "tensor_bias", "params": [false], "mult_ranges": [[6, 6]], "min_sequence": 1280}
+      }
+    },
+    "S=1536": {
+      "source_variants": {
+        "native_true_0_true": {"kernel": "native", "params": [true, 0, true], "mult_ranges": [[1, 1]]}
+      }
+    },
+    "S=1792": {
+      "source_variants": {
+        "native_false_0": {"kernel": "native", "params": [false, 0], "mult_ranges": [[1, 1]]},
+        "native_true_2": {"kernel": "native", "params": [true, 2], "mult_ranges": [[2, 2]]}
+      }
+    },
+    "S=2048": {
+      "source_variants": {
+        "native_false_0": {"kernel": "native", "params": [false, 0], "mult_ranges": [[1, 1]]},
+        "native_true_0_true": {"kernel": "native", "params": [true, 0, true], "mult_ranges": [[2, 2]]},
+        "tensor_bias_false_exact": {"kernel": "tensor_bias", "params": [false], "mult_ranges": [[10, 10]], "min_sequence": 2048}
+      }
+    },
+    "S=2304": {
+      "source_variants": {
+        "native_false_0": {"kernel": "native", "params": [false, 0], "mult_ranges": [[1, 1]]},
+        "native_true_0_true": {"kernel": "native", "params": [true, 0, true], "mult_ranges": [[2, 2]]},
+        "native_false_2": {"kernel": "native", "params": [false, 2], "mult_ranges": [[3, 3]]}
+      }
+    },
+    "S=2560": {
+      "source_variants": {
+        "native_false_0": {"kernel": "native", "params": [false, 0], "mult_ranges": [[1, 1]]},
+        "native_true_2": {"kernel": "native", "params": [true, 2], "mult_ranges": [[2, 2]]}
+      }
+    },
+    "S=2816": {
+      "source_variants": {
+        "native_false_0_true": {"kernel": "native", "params": [false, 0, true], "mult_ranges": [[1, 1]]}
+      }
+    },
+    "S=3072": {
+      "source_variants": {
+        "native_false_0_true": {"kernel": "native", "params": [false, 0, true], "mult_ranges": [[1, 1]]}
+      }
+    },
+    "S=3584": {
+      "source_variants": {
+        "native_true_2_true": {"kernel": "native", "params": [true, 2, true], "mult_ranges": [[1, 2]]}
+      }
+    },
+    "S=4096": {
+      "source_variants": {
+        "native_true_2_true": {"kernel": "native", "params": [true, 2, true], "mult_ranges": [[1, 1]]},
+        "native_true_2_true_exact": {"kernel": "native", "params": [true, 2, true], "mult_ranges": [[2, 2]], "min_sequence": 4096},
+        "native_false_0_below": {"kernel": "native", "params": [false, 0], "mult_ranges": [[2, 2]], "max_sequence": 4095}
+      }
+    }
+  }
+}

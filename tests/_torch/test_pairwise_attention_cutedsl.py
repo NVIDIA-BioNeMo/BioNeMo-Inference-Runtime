@@ -52,7 +52,7 @@ pytestmark = skip_cutedsl_for("pairwise_attention")
 
 FORCE_CUBIN_ENV = pw_cutedsl.FORCE_CUBIN_ENV
 _SOURCE_MODULE = "bionemo_ir._torch.attention_backend.pairwise_attention._source"
-_BLACKWELL = SM_VERSION in (100, 103)
+_BLACKWELL = SM_VERSION in (100, 103, 107)
 _MODES = cutedsl_test_modes(_SOURCE_MODULE)
 _HEAD_DIMS = (32, 48, 64)
 loud_on_missing_cubin = pytest.mark.skipif(
@@ -77,7 +77,7 @@ def _library_misses_a_tuned_image() -> bool:
 
 
 def _require_blackwell_cubins() -> None:
-    """Skip a CUBIN run on SM100/SM103 when the kernel library predates their images: it runs SDPA there."""
+    """Skip a CUBIN run on SM100/SM103/SM107 when the kernel library predates their images: it runs SDPA there."""
     if _BLACKWELL and _library_misses_a_tuned_image():
         pytest.skip(f"this kernel library has no pairwise-attention CUBIN for every SM{SM_VERSION} anchor yet")
 
@@ -254,7 +254,7 @@ def test_rectangular_and_broadcast_batch(
 ) -> None:
     """Sq != Sk with mult > 1: the bias and actual_s_kv broadcast over mult.
 
-    The D=48 cases sit past the SM100 crossover, so on SM100 and SM103 they run the Blackwell kernel.
+    The D=48 cases sit past the SM100 crossover, so on SM100, SM103 and SM107 they run the Blackwell kernel.
     """
     if head_dim not in _tuned_head_dims():
         pytest.skip(f"no tuned D{head_dim} config for SM{SM_VERSION}")
@@ -270,7 +270,7 @@ def test_rectangular_and_broadcast_batch(
         assert variant.kernel_abi == "sm100"
 
 
-@pytest.mark.parametrize("sm", [100, 103])
+@pytest.mark.parametrize("sm", [100, 103, 107])
 @pytest.mark.parametrize("head_dim", _HEAD_DIMS)
 def test_blackwell_anchors_name_their_kernel(sm: int, head_dim: int) -> None:
     """Short sequences take the Ampere kernel; long ones the Blackwell kernel."""
@@ -343,7 +343,7 @@ def _tuned_calls(head_dim: int) -> dict[tuple, tuple[int, int, tuple]]:
 
 
 @pytest.mark.skipif(
-    not _BLACKWELL or "source" not in _MODES, reason="the measured kernels run from source on SM100/SM103"
+    not _BLACKWELL or "source" not in _MODES, reason="the measured kernels run from source on SM100/SM103/SM107"
 )
 @pytest.mark.parametrize("head_dim", pw_config.TUNED_HEAD_DIMS)
 def test_measured_kernels_match_the_reference(monkeypatch: pytest.MonkeyPatch, head_dim: int) -> None:
@@ -367,7 +367,7 @@ def test_measured_kernels_match_the_reference(monkeypatch: pytest.MonkeyPatch, h
         torch.testing.assert_close(actual.float(), expected.float(), atol=_ATOL[torch.bfloat16], rtol=1e-2)
 
 
-@pytest.mark.skipif(not _BLACKWELL, reason="the Blackwell pairwise kernel runs on SM100 and SM103")
+@pytest.mark.skipif(not _BLACKWELL, reason="the Blackwell pairwise kernel runs on SM100, SM103 and SM107")
 @pytest.mark.parametrize(
     ("head_dim", "seqlen"),
     [
@@ -406,7 +406,9 @@ def test_blackwell_kernel_serves_the_diffusion_token_shape(
     assert all(torch.equal(outputs[0], output) for output in outputs[1:])
 
 
-@pytest.mark.skipif(not _BLACKWELL, reason="only SM100 and SM103 fall back to SDPA on a library without their CUBINs")
+@pytest.mark.skipif(
+    not _BLACKWELL, reason="only SM100, SM103 and SM107 fall back to SDPA on a library without their CUBINs"
+)
 @pytest.mark.parametrize("graph", [False, True], ids=["eager", "graph"])
 @pytest.mark.parametrize("cause", ["force_cubin", "no_sources"])
 @pytest.mark.parametrize(("batch", "mult", "head_dim", "seqlen"), [(1, 5, 48, 959), (2, 5, 48, 301), (2, 1, 24, 200)])
@@ -414,7 +416,7 @@ def test_call_without_a_kernel_takes_sdpa(
     monkeypatch: pytest.MonkeyPatch, graph: bool, cause: str, batch: int, mult: int, head_dim: int, seqlen: int
 ) -> None:
     """Model tests set CUTEDSL_FORCE_CUBIN after building their layers, and a source-free build has no kernel to
-    compile. A kernel library built before the SM100 and SM103 CUBINs shipped cannot load one either, so the call
+    compile. A kernel library built before the SM100, SM103 and SM107 CUBINs shipped cannot load one either, so the call
     runs on SDPA instead of raising: eagerly and under graph capture."""
     num_heads = 4
     backend = PairwiseAttentionCuTeLeftMask(0, num_heads, head_dim, num_kv_heads=num_heads)
@@ -464,7 +466,7 @@ def test_an_empty_prefix_attends_to_nothing(
     finite mask value fails this in float16, where it is too small to swamp the scores.
     """
     if route == "sdpa" and not _BLACKWELL:
-        pytest.skip("only SM100 and SM103 fall back to SDPA on a library without their CUBINs")
+        pytest.skip("only SM100, SM103 and SM107 fall back to SDPA on a library without their CUBINs")
     num_heads, batch, mult, seqlen = 4, 2, 2, 200
     q, k, v, pair_bias, actual_s_kv = _make_inputs(batch, mult, seqlen, seqlen, num_heads, head_dim, dtype, False)
     actual_s_kv = torch.tensor([0, 77], dtype=torch.int32, device=q.device)
@@ -487,7 +489,9 @@ def test_an_empty_prefix_attends_to_nothing(
     torch.testing.assert_close(actual[mult:].float(), expected[mult:].float(), atol=_ATOL[dtype], rtol=1e-2)
 
 
-@pytest.mark.skipif(not _BLACKWELL, reason="only SM100 and SM103 fall back to SDPA on a library without their CUBINs")
+@pytest.mark.skipif(
+    not _BLACKWELL, reason="only SM100, SM103 and SM107 fall back to SDPA on a library without their CUBINs"
+)
 @pytest.mark.parametrize(
     "fault",
     [
@@ -586,11 +590,11 @@ def test_force_cubin_takes_the_library_path_with_sources_present(monkeypatch):
 @pytest.mark.skipif(not source_module_available(_SOURCE_MODULE), reason="the CuTeDSL kernel sources are not installed")
 @pytest.mark.parametrize("library", ["installed", "without_this_sm"])
 def test_forcing_cubins_after_a_source_call_loads_the_cubin(monkeypatch: pytest.MonkeyPatch, library: str) -> None:
-    """Model tests set CUTEDSL_FORCE_CUBIN after their layers ran: the next call loads the CUBIN, or on SM100/SM103
+    """Model tests set CUTEDSL_FORCE_CUBIN after their layers ran: the next call loads the CUBIN, or on SM100/SM103/SM107
     runs a pre-mult-inner CUBIN or SDPA from a library without current images, rather than reuse the source
     executable. Clearing the switch, caches kept, runs the source executable again."""
     if library == "without_this_sm" and not _BLACKWELL:
-        pytest.skip("only SM100 and SM103 fall back to SDPA on a library without their CUBINs")
+        pytest.skip("only SM100, SM103 and SM107 fall back to SDPA on a library without their CUBINs")
     monkeypatch.delenv(FORCE_CUBIN_ENV, raising=False)
     monkeypatch.setattr(PairwiseAttentionCuTeLeftMask, "_compiled_cache", {})
     head_dim = _tuned_head_dims()[0]

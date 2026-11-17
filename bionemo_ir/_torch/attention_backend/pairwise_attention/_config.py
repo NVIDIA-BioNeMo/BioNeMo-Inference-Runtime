@@ -80,7 +80,7 @@ def _general_tile(entry: dict[str, Any]) -> dict[str, Any] | None:
 
 
 # The measured source kernels exist for these targets only.
-TUNED_SMS = (100, 103)
+TUNED_SMS = (100, 103, 107)
 TUNED_HEAD_DIMS = (32, 48, 64)
 _TUNED_FAMILIES = ("splitn", "native", "tensor_bias")
 
@@ -145,6 +145,9 @@ def _parse_tuned_variant(anchor: int, variant: Any) -> _TunedVariant:
     key = (family, *params)
     if family == "splitn" and (len(key) < 5 or type(key[3]) is not int or type(key[4]) is not bool):
         raise ValueError("invalid SplitN tile or full-tiles flag")
+    # Full tiles also skip the query-row mask, so the length must fill whole 16 * wm row tiles.
+    if family == "splitn" and key[4] and (type(key[1]) is not int or key[3] % (16 * key[1])):
+        raise ValueError(f"SplitN full tiles need tile_n divisible by 16 * wm; got {params}")
     # A variant may be faster on only one side of its tuning anchor.
     min_sequence = variant.get("min_sequence", 1)
     max_sequence = variant.get("max_sequence")
@@ -194,7 +197,7 @@ def _tuned_table(sm_version: int, head_dim: int) -> _TunedTable:
 
 
 def tuned_key(mult: int, head_dim: int, seqlen: int, sm_version: int = 100) -> _ResolvedKey | None:
-    """Select the measured SM100 or SM103 source kernel for ``mult`` rows of length ``seqlen``.
+    """Select the measured SM100, SM103 or SM107 source kernel for ``mult`` rows of length ``seqlen``.
 
     An anchor's ``source_variants`` name a kernel per range of multiplicities.
     Returns ``None`` where no measured kernel applies, so the general kernel runs.
@@ -265,7 +268,7 @@ def _anchor_kernel_abi(bundle: KernelConfigBundle, tile_params: dict[str, Any]) 
 def get_bucket_kernel_abi(sm_version: int, head_dim: int, bucket: int) -> str:
     """Return the kernel ABI that serves the tuned ``S=<bucket>`` anchor.
 
-    An anchor may name its own ``kernel_abi``: on SM100 and SM103 short
+    An anchor may name its own ``kernel_abi``: on SM100, SM103 and SM107 short
     sequences run the Ampere kernel, whose smaller tiles pad less than the
     Blackwell kernel's 256-row work items.
     """

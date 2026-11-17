@@ -370,7 +370,7 @@ constexpr KernelSpecSM100 make_sm100_spec(std::int32_t target_sm, std::int32_t h
  * configuration in configs/pairwise_attention. Dtype and packed output select
  * distinct CUBINs but do not change launch geometry.
  */
-inline std::array<KernelSpec, 42> const kKernelSpecs = {
+inline std::array<KernelSpec, 60> const kKernelSpecs = {
   /* SM80 */
   make_sm80_spec(80, 32, 0, 128, 128, 128),
   make_sm80_spec(80, 32, 512, 128, 128, 128),
@@ -403,7 +403,7 @@ inline std::array<KernelSpec, 42> const kKernelSpecs = {
   make_sm90_spec(64, 0, 64, 64, 7, 1),
   make_sm90_spec(64, 512, 64, 128, 7, 0),
 
-  /* SM100 and SM103 take the Ampere ABI below each head dimension's
+  /* SM100, SM103, and SM107 take the Ampere ABI below each head dimension's
    * Blackwell anchor, where its 64-row tiles pad less than a 256-row
    * Blackwell work item.
    */
@@ -418,8 +418,23 @@ inline std::array<KernelSpec, 42> const kKernelSpecs = {
   make_sm80_spec(103, 48, 176, 64, 64, 128),
   make_sm80_spec(103, 48, 304, 64, 64, 128),
   make_sm80_spec(103, 64, 512, 64, 128, 128),
+  make_sm80_spec(107, 32, 64, 64, 64, 128),
+  make_sm80_spec(107, 32, 80, 64, 128, 128),
+  make_sm80_spec(107, 32, 128, 64, 128, 128),
+  make_sm80_spec(107, 32, 144, 64, 64, 128),
+  make_sm80_spec(107, 32, 448, 64, 64, 128),
+  make_sm80_spec(107, 48, 32, 64, 64, 128),
+  make_sm80_spec(107, 48, 64, 64, 64, 128),
+  make_sm80_spec(107, 48, 320, 64, 64, 128),
+  make_sm80_spec(107, 48, 336, 64, 64, 128),
+  make_sm80_spec(107, 48, 368, 64, 64, 128),
+  make_sm80_spec(107, 64, 64, 64, 64, 128),
+  make_sm80_spec(107, 64, 80, 64, 128, 128),
+  make_sm80_spec(107, 64, 128, 64, 128, 128),
+  make_sm80_spec(107, 64, 144, 64, 64, 128),
+  make_sm80_spec(107, 64, 352, 64, 64, 128),
 
-  /* Native Blackwell entries use the same device ABI on SM100 and SM103. */
+  /* Native Blackwell entries use the same device ABI on SM100, SM103, and SM107. */
   make_sm100_spec(100, 32, 1152),
   make_sm100_spec(100, 48, 352),
   make_sm100_spec(100, 64, 640),
@@ -427,6 +442,9 @@ inline std::array<KernelSpec, 42> const kKernelSpecs = {
   make_sm100_spec(103, 48, 240),
   make_sm100_spec(103, 48, 346),
   make_sm100_spec(103, 64, 640),
+  make_sm100_spec(107, 32, 464),
+  make_sm100_spec(107, 48, 384),
+  make_sm100_spec(107, 64, 368),
 };
 
 inline std::int32_t spec_target_sm(KernelSpec const& spec)

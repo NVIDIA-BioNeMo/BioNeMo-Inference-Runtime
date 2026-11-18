@@ -127,8 +127,14 @@ Do **not**:
 
 - Build a `BaseConfig` by hand
 - Copy OSS dtypes or attention backends onto BioIR
-- Pass `engine_kwargs["config"]` or `config=` unless it is
-  exactly that constructor default
+- Pass a config that changes fields beyond the documented model-profile
+  overrides or an eager arm's `disable_cuda_graphs()`
+
+For a profile's input-parity, recycle-lock, or approximate-option override,
+derive the official pretrained config, change only the documented fields,
+pass it through `engine_kwargs["config"]` (or module `config=`), and record
+the delta in `bench_config.json`. Approximate options also require the paired
+exact arm and fidelity report in [SKILL.md](SKILL.md#approximate-options).
 
 That default config carries the CUDA-graph policies ([below](#cuda-graphs)).
 An eager arm's `disable_cuda_graphs()` is the one permitted graph change.

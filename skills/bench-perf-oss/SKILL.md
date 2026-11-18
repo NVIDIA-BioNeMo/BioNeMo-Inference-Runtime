@@ -15,20 +15,9 @@
 # limitations under the License.
 name: bench-perf-oss
 description: >-
-  Benchmark BioIR against an OSS model's e2e path for folding
-  models, measuring model.forward() latency and GPU use on a bench
-  set the shipped script rebuilds from RCSB and the MSA NIM — no
-  dataset release to download. Serial:
-  one sample per processor() call. Score written CIFs with
-  OpenStructure lDDT and DockQ on every supported protein interface;
-  record an explicit applicability status on every sample.
-  Uses serial build_processor on every current folding key
-  (Boltz-1/2, OpenFold2 / AlphaFold2, OpenFold3, protenix-v2); each
-  side featurizes itself. Every sample
-  must load its bundled MSAs and templates when any exist, on both
-  sides or neither. Use when comparing
-  BioIR vs OSS folding performance. Do not use as-is for affinity
-  or other non-folding heads — extend the skill first.
+  Compare BioIR vs OSS folding performance: model.forward() latency,
+  GPU use, lDDT and DockQ with matched inputs. Use for benchmark setup,
+  execution or audits; excludes affinity heads and Ray throughput.
 license: Apache-2.0
 metadata:
   author: NVIDIA Corporation
@@ -41,10 +30,9 @@ config, per-sample `model.forward()` latency + GPU artifacts, OpenStructure
 lDDT and DockQ vs `benchmarks/dataset/ground_truth/`,
 comparison report.
 
-This file routes the work: scope, the mandatory gates, and what each phase
-hands to the next. The procedure for each phase is in
-[workflow.md](workflow.md), and the rules behind it are in the references
-listed below. Open a reference when its phase starts, not up front.
+This file defines scope, mandatory gates, and phase handoffs. Follow
+[workflow.md](workflow.md) for procedures; open references when their phase
+starts.
 
 This is v1 for **structure folding** only (keys with a coordinate
 head: Boltz-1/2, OpenFold2 / AlphaFold2, OpenFold3, `protenix-v2`).
@@ -52,27 +40,20 @@ The **headline** compared numbers are GPU-synced `model.forward()`
 time and GPU memory. Parse, tokenize, featurize, H2D, postprocess,
 write, and scoring are **outside** the timing window.
 
-**Two required quality metrics**, neither a substitute for latency
-and neither a substitute for the other: OpenStructure lDDT on every
-sample, and DockQ on every supported protein-protein or
-protein-small-molecule complex. Every row records DockQ applicability;
-DockQ 2.1.3 does not support RNA/DNA interfaces. lDDT scores the whole
-structure, DockQ scores the interfaces, so a complex can post a
-respectable lDDT while docking its chains wrongly. See
+**Both quality metrics are required:** OpenStructure lDDT on every sample,
+and DockQ on supported protein-protein or protein-small-molecule complexes.
+Every row records DockQ applicability; DockQ 2.1.3 does not support RNA/DNA
+interfaces. Whole-structure lDDT and interface DockQ answer different questions.
+See
 [measurement.md](measurement.md#quality-lddt-and-dockq).
 
 Do not run this playbook unchanged on a non-folding key
 (`boltz-2-affinity`, or anything whose output is not a structure).
 See [Other model kinds](#other-model-kinds).
 
-**Templates on both sides or neither.** Template-bearing spec items
-are in scope, and their templates get attached. A side that silently
-failed to attach them still predicts — just from less evidence — so
-the row looks valid while the structure, and its lDDT, answer a
-different question. Where a model sizes its template tensors by
-template count, latency diverges too. The two stacks may want
-templates in different forms, so follow the pinned model profile and
-verify attachment on the featurized batch on both sides before timing. See
+**Templates on both sides or neither.** Retain template-bearing spec items
+and verify attachment on both featurized batches before timing; missing
+templates change both quality and workload. Follow the model profile and
 [samples.md](samples.md#templates-are-in).
 
 **Serial, one sample per call.** `executor_backend=None`. Feed
@@ -172,24 +153,14 @@ claim a complete bench.
 1. **Config parity is locked first.** Write
    `$WORKDIR/ref_data/bench_config.json` before Phase 4. Recycling,
    sampling, diffusion samples, precision, seed, and GPU id must match.
-1. **BioIR uses the default model constructor.** With no config,
-   each class uses `get_pretrained_config(self.model_name)`.
-   That is the default optimized config
-   (dtypes, triangle / pairwise backends). Construct with
-   `config=None` (omit the kwarg). Processor path: omit
-   `engine_kwargs["config"]` so the engine takes the same
-   constructor path. That model captures CUDA graphs by default; an
-   eager arm derives the pretrained config and calls
-   `disable_cuda_graphs()` ([measurement.md](measurement.md#cuda-graphs)).
-   Never pass a handmade `BaseConfig` or override a graph policy.
-   Do not copy OSS layer configs onto BioIR. A model profile
-   may require one feature enable on top of the official pretrained
-   config—for example Boltz-2 custom templates require
-   `trunk.use_templates_v2=True`. In that case call
-   `get_pretrained_config`, change only the documented flag, pass that
-   config, and record the exception. An approximate option a profile
-   turns on by default is the same kind of exception
-   ([approximate options](#approximate-options)). See [`docs/ref/api.md`][api].
+1. **BioIR starts from its optimized pretrained config.** Omit `config=` and
+   processor `engine_kwargs["config"]` unless applying documented model-profile
+   overrides for input parity, fixed recycle counts, or
+   [approximate options](#approximate-options). Derive those configs with
+   `get_pretrained_config`, change only the documented fields, and record the
+   delta. An eager arm additionally calls `disable_cuda_graphs()`. Never
+   hand-build a `BaseConfig`, copy OSS layer configs onto BioIR, or replace
+   graph policies. See [measurement.md](measurement.md#bioir-pretrained-config).
 1. **Serial, one GPU, one sample per call.**
    `executor_backend=None`. Pin `CUDA_VISIBLE_DEVICES` to one device.
    Loop the in-scope manifest and call `processor([one_record])` (or
@@ -204,16 +175,12 @@ claim a complete bench.
    different hosts is not comparable, because CPU, driver, power limit,
    and thermals differ. If a column must be rerun elsewhere, rerun every
    column there.
-1. **Both scorers are installed before any timed run.** Put `ost`
-   in its **own conda env** and `DockQ` in its **own venv** (not
-   BioIR, not OSS, not Miniforge base) so scorer deps cannot fight
-   torch / CUDA pins. Score each written CIF with
-   `ost compare-structures`, and score every supported protein
-   interface with `DockQ` (`pip install DockQ`). Every row gets a
-   `dockq_status`; RNA/DNA interfaces are
-   `unsupported_chain_types`. Never invent either number, and never
-   write `0.0` DockQ for a monomer — that row is `null` /
-   `single_chain`. See
+1. **Both scorers are installed before timing.** Give `ost` its own conda
+   env and `DockQ` its own venv, separate from BioIR, OSS and Miniforge base.
+   Score written CIFs with `ost compare-structures` and supported interfaces
+   with `DockQ`. Every row gets `dockq_status`: RNA/DNA interfaces use
+   `unsupported_chain_types`; a monomer uses `null` / `single_chain`, never
+   `0.0`. See
    [environment.md](environment.md#step-7--install-openstructure-after-bioir-and-oss)
    and
    [environment.md](environment.md#step-8--install-dockq-interface-scorer).
@@ -285,14 +252,6 @@ when the spec lists A3Ms. Paired MSA is used when the spec lists
 `paired_msas`. RNA, DNA, and ligand chains carry empty `msas` —
 that is correct; do not invent files.
 
-The spec's templates are **custom templates**: every one is attached
-on both sides, capped only by a config value set identically on each,
-with the search-oriented filters turned off. Verify by counting
-populated slots on the featurized batch rather than reading config —
-a tree may need a query→template alignment rather than the structure
-the dataset ships, and a fixed slot layout hides a partial drop
-([templates.md](templates.md#verification)).
-
 **BioIR load (processor path).** Convert each in-scope spec item to an
 `InputRequest` with paths resolved against
 `benchmarks/dataset/`
@@ -322,22 +281,12 @@ OSS trees: spec polymers + resolved A3Ms. Do not call
    with the same entry and chain per slot
    ([templates.md](templates.md#verification)).
 
-**Forbidden:**
-
-- Feeding `examples/data/samples/` or demo FASTA instead of the
-  release specs
-- `--use_msa_server` / `use_msa=False` / empty protein MSA when the
-  spec lists files
-- Timing a no-MSA protein run and comparing it to a with-MSA run
-- Using the shipped Boltz YAML's original absolute `msa:` path when
-  it does not point at `$DATASET_ROOT`
-
 ## Phases
 
 Run the phases in order. Each names what to read, what it must leave in
 `$WORKDIR`, and the check that ends it; do not start a phase before the
-previous exit check passes. Harnesses live in `$WORKDIR`; do not modify
-`bionemo_ir/` or `$OSS_ROOT`.
+previous exit check passes. Harnesses live in `$WORKDIR`; source changes are
+limited to the recorded input-side patches allowed by the mandatory gates.
 
 ### Phase 0 — WORKDIR, environments, GPU, OSS root
 
@@ -433,15 +382,12 @@ Skip unless the user asks to pack completed benches so they can run
 on another GPU SKU or in a fresh container. Follow
 [bundle.md](bundle.md).
 
-Packing copies locked harnesses into `bioir-perf/` (host
-`bench.sh`, in-container `bench.py`, one directory per model). Do
-not name the pack `release/`. Packing is not done until a GPU
-smoke of **all** models passes: BioIR, OSS eager, and OSS
-`torch.compile` (Protenix never compiles). That smoke is the
-harness-bug gate, not a full-dataset SKU sweep. Required pack
-outputs are JSON and Markdown (`speedup.json`,
-`comparison_report.md`, plus per-column JSON). Supported folding
-keys: `boltz2`, `of3`, `protenix`, `of2`.
+The pack is `bioir-perf/`, never `release/`, with one directory per model.
+Completion requires a GPU smoke of every included model's BioIR, OSS eager,
+and supported compile arms (Protenix never compiles), plus `speedup.json`,
+`comparison_report.md`, and per-column JSON. This smoke checks harnesses;
+a full-dataset SKU sweep is separate. Supported keys: `boltz2`, `of3`,
+`protenix`, `of2`.
 
 ## Boltz-2 — MSA deletion bug
 
@@ -478,13 +424,6 @@ Those are separate skills or a later revision.
 
 ## Key gotchas
 
-Each of these has cost a full run. The gates above cover the rest.
-
-- **A package name is not a model variant.** Strict-load the same checkpoint
-  on both sides; a non-strict or key-rewriting load is model onboarding
-  ([weights preflight](workflow.md#weights-preflight--prove-one-load-before-any-timed-run)).
-- **Load the checkpoint once before Phase 4.** A gated repo fails every
-  sample in the loop.
 - **Launch each harness with its own python** — `$BIOIR_PYTHON` or
   `$OSS_PYTHON`, never a bare `python` after Phase 0.
 - **`CUTEDSL_FORCE_CUBIN=1` on every BioIR process.** JIT compile time makes
@@ -494,21 +433,15 @@ Each of these has cost a full run. The gates above cover the rest.
   ([measurement.md](measurement.md#allocator-flags--leave-pytorch-on-its-default)).
 - **CUDA 12 packages → CUDA 13.** Install the `cu13` counterpart of any
   `cu12` pin ([environment.md](environment.md#cuda-12-packages--cuda-13)).
-- **Processor path: `profile_inference` already isolates `model.forward`.** Do
-  not time `processor()` wall clock and call it the model.
-- **H2D is outside the window on both sides.** OSS must move the batch first.
 - **Protenix-v2 is Processor path.** Never pass `return_full_data=False`;
   `build_processor` rejects it. Compare
   quality over seeds or the sample set because OSS adds Monte Carlo pair
   dropout that BioIR omits.
 - **Seed goes on the feature-generator stage**, not the tokenizer
   (`docs/ref/api.md`).
-- **Paired A3Ms are per chain, same row count** (`docs/ref/api.md`).
-  Dropping one side's paired file changes the forward.
-- **Let DockQ choose the chain mapping** and record it; a monomer's DockQ is
-  `null`, not `0.0`.
-- **BioIR graphs are on by default.** The default model needs no
-  `optimize()` call; an eager arm uses `disable_cuda_graphs()`. Keep the
-  policies and caches, and audit each forward
-  ([measurement.md](measurement.md#cuda-graphs)).
+- **Paired A3Ms are per chain with equal row counts** (`docs/ref/api.md`).
+- **Let DockQ choose the chain mapping** and record it.
+- **Audit graph execution on every forward.** Follow the counters and
+  cache rules in [measurement.md](measurement.md#cuda-graphs); the default
+  model captures graphs without an `optimize()` call.
 - **Sharing the GPU with another job invalidates the run.**

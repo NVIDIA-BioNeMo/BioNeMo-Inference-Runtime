@@ -43,8 +43,10 @@ so Processor path needs no shared OSS feature dump.
   Obtain `protenix-v2.pt` from the Protenix authors and stage it yourself.
 - BioIR construction: serial
   `build_processor(EngineProcessorConfig(model_source="protenix-v2", ...))`.
-  Omit `engine_kwargs["config"]` so the optimized pretrained config is
-  selected.
+  Start from the optimized pretrained config; pass an explicit config only for
+  the
+  [documented approximate option](#approximate-option-frame-aware-prediction-reuse-default-on)
+  or an eager arm.
 - Set `PROTENIX_V2_CKPT` to the staged checkpoint. Record the
   resolved path and SHA-256 and strict-load the same file in both
   interpreters before timing.

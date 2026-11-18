@@ -103,12 +103,12 @@ def check_artifact(check: dict, output_root: Path, input_root: Path) -> bool:
     if op == "equals":
         return type(actual) is type(expected) and actual == expected
     if op == "close":
-        return (
-            isinstance(actual, int | float)
-            and not isinstance(actual, bool)
-            and math.isfinite(actual)
-            and math.isclose(actual, expected, rel_tol=1e-8, abs_tol=1e-8)
-        )
+        if not isinstance(actual, int | float) or isinstance(actual, bool):
+            return False
+        try:
+            return math.isfinite(actual) and math.isclose(actual, expected, rel_tol=1e-8, abs_tol=1e-8)
+        except OverflowError:
+            return False
     if op in {"set_equals", "contains"}:
         if not isinstance(actual, list) or any(not isinstance(item, str) for item in actual):
             return False
@@ -132,14 +132,14 @@ def assess(entry: dict, output_root: Path, input_root: Path) -> dict:
         try:
             passed = check_artifact(check, output_root, input_root)
             reason = "passed" if passed else "artifact did not satisfy the reference check"
-        except (OSError, ValueError, KeyError, TypeError, RecursionError) as exc:
+        except (OSError, ValueError, KeyError, TypeError, RuntimeError) as exc:
             passed, reason = False, str(exc)
         details[check["label"]] = {"passed": passed, "reason": reason}
     for relative, expected in entry.get("input_sha256", {}).items():
         try:
             path = contained(input_root, relative)
             passed = path.is_file() and hashlib.sha256(path.read_bytes()).hexdigest() == expected
-        except (OSError, ValueError):
+        except (OSError, ValueError, RuntimeError):
             passed = False
         details[f"unchanged:{relative}"] = {"passed": passed, "reason": "input checksum must remain unchanged"}
     fraction = sum(item["passed"] for item in details.values()) / len(details) if details else 0.0

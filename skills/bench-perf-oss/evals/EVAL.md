@@ -15,23 +15,24 @@ for the production dataset; ordinary benchmark runs still use the release specs.
 
 ## Cases
 
-| Case | Task                                          | Failure the case should expose                                                                |
-| ---- | --------------------------------------------- | --------------------------------------------------------------------------------------------- |
-| 001  | Prepare a manifest and per-chain staging tree | Lost chain copies, extra MSAs, templates, or RNA residues                                     |
-| 002  | Audit featurized inputs before timing         | Accepting a nonzero mask despite missing template slots or unequal paired rows                |
-| 003  | Review a Protenix-v2 runtime lock             | Off-by-one recycle count, wrong feature path, CUDA wheel, compile arm, or weight fallback     |
-| 004  | Triage a Boltz-2 quality gap                  | Blaming the engine or destroying BioIR deletion features to hide an OSS discrepancy           |
-| 005  | Audit result artifacts                        | Publishing recaptured timings, monomer DockQ zero, mismatched templates, or empty telemetry   |
-| 006  | Aggregate supplied latency fixtures           | Ratio inversion, arithmetic mean, wrong bin boundaries, or OOM/failed rows in the denominator |
-| 007  | Review checkpoint compatibility               | Comparing different variants or bypassing a failed strict load                                |
-| 008  | Analyze affinity regression predictions       | Activating a structure-folding workflow for a different task                                  |
-| 009  | Summarize Ray replica throughput              | Replacing throughput analysis with serial folding latency                                     |
-| 010  | Review an AlphaFold2 multimer plan            | Applying AF3 recycle semantics, allowing early stop, or selecting unsupported polymers        |
+| Case | Task                                             | Failure the case should expose                                                                |
+| ---- | ------------------------------------------------ | --------------------------------------------------------------------------------------------- |
+| 001  | Prepare a manifest and per-chain staging tree    | Lost chain copies, extra MSAs, templates, or RNA residues                                     |
+| 002  | Audit featurized inputs before timing            | Accepting a nonzero mask despite missing template slots or unequal paired rows                |
+| 003  | Review a Protenix-v2 runtime lock                | Off-by-one recycle count, wrong feature path, CUDA wheel, compile arm, or weight fallback     |
+| 004  | Triage a Boltz-2 quality gap                     | Blaming the engine or destroying BioIR deletion features to hide an OSS discrepancy           |
+| 005  | Audit result artifacts                           | Publishing recaptured timings, monomer DockQ zero, mismatched templates, or empty telemetry   |
+| 006  | Aggregate supplied latency fixtures              | Ratio inversion, arithmetic mean, wrong bin boundaries, or OOM/failed rows in the denominator |
+| 007  | Review checkpoint compatibility                  | Comparing different variants or bypassing a failed strict load                                |
+| 008  | Analyze affinity regression predictions          | Activating a structure-folding workflow for a different task                                  |
+| 009  | Summarize Ray replica throughput                 | Replacing throughput analysis with serial folding latency                                     |
+| 010  | Review an AlphaFold2 multimer plan               | Applying AF3 recycle semantics, allowing early stop, or selecting unsupported polymers        |
+| 011  | Audit an approximate-mode plan and paired scores | Omitting the exact control, mislabeling approximate results, or reversing fidelity deltas     |
 
-Case 001 names the skill explicitly. Cases 002–007 and 010 describe realistic
-tasks without naming it. Cases 008–009 set `expected_skill: null` and still
-require useful answers to the actual user request. The negative cases should not
-pass merely because the agent refuses to help.
+Case 001 names the skill explicitly. Cases 002–007 and 010–011 describe
+realistic tasks without naming it. Cases 008–009 set `expected_skill: null` and
+still require useful answers to the actual user request. The negative cases
+should not pass merely because the agent refuses to help.
 
 Prompts specify the requested outputs and scope without supplying the acceptance
 answers. Assertions describe observable outcomes rather than a required phrase,
@@ -51,9 +52,11 @@ reference data are staged under verifier-only `/tests/`, equally for both arms.
 
 No GPU, model weights, API keys, external services, package installation, custom
 Dockerfile, or full repository copy is required by these tasks. Keep the
-isolated workspace and paired with-skill/without-skill runs. The config limits
-active cases to two; CI selects agents, models, attempt count, and its
-threshold.
+isolated workspace and paired with-skill/without-skill runs. The config requests
+`harbor.n_concurrent: 2`, which CI caps against its Harbor concurrency policy.
+This is distinct from a global `harbor.case_concurrency` limit; it does not
+promise only two active cases across all agents and arms. CI selects agents,
+models, attempt count, and its threshold.
 
 `aces_plus_custom` preserves the standard evaluator's score and pass decision.
 The `domain_correctness` metric is 1 only when every artifact check and input

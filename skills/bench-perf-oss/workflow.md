@@ -332,18 +332,19 @@ For every family, seed and all supported inference knobs must match
 between BioIR and OSS.
 
 **BioIR model config.** Use the default constructor:
-`ModelCls(model_name=..., config=None)`. The class fills
-`self.config` from `get_pretrained_config(model_name)` — the
-default optimized stack (bf16 where the class sets it, auto
-triangle / pairwise backends,
+`ModelCls(model_name=..., config=None)`. The class fills `self.config` from
+`get_pretrained_config(model_name)` — the default optimized stack (bf16 where
+the class sets it, auto triangle / pairwise backends,
 `docs/ref/support-matrix.md`). The processor path omits
-`engine_kwargs["config"]` so `FoldingEngine` does the same.
-Do not construct a `BaseConfig` by hand. Do not pass OSS
-dtypes or attention backends into BioIR. The only exceptions are a
-minimal feature flag explicitly required by a model profile for input
-parity and an eager arm's `disable_cuda_graphs()`: derive the official
-pretrained config, change only that, and serialize the delta. Boltz-2's
-custom-template case is documented in [models/boltz2.md](models/boltz2.md).
+`engine_kwargs["config"]` so `FoldingEngine` does the same. Do not construct a
+`BaseConfig` by hand. Do not pass OSS dtypes or attention backends into BioIR.
+Supported exceptions are documented model-profile overrides for input parity,
+fixed recycle counts, or approximate options, and an eager arm's
+`disable_cuda_graphs()`. Derive the official pretrained config, change only the
+documented fields, and serialize the delta. For approximate options, include the
+paired exact arm and fidelity report required by
+[SKILL.md](SKILL.md#approximate-options). Boltz-2's custom-template case is
+documented in [models/boltz2.md](models/boltz2.md).
 
 **BioIR CUDA graphs.** Every graph region captures by default: lock
 `graph_activation="default"` for the BioIR column, or

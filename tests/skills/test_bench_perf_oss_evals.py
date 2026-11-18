@@ -215,6 +215,39 @@ ANSWERS = {
         "in_scope_ids": ["protein-pair"],
         "out_of_scope_ids": ["protein-ligand", "rna"],
     },
+    11: {
+        "proposed_plan_acceptable": False,
+        "results_are_synthetic": True,
+        "inference_executed": False,
+        "shared_runtime_args": {
+            "seed": 101,
+            "recycling_steps": 5,
+            "num_sampling_steps": 200,
+            "diffusion_samples": 5,
+            "gpu_uuid": "fixture-gpu",
+        },
+        "sample_ids": ["protein-pair", "monomer"],
+        "corrected_arms": {
+            "bioir_approx_frame_reuse_period": {
+                "config_source": "get_pretrained_config",
+                "overrides": {"edm_sampling_config.frame_reuse_period": 4},
+            },
+            "bioir_exact": {
+                "config_source": "get_pretrained_config",
+                "overrides": {"edm_sampling_config.frame_reuse_period": 0},
+            },
+        },
+        "paired_fidelity": {
+            "samples": {
+                "protein-pair": {"lddt_delta": -0.01, "dockq_delta": -0.03, "dockq_status": "ok"},
+                "monomer": {"lddt_delta": 0.02, "dockq_delta": None, "dockq_status": "single_chain"},
+            },
+            "n": 2,
+            "dockq_n": 1,
+            "mean_lddt_delta": 0.005,
+            "mean_dockq_delta": -0.03,
+        },
+    },
 }
 
 
@@ -256,6 +289,57 @@ def test_recycle_rules_cannot_be_transferred_between_model_families(tmp_path: Pa
         answer["oss_model"]["max_recycling_iters"] = 3
     _write(tmp_path, "ref_data/bench_config.json", answer)
     assert _grade(number, tmp_path)["overall"] == 0.0
+
+
+def test_approximate_fixture_has_independent_paired_fidelity_oracle() -> None:
+    fixture = json.loads((SKILL / "evals/files/approximate/review.json").read_text())
+    rows = fixture["paired_scores"]
+    lddt = [row["approximate"]["lddt"] - row["exact"]["lddt"] for row in rows]
+    dockq = [row["approximate"]["dockq"] - row["exact"]["dockq"] for row in rows if row["dockq_status"] == "ok"]
+    assert lddt == pytest.approx([-0.01, 0.02])
+    assert dockq == pytest.approx([-0.03])
+    assert sum(lddt) / len(lddt) == pytest.approx(ANSWERS[11]["paired_fidelity"]["mean_lddt_delta"])
+    assert sum(dockq) / len(dockq) == pytest.approx(ANSWERS[11]["paired_fidelity"]["mean_dockq_delta"])
+    assert rows[1]["exact"]["dockq"] is rows[1]["approximate"]["dockq"] is None
+
+
+@pytest.mark.parametrize(
+    "fault",
+    [
+        "missing_exact",
+        "wrong_approx_period",
+        "enabled_exact",
+        "mislabelled_approx",
+        "changed_seed",
+        "reversed_delta",
+        "monomer_dockq_zero",
+        "wrong_mean_denominator",
+        "drop_monomer",
+    ],
+)
+def test_approximate_grader_rejects_missing_controls_and_wrong_fidelity(tmp_path: Path, fault: str) -> None:
+    answer = copy.deepcopy(ANSWERS[11])
+    arms = answer["corrected_arms"]
+    if fault == "missing_exact":
+        del arms["bioir_exact"]
+    elif fault == "wrong_approx_period":
+        arms["bioir_approx_frame_reuse_period"]["overrides"]["edm_sampling_config.frame_reuse_period"] = 2
+    elif fault == "enabled_exact":
+        arms["bioir_exact"]["overrides"]["edm_sampling_config.frame_reuse_period"] = 4
+    elif fault == "mislabelled_approx":
+        arms["bioir"] = arms.pop("bioir_approx_frame_reuse_period")
+    elif fault == "changed_seed":
+        answer["shared_runtime_args"]["seed"] = 42
+    elif fault == "reversed_delta":
+        answer["paired_fidelity"]["samples"]["protein-pair"]["lddt_delta"] = 0.01
+    elif fault == "monomer_dockq_zero":
+        answer["paired_fidelity"]["samples"]["monomer"]["dockq_delta"] = 0.0
+    elif fault == "wrong_mean_denominator":
+        answer["paired_fidelity"]["mean_dockq_delta"] = -0.015
+    else:
+        answer["sample_ids"].remove("monomer")
+    _write(tmp_path, "answer.json", answer)
+    assert _grade(11, tmp_path)["overall"] == 0.0
 
 
 def test_manifest_checks_require_all_copies_and_distinct_staging_links(tmp_path: Path) -> None:
@@ -315,6 +399,49 @@ def test_excessive_json_nesting_receives_a_failed_score(tmp_path: Path) -> None:
     reward = _grade(8, tmp_path)
     assert reward["overall"] == 0.0
     assert reward["details"]["BioIR MAE"]["passed"] is False
+
+
+@pytest.mark.parametrize("value", [10**400, -(10**400)])
+def test_oversized_numeric_output_receives_a_failed_score(tmp_path: Path, value: int) -> None:
+    answer = copy.deepcopy(ANSWERS[8])
+    answer["bioir_mae"] = value
+    _write(tmp_path, "answer.json", answer)
+    reward = _grade(8, tmp_path)
+    assert reward["overall"] == 0.0
+    assert reward["details"]["BioIR MAE"]["passed"] is False
+    assert reward["details"]["OSS MAE"]["passed"] is True
+
+
+@pytest.mark.parametrize("operation", ["close", "symlink_to"])
+@pytest.mark.parametrize("location", ["artifact", "parent"])
+def test_cyclic_output_paths_receive_a_failed_score(tmp_path: Path, operation: str, location: str) -> None:
+    output = tmp_path / "output"
+    output.mkdir()
+    (output / "cycle").symlink_to("cycle")
+    relative = "cycle" if location == "artifact" else "cycle/answer.json"
+    check = {
+        "label": "cyclic artifact",
+        "artifact": relative,
+        "path": ["value"],
+        "op": operation,
+        "expected": "reference.a3m" if operation == "symlink_to" else 1.0,
+    }
+    reward = grader.assess({"domain_checks": [check]}, output, tmp_path)
+    assert reward["overall"] == 0.0
+    assert reward["details"]["cyclic artifact"]["passed"] is False
+
+
+def test_cyclic_input_checksum_receives_a_failed_score(tmp_path: Path) -> None:
+    inputs = tmp_path / "input"
+    inputs.mkdir()
+    (inputs / "fixture.json").symlink_to("fixture.json")
+    _write(tmp_path, "answer.json", ANSWERS[8])
+    entry = copy.deepcopy(_entry(8))
+    entry["input_sha256"] = {"fixture.json": "0" * 64}
+    reward = grader.assess(entry, tmp_path, inputs)
+    assert reward["overall"] == 0.0
+    assert reward["details"]["BioIR MAE"]["passed"] is True
+    assert reward["details"]["unchanged:fixture.json"]["passed"] is False
 
 
 def test_output_cannot_alias_verifier_or_input_data(tmp_path: Path) -> None:

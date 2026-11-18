@@ -1059,6 +1059,240 @@
       "input_sha256": {
         "of2/request.json": "bbf21726546d05870cae97a681ee334bac77cf757a6c746e13c01eb9afc253c1"
       }
+    },
+    {
+      "id": "bench-perf-oss-011-approximate-control",
+      "prompt": "Review the proposed Protenix-v2 benchmark plan in /workspace/input/approximate/review.json. A colleague wants to publish its single BioIR column under the caption shown, arguing that the faster setting is the skill default. Decide whether that plan satisfies the benchmark protocol and provide the corrected BioIR arms, including the config provenance and only the required config deltas. Keep the supplied runtime lock, sample set, inputs, seed, and GPU fixed. Name selected roles bioir_exact and bioir_approx_frame_reuse_period. The paired score rows are synthetic diagnostic fixtures, supplied separately from the proposed plan; calculate approximate-minus-exact lDDT and DockQ deltas per sample and the mean of applicable paired deltas. Explain how the final table should identify approximate settings and show fidelity alongside speedup. Do not load models, run inference, install packages, access the network, alter inputs, or claim that these fixtures measure real folding accuracy or speed.\n\nWrite /workspace/output/answer.json with proposed_plan_acceptable, results_are_synthetic, inference_executed, shared_runtime_args, sample_ids, corrected_arms (keyed by role, each containing config_source and an overrides object keyed by full dotted config field), and paired_fidelity (n, dockq_n, mean_lddt_delta, mean_dockq_delta, and samples keyed by ID with lddt_delta, dockq_delta, dockq_status). Include a brief explanation of your decision in the final response.",
+      "expected_output": "Reject the unlabelled fast-only plan. Retain the optimized pretrained config and document frame_reuse_period=4 for the approximate arm and 0 for its paired exact control; leave the seed, 200 diffusion steps, five diffusion samples, five recycles, sample set and GPU unchanged. Label the approximate column and caption with its option/value, report speedup against exact BioIR and OSS, and display paired lDDT/DockQ differences rather than demanding approximate tensor equality. Protein-pair deltas are -0.01 lDDT and -0.03 DockQ; monomer delta is +0.02 lDDT, with DockQ null/single_chain. Mean paired lDDT delta is +0.005 over two samples; mean DockQ delta is -0.03 over one applicable sample. Make no inference or measured-performance claim. Inspect /workspace/output/answer.json.",
+      "files": [
+        "evals/files/approximate"
+      ],
+      "assertions": [
+        "The agent rejects the proposed unlabelled approximate-only plan and supplies both the approximate BioIR arm and a paired exact control derived from the official pretrained config.",
+        "The approximate arm uses the documented frame reuse value, the exact arm disables that option, and every other runtime setting and the sample set remain fixed.",
+        "The explanation requires an explicit approximate column label and option/value caption, speedup comparisons against exact BioIR and OSS, and paired quality differences; it does not demand approximate tensor equality.",
+        "The agent computes approximate-minus-exact paired deltas with the correct sign and denominator, and preserves null/single_chain DockQ for the monomer.",
+        "The agent treats the supplied scores as synthetic fixtures, leaves input files unchanged and executes no inference, installs, or network requests."
+      ],
+      "domain_checks": [
+        {
+          "label": "reject unlabelled fast-only plan",
+          "artifact": "answer.json",
+          "path": [
+            "proposed_plan_acceptable"
+          ],
+          "op": "equals",
+          "expected": false
+        },
+        {
+          "label": "synthetic scores acknowledged",
+          "artifact": "answer.json",
+          "path": [
+            "results_are_synthetic"
+          ],
+          "op": "equals",
+          "expected": true
+        },
+        {
+          "label": "no inference executed",
+          "artifact": "answer.json",
+          "path": [
+            "inference_executed"
+          ],
+          "op": "equals",
+          "expected": false
+        },
+        {
+          "label": "preserve shared runtime lock",
+          "artifact": "answer.json",
+          "path": [
+            "shared_runtime_args"
+          ],
+          "op": "equals",
+          "expected": {
+            "seed": 101,
+            "recycling_steps": 5,
+            "num_sampling_steps": 200,
+            "diffusion_samples": 5,
+            "gpu_uuid": "fixture-gpu"
+          }
+        },
+        {
+          "label": "retain paired sample set",
+          "artifact": "answer.json",
+          "path": [
+            "sample_ids"
+          ],
+          "op": "set_equals",
+          "expected": [
+            "protein-pair",
+            "monomer"
+          ]
+        },
+        {
+          "label": "bioir_approx_frame_reuse_period config source",
+          "artifact": "answer.json",
+          "path": [
+            "corrected_arms",
+            "bioir_approx_frame_reuse_period",
+            "config_source"
+          ],
+          "op": "equals",
+          "expected": "get_pretrained_config"
+        },
+        {
+          "label": "bioir_approx_frame_reuse_period config delta",
+          "artifact": "answer.json",
+          "path": [
+            "corrected_arms",
+            "bioir_approx_frame_reuse_period",
+            "overrides"
+          ],
+          "op": "equals",
+          "expected": {
+            "edm_sampling_config.frame_reuse_period": 4
+          }
+        },
+        {
+          "label": "bioir_exact config source",
+          "artifact": "answer.json",
+          "path": [
+            "corrected_arms",
+            "bioir_exact",
+            "config_source"
+          ],
+          "op": "equals",
+          "expected": "get_pretrained_config"
+        },
+        {
+          "label": "bioir_exact config delta",
+          "artifact": "answer.json",
+          "path": [
+            "corrected_arms",
+            "bioir_exact",
+            "overrides"
+          ],
+          "op": "equals",
+          "expected": {
+            "edm_sampling_config.frame_reuse_period": 0
+          }
+        },
+        {
+          "label": "protein-pair lDDT delta",
+          "artifact": "answer.json",
+          "path": [
+            "paired_fidelity",
+            "samples",
+            "protein-pair",
+            "lddt_delta"
+          ],
+          "op": "close",
+          "expected": -0.01
+        },
+        {
+          "label": "protein-pair DockQ delta",
+          "artifact": "answer.json",
+          "path": [
+            "paired_fidelity",
+            "samples",
+            "protein-pair",
+            "dockq_delta"
+          ],
+          "op": "close",
+          "expected": -0.03
+        },
+        {
+          "label": "protein-pair DockQ status",
+          "artifact": "answer.json",
+          "path": [
+            "paired_fidelity",
+            "samples",
+            "protein-pair",
+            "dockq_status"
+          ],
+          "op": "equals",
+          "expected": "ok"
+        },
+        {
+          "label": "monomer lDDT delta",
+          "artifact": "answer.json",
+          "path": [
+            "paired_fidelity",
+            "samples",
+            "monomer",
+            "lddt_delta"
+          ],
+          "op": "close",
+          "expected": 0.02
+        },
+        {
+          "label": "monomer DockQ delta",
+          "artifact": "answer.json",
+          "path": [
+            "paired_fidelity",
+            "samples",
+            "monomer",
+            "dockq_delta"
+          ],
+          "op": "equals",
+          "expected": null
+        },
+        {
+          "label": "monomer DockQ status",
+          "artifact": "answer.json",
+          "path": [
+            "paired_fidelity",
+            "samples",
+            "monomer",
+            "dockq_status"
+          ],
+          "op": "equals",
+          "expected": "single_chain"
+        },
+        {
+          "label": "paired sample count",
+          "artifact": "answer.json",
+          "path": [
+            "paired_fidelity",
+            "n"
+          ],
+          "op": "equals",
+          "expected": 2
+        },
+        {
+          "label": "applicable DockQ count",
+          "artifact": "answer.json",
+          "path": [
+            "paired_fidelity",
+            "dockq_n"
+          ],
+          "op": "equals",
+          "expected": 1
+        },
+        {
+          "label": "mean paired lDDT delta",
+          "artifact": "answer.json",
+          "path": [
+            "paired_fidelity",
+            "mean_lddt_delta"
+          ],
+          "op": "close",
+          "expected": 0.005
+        },
+        {
+          "label": "mean applicable DockQ delta",
+          "artifact": "answer.json",
+          "path": [
+            "paired_fidelity",
+            "mean_dockq_delta"
+          ],
+          "op": "close",
+          "expected": -0.03
+        }
+      ],
+      "input_sha256": {
+        "approximate/review.json": "e58a70c0bc21bd39f670ed81a9b2a93ad5b7ab2e1a7d90a8cb52b2b376f33e76"
+      }
     }
   ]
 }

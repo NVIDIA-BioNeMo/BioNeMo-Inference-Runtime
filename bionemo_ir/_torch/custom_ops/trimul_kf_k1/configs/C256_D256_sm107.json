@@ -1,0 +1,19 @@
+{
+  "kernel_abi": "sm100",
+  "configs": {
+    "S=32": {"kernel_variant": "K1_B0", "bnc": 32, "epi_n": 8, "ctas": 1, "w_slots": 4, "s_stages": 1, "store_warps": 1, "epi_groups": 4},
+    "S=200": {"kernel_variant": "K1_B0", "bnc": 128, "epi_n": 32, "ctas": 2, "w_slots": 6, "s_stages": 1, "store_warps": 1, "epi_groups": 2, "ab_layout": "pad_n_mod_16_8"},
+    "S=256": {"kernel_variant": "K1_B0", "bnc": 128, "epi_n": 8, "ctas": 2, "w_slots": 4, "s_stages": 2, "store_warps": 1, "epi_groups": 4, "ab_layout": "pad_n_mod_64_56"},
+    "S=400": {"kernel_variant": "K1_B0", "bnc": 128, "epi_n": 8, "ctas": 2, "w_slots": 4, "s_stages": 2, "store_warps": 1, "epi_groups": 4, "ab_layout": "pad_n_mod_64_56"},
+    "S=408": {"kernel_variant": "K1_B0", "bnc": 64, "epi_n": 16, "ctas": 2, "w_slots": 6, "s_stages": 2, "store_warps": 1, "epi_groups": 2, "ab_layout": "pad_n_mod_64_56"},
+    "S=592": {"kernel_variant": "K1_B0", "bnc": 64, "epi_n": 16, "ctas": 2, "w_slots": 6, "s_stages": 2, "store_warps": 1, "epi_groups": 2, "ab_layout": "pad_n_mod_16_8"},
+    "S=888": {"kernel_variant": "K1_B0", "bnc": 128, "epi_n": 8, "ctas": 2, "w_slots": 4, "s_stages": 2, "store_warps": 1, "epi_groups": 4, "ab_layout": "pad_n_mod_16_8"},
+    "S=1200": {"kernel_variant": "K1_B0", "bnc": 128, "epi_n": 8, "ctas": 2, "w_slots": 4, "s_stages": 3, "store_warps": 1, "epi_groups": 4, "ab_layout": "pad_n_mod_16_8"},
+    "S=1384": {"kernel_variant": "K1_B0", "bnc": 128, "epi_n": 8, "ctas": 2, "w_slots": 4, "s_stages": 2, "store_warps": 1, "epi_groups": 4, "ab_layout": "pad_n_mod_16_8"},
+    "S=1568": {"kernel_variant": "K1_B0", "bnc": 128, "epi_n": 8, "ctas": 2, "w_slots": 4, "s_stages": 2, "store_warps": 1, "epi_groups": 4, "ab_layout": "pad_n_mod_16_8"},
+    "S=1576": {"kernel_variant": "K1_B0", "bnc": 128, "epi_n": 8, "ctas": 2, "w_slots": 4, "s_stages": 3, "store_warps": 1, "epi_groups": 4, "ab_layout": "pad_n_mod_16_8"},
+    "S=1904": {"kernel_variant": "K1_B0", "bnc": 128, "epi_n": 8, "ctas": 2, "w_slots": 4, "s_stages": 2, "store_warps": 1, "epi_groups": 4, "ab_layout": "pad_n_mod_16_8"},
+    "S=2616": {"kernel_variant": "K1_B0", "bnc": 128, "epi_n": 8, "ctas": 2, "w_slots": 4, "s_stages": 2, "store_warps": 1, "epi_groups": 4, "ab_layout": "pad_n_mod_16_8"},
+    "S=2624": {"kernel_variant": "K1_B0", "bnc": 128, "epi_n": 16, "ctas": 2, "w_slots": 4, "s_stages": 2, "store_warps": 1, "epi_groups": 2, "ab_layout": "pad_n_mod_16_8"}
+  }
+}

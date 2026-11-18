@@ -1,0 +1,17 @@
+{
+  "kernel_abi": "sm100",
+  "configs": {
+    "S=32": {
+      "kernel_variant": "K3_B3"
+    },
+    "S=192": {
+      "kernel_variant": "K3_B3"
+    },
+    "S=208": {
+      "kernel_variant": "K3_B0"
+    },
+    "S=2624": {
+      "kernel_variant": "K3_B0"
+    }
+  }
+}

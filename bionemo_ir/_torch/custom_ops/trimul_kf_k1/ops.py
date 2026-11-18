@@ -12,7 +12,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Variant selection, input weight fold and PyTorch reference for the TriMul KF K1 on SM90 and SM100/SM103."""
+"""Variant selection, input weight fold and PyTorch reference for the TriMul KF K1 on SM90 and SM100/SM103/SM107."""
 
 from __future__ import annotations
 
@@ -234,7 +234,7 @@ class TrimulKFK1Op:
 def get_trimul_kf_k1_op(dtype: torch.dtype | None, dim: int, hidden_dim: int) -> TrimulKFK1Op | None:
     """Return K1 when this build ships it for ``(dim, hidden_dim)`` on the current GPU, else ``None``.
 
-    The kernels run in bf16 on SM90, SM100 and SM103, from source in a private checkout and from
+    The kernels run in bf16 on SM90, SM100, SM103 and SM107, from source in a private checkout and from
     packaged CUBINs otherwise: a source-free build or ``CUTEDSL_FORCE_CUBIN=1`` without every image the
     shape's configs name gets ``None`` and keeps the caller's regular path.
     """

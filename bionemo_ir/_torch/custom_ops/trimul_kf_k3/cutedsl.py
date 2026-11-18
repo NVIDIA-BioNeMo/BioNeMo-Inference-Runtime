@@ -12,7 +12,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Source-or-CUBIN interface for the TriMul KF K3: SM90, SM100 and SM103 from source or packaged CUBINs."""
+"""Source-or-CUBIN interface for the TriMul KF K3: SM90, SM100, SM103 and SM107 from source or packaged CUBINs."""
 
 from __future__ import annotations
 

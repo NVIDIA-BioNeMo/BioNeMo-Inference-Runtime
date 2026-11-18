@@ -325,10 +325,14 @@ def skip_if_not_sm90():
         pytest.skip(f"requires SM90 (current SM{SM_VERSION})")
 
 
-def skip_if_not_sm100_family():
-    """Skip when the current GPU cannot run the native SM100 launch ABI."""
-    if SM_VERSION not in (100, 103):
-        pytest.skip(f"requires SM100/SM103 (current SM{SM_VERSION})")
+def skip_if_not_sm100_family(*, sm107: bool = False) -> None:
+    """Skip when the current GPU cannot run the native SM100 launch ABI.
+
+    ``sm107=True`` also admits Vera Rubin (SM107), for ops that ship SM107 configs for the ``sm100`` ABI.
+    """
+    supported = (100, 103, 107) if sm107 else (100, 103)
+    if SM_VERSION not in supported:
+        pytest.skip(f"requires SM{'/SM'.join(map(str, supported))} (current SM{SM_VERSION})")
 
 
 def skip_if_epilogue_tile_exceeds_smem(backend) -> None:

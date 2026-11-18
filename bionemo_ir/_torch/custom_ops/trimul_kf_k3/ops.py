@@ -12,7 +12,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Variant selection, output weight fold and PyTorch reference for the SM90 and SM100/SM103 TriMul KF K3."""
+"""Variant selection, output weight fold and PyTorch reference for the SM90 and SM100/SM103/SM107 TriMul KF K3."""
 
 from __future__ import annotations
 
@@ -333,7 +333,7 @@ class TrimulKFK3Op:
             x: bf16 ``[B, N, N, C]`` input pair representation, ``N`` a multiple of 8.
             fold: The weights folded by :func:`fold_output_weights`.
             stats: The row statistics K1 returned; required exactly when ``select(N).reads_stats``,
-                which no SM100/SM103 variant does.
+                which no SM100/SM103/SM107 variant does.
             eps: The LayerNorms' epsilon.
             residual: Fuse ``(x + update) * mask``.
             actual_seqlen: int32 prefix lengths, one per ``(b, i)`` output row; required exactly
@@ -377,7 +377,7 @@ def get_trimul_kf_k3_op(
 ) -> TrimulKFK3Op | None:
     """Return K3 when this build ships it for ``(dim, hidden_dim)`` and the residual setting, else ``None``.
 
-    SM90, SM100 and SM103 run it from source or the packaged CUBINs: under ``CUTEDSL_FORCE_CUBIN=1``,
+    SM90, SM100, SM103 and SM107 run it from source or the packaged CUBINs: under ``CUTEDSL_FORCE_CUBIN=1``,
     or in a build without kernel sources, it returns ``None`` unless every image the configs name ships.
     """
     if dtype != _SUPPORTED_DTYPE or not torch.cuda.is_available():

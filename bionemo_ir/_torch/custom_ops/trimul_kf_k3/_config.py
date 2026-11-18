@@ -12,7 +12,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Shipped TriMul KF K3 variants and their sequence anchors on SM90 and SM100/SM103.
+"""Shipped TriMul KF K3 variants and their sequence anchors on SM90 and SM100/SM103/SM107.
 
 One ``configs/C{C}_D{D}_sm{SM}.json`` bundle per output width ``C``, hidden width ``D`` and SM
 declares the ``kernel_abi`` and maps ``S=<anchor>`` keys to the K3 variant tuned for that token
@@ -39,7 +39,7 @@ product pitched exactly where K1 pads its planes and this rule reads a pitch::
     {"kernel_abi": "sm90", "configs": {"S=128": {"kernel_variant": "K3_4",
                                                  "prod_layout": "pitched_n_mod_64_ge_56"}}}
 
-SM100 and SM103 share the ``sm100`` ABI, never read K1's statistics and read
+SM100, SM103 and SM107 share the ``sm100`` ABI, never read K1's statistics and read
 a dense product only: ``K3_B0`` covers ``C <= 128``, ``K3_B1`` ``C = 256`` and ``K3_B2``
 ``C = 384`` (:data:`SM100_VARIANT_SHAPES`). ``K3_B3`` is ``K3_B0`` with its x ring two tiles deep
 instead of three, for the token counts that give a CTA about one tile at ``C = 128``.
@@ -54,7 +54,7 @@ from typing import Any, NamedTuple
 from bionemo_ir._torch.utils.kernel import get_config_file_name, load_kernel_configs
 
 CONFIGS_DIR = Path(__file__).with_name("configs")
-KERNEL_ABIS = {90: "sm90", 100: "sm100", 103: "sm100"}
+KERNEL_ABIS = {90: "sm90", 100: "sm100", 103: "sm100", 107: "sm100"}
 #: The K3 variants of each kernel ABI.
 KERNEL_VARIANTS = {
     "sm90": ("K3_0", "K3_1", "K3_2", "K3_3", "K3_4"),

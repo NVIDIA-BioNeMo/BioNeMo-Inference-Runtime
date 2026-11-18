@@ -12,7 +12,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""SM100/SM103 TriMul KF K1: the tcgen05 kernels against the fp32 reference, their CUBINs against the source, and
+"""SM100/SM103/SM107 TriMul KF K1: the tcgen05 kernels against the fp32 reference, their CUBINs against the source, and
 their configs and selection."""
 
 from __future__ import annotations
@@ -33,7 +33,9 @@ from .test_trimul_kf import _ATOL, _EPS, _k1_reference, _problem, library_carrie
 _SOURCE = "bionemo_ir._torch.custom_ops.trimul_kf_k1._source"
 _requires_source = pytest.mark.skipif(not source_module_available(_SOURCE), reason="needs the K1 kernel sources")
 _SHAPES = [(32, 32), (64, 64), (128, 128), (256, 256), (384, 256)]
-_BLACKWELL = (100, 103)
+_BLACKWELL = (100, 103, 107)
+#: The B200/B300 bundles; SM107 ships its own Vera Rubin tuning (see the SM107 tests below).
+_B200_B300 = (100, 103)
 _Tile = k1_config.TrimulKFK1Tile
 
 # (B, N, C, D, has_bias, lengths). Tiny N, at B = 1 and 2, on every shape: fewer tiles than CTAs, CTA
@@ -90,8 +92,8 @@ def _fold(problem: dict) -> k1.TrimulKFInputFold:
 
 
 def _op(C: int, D: int, monkeypatch: pytest.MonkeyPatch) -> k1.TrimulKFK1Op:
-    """K1 from source on this SM100/SM103 GPU."""
-    skip_if_not_sm100_family()
+    """K1 from source on this SM100/SM103/SM107 GPU."""
+    skip_if_not_sm100_family(sm107=True)
     if not source_module_available(_SOURCE):
         pytest.skip("needs the K1 kernel sources")
     monkeypatch.delenv("CUTEDSL_FORCE_CUBIN", raising=False)
@@ -220,7 +222,7 @@ def test_sm100_and_sm103_ship_one_bundle_per_shape():
     assert k1_config.shipped_shapes(100) == k1_config.shipped_shapes(103) == set(_SHAPES)
     assert k1_config.KERNEL_ABIS[100] == k1_config.KERNEL_ABIS[103] == "sm100"
     for C, D in _SHAPES:
-        sm100, sm103 = (json.loads((k1_config.CONFIGS_DIR / f"C{C}_D{D}_sm{sm}.json").read_text()) for sm in _BLACKWELL)
+        sm100, sm103 = (json.loads((k1_config.CONFIGS_DIR / f"C{C}_D{D}_sm{sm}.json").read_text()) for sm in _B200_B300)
         assert sm100["kernel_abi"] == sm103["kernel_abi"] == "sm100", (C, D)
         assert sm100["configs"].keys() == sm103["configs"].keys(), (C, D)
         differing = {key for key, entry in sm100["configs"].items() if sm103["configs"][key] != entry}
@@ -228,7 +230,7 @@ def test_sm100_and_sm103_ship_one_bundle_per_shape():
         assert k1_config.anchors(100, C, D) == k1_config.anchors(103, C, D)
 
 
-@pytest.mark.parametrize("sm", _BLACKWELL)
+@pytest.mark.parametrize("sm", _B200_B300)
 @pytest.mark.parametrize("shape", _SHAPES, ids=lambda shape: f"C{shape[0]}-D{shape[1]}")
 def test_sm100_selection_follows_the_measured_dispatch(sm, shape):
     """K1_B1 at C = 32 and K1_B0 elsewhere, tiles switching where the interleaved measurements put them, the
@@ -259,6 +261,26 @@ def test_sm100_selection_follows_the_measured_dispatch(sm, shape):
             assert tile.epi_groups == (4 if 64 < n <= 1032 else 2), n
         else:
             assert tile == _Tile(128, 32 if _sm103_s480(sm, C, D, n) else 16, 2, 4, 2, 1, 2), n
+
+
+def test_sm107_ships_its_own_vera_rubin_bundles() -> None:
+    """SM107 runs the ``sm100`` kernels from bundles tuned on Vera Rubin: K1_B1 at C = 32 and a K1_B0 tile elsewhere,
+    separate folds and no statistics, and the a/b planes padded only where N % 16 == 8, which every shape does
+    from 1024 tokens."""
+    assert k1_config.KERNEL_ABIS[107] == "sm100"
+    assert k1_config.shipped_shapes(107) == set(_SHAPES)
+    for C, D in _SHAPES:
+        bundle = json.loads((k1_config.CONFIGS_DIR / f"C{C}_D{D}_sm107.json").read_text())
+        assert bundle["kernel_abi"] == "sm100", (C, D)
+        for n in range(8, 4097, 8):
+            selection = k1_config.select(107, C, D, n)
+            assert not selection.interleaved and not selection.writes_stats, (C, n)
+            assert selection.kernel_variant == ("K1_B1" if C == 32 else "K1_B0"), (C, n)
+            assert (selection.tile is None) == (C == 32), (C, n)
+            padded = selection.ab_layout == "padded"
+            assert not padded or n % 16 == 8, (C, n)
+            if n >= 1024 and n % 16 == 8:
+                assert padded, (C, n)
 
 
 @_requires_source
@@ -311,7 +333,7 @@ def test_force_cubin_ships_sm100_from_the_library(sm, monkeypatch):
 
 @pytest.mark.parametrize("sm", _BLACKWELL)
 def test_get_op_follows_ships_on_blackwell(sm, monkeypatch):
-    """The op exists on SM100/SM103 exactly when its kernels compile from source or ship as CUBINs."""
+    """The op exists on SM100/SM103/SM107 exactly when its kernels compile from source or ship as CUBINs."""
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
     monkeypatch.setattr(torch.cuda, "get_device_capability", lambda device=None: divmod(sm, 10))
     monkeypatch.setattr(k1_ops, "_trimul_kf_k1_instances", {})

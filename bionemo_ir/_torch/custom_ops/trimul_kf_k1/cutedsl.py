@@ -12,7 +12,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Source-or-CUBIN interface for the TriMul KF K1: SM90, SM100 and SM103 from source or packaged CUBINs."""
+"""Source-or-CUBIN interface for the TriMul KF K1: SM90, SM100, SM103 and SM107 from source or packaged CUBINs."""
 
 from __future__ import annotations
 
@@ -140,7 +140,7 @@ class TrimulKFK1CuTe(CuteKernelCache):
         """Whether this build can run ``(C, D)``, from source or from a packaged CUBIN.
 
         A source-free build, or ``CUTEDSL_FORCE_CUBIN``, needs every packaged image the shape's
-        configs name: each anchor's variant and, on SM100 and SM103, its tile in every a/b layout its
+        configs name: each anchor's variant and, on SM100, SM103 and SM107, its tile in every a/b layout its
         rule writes. Without them the caller keeps its own path.
         """
         entries = anchors(self._sm_version, C, D)

@@ -141,7 +141,7 @@ and **SM103**, triangle attention falls back to cuEquivariance; on **SM120** and
 | **Blackwell**      | SM103              | B300, GB300                  | CuTeDSL CUBIN (PWA, OPM, AdaLN, both dual GEMMs, attention epilogue); cuEquivariance (triangle attention) |
 | **Blackwell**      | SM120              | RTX 5090, RTX 6000 Blackwell | CuTeDSL CUBIN (PWA, AdaLN); cuEquivariance (triangle attention, dual GEMM); Triton (OPM)                  |
 | **Blackwell**      | SM121              | DGX Spark (GB10)             | CuTeDSL CUBIN (PWA, AdaLN); cuEquivariance (triangle attention, dual GEMM); Triton (OPM)                  |
-| **Rubin**          | SM107              | Vera Rubin                   | CuTeDSL (PWA, AdaLN; the CUBIN pack ships after merge); Triton (OPM)                                      |
+| **Rubin**          | SM107              | Vera Rubin                   | CuTeDSL (PWA, AdaLN, TriMul KF; the CUBIN packs ship after merge); Triton (OPM)                           |
 
 Check the device:
 
@@ -188,7 +188,7 @@ and `bionemo_ir._torch.custom_ops`). Layers wrap the same ops:
 | Windowed atom attention             | Diffusion atom encoder / decoder attention    | CuTeDSL → CUBIN; else SDPA                                      | 80, 86, 89, 90, 100, 103                      | [`auto_select_window_attention_backend`](../../bionemo_ir/_torch/attention_backend/utils.py) → [`create_window_attention`](../../bionemo_ir/_torch/attention_backend/utils.py)              |
 | Dual-GEMM `x_x`                     | Triangle multiplication; SwiGLU projection    | CuTeDSL → CUBIN; else CUEQUIV / PyTorch                         | 80, 86, 89, 90, 100, 103; CUEQUIV on 120, 121 | [`get_dual_gemm_x_x_op`](../../bionemo_ir/_torch/custom_ops/dual_gemm_x_x/ops.py) / [`get_cute_dual_gemm_x_x_op`](../../bionemo_ir/_torch/custom_ops/dual_gemm_x_x/ops.py)                  |
 | Dual-GEMM `x0_x1`                   | Triangle multiplication                       | CuTeDSL → CUBIN; else CUEQUIV                                   | 80, 86, 89, 90, 100, 103; CUEQUIV on 120, 121 | [`get_dual_gemm_x0_x1_op`](../../bionemo_ir/_torch/custom_ops/dual_gemm_x0_x1/ops.py)                                                                                                       |
-| TriMul KF chain                     | Triangle multiplication on padded tokens      | CuTeDSL → CUBIN (bf16)                                          | 90, 100, 103                                  | [`get_trimul_kf_k1_op`](../../bionemo_ir/_torch/custom_ops/trimul_kf_k1/ops.py) → `get_trimul_kf_k2_op` → `get_trimul_kf_k3_op`                                                             |
+| TriMul KF chain                     | Triangle multiplication on padded tokens      | CuTeDSL → CUBIN (bf16)                                          | 90, 100, 103, 107                             | [`get_trimul_kf_k1_op`](../../bionemo_ir/_torch/custom_ops/trimul_kf_k1/ops.py) → `get_trimul_kf_k2_op` → `get_trimul_kf_k3_op`                                                             |
 | Pair-weighted averaging (PWA)       | Pair → single update                          | CuTeDSL → CUBIN                                                 | 80, 90, 100, 103, 107, 120, 121               | [`get_pair_weighted_averaging_op`](../../bionemo_ir/_torch/custom_ops/pair_weighted_averaging/ops.py)                                                                                       |
 | Outer-product mean (OPM)            | Single → pair update                          | CuTeDSL → CUBIN on native SMs (90: bf16); else Triton / PyTorch | 80, 86, 89, 90, 100, 103; Triton on other 80+ | [`get_outer_product_mean_op`](../../bionemo_ir/_torch/custom_ops/outer_product_mean/ops.py)                                                                                                 |
 | Gated sigmoid                       | Attention output gate                         | CuTeDSL → CUBIN                                                 | 80, 86, 89, 90, 100, 103, 107, 120, 121       | [`get_gated_sigmoid_op`](../../bionemo_ir/_torch/custom_ops/gated_sigmoid/ops.py)                                                                                                           |
@@ -276,7 +276,11 @@ LayerNorm, projection, gate, and masked residual. The Boltz, Protenix, and
 OpenFold3 trunks run it in their MSA, template, and pairformer stacks; OpenFold2
 in its Evoformer and extra-MSA stacks; RFProteina in its velocity-network pair
 updates. Confidence heads, OpenFold2 templates, and calls whose token counts are
-not multiples of 8 take the dual-GEMM path.
+not multiples of 8 take the dual-GEMM path. SM107 (Vera Rubin) compiles the
+SM100 K1, K2 and K3 kernels for `sm_107a` and selects their tiles and variants
+from its own tables, tuned on one Rubin GPU. The CUBIN packs have no SM107
+image until the protected refresh publishes them, so a source-free build on
+SM107 takes the dual-GEMM path until then.
 
 Override backends on a config if you need a reference path, for example
 `config.trunk.set_triangle_attention_backend("SDPA")`.

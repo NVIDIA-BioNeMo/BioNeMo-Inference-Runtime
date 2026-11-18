@@ -1,5 +1,17 @@
 {
   "executables": {
+    "e3d5c5b39c5a7a7315110bcdef8c3c858830f0cb37fc4ec2358ada8003861d64": {
+      "dtype": "bf16",
+      "dynamic_smem_bytes": 230400,
+      "image_sha256": "ae46fb87092b94ee142b5e3cd371de5ac1eb477f3f44d054dc3f00bf0c8bc6b2",
+      "image_size": 334904,
+      "kernel_sm": 100,
+      "kernel_symbol": "40da18deec36d893e515518e1001523ad7a1eccd94f4b319bab83b29cb0d3f54",
+      "launch_abi": "transition_mlp_sm100_mask_ptr_v1",
+      "non_portable_cluster_size_allowed": true,
+      "target_arch": "sm_107a",
+      "target_sm": 107
+    },
     "e41015ddfe59740b99bb2d4c3cf96014092f18fdbc8bcdf33250cfe1b7b34e61": {
       "dtype": "bf16",
       "dynamic_smem_bytes": 84992,
@@ -32,6 +44,18 @@
       "launch_abi": "transition_mlp_sm80_v1",
       "target_arch": "sm_89",
       "target_sm": 89
+    },
+    "e8a51709a9d5c6b2b148bc2a348da74d11cb318aa4f03f1d5195effae1b07a86": {
+      "dtype": "bf16",
+      "dynamic_smem_bytes": 82944,
+      "image_sha256": "f18ab43363a309c005fbc8b267ba89531dcbd43fdba1359c91ca9c70dc388e16",
+      "image_size": 94216,
+      "kernel_sm": 100,
+      "kernel_symbol": "40da18deec36d893e515518e1001523ad7a1eccd94f4b319bab83b29cb0d3f54",
+      "launch_abi": "transition_mlp_sm100_mask_ptr_v1",
+      "non_portable_cluster_size_allowed": true,
+      "target_arch": "sm_107a",
+      "target_sm": 107
     },
     "e8dce0917c51ce23e85582b33e356066cace4f1b2c655534aedcf526d769dce8": {
       "dtype": "bf16",
@@ -754,6 +778,103 @@
         "width": 64
       },
       "variant_id": "e951cc751ee1e0cb1ff0"
+    },
+    {
+      "executable": "a24399968a74c78bd9a809f451ec2f3191868898e2fe9fe0e3eccfdb22b2ccc3",
+      "runtime_metadata": {
+        "bucket": 0,
+        "has_bias": false,
+        "has_mask": false,
+        "has_residual": false,
+        "hidden": 512,
+        "is_silu_gate": true,
+        "is_three_way": false,
+        "num_threads": 512,
+        "sm100_launch": {
+          "block_dims": [
+            512,
+            1,
+            1
+          ],
+          "cluster_dims": [
+            2,
+            1,
+            1
+          ],
+          "cluster_scheduling_policy": "default",
+          "tma_descriptors": {
+            "w1": {
+              "box_dims": [
+                64,
+                64,
+                1,
+                1
+              ],
+              "data_type": "bfloat16",
+              "element_strides": [
+                1,
+                1,
+                1,
+                1
+              ],
+              "global_dim_order": [
+                3,
+                0,
+                1,
+                2
+              ],
+              "interleave": "none",
+              "l2_promotion": "128b",
+              "oob_fill": "none",
+              "rank": 4,
+              "swizzle": "128b"
+            },
+            "w2": {
+              "box_dims": [
+                64,
+                64
+              ],
+              "data_type": "bfloat16",
+              "element_strides": [
+                1,
+                1
+              ],
+              "global_dim_order": [
+                1,
+                0
+              ],
+              "interleave": "none",
+              "l2_promotion": "128b",
+              "oob_fill": "none",
+              "rank": 2,
+              "swizzle": "128b"
+            },
+            "x": {
+              "box_dims": [
+                64,
+                128
+              ],
+              "data_type": "bfloat16",
+              "element_strides": [
+                1,
+                1
+              ],
+              "global_dim_order": [
+                1,
+                0
+              ],
+              "interleave": "none",
+              "l2_promotion": "128b",
+              "oob_fill": "none",
+              "rank": 2,
+              "swizzle": "128b"
+            }
+          }
+        },
+        "tile_m": 256,
+        "width": 128
+      },
+      "variant_id": "e961953946db2206660c"
     },
     {
       "executable": "d5f238688032521dfafbf81acbf9aa917f43a5dff5ffb93fa2e669861f35924b",

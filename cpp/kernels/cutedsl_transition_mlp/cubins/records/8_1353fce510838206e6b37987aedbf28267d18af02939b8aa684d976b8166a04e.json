@@ -113,6 +113,18 @@
       "target_arch": "sm_100a",
       "target_sm": 100
     },
+    "8a7115c7ae51947fea218c05102dca77aa5229dfbe7e4a61ef1571cc002cef0e": {
+      "dtype": "bf16",
+      "dynamic_smem_bytes": 164864,
+      "image_sha256": "d95fb6ce36ebc2299cadee2227976ed3e8465a564b9a98bc46821552ae333ebf",
+      "image_size": 112568,
+      "kernel_sm": 100,
+      "kernel_symbol": "40da18deec36d893e515518e1001523ad7a1eccd94f4b319bab83b29cb0d3f54",
+      "launch_abi": "transition_mlp_sm100_mask_ptr_v1",
+      "non_portable_cluster_size_allowed": true,
+      "target_arch": "sm_107a",
+      "target_sm": 107
+    },
     "8b4621bcb924a6286c541a46df42f00577f06215360b4ce31228675d44c47dc9": {
       "dtype": "bf16",
       "dynamic_smem_bytes": 34816,
@@ -180,6 +192,18 @@
       "launch_abi": "transition_mlp_sm80_v1",
       "target_arch": "sm_89",
       "target_sm": 89
+    },
+    "8cffe27dfff5c4546d8e6d39c6e8d99fb6da016775ae44b209a49a798e12a28e": {
+      "dtype": "bf16",
+      "dynamic_smem_bytes": 230400,
+      "image_sha256": "f2414979b42468c0fb0811e4a3f8341c4354b1985cb10ece41ad4606b85be600",
+      "image_size": 228552,
+      "kernel_sm": 100,
+      "kernel_symbol": "40da18deec36d893e515518e1001523ad7a1eccd94f4b319bab83b29cb0d3f54",
+      "launch_abi": "transition_mlp_sm100_mask_ptr_v1",
+      "non_portable_cluster_size_allowed": true,
+      "target_arch": "sm_107a",
+      "target_sm": 107
     },
     "8d582310f167a7ccfc5a401336bf254feb2d9327cf5e03ec41b85c96d8c6eaf2": {
       "dtype": "bf16",
@@ -865,6 +889,103 @@
         "width": 256
       },
       "variant_id": "8d34f1b29091b2a814d5"
+    },
+    {
+      "executable": "e8a51709a9d5c6b2b148bc2a348da74d11cb318aa4f03f1d5195effae1b07a86",
+      "runtime_metadata": {
+        "bucket": 0,
+        "has_bias": false,
+        "has_mask": false,
+        "has_residual": false,
+        "hidden": 256,
+        "is_silu_gate": true,
+        "is_three_way": false,
+        "num_threads": 512,
+        "sm100_launch": {
+          "block_dims": [
+            512,
+            1,
+            1
+          ],
+          "cluster_dims": [
+            2,
+            1,
+            1
+          ],
+          "cluster_scheduling_policy": "default",
+          "tma_descriptors": {
+            "w1": {
+              "box_dims": [
+                64,
+                64,
+                1,
+                1
+              ],
+              "data_type": "bfloat16",
+              "element_strides": [
+                1,
+                1,
+                1,
+                1
+              ],
+              "global_dim_order": [
+                3,
+                0,
+                1,
+                2
+              ],
+              "interleave": "none",
+              "l2_promotion": "128b",
+              "oob_fill": "none",
+              "rank": 4,
+              "swizzle": "128b"
+            },
+            "w2": {
+              "box_dims": [
+                64,
+                32
+              ],
+              "data_type": "bfloat16",
+              "element_strides": [
+                1,
+                1
+              ],
+              "global_dim_order": [
+                1,
+                0
+              ],
+              "interleave": "none",
+              "l2_promotion": "128b",
+              "oob_fill": "none",
+              "rank": 2,
+              "swizzle": "128b"
+            },
+            "x": {
+              "box_dims": [
+                64,
+                128
+              ],
+              "data_type": "bfloat16",
+              "element_strides": [
+                1,
+                1
+              ],
+              "global_dim_order": [
+                1,
+                0
+              ],
+              "interleave": "none",
+              "l2_promotion": "128b",
+              "oob_fill": "none",
+              "rank": 2,
+              "swizzle": "128b"
+            }
+          }
+        },
+        "tile_m": 256,
+        "width": 64
+      },
+      "variant_id": "8d953535744cb45f4f12"
     },
     {
       "executable": "79b753d4bf4cdf6e89b894f72cdffed63e82fd5891342ee9abf05095a749ed61",

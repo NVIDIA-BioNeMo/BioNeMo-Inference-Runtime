@@ -28,6 +28,7 @@ from bionemo_ir._torch.graph_optimization.graph_policy import (
     pairformer_graph_config,
     trunk_graph_config,
 )
+from bionemo_ir._torch.sampling.frame_reuse import FrameReuseSetting
 from bionemo_ir.configs import (
     BaseConfig,
     DiffusionTransformerConfig,
@@ -190,6 +191,9 @@ class TrunkConfig(BaseConfig):
 
 
 class AtomDiffusionConfig(BaseConfig):
+    # Check assignments too: the documented way to change ``frame_reuse_period`` is to assign it.
+    model_config = ConfigDict(validate_assignment=True)
+
     sigma_min: float = 0.0001
     sigma_max: float = 160.0
     sigma_data: int = 16
@@ -208,6 +212,15 @@ class AtomDiffusionConfig(BaseConfig):
     token_s: int = _Default.token_s
     dim_fourier: int = 256
     version: str = "v2"
+    frame_reuse_period: FrameReuseSetting = Field(
+        default=0,
+        description=(
+            "Opt-in approximation: in the churn-free tail of the rollout, run the denoiser every this many steps and"
+            " reuse the previous prediction, mapped into each step's frame, in between. 0 (default) is exact;"
+            ' "auto" uses period 4 when the rollout has 200 or 400 steps and no steering, and runs exact otherwise;'
+            " 4 forces reuse, and the model rejects other step counts and steering before it runs the trunk."
+        ),
+    )
 
 
 class ScoreModelConfig(BaseConfig):

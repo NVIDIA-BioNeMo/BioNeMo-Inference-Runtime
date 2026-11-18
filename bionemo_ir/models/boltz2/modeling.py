@@ -432,6 +432,8 @@ class Boltz2(nn.Module, OptimizedModuleSetterMixin):
 
         if steering_args is None:
             steering_args = self.steering_args
+        # A forced frame reuse period rejects steering or an unevaluated step count before the trunk runs.
+        self.diffusion_sampler.require_forced_frame_reuse_call(num_sampling_steps, steering_args)
 
         # Host-side branch decisions first, while the launch queue is empty: a
         # device read later in the forward drains the queue and idles the GPU

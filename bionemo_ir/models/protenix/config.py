@@ -18,7 +18,7 @@ Defaults track the ``protenix-v2`` checkpoint (ByteDance OSS
 ``configs_base.py`` + ``configs_model_type.py`` overrides).
 """
 
-from pydantic import Field, field_validator, model_validator
+from pydantic import ConfigDict, Field, ValidationInfo, field_validator
 
 from bionemo_ir._torch.graph_optimization.config import CUDAGraphOptimizationConfig, NamedDimTies
 from bionemo_ir._torch.graph_optimization.graph_policy import (
@@ -28,7 +28,7 @@ from bionemo_ir._torch.graph_optimization.graph_policy import (
     trunk_graph_config,
 )
 from bionemo_ir._torch.modules.protenix._common import DENOISER_FEATURE_KEYS
-from bionemo_ir._torch.sampling.frame_reuse import require_evaluated_period, require_evaluated_steps
+from bionemo_ir._torch.sampling.frame_reuse import FrameReuseSetting, require_forced_reuse
 from bionemo_ir.configs import (
     BaseConfig,
     DiffusionTransformerConfig,
@@ -263,6 +263,9 @@ class EDMSamplingConfig(BaseConfig):
     once per rollout (numerically identical to the uncached path).
     """
 
+    # Check assignments too: the documented way to change ``frame_reuse_period`` is to assign it.
+    model_config = ConfigDict(validate_assignment=True)
+
     n_step: int = 200
     s_max: float = 160.0
     s_min: float = 4e-4
@@ -272,26 +275,30 @@ class EDMSamplingConfig(BaseConfig):
     noise_scale_lambda: float = 1.003
     step_scale_eta: float = 1.5
     enable_diffusion_shared_vars_cache: bool = True
-    frame_reuse_period: int = Field(
-        default=0,
-        ge=0,
+    frame_reuse_period: FrameReuseSetting = Field(
+        default="auto",
         description=(
-            "Opt-in approximation: in the churn-free tail of the rollout, run the denoiser every this many steps and"
-            " map the previous prediction through each step's augmentation in between; 0 is off. Only evaluated with"
-            " period 4 and 100, 150, 200 or 400 rollout steps; other values are rejected."
+            "Approximation: in the churn-free tail of the rollout, run the denoiser every this many steps and map the"
+            ' previous prediction through each step\'s augmentation in between. "auto" (default) uses period 4 when'
+            " the rollout has 100, 150, 200 or 400 steps and runs exact otherwise; 0 is always exact; 4 forces reuse"
+            " and rejects other step counts."
         ),
     )
 
+    # Field validators, not a model validator: a rejected assignment then leaves the config unchanged.
+    @field_validator("n_step")
+    @classmethod
+    def _n_step_fits_a_forced_frame_reuse_period(cls, n_step: int, info: ValidationInfo) -> int:
+        # On construction the period comes later and checks n_step itself; on assignment it is in ``info.data``.
+        require_forced_reuse(info.data.get("frame_reuse_period", 0), n_step)
+        return n_step
+
     @field_validator("frame_reuse_period")
     @classmethod
-    def _frame_reuse_period_is_off_or_at_least_two(cls, period: int) -> int:
-        return require_evaluated_period(period)
-
-    @model_validator(mode="after")
-    def _frame_reuse_window_needs_the_evaluated_step_count(self) -> "EDMSamplingConfig":
-        if self.frame_reuse_period:
-            require_evaluated_steps(self.n_step)
-        return self
+    def _forced_frame_reuse_period_fits_n_step(cls, period: int | str, info: ValidationInfo) -> int | str:
+        if "n_step" in info.data:
+            require_forced_reuse(period, info.data["n_step"])
+        return period
 
 
 class DiffusionModuleConfig(BaseConfig):

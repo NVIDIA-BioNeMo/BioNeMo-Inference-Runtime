@@ -10,8 +10,8 @@ Recommended for publication based on the completed evaluation evidence in this r
 
 - Skill: `bench-perf-oss`
 - Validation status: `passed`
-- Evaluation date: 2026-11-17
-- Evaluator version: `1.6.9`
+- Evaluation date: 2026-11-18
+- Evaluator version: `1.6.10`
 - Agents: Claude Code (`aws/anthropic/bedrock-claude-opus-5-5`), Codex (`openai/openai/gpt-6.1-sol`)
 - Tasks: 11 evaluation tasks (9 positive, 2 negative)
 - Dataset digest: `sha256:84f4a60929fe1591ebfdb376f2313a0123288921678895e37f156e774ec52c2b` (skill-evaluator-dataset-snapshot/1)
@@ -28,11 +28,11 @@ SkillSpector provider, model, analyzer revision, and determinism evidence retain
 
 | Skill | Provider | Adapter | Analyzer | Model | Revision | Determinism |
 | --- | --- | --- | --- | --- | --- | --- |
-| bench-perf-oss | nv_inference | openai | mcp_tool_poisoning | `aws/anthropic/bedrock-claude-opus-5-5` | `2.13.4` | nondeterministic / provider_defaults |
-| bench-perf-oss | nv_inference | openai | semantic_developer_intent | `aws/anthropic/bedrock-claude-opus-5-5` | `2.13.4` | nondeterministic / provider_defaults |
-| bench-perf-oss | nv_inference | openai | semantic_quality_policy | `aws/anthropic/bedrock-claude-opus-5-5` | `2.13.4` | nondeterministic / provider_defaults |
-| bench-perf-oss | nv_inference | openai | semantic_security_discovery | `aws/anthropic/bedrock-claude-opus-5-5` | `2.13.4` | nondeterministic / provider_defaults |
-| bench-perf-oss | nv_inference | openai | meta_analyzer | `aws/anthropic/bedrock-claude-opus-5-5` | `2.13.4` | nondeterministic / provider_defaults |
+| bench-perf-oss | nv_inference | openai | mcp_tool_poisoning | `aws/anthropic/bedrock-claude-opus-5-5` | `2.13.5` | nondeterministic / provider_defaults |
+| bench-perf-oss | nv_inference | openai | semantic_developer_intent | `aws/anthropic/bedrock-claude-opus-5-5` | `2.13.5` | nondeterministic / provider_defaults |
+| bench-perf-oss | nv_inference | openai | semantic_quality_policy | `aws/anthropic/bedrock-claude-opus-5-5` | `2.13.5` | nondeterministic / provider_defaults |
+| bench-perf-oss | nv_inference | openai | semantic_security_discovery | `aws/anthropic/bedrock-claude-opus-5-5` | `2.13.5` | nondeterministic / provider_defaults |
+| bench-perf-oss | nv_inference | openai | meta_analyzer | `aws/anthropic/bedrock-claude-opus-5-5` | `2.13.5` | nondeterministic / provider_defaults |
 
 - Controls for `bench-perf-oss`: temperature=not set (source=provider_default, forwarded=no); seed=not set (source=unset, forwarded=no); reasoning_effort=not set (source=provider_default, forwarded=no)
 
@@ -50,12 +50,12 @@ The three-tier evaluation checks whether the skill:
 
 | Measure | Claude Code (Baseline → Skill Uplift) | Codex (Baseline → Skill Uplift) |
 |---|---:|---:|
-| Overall | Not available | 90.2% — baseline ran, but no comparable score was available; uplift unavailable |
-| Security | Not available | 100.0% → 100.0% (±0.0 points) |
-| Correctness | Not available | 89.1% → 89.1% (±0.0 points) |
-| Discoverability | Not available | 82.8% — baseline ran, but no comparable score was available; uplift unavailable |
-| Effectiveness | Not available | 76.3% → 91.2% (+14.9 points) |
-| Efficiency | Not available | 88.2% — baseline ran, but no comparable score was available; uplift unavailable |
+| Overall | Not available | 91.2% — baseline ran, but no comparable score was available; uplift unavailable |
+| Security | Not available | 86.4% → 100.0% (+13.6 points) |
+| Correctness | Not available | 85.5% → 94.6% (+9.1 points) |
+| Discoverability | Not available | 87.2% — baseline ran, but no comparable score was available; uplift unavailable |
+| Effectiveness | Not available | 83.2% → 82.8% (-0.4 points) |
+| Efficiency | Not available | 91.5% — baseline ran, but no comparable score was available; uplift unavailable |
 
 **How to read this table:** baseline is the same task attempted without the target skill. Scores are rounded to one decimal; threshold-adjacent values use additional precision so their displayed band matches the verdict. Uplift is derived from those displayed scores and shown in percentage points.
 
@@ -70,7 +70,7 @@ Shared-source comparisons use the same signals and weights on both conditions. T
 | Agent | Dimension | Basis | Baseline → With skill (uplift) | Explanation |
 | --- | --- | --- | --- | --- |
 | codex | Discoverability | Dimension comparison | N/A | Discoverability is not applicable to the no-skill baseline; there is no installed skill to discover. |
-| codex | Efficiency | Token-only comparison | 88.1% → 88.1% (±0.0 points) | Only Token Efficiency is comparable; the full dimension scores use different evaluator sources. |
+| codex | Efficiency | Token-only comparison | 86.5% → 88.2% (+1.7 points) | Only Token Efficiency is comparable; the full dimension scores use different evaluator sources. |
 
 ## Token Usage
 
@@ -78,31 +78,31 @@ Actual Tier 3 execution usage is reported for every observed agent/case pair and
 
 | Agent | Dataset case | With skill | Without skill | Delta | Change | Coverage |
 |---|---|---:|---:|---:|---:|---|
-| claude-code | All cases | 2,976,419 | 1,512,733 | +1,463,686 | +96.76% | skill 11/11; base 11/11 |
-| claude-code | bench-perf-oss-001-manifest | 966,429 | 283,124 | +683,305 | +241.34% | skill 1/1; base 1/1 |
-| claude-code | bench-perf-oss-002-input-parity | 128,675 | 109,653 | +19,022 | +17.35% | skill 1/1; base 1/1 |
-| claude-code | bench-perf-oss-003-protenix-lock | 313,073 | 71,072 | +242,001 | +340.50% | skill 1/1; base 1/1 |
-| claude-code | bench-perf-oss-004-boltz-quality | 224,440 | 0 | +224,440 | N/A | skill 1/1; base 1/1; Baseline total tokens are zero; percentage change is undefined. |
-| claude-code | bench-perf-oss-005-artifact-audit | 293,871 | 198,580 | +95,291 | +47.99% | skill 1/1; base 1/1 |
-| claude-code | bench-perf-oss-006-speedup-aggregation | 232,700 | 195,447 | +37,253 | +19.06% | skill 1/1; base 1/1 |
-| claude-code | bench-perf-oss-007-checkpoint-gate | 231,370 | 109,732 | +121,638 | +110.85% | skill 1/1; base 1/1 |
-| claude-code | bench-perf-oss-008-affinity-negative | 107,278 | 106,707 | +571 | +0.54% | skill 1/1; base 1/1 |
-| claude-code | bench-perf-oss-009-throughput-negative | 106,271 | 105,961 | +310 | +0.29% | skill 1/1; base 1/1 |
-| claude-code | bench-perf-oss-010-of2-role-lock | 195,399 | 110,651 | +84,748 | +76.59% | skill 1/1; base 1/1 |
-| claude-code | bench-perf-oss-011-approximate-control | 176,913 | 221,806 | -44,893 | -20.24% | skill 1/1; base 1/1 |
-| codex | All cases | 1,921,852 | 1,352,062 | +569,790 | +42.14% | skill 11/11; base 11/11 |
-| codex | bench-perf-oss-001-manifest | 331,419 | 242,502 | +88,917 | +36.67% | skill 1/1; base 1/1 |
-| codex | bench-perf-oss-002-input-parity | 149,292 | 75,199 | +74,093 | +98.53% | skill 1/1; base 1/1 |
-| codex | bench-perf-oss-003-protenix-lock | 158,680 | 172,092 | -13,412 | -7.79% | skill 1/1; base 1/1 |
-| codex | bench-perf-oss-004-boltz-quality | 132,216 | 88,141 | +44,075 | +50.01% | skill 1/1; base 1/1 |
-| codex | bench-perf-oss-005-artifact-audit | 341,681 | 117,863 | +223,818 | +189.90% | skill 1/1; base 1/1 |
-| codex | bench-perf-oss-006-speedup-aggregation | 170,606 | 158,719 | +11,887 | +7.49% | skill 1/1; base 1/1 |
-| codex | bench-perf-oss-007-checkpoint-gate | 173,157 | 111,383 | +61,774 | +55.46% | skill 1/1; base 1/1 |
-| codex | bench-perf-oss-008-affinity-negative | 84,750 | 71,457 | +13,293 | +18.60% | skill 1/1; base 1/1 |
-| codex | bench-perf-oss-009-throughput-negative | 70,656 | 55,846 | +14,810 | +26.52% | skill 1/1; base 1/1 |
-| codex | bench-perf-oss-010-of2-role-lock | 124,462 | 118,206 | +6,256 | +5.29% | skill 1/1; base 1/1 |
-| codex | bench-perf-oss-011-approximate-control | 184,933 | 140,654 | +44,279 | +31.48% | skill 1/1; base 1/1 |
-| ALL AGENTS | Dataset aggregate | 4,898,271 | 2,864,795 | +2,033,476 | +70.98% | skill 22/22; base 22/22 |
+| claude-code | All cases | 2,524,776 | 1,710,053 | +814,723 | +47.64% | skill 11/11; base 11/11 |
+| claude-code | bench-perf-oss-001-manifest | 497,685 | 283,926 | +213,759 | +75.29% | skill 1/1; base 1/1 |
+| claude-code | bench-perf-oss-002-input-parity | 226,781 | 225,390 | +1,391 | +0.62% | skill 1/1; base 1/1 |
+| claude-code | bench-perf-oss-003-protenix-lock | 320,189 | 0 | +320,189 | N/A | skill 1/1; base 1/1; Baseline total tokens are zero; percentage change is undefined. |
+| claude-code | bench-perf-oss-004-boltz-quality | 176,706 | 109,833 | +66,873 | +60.89% | skill 1/1; base 1/1 |
+| claude-code | bench-perf-oss-005-artifact-audit | 291,754 | 119,513 | +172,241 | +144.12% | skill 1/1; base 1/1 |
+| claude-code | bench-perf-oss-006-speedup-aggregation | 234,035 | 235,806 | -1,771 | -0.75% | skill 1/1; base 1/1 |
+| claude-code | bench-perf-oss-007-checkpoint-gate | 190,227 | 109,310 | +80,917 | +74.03% | skill 1/1; base 1/1 |
+| claude-code | bench-perf-oss-008-affinity-negative | 107,242 | 106,715 | +527 | +0.49% | skill 1/1; base 1/1 |
+| claude-code | bench-perf-oss-009-throughput-negative | 106,242 | 106,166 | +76 | +0.07% | skill 1/1; base 1/1 |
+| claude-code | bench-perf-oss-010-of2-role-lock | 196,216 | 110,551 | +85,665 | +77.49% | skill 1/1; base 1/1 |
+| claude-code | bench-perf-oss-011-approximate-control | 177,699 | 302,843 | -125,144 | -41.32% | skill 1/1; base 1/1 |
+| codex | All cases | 1,701,249 | 1,463,488 | +237,761 | +16.25% | skill 11/11; base 11/11 |
+| codex | bench-perf-oss-001-manifest | 331,688 | 224,125 | +107,563 | +47.99% | skill 1/1; base 1/1 |
+| codex | bench-perf-oss-002-input-parity | 143,378 | 59,141 | +84,237 | +142.43% | skill 1/1; base 1/1 |
+| codex | bench-perf-oss-003-protenix-lock | 128,195 | 196,618 | -68,423 | -34.80% | skill 1/1; base 1/1 |
+| codex | bench-perf-oss-004-boltz-quality | 124,481 | 71,259 | +53,222 | +74.69% | skill 1/1; base 1/1 |
+| codex | bench-perf-oss-005-artifact-audit | 180,932 | 117,880 | +63,052 | +53.49% | skill 1/1; base 1/1 |
+| codex | bench-perf-oss-006-speedup-aggregation | 97,955 | 139,820 | -41,865 | -29.94% | skill 1/1; base 1/1 |
+| codex | bench-perf-oss-007-checkpoint-gate | 227,960 | 183,446 | +44,514 | +24.27% | skill 1/1; base 1/1 |
+| codex | bench-perf-oss-008-affinity-negative | 70,259 | 55,274 | +14,985 | +27.11% | skill 1/1; base 1/1 |
+| codex | bench-perf-oss-009-throughput-negative | 71,376 | 68,488 | +2,888 | +4.22% | skill 1/1; base 1/1 |
+| codex | bench-perf-oss-010-of2-role-lock | 178,460 | 170,715 | +7,745 | +4.54% | skill 1/1; base 1/1 |
+| codex | bench-perf-oss-011-approximate-control | 146,565 | 176,722 | -30,157 | -17.06% | skill 1/1; base 1/1 |
+| ALL AGENTS | Dataset aggregate | 4,226,025 | 3,173,541 | +1,052,484 | +33.16% | skill 22/22; base 22/22 |
 
 Prompt tokens include cached reads, so total tokens are `prompt + completion` (cached is not added twice). The Efficiency score uses `(prompt - cached) + completion`. Change is `100 * (with - without) / without`; negative means fewer tokens. N/A comparisons include their reason in the coverage column; coverage is never estimated.
 
@@ -110,7 +110,7 @@ Prompt tokens include cached reads, so total tokens are `prompt + completion` (c
 
 | Tier | Purpose | Status | Evidence |
 |---|---|---|---|
-| Tier 1 | Static validation | **PASSED WITH OBSERVATIONS** | 11 validator(s); 46 finding(s) |
+| Tier 1 | Static validation | **PASSED WITH OBSERVATIONS** | 11 validator(s); 44 finding(s) |
 | Tier 2 | Semantic deduplication | **PASSED WITH OBSERVATIONS** | 2 validator(s); 6 finding(s) |
 | Tier 3 | Live agent evaluation | **PASS** | 2 agent(s); 11 task(s) |
 
@@ -119,9 +119,6 @@ Prompt tokens include cached reads, so total tokens are `prompt + completion` (c
 <details>
 <summary>Show detailed findings and successful checks</summary>
 
-- **HIGH** DUPLICATE/duplicate: Duplicate content found across measurement.md and workflow.md:
-  "## GPU inventory" in measurement.md (lines 730-775)
-  vs "### GPU inventory" in workflow.md (lines 121-149) (`measurement.md:730`)
 - **HIGH** DUPLICATE/duplicate: Duplicate content found across measurement.md and models/of2.md and no-pipeline.md and workflow.md:
   "## OSS `torch.compile`" in measurement.md (lines 234-276)
   vs "### Fast synthetic compile probe" in measurement.md (lines 303-308)
@@ -140,6 +137,9 @@ Prompt tokens include cached reads, so total tokens are `prompt + completion` (c
   vs "### Locked inference config" in workflow.md (lines 354-371)
   vs "### Processor path, OSS side — `$WORKDIR/bench/run_oss.py`" in workflow.md (lines 526-569) (`measurement.md:234`)
 - **HIGH** DUPLICATE/duplicate: Duplicate content found across measurement.md and workflow.md:
+  "## GPU inventory" in measurement.md (lines 730-775)
+  vs "### GPU inventory" in workflow.md (lines 121-149) (`measurement.md:730`)
+- **HIGH** DUPLICATE/duplicate: Duplicate content found across measurement.md and workflow.md:
   "## BioIR pretrained config" in measurement.md (lines 112-141)
   vs "### Locked inference config" in workflow.md (lines 321-334) (`measurement.md:112`)
 - **HIGH** DUPLICATE/duplicate: Duplicate content found across deepspeed-evoformer.md and environment.md and models/of2.md and models/of3.md:
@@ -157,7 +157,7 @@ Prompt tokens include cached reads, so total tokens are `prompt + completion` (c
 - **HIGH** DUPLICATE/duplicate: Duplicate content found across samples.md and workflow.md:
   "## Manifest fields" in samples.md (lines 235-267)
   vs "### Sample manifest" in workflow.md (lines 203-248) (`samples.md:235`)
-- 47 additional finding(s) are available in the full evaluation artifacts.
+- 45 additional finding(s) are available in the full evaluation artifacts.
 
 </details>
 

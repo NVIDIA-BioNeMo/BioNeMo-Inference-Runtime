@@ -12,6 +12,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import logging
 from collections.abc import Callable
 from dataclasses import dataclass
 from math import sqrt
@@ -42,12 +43,19 @@ from bionemo_ir._torch.modules.boltz.physical.steering import BoltzSteeringParam
 from bionemo_ir._torch.sampling import edm as edm_sampling
 from bionemo_ir._torch.sampling.contracts import SamplingContext
 from bionemo_ir._torch.sampling.denoise_integrator import DenoiseIntegratorTemplate
+from bionemo_ir._torch.sampling.frame_reuse import FrameReuseSchedule, frame_reuse_schedule, require_forced_reuse
 from bionemo_ir._torch.sampling.hooks import DenoiseHookPipeline
 from bionemo_ir._torch.sampling.runner import GenerativeRunner
 from bionemo_ir._torch.utils import recursive_calling_load_weights
 from bionemo_ir.configs import BaseConfig
 from bionemo_ir.pipeline.models.boltz2.const import num_pocket_contact_info, num_tokens
 from bionemo_ir.runtime.buffers import PreallocatedBuffers
+
+logger = logging.getLogger(__name__)
+
+# Boltz-2 kept its accuracy with frame reuse at these step counts only: at 100 and 150 steps the mean
+# lDDT of 17 benchmark entries dropped by 0.023 and 0.013, beyond its 95% confidence interval.
+BOLTZ_FRAME_REUSE_STEPS = (200, 400)
 
 
 class DiffusionConditioning(nn.Module):
@@ -1051,6 +1059,68 @@ class BoltzEDMIntegrator(
         return state
 
 
+class BoltzFrameReuseEDMIntegrator(BoltzEDMIntegrator):
+    """The Boltz EDM integrator with frame-aware prediction reuse in the churn-free tail.
+
+    Boltz's augmentation hook already maps the previous denoised coordinates through each step's rigid
+    transform, so they live in the state's frame. A reused step therefore
+    takes that prediction instead of running the network; every hook, churn draw and Euler update still
+    runs, so the random streams are unchanged. See :mod:`bionemo_ir._torch.sampling.frame_reuse`.
+
+    Args:
+        parent: The integrator whose configuration and hooks are kept.
+        schedule: Reuse schedule.
+    """
+
+    def __init__(self, parent: BoltzEDMIntegrator, schedule: FrameReuseSchedule) -> None:
+        super().__init__(parent.config, parent.hook_pipeline)
+        self.schedule = schedule
+        self.fresh_calls = 0
+        self.reused_calls = 0
+        self._mapped: BoltzDenoisePrediction | None = None
+
+    def initialize(
+        self,
+        plan: edm_sampling.EDMRolloutPlan,
+        context: SamplingContext,
+    ) -> BoltzEDMSamplingState:
+        self.schedule.validate(plan, self.config)
+        self.fresh_calls, self.reused_calls = 0, 0
+        return super().initialize(plan, context)
+
+    def denoiser_inputs(self, step: BoltzEDMDenoiseStep) -> tuple[torch.Tensor, float]:
+        # ``step`` runs this before ``predict`` at every step, so the mapping never outlives its step.
+        reused = self.schedule.reuses(step.step_index)
+        if reused and step.state.atom_coords_denoised is None:
+            raise RuntimeError("No previous prediction to reuse")
+        self._mapped = BoltzDenoisePrediction(step.state.atom_coords_denoised, step.state.token_a) if reused else None
+        return super().denoiser_inputs(step)
+
+    def predict(
+        self,
+        x_noisy: torch.Tensor,
+        sigma_hat: float,
+        evaluate: Callable[[torch.Tensor, float], BoltzDenoisePrediction],
+    ) -> BoltzDenoisePrediction:
+        """Evaluate the network, or take the previous prediction mapped into this step's frame."""
+        if self._mapped is not None:
+            self.reused_calls += 1
+            return self._mapped
+        self.fresh_calls += 1
+        return evaluate(x_noisy, sigma_hat)
+
+    def bind(
+        self, evaluate: Callable[[torch.Tensor, float], BoltzDenoisePrediction]
+    ) -> Callable[[torch.Tensor, float], BoltzDenoisePrediction]:
+        """The ``predict(x_noisy, sigma_hat)`` closure of a sampler whose network call is ``evaluate``."""
+        return lambda x_noisy, sigma_hat: self.predict(x_noisy, sigma_hat, evaluate)
+
+    @property
+    def receipt(self) -> dict[str, int]:
+        """Counts of the last rollout: network evaluations and reused predictions."""
+        return {"fresh": self.fresh_calls, "reused": self.reused_calls}
+
+
 class BoltzDiffusionSampler(nn.Module):
     """Boltz denoiser adapter composed with the shared EDM runtime."""
 
@@ -1095,6 +1165,10 @@ class BoltzDiffusionSampler(nn.Module):
         self.version = atom_diffusion_config.version
         self.alignment_reverse_diff = atom_diffusion_config.alignment_reverse_diff
         self.synchronize_sigmas = atom_diffusion_config.synchronize_sigmas
+        # Opt-in approximation: in the churn-free tail, evaluate the denoiser every ``frame_reuse_period`` steps
+        # and reuse the previous prediction, mapped into each step's frame, in between (0, the default: off;
+        # "auto": on for the evaluated step counts without steering). Boltz-1's config has no field, so it stays off.
+        self.frame_reuse_period = getattr(atom_diffusion_config, "frame_reuse_period", 0)
 
         self.accumulate_token_repr = atom_diffusion_config.accumulate_token_repr
         self.out_token_feat_update = None
@@ -1238,6 +1312,33 @@ class BoltzDiffusionSampler(nn.Module):
         return BoltzEDMIntegrator(
             config=self.edm_integrator_config,
             hook_pipeline=hook_pipeline,
+        )
+
+    def _frame_reuse_blocker(self, steering_args: BoltzSteeringParams | None) -> str | None:
+        """Why this sampler cannot reuse predictions with ``steering_args``, or None when it can.
+
+        Reuse only maps coordinates, so Boltz-1's token accumulation and steering, which read or edit
+        each fresh prediction, block it, and so does coordinate augmentation off.
+        """
+        if not self.coordinate_augmentation:
+            return "Frame reuse was only evaluated with coordinate augmentation; it is off in this sampler"
+        if self.out_token_feat_update is not None:
+            return "Frame reuse cannot reuse the token representation that accumulate_token_repr reads"
+        if steering_args is not None and (
+            steering_args.fk_steering or steering_args.physical_guidance_update or steering_args.contact_guidance_update
+        ):
+            return "Frame reuse is not supported with steering or potential guidance"
+        return None
+
+    def require_forced_frame_reuse_call(
+        self, num_sampling_steps: int | None, steering_args: BoltzSteeringParams | None
+    ) -> None:
+        """Reject, before the model's trunk runs, call arguments a forced ``frame_reuse_period`` cannot reuse with."""
+        require_forced_reuse(
+            self.frame_reuse_period,
+            self.num_sampling_steps if num_sampling_steps is None else num_sampling_steps,
+            blocker=self._frame_reuse_blocker(steering_args),
+            evaluated_steps=BOLTZ_FRAME_REUSE_STEPS,
         )
 
     @torch.no_grad()
@@ -1384,6 +1485,18 @@ class BoltzDiffusionSampler(nn.Module):
                     token_a[:, sample_ids_chunk] = token_a_chunk
             return BoltzDenoisePrediction(atom_coords_denoised, token_a)
 
+        schedule = frame_reuse_schedule(
+            self.frame_reuse_period,
+            plan,
+            training=self.training,
+            blocker=self._frame_reuse_blocker(steering_args),
+            evaluated_steps=BOLTZ_FRAME_REUSE_STEPS,
+        )
+        if schedule is not None:
+            integrator = BoltzFrameReuseEDMIntegrator(integrator, schedule)
+            predict = integrator.bind(predict)
         with SamplingContext.graph_safe(self.device, sampling_seed) as sampling_context:
             state = self.runner.run(integrator, plan, predict, sampling_context).final_state
+        if schedule is not None:
+            logger.debug("Frame reuse rollout: %s", integrator.receipt)
         return {"sample_atom_coords": state.atom_coords, "diff_token_repr": state.token_repr}

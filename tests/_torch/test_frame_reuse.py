@@ -15,6 +15,7 @@
 """Frame-aware prediction reuse: schedule, rollout counts, random streams and the mapped prediction."""
 
 import dataclasses
+from types import SimpleNamespace
 
 import pytest
 import torch
@@ -27,19 +28,34 @@ from bionemo_ir._torch.sampling.frame_reuse import (
     FRAME_REUSE_EVALUATED_STEPS,
     FrameReuseEDMIntegrator,
     FrameReuseSchedule,
+    frame_reuse_schedule,
+    require_forced_reuse,
     wrap_for_frame_reuse,
 )
+from bionemo_ir.models.boltz2.config import AtomDiffusionConfig as Boltz2AtomDiffusionConfig
+from bionemo_ir.models.openfold3.config import EDMSamplingConfig as OpenFold3EDMSamplingConfig
+from bionemo_ir.models.protenix.config import EDMSamplingConfig as ProtenixEDMSamplingConfig
 
 _STEPS = 200
 _FINALS = ("zero", "keep")  # Protenix ends the schedule at 0; OpenFold3 keeps its last level
 
 
-def _plan(device: str, atoms: int = 17, steps: int = _STEPS, final: str = "zero") -> EDMRolloutPlan:
+def _plan(
+    device: str,
+    atoms: int = 17,
+    steps: int = _STEPS,
+    final: str = "zero",
+    integrator_config: EDMIntegratorConfig | None = None,
+) -> EDMRolloutPlan:
     schedule = EDMScheduleConfig(sigma_data=16.0, s_max=160.0, s_min=4e-4, rho=7.0, final=final).build(
         num_steps=steps, dtype=torch.float32, device=torch.device(device)
     )
     return EDMRolloutPlan(
-        schedule, (1, 5, atoms, 3), schedule.device, torch.float32, integrator_config=EDMIntegratorConfig()
+        schedule,
+        (1, 5, atoms, 3),
+        schedule.device,
+        torch.float32,
+        integrator_config=integrator_config or EDMIntegratorConfig(),
     )
 
 
@@ -98,10 +114,15 @@ def test_other_step_counts_are_rejected_up_front(steps: int) -> None:
 
 
 def test_reuse_needs_coordinate_augmentation() -> None:
-    schedule = FrameReuseSchedule.for_plan(4, _plan("cpu"))
-    plan = dataclasses.replace(_plan("cpu"), augment_coordinates=False)
-    with pytest.raises(ValueError, match="augmentation"):
-        schedule.validate(plan)
+    parent = AF3EDMIntegrator(EDMIntegratorConfig())
+    plan = dataclasses.replace(_plan("cpu"), augment_coordinates=False, integrator_config=parent.config)
+    with torch.inference_mode():
+        assert wrap_for_frame_reuse(parent, "auto", plan, _denoiser, training=False) == (parent, _denoiser)
+        with pytest.raises(ValueError, match="augmentation"):
+            wrap_for_frame_reuse(parent, 4, plan, _denoiser, training=False)
+    reuse = FrameReuseEDMIntegrator(parent, FrameReuseSchedule.for_plan(4, plan))
+    with SamplingContext.graph_safe(torch.device("cpu"), 7) as context, pytest.raises(ValueError, match="augmentation"):
+        reuse.initialize(plan, context)
 
 
 def test_plan_levels_must_match_the_integrator_config() -> None:
@@ -167,32 +188,75 @@ def test_frame_applies_the_augmentation() -> None:
     assert torch.equal(frame.apply(x), augmented)
 
 
-def test_frame_reuse_period_follows_the_sampling_config() -> None:
-    from bionemo_ir.models.protenix.config import EDMSamplingConfig
-
-    assert EDMSamplingConfig().frame_reuse_period == 0
-    assert EDMSamplingConfig(frame_reuse_period=4).frame_reuse_period == 4
-    with pytest.raises(ValueError):
-        EDMSamplingConfig(frame_reuse_period=-1)
-    for period in (1, 2, 3, 5, 6, 8):
+@pytest.mark.parametrize(
+    "config_cls, default",
+    [(ProtenixEDMSamplingConfig, "auto"), (OpenFold3EDMSamplingConfig, "auto"), (Boltz2AtomDiffusionConfig, 0)],
+)
+def test_sampling_configs_take_auto_off_or_the_evaluated_period(config_cls: type, default: int | str) -> None:
+    assert config_cls().frame_reuse_period == default
+    for setting in ("auto", 0, 4):
+        assert config_cls(frame_reuse_period=setting).frame_reuse_period == setting
+    for period in (-1, 1, 2, 3, 5, 6, 8):
         with pytest.raises(ValueError, match=r"0 \(off\) or one of \(4,\).*; got "):
-            EDMSamplingConfig(frame_reuse_period=period)
+            config_cls(frame_reuse_period=period)
+    # Assignments are checked too, and a rejected one leaves the field as it was.
+    config = config_cls(frame_reuse_period=4)
+    for value in (3, "Auto"):
+        with pytest.raises(ValueError, match="frame_reuse_period"):
+            config.frame_reuse_period = value
+    assert config.frame_reuse_period == 4
+
+
+def test_protenix_forced_period_needs_an_evaluated_n_step() -> None:
     with pytest.raises(ValueError, match="only evaluated with .*; got 75"):
-        EDMSamplingConfig(frame_reuse_period=4, n_step=75)
-    assert EDMSamplingConfig(frame_reuse_period=4, n_step=100).frame_reuse_period == 4
-    assert EDMSamplingConfig(n_step=75).frame_reuse_period == 0
+        ProtenixEDMSamplingConfig(frame_reuse_period=4, n_step=75)
+    assert ProtenixEDMSamplingConfig(frame_reuse_period=4, n_step=100).frame_reuse_period == 4
+    assert ProtenixEDMSamplingConfig(n_step=75).frame_reuse_period == "auto"
+    assert ProtenixEDMSamplingConfig(frame_reuse_period=0, n_step=75).frame_reuse_period == 0
+    # On assignment the check runs from either field, and a rejected value is not kept.
+    config = ProtenixEDMSamplingConfig(frame_reuse_period=4)
+    with pytest.raises(ValueError, match="only evaluated with .*; got 75"):
+        config.n_step = 75
+    assert config.n_step == 200
+    config.frame_reuse_period = "auto"
+    config.n_step = 75
+    with pytest.raises(ValueError, match="only evaluated with .*; got 75"):
+        config.frame_reuse_period = 4
+    assert (config.frame_reuse_period, config.n_step) == ("auto", 75)
+    config.set_dtype("bfloat16")  # the propagating setters still assign through validation
 
 
-def test_openfold3_config_takes_the_same_period_values() -> None:
-    from bionemo_ir.models.openfold3.config import EDMSamplingConfig as OpenFold3EDMSamplingConfig
+def test_protenix_sampler_defaults_to_the_config_period() -> None:
+    import inspect
 
-    assert OpenFold3EDMSamplingConfig().frame_reuse_period == 0
-    assert OpenFold3EDMSamplingConfig(frame_reuse_period=4).frame_reuse_period == 4
-    with pytest.raises(ValueError):
-        OpenFold3EDMSamplingConfig(frame_reuse_period=-1)
-    for period in (1, 2, 3, 5, 6, 8):
-        with pytest.raises(ValueError, match=r"0 \(off\) or one of \(4,\).*; got "):
-            OpenFold3EDMSamplingConfig(frame_reuse_period=period)
+    from bionemo_ir._torch.modules.protenix.diffusion import ProtenixDiffusionSampler
+
+    default = inspect.signature(ProtenixDiffusionSampler).parameters["frame_reuse_period"].default
+    assert default == ProtenixEDMSamplingConfig().frame_reuse_period
+
+
+def test_forced_reuse_is_checked_before_any_model_work() -> None:
+    for setting in (0, "auto"):
+        require_forced_reuse(setting, 75, blocker="steering")
+    require_forced_reuse(4, 200)
+    with pytest.raises(ValueError, match=r"only evaluated with \(200, 400\) sampling steps; got 100"):
+        require_forced_reuse(4, 100, evaluated_steps=(200, 400))
+    with pytest.raises(ValueError, match="steering"):
+        require_forced_reuse(4, 200, blocker="steering")
+
+
+def test_models_reject_a_forced_period_before_the_trunk() -> None:
+    from bionemo_ir.models.openfold3.modeling import OpenFold3
+    from bionemo_ir.models.protenix.modeling import Protenix
+
+    # The check runs before the trunk, so the stand-ins need nothing the trunk would read.
+    openfold3 = SimpleNamespace(diffusion_sampler=SimpleNamespace(frame_reuse_period=4), no_rollout_steps=50)
+    protenix = SimpleNamespace(diffusion_sampler=SimpleNamespace(frame_reuse_period=4, n_step=50))
+    for forward, model in ((OpenFold3.forward, openfold3), (Protenix.forward, protenix)):
+        with pytest.raises(ValueError, match="got 75"):
+            forward(model, batch={}, num_sampling_steps=75)
+        with pytest.raises(ValueError, match="got 50"):  # None takes the model's default step count
+            forward(model, batch={}, num_sampling_steps=None)
 
 
 def test_wrapper_is_inference_only() -> None:
@@ -201,7 +265,55 @@ def test_wrapper_is_inference_only() -> None:
     with torch.inference_mode():
         integrator, predict = wrap_for_frame_reuse(parent, 4, plan, _denoiser, training=False)
         assert integrator.schedule == FrameReuseSchedule.for_plan(4, plan) and callable(predict)
+        assert wrap_for_frame_reuse(parent, "auto", plan, _denoiser, training=True) == (parent, _denoiser)
         with pytest.raises(ValueError, match="inference-only"):
             wrap_for_frame_reuse(parent, 4, plan, _denoiser, training=True)
     with pytest.raises(ValueError, match="inference-only"):
         wrap_for_frame_reuse(parent, 4, plan, _denoiser, training=False)
+
+
+@pytest.mark.parametrize("steps", FRAME_REUSE_EVALUATED_STEPS)
+def test_auto_reuses_only_where_it_was_evaluated(steps: int) -> None:
+    plan = _plan("cpu", steps=steps)
+    with torch.inference_mode():
+        assert frame_reuse_schedule("auto", plan, training=False) == FrameReuseSchedule.for_plan(4, plan)
+        assert frame_reuse_schedule("auto", plan, training=False, blocker="steering") is None
+        assert frame_reuse_schedule("auto", plan, training=True) is None
+        boltz_steps = frame_reuse_schedule("auto", plan, training=False, evaluated_steps=(200, 400))
+        assert (boltz_steps is not None) == (steps in (200, 400))
+    assert frame_reuse_schedule("auto", plan, training=False) is None  # autograd on
+
+
+def test_auto_runs_exact_where_a_forced_period_raises() -> None:
+    plan = _plan("cpu")
+    with torch.inference_mode():
+        for steps in (2, 50, 75, 201):
+            unevaluated = _plan("cpu", steps=steps)
+            assert frame_reuse_schedule("auto", unevaluated, training=False) is None
+            with pytest.raises(ValueError, match=rf"; got {steps}$"):
+                frame_reuse_schedule(4, unevaluated, training=False)
+        with pytest.raises(ValueError, match="steering"):
+            frame_reuse_schedule(4, plan, training=False, blocker="steering")
+        with pytest.raises(ValueError, match="inference-only"):
+            frame_reuse_schedule(4, plan, training=True)
+        assert frame_reuse_schedule(0, plan, training=True, blocker="steering") is None
+
+
+def test_auto_raises_on_a_plan_without_prepared_levels() -> None:
+    # Every sampler prepares the levels; a plan without them is a sampler bug, not a reason to run exact.
+    plan = dataclasses.replace(_plan("cpu"))
+    assert plan.churn_levels is None
+    with torch.inference_mode(), pytest.raises(ValueError, match="prepared EDM levels"):
+        frame_reuse_schedule("auto", plan, training=False)
+
+
+@pytest.mark.parametrize("final", _FINALS)
+@pytest.mark.parametrize("steps", FRAME_REUSE_EVALUATED_STEPS)
+def test_auto_runs_exact_without_a_reuse_window(steps: int, final: str) -> None:
+    # With gamma_min = 0 every step but a terminal zero churns, so no window precedes the fresh tail.
+    config = EDMIntegratorConfig(gamma_min=0.0)
+    plan = _plan("cpu", steps=steps, final=final, integrator_config=config)
+    with torch.inference_mode():
+        assert frame_reuse_schedule("auto", plan, training=False) is None
+        with pytest.raises(ValueError, match="churn-free"):
+            wrap_for_frame_reuse(AF3EDMIntegrator(config), 4, plan, _denoiser, training=False)

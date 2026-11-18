@@ -204,6 +204,25 @@ The OSS YAML also needs explicit `templates:` entries. None of the
 shipped CASP query YAML files carries those spec templates, so the
 staging script must add them from the manifest.
 
+## Approximate option: frame-aware prediction reuse (off by default)
+
+Boltz-2 has `frame_reuse_period` too, but its pretrained default is 0, so
+the BioIR column is exact. The option was evaluated on only 17 entries, so
+add an approximate column only when the user asks. Then follow
+[Approximate options](../SKILL.md#approximate-options): set the field on the
+config the template section builds, and keep the template enable in both
+columns.
+
+```python
+config.structure_module.atom_diffusion.frame_reuse_period = 4  # 0 (default) for the exact column
+```
+
+- The 200-step lock is a count Boltz-2 was evaluated with: 167 of the 200
+  denoiser calls run. A forced 4 raises at 100 or 150 steps.
+- Steering stays disabled, as the lock requires; a forced 4 raises with
+  steering.
+- Record the value in `bench_config.json` next to the template exception.
+
 ## Dataset-to-OSS mapping
 
 Use all 17 items in `$DATASET_ROOT/spec_full.json`. BioIR consumes

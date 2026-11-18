@@ -200,40 +200,57 @@ OpenFold3 and Protenix use:
 Their differences remain in denoiser signatures, conditioning, schedule
 termination, and optional caches.
 
-### Frame-aware prediction reuse (Protenix and OpenFold3, opt-in)
+### Frame-aware prediction reuse
 
-Protenix and OpenFold3 can skip some denoiser calls near the end of the
-rollout. This is an **approximation of the denoiser**, not of the integration:
-every EDM update, rigid augmentation and churn draw still happens, so the
-random streams are unchanged. It is **off by default**.
+Protenix, OpenFold3 and Boltz-2 can skip some denoiser calls near the end of
+the rollout. This is an **approximation of the denoiser**, not of the
+integration: every EDM update, rigid augmentation and churn draw still happens,
+so the random streams are unchanged. It is **on by default** for Protenix and
+OpenFold3 at the step counts it was evaluated with, and **opt-in** for Boltz-2.
 
 The window is derived from the rollout plan, not configured. It starts at the
 first step whose churn rate is zero, because a reused step must not inject
 churn noise (step $0.8\,n$ with the default schedule), and it ends two steps
 before the last, so the final two steps always evaluate the network. It was
 **only evaluated with 100, 150, 200 and 400 sampling steps**; any other count
-is rejected. 50 steps is rejected on purpose: OpenFold3 lost 0.003 lDDT there.
+runs exact. 50 steps is left out on purpose: OpenFold3 lost 0.003 lDDT there.
 For 200 steps the window is steps 160 to 197.
 
-Turn it on with the config field, and only there:
+The config field `frame_reuse_period` takes three values:
+
+- `"auto"`, the Protenix and OpenFold3 default, reuses with period 4 when the
+  rollout has an evaluated step count and the sampler can reuse in it, and runs
+  exact otherwise. A sampler cannot reuse in training, with coordinate
+  augmentation off, or, for Boltz-2, with steering. Nor can it reuse when the
+  churn gate leaves no churn-free step before the two fresh final steps, as with
+  `gamma_min = 0`.
+- `0` always runs exact, and is the Boltz-2 default. Use it to compare against
+  an upstream rollout or to reproduce outputs from before reuse became the
+  default.
+- `4` forces reuse and raises a `ValueError` wherever `"auto"` would run
+  exact.
 
 ```python
 config = Protenix.get_pretrained_config("protenix-v2")
-config.edm_sampling_config.frame_reuse_period = 4  # 0 (default) is off; 4 is the only other value
+config.edm_sampling_config.frame_reuse_period = 0  # exact; "auto" (default) reuses at 100, 150, 200 and 400 steps
 model = Protenix(model_name="protenix-v2", config=config, include_load_weights=True)
 ```
 
 For OpenFold3 the field is the same name on its `EDMSamplingConfig`
-(`models/openfold3/config.py`), with the same values.
+(`models/openfold3/config.py`), with the same values. The configs check the
+field when it is assigned, not only when they are built, so an unsupported
+value fails on the line that sets it.
 
 With `frame_reuse_period = p` and a window $[s, e]$, steps $s \le i \le e$
 evaluate the network when $(i - s) \bmod p = 0$ and reuse the previous
 prediction otherwise. Only $p = 4$ was evaluated, so `frame_reuse_period`
-accepts 0 or 4 and raises a `ValueError` for any other value. At 200 steps that
-is 172 network calls and 28 reused predictions. Any other step count raises a
-`ValueError` ("frame_reuse_period was only evaluated with (100, 150, 200, 400)
-sampling steps; got N") before the rollout starts, and so does a plan with
-coordinate augmentation off.
+accepts `"auto"`, 0 or 4 and raises a `ValueError` for any other value. At 200
+steps that is 172 network calls and 28 reused predictions. With 4 forced, any
+other step count raises a `ValueError` ("frame_reuse_period was only evaluated
+with (100, 150, 200, 400) sampling steps; got N") before any model work: each
+model checks its call's step count before the trunk runs, and Protenix also
+checks `n_step` when its config is built or assigned. A plan with coordinate
+augmentation off raises when the rollout starts.
 
 Both models were compared with the exact rollout on 99 PDB entries, 5 samples
 each. Every sample's rms displacement stayed below the bound computed from the
@@ -299,8 +316,8 @@ faster on the benchmark inputs, less on large inputs, because 28 denoiser calls
 are saved whatever the input size. The OpenFold3 diffusion sampler is 15 to 18
 percent faster at 200 and 400 steps. Output is approximate: it is judged on
 paired lDDT / DockQ against the exact rollout, not on bit equality
-([oracles.md](oracles.md#approximate-options)). With the option off the output
-is bit-identical to the exact sampler.
+([oracles.md](oracles.md#approximate-options)). With `frame_reuse_period = 0`
+the output is bit-identical to the exact sampler.
 
 ### Boltz
 
@@ -313,6 +330,33 @@ Boltz uses:
 
 This preserves steering, resampling, alignment, token accumulation, and sample
 chunking without duplicating the EDM loop.
+
+**Frame reuse (Boltz-2).** Boltz-2 takes the same
+[frame-aware prediction reuse](#frame-aware-prediction-reuse) through
+`atom_diffusion.frame_reuse_period`, with the same values, but the field
+defaults to 0, so Boltz-2 runs exact unless asked. Boltz's augmentation
+hook already maps the previous denoised coordinates through each step's rigid
+transform, so `BoltzFrameReuseEDMIntegrator` only skips the network call at a
+reused step and keeps that mapped prediction. The window comes from the same
+rule. With Boltz's schedule, which appends its terminal zero, churn stops
+earlier: at 200 steps the window is steps 154 to 197, so 167 steps evaluate the
+network and 33 reuse.
+
+```python
+config = Boltz2.get_pretrained_config("boltz-2")
+config.structure_module.atom_diffusion.frame_reuse_period = "auto"  # opt in: reuses at 200 and 400 steps
+```
+
+Boltz-2 kept its accuracy only at 200 and 400 steps. On 17 benchmark entries
+with 5 samples each, the mean lDDT change against the exact rollout was -0.0009
+± 0.0056 at 200 steps and -0.0017 ± 0.0028 at 400 steps (95% confidence
+interval). At 100 and 150 steps it dropped by 0.023 and 0.013, so `"auto"` runs
+those counts exact and a forced 4 rejects them. The 200-step interval cannot
+rule out a loss of about 0.006 lDDT, so the option stays off by default until a
+larger comparison narrows it. `model.forward` was 7 and 10 percent faster at 200
+and 400 steps on inputs of 600 residues or more. Steering and Boltz-1's
+`accumulate_token_repr` read or edit every fresh prediction, so `"auto"` runs
+exact with steering, a forced 4 rejects it, and Boltz-1 has no field.
 
 ## Flow-matching step
 
@@ -430,7 +474,7 @@ bionemo_ir/_torch/sampling/
   denoise_integrator.py    invariant denoiser-step ordering
   hooks.py                 ordered before/after-denoise hooks
   edm.py                   EDM schedule, math, and tensor integrator
-  frame_reuse.py           opt-in frame-aware prediction reuse
+  frame_reuse.py           frame-aware prediction reuse
   flow_matching.py         flow schedule, math, and product-space integrator
 ```
 

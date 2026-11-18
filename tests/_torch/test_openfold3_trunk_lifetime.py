@@ -115,7 +115,7 @@ class _TrunkLifetimeProbe:
             dtype=torch.float32,
             diffusion_conditioning=SimpleNamespace(pair_projection_chunk_policy=ChunkPolicy(min_size=pair_min_size)),
         )
-        self.diffusion_sampler = SimpleNamespace(use_conditioning=True)
+        self.diffusion_sampler = SimpleNamespace(use_conditioning=True, frame_reuse_period="auto")
         self.trunk_refs: list[weakref.ReferenceType[torch.Tensor]] = []
         self.expected: tuple[torch.Tensor, ...] = ()
 

@@ -22,49 +22,143 @@ network. Only Cartesian coordinates are mapped; learned feature channels are nev
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
+from typing import Annotated, Literal
 
 import torch
+from pydantic import AfterValidator
 
 from bionemo_ir._torch.layers.random_augmentation import RigidFrame, centre_random_augmentation_with_frame
 from bionemo_ir._torch.sampling.contracts import SamplingContext
-from bionemo_ir._torch.sampling.edm import AF3EDMIntegrator, EDMRolloutPlan
+from bionemo_ir._torch.sampling.edm import AF3EDMIntegrator, EDMIntegratorConfig, EDMRolloutPlan
 
 __all__ = [
+    "FRAME_REUSE_AUTO",
     "FRAME_REUSE_EVALUATED_PERIODS",
     "FRAME_REUSE_EVALUATED_STEPS",
     "FRESH_TAIL_STEPS",
     "FrameReuseEDMIntegrator",
+    "FrameReusePeriod",
     "FrameReuseSchedule",
+    "FrameReuseSetting",
+    "frame_reuse_schedule",
     "require_evaluated_period",
     "require_evaluated_steps",
+    "require_forced_reuse",
     "wrap_for_frame_reuse",
 ]
 
-# Step counts the derived window was evaluated with; others are rejected before any rollout work.
+# Step counts the derived window was evaluated with: "auto" runs other counts exact, a forced period rejects them.
 FRAME_REUSE_EVALUATED_STEPS = (100, 150, 200, 400)
-# Periods the option was evaluated with; others are rejected. 0 (off) is always allowed.
+# Periods the option was evaluated with; others are rejected, while 0 (off) and "auto" are always allowed.
 FRAME_REUSE_EVALUATED_PERIODS = (4,)
 # The last steps of a rollout always run the network.
 FRESH_TAIL_STEPS = 2
+# Reuse with the evaluated period wherever the rollout was evaluated, and run exact elsewhere.
+FRAME_REUSE_AUTO = "auto"
+# Why an AF3-style plan cannot reuse: the mapping goes through the step's augmentation.
+_NO_AUGMENTATION = "Frame reuse maps predictions through the step's augmentation; it is off in this plan"
+
+type FrameReusePeriod = int | Literal["auto"]
 
 
-def require_evaluated_steps(num_steps: int) -> None:
+def require_evaluated_steps(num_steps: int, evaluated_steps: Sequence[int] = FRAME_REUSE_EVALUATED_STEPS) -> None:
     """Reject a step count the derived window was not evaluated with, before any rollout work starts."""
-    if num_steps not in FRAME_REUSE_EVALUATED_STEPS:
+    if num_steps not in evaluated_steps:
         raise ValueError(
-            f"frame_reuse_period was only evaluated with {FRAME_REUSE_EVALUATED_STEPS} sampling steps; got {num_steps}"
+            f"frame_reuse_period was only evaluated with {tuple(evaluated_steps)} sampling steps; got {num_steps}"
         )
 
 
-def require_evaluated_period(period: int) -> int:
-    """Return ``period`` when it is 0 (off) or one the option was evaluated with, else raise."""
+def require_forced_reuse(
+    setting: FrameReusePeriod,
+    num_steps: int,
+    *,
+    blocker: str | None = None,
+    evaluated_steps: Sequence[int] = FRAME_REUSE_EVALUATED_STEPS,
+) -> None:
+    """Reject a forced period, neither 0 nor ``"auto"``, that cannot reuse in a rollout of ``num_steps``.
+
+    Models run this before the trunk with their call arguments, so a forced period fails before any
+    model work instead of when the rollout starts.
+
+    Args:
+        setting: ``frame_reuse_period`` of the sampling config.
+        num_steps: The rollout's step count.
+        blocker: Why the sampler cannot reuse with these arguments, or None when it can.
+        evaluated_steps: Step counts the model kept its accuracy at.
+    """
+    if setting in (0, FRAME_REUSE_AUTO):
+        return
+    if blocker is not None:
+        raise ValueError(blocker)
+    require_evaluated_steps(num_steps, evaluated_steps)
+
+
+def require_evaluated_period(period: FrameReusePeriod) -> FrameReusePeriod:
+    """Return ``period`` when it is ``"auto"``, 0 (off) or one the option was evaluated with, else raise."""
+    if period == FRAME_REUSE_AUTO:
+        return period
     if period != 0 and period not in FRAME_REUSE_EVALUATED_PERIODS:
         raise ValueError(
             f"frame_reuse_period must be 0 (off) or one of {FRAME_REUSE_EVALUATED_PERIODS}, the evaluated periods; got {period}"
         )
     return period
+
+
+# The type of a sampling config's ``frame_reuse_period`` field: "auto", 0 or an evaluated period.
+FrameReuseSetting = Annotated[FrameReusePeriod, AfterValidator(require_evaluated_period)]
+
+
+def frame_reuse_schedule(
+    setting: FrameReusePeriod,
+    plan: EDMRolloutPlan,
+    *,
+    training: bool,
+    blocker: str | None = None,
+    evaluated_steps: Sequence[int] = FRAME_REUSE_EVALUATED_STEPS,
+) -> FrameReuseSchedule | None:
+    """The reuse schedule of one rollout, or None to run it exact.
+
+    A rollout cannot reuse in training, under autograd, or when ``blocker`` names a reason. ``"auto"``
+    then runs exact, as it does at a step count outside ``evaluated_steps`` or when the churn gate
+    leaves no window before the fresh tail. A forced period raises a ``ValueError`` in each of those
+    cases instead. A plan without prepared EDM levels raises even for ``"auto"``: every sampler
+    prepares them, so a missing set is a sampler bug, not a configuration to run exact.
+
+    Args:
+        setting: ``frame_reuse_period`` of the sampling config.
+        plan: The rollout plan; its churn gate decides the window.
+        training: Whether the sampler is in training mode.
+        blocker: Why the sampler cannot reuse in this rollout, such as an option that reads or edits
+            every fresh prediction, or None when it can.
+        evaluated_steps: Step counts the model kept its accuracy at.
+    """
+    if setting == 0:
+        return None
+    if training or torch.is_grad_enabled():
+        blocker = "Frame prediction reuse is inference-only"
+    if setting != FRAME_REUSE_AUTO:
+        if blocker is not None:
+            raise ValueError(blocker)
+        return FrameReuseSchedule.for_plan(setting, plan, evaluated_steps)
+    if blocker is not None or plan.num_steps not in evaluated_steps:
+        return None
+    window = _reuse_window(plan)
+    return None if window is None else FrameReuseSchedule(FRAME_REUSE_EVALUATED_PERIODS[0], *window)
+
+
+def _reuse_window(plan: EDMRolloutPlan) -> tuple[int, int] | None:
+    """The plan's first churn-free step and its last reusable step, or None when no step lies between them."""
+    levels = plan.churn_levels
+    if levels is None:
+        raise ValueError("Frame reuse needs the prepared EDM levels of the plan")
+    churn_free = (levels.gamma_host == 0).nonzero()
+    end = plan.num_steps - 1 - FRESH_TAIL_STEPS
+    if churn_free.numel() == 0 or int(churn_free[0]) > end:
+        return None
+    return int(churn_free[0]), end
 
 
 @dataclass(frozen=True)
@@ -87,40 +181,40 @@ class FrameReuseSchedule:
             raise ValueError("Frame reuse needs period >= 2 and 0 <= start <= end")
 
     @classmethod
-    def for_plan(cls, period: int, plan: EDMRolloutPlan) -> FrameReuseSchedule:
+    def for_plan(
+        cls, period: int, plan: EDMRolloutPlan, evaluated_steps: Sequence[int] = FRAME_REUSE_EVALUATED_STEPS
+    ) -> FrameReuseSchedule:
         """Derive the window from the plan's noise schedule and churn gate.
 
         The start is the first step whose churn rate is zero (a reused step must not inject churn noise);
-        the end leaves ``FRESH_TAIL_STEPS`` fresh steps. Step counts and periods the option was not
-        evaluated with are rejected here, before any rollout work.
+        the end leaves ``FRESH_TAIL_STEPS`` fresh steps. Step counts outside ``evaluated_steps`` and
+        periods the option was not evaluated with are rejected here, before any rollout work.
         """
-        require_evaluated_steps(plan.num_steps)
+        require_evaluated_steps(plan.num_steps, evaluated_steps)
         require_evaluated_period(period)
-        levels = plan.churn_levels
-        if levels is None:
-            raise ValueError("Frame reuse needs the prepared EDM levels of the plan")
-        churn_free = (levels.gamma_host == 0).nonzero()
-        if churn_free.numel() == 0:
-            raise ValueError("Frame reuse needs churn-free steps; every step of this plan injects noise")
-        return cls(period, int(churn_free[0]), plan.num_steps - 1 - FRESH_TAIL_STEPS)
+        window = _reuse_window(plan)
+        if window is None:
+            raise ValueError("Frame reuse needs a churn-free step before the fresh final steps; this plan has none")
+        return cls(period, *window)
 
     def reuses(self, step: int) -> bool:
         """Whether ``step`` takes a mapped prediction."""
         return self.start <= step <= self.end and (step - self.start) % self.period != 0
 
-    def validate(self, plan: EDMRolloutPlan) -> None:
+    def validate(self, plan: EDMRolloutPlan, config: EDMIntegratorConfig | None = None) -> None:
         """Require the plan to be the no-churn tail the mapping is defined for.
 
-        Reuse is only meaningful where the noisy state is the augmented state: the plan must augment
-        coordinates, a reused step must not inject churn noise, and the plan needs a step after the
-        last reused one. The window was only evaluated with 200 steps; other counts are rejected up front.
+        A reused step must not inject churn noise, and the plan needs a step after the last reused one.
+        With ``config``, the plan's levels must be prepared for it, so the churn checked here is the
+        churn the integrator applies. The window was only evaluated with the step counts of
+        ``FRAME_REUSE_EVALUATED_STEPS``; other counts are rejected up front.
         """
         require_evaluated_steps(plan.num_steps)
-        if not plan.augment_coordinates:
-            raise ValueError("Frame reuse maps predictions through the step's augmentation; it is off in this plan")
         levels = plan.churn_levels
         if levels is None:
             raise ValueError("Frame reuse needs the prepared EDM levels of the plan")
+        if config is not None and levels.config != config:
+            raise ValueError("Frame reuse needs the plan's churn levels to be prepared for this integrator's config")
         if plan.num_steps <= self.end + 1:
             raise ValueError("Frame reuse needs a fresh step after its last reused step")
         for step in range(plan.num_steps):
@@ -147,9 +241,9 @@ class FrameReuseEDMIntegrator(AF3EDMIntegrator):
         self._cache: torch.Tensor | None = None
 
     def initialize(self, plan: EDMRolloutPlan, context: SamplingContext) -> torch.Tensor:
-        self.schedule.validate(plan)
-        if plan.churn_levels.config != self.config:
-            raise ValueError("Frame reuse needs the plan's churn levels to be prepared for this integrator's config")
+        if not plan.augment_coordinates:
+            raise ValueError(_NO_AUGMENTATION)
+        self.schedule.validate(plan, self.config)
         self.current_step, self.fresh_calls, self.reused_calls = -1, 0, 0
         self.fresh_steps = []
         self._frame = self._cache = None
@@ -199,22 +293,26 @@ class FrameReuseEDMIntegrator(AF3EDMIntegrator):
 
 def wrap_for_frame_reuse(
     parent: AF3EDMIntegrator,
-    period: int,
+    setting: FrameReusePeriod,
     plan: EDMRolloutPlan,
     evaluate: Callable[[torch.Tensor, torch.Tensor], torch.Tensor],
     *,
     training: bool,
-) -> tuple[FrameReuseEDMIntegrator, Callable[..., torch.Tensor]]:
-    """The frame-reuse integrator of one rollout and its ``predict`` closure, for any AF3-style sampler.
+) -> tuple[AF3EDMIntegrator, Callable[..., torch.Tensor]]:
+    """The integrator of one rollout of an AF3-style sampler and its ``predict`` closure.
+
+    Returns ``parent`` and ``evaluate`` unchanged when :func:`frame_reuse_schedule` runs the rollout exact.
 
     Args:
         parent: The sampler's integrator.
-        period: ``frame_reuse_period`` of the sampling config (4, the evaluated period).
+        setting: ``frame_reuse_period`` of the sampling config.
         plan: The rollout plan; the window is derived from it.
         evaluate: The sampler's network call, ``evaluate(x_noisy, sigma_hat)``.
         training: Whether the sampler is in training mode; reuse is inference-only.
     """
-    if training or torch.is_grad_enabled():
-        raise ValueError("Frame prediction reuse is inference-only")
-    integrator = FrameReuseEDMIntegrator(parent, FrameReuseSchedule.for_plan(period, plan))
+    blocker = None if plan.augment_coordinates else _NO_AUGMENTATION
+    schedule = frame_reuse_schedule(setting, plan, training=training, blocker=blocker)
+    if schedule is None:
+        return parent, evaluate
+    integrator = FrameReuseEDMIntegrator(parent, schedule)
     return integrator, integrator.bind(evaluate)

@@ -334,6 +334,7 @@ class _StubSampler(nn.Module):
     def __init__(self):
         super().__init__()
         self.graph = GraphRegion(self, "sample_coords", None)
+        self.frame_reuse_period = "auto"  # read by Protenix.forward before the trunk runs
         self.last_kwargs: dict[str, Any] = {}
 
     def sample_coords(self, batch, *args, **kwargs):

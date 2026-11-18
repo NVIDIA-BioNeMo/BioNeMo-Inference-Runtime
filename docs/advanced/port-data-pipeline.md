@@ -18,6 +18,7 @@ want the full pipeline. The full pipeline covers parsing, featurization,
 inference, and PDB or mmCIF output, run
 serially or across GPUs with Ray. If you only need BioIR's optimized layers
 inside your own model, [Accelerate a Custom Model][custom-model] is shorter.
+For an agent-driven port, use the [make-data-pipeline skill][skill].
 
 When you finish, you have the following:
 
@@ -36,6 +37,7 @@ In this guide, the *upstream* model is the open-source model you port from,
 and the *upstream pipeline* is its code.
 
 [custom-model]: accelerate-custom-model.md
+[skill]: ../../skills/make-data-pipeline/SKILL.md
 [model-port]: port-model.md
 [dev]: ../dev.md
 [validate]: validate-data-pipeline.md

@@ -61,11 +61,11 @@ class TransitionMlpWNormCubinExecutable(CuTeDSLKernelLibraryExecutable):
         persistent: bool = False,
     ) -> None:
         activations = getattr(launcher, "Activation", None)
-        abi_attribute = "SM100_LAUNCH_ABI" if target_sm in (100, 103) else "LAUNCH_ABI"
-        expected_abi = SM100_LAUNCH_ABI if target_sm in (100, 103) else LAUNCH_ABI
-        if target_sm in (100, 103) and activation == "silu_gate" and width <= 128:
+        abi_attribute = "SM100_LAUNCH_ABI" if target_sm in (100, 103, 107) else "LAUNCH_ABI"
+        expected_abi = SM100_LAUNCH_ABI if target_sm in (100, 103, 107) else LAUNCH_ABI
+        if target_sm in (100, 103, 107) and activation == "silu_gate" and width <= 128:
             abi_attribute, expected_abi = "SM100_OUTPUT_LAUNCH_ABI", SM100_OUTPUT_LAUNCH_ABI
-        if target_sm in (100, 103) and f16_gemm2(width, activation, "sm100"):
+        if target_sm in (100, 103, 107) and f16_gemm2(width, activation, "sm100"):
             abi_attribute, expected_abi = "SM100_F16_LAUNCH_ABI", SM100_F16_LAUNCH_ABI
         if activations is None or getattr(launcher, abi_attribute, None) != expected_abi:
             raise CuTeDSLKernelVariantUnavailable(

@@ -135,7 +135,8 @@ void validate_image(KernelConfig const& config)
   if (config.cubin.kernel_symbol == nullptr || config.cubin.kernel_symbol[0] == '\0')
     throw std::invalid_argument("kernel_symbol must not be empty");
   bool const sm90 = config.cubin.kernel_sm == kSM90KernelSM && config.spec.target_sm == 90;
-  bool const sm100 = config.cubin.kernel_sm == 100 && (config.spec.target_sm == 100 || config.spec.target_sm == 103);
+  bool const sm100 = config.cubin.kernel_sm == 100
+    && (config.spec.target_sm == 100 || config.spec.target_sm == 103 || config.spec.target_sm == 107);
   char const* expected_abi = sm100 ? sm100_launch_abi(config.spec.width, config.spec.activation) : kSM90LaunchAbi;
   if (
     (!sm90 && !sm100) || config.cubin.launch_abi == nullptr || std::strcmp(config.cubin.launch_abi, expected_abi) != 0)

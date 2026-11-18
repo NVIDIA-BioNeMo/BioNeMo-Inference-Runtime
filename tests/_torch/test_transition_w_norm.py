@@ -430,8 +430,9 @@ def candidates(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def _shipped(site: _Site, seed: int = 0, **kwargs: object) -> TransitionLayer:
-    """The site's loaded layer on SM90, or skip where the op builds no kernel for its shape."""
-    skip_if_not_sm90()
+    """The site's loaded layer on SM90 or SM107, where the op builds its shape."""
+    if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (10, 7):
+        skip_if_not_sm90()
     layer = _loaded(site, seed, **kwargs)
     if layer._w_norm_op is None:
         pytest.skip(f"transition_mlp_w_norm builds no C={site.width}, H={site.hidden} kernel for {site.kind}")

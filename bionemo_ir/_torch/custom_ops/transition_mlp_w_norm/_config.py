@@ -50,9 +50,9 @@ W1_BLOCKS = {"relu": 1, "silu_gate": 2}
 ACTIVATIONS = tuple(W1_BLOCKS)
 #: Blackwell ReLU widths whose GEMM2 runs in fp16 (the SM100 kernel's ``F16_WIDTHS``): the pack holds W2 in fp16.
 F16_WIDTHS = (384,)
-# SM103 runs the SM100 kernel ABI from images compiled for it. Its configs copy SM100's (B200-measured) until a B300
-# tunes them.
-KERNEL_ABIS = {90: "sm90", 100: "sm100", 103: "sm100"}
+# SM103 and SM107 run the SM100 kernel ABI from images compiled for them. SM103's configs copy SM100's (B200-measured)
+# until a B300 tunes them; SM107 has its own.
+KERNEL_ABIS = {90: "sm90", 100: "sm100", 103: "sm100", 107: "sm100"}
 _FILE_RE = re.compile(r"^C(?P<width>\d+)_H(?P<hidden>\d+)_sm(?P<sm>\d+)\.json$")
 _KEY_RE = re.compile(r"^act=(?P<activation>relu|silu_gate)$")
 # An entry's keys: whether it is a candidate, and its launch layouts for small calls.

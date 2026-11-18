@@ -56,7 +56,7 @@ _ROW_ALIGNMENT_BYTES = 16
 _OUT_ALIGNMENT_BYTES = {"sm100": 32}
 # SMs whose CUBINs shipped after earlier kernel libraries: under CUTEDSL_FORCE_CUBIN a library without
 # them keeps the caller's path rather than failing.
-_LAYER_FALLBACK_SMS = frozenset({100, 103})
+_LAYER_FALLBACK_SMS = frozenset({100, 103, 107})
 
 
 def _rows_aligned(tensor: torch.Tensor, alignment: int = _ROW_ALIGNMENT_BYTES) -> bool:

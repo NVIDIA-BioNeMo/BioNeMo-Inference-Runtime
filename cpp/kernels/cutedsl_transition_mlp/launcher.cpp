@@ -103,8 +103,9 @@ void validate_launch(KernelConfig const& config, LaunchParams const& params)
   if (config.cubin.kernel_symbol == nullptr || config.cubin.kernel_symbol[0] == '\0')
     throw std::invalid_argument("kernel_symbol must not be empty");
   bool const is_sm80 = config.cubin.kernel_sm == 80;
-  /* SM100 and SM103 both run the SM100 kernel's images. */
-  bool const is_sm100 = config.cubin.kernel_sm == 100 && (config.spec.target_sm == 100 || config.spec.target_sm == 103);
+  /* SM100, SM103 and SM107 run the SM100 kernel's images. */
+  bool const is_sm100 = config.cubin.kernel_sm == 100
+    && (config.spec.target_sm == 100 || config.spec.target_sm == 103 || config.spec.target_sm == 107);
   char const* expected_abi = is_sm80 ? kSM80LaunchAbi : is_sm100 ? kSM100LaunchAbi : kSM90LaunchAbi;
   if (
     (config.cubin.kernel_sm != 80 && config.cubin.kernel_sm != 90 && !is_sm100) || config.cubin.launch_abi == nullptr

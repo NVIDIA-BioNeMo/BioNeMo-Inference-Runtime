@@ -478,8 +478,8 @@ def test_op_declines_calls_it_cannot_run():
 
 def test_three_way_op_declines_a_two_way_projection():
     """The 3-way op reads three blocks of W1 rows, so a 2-way block's two blocks keep the caller's own path."""
-    if SM_VERSION not in (90, 100, 103):
-        pytest.skip(f"the 3-way SwiGLU ships on SM90, SM100 and SM103 (current SM{SM_VERSION})")
+    if SM_VERSION not in (90, 100, 103, 107):
+        pytest.skip(f"the 3-way SwiGLU ships on SM90, SM100, SM103 and SM107 (current SM{SM_VERSION})")
     variant = TransitionMlpVariant("silu_gate_3way", False, False, False, 128, 256)
     op = get_transition_mlp_op(torch.bfloat16, **variant._asdict())
     assert op is not None
@@ -940,7 +940,8 @@ def test_fused_transitions_replay_under_cuda_graph_capture(mode, monkeypatch):
 
 def _require_sm100() -> None:
     """Skip unless this GPU runs the SM100 launch ABI."""
-    skip_if_not_sm100_family()
+    if SM_VERSION != 107:
+        skip_if_not_sm100_family()
 
 
 def _require_sm100_cubins(*sms: int) -> None:
@@ -965,7 +966,7 @@ def test_sm100_ships_the_model_swiglu_shapes_on_both_family_members():
     expected.add(TransitionMlpVariant("silu_gate_3way", False, False, False, 128, 256))
     assert set(_SM100_VARIANTS) == expected
     assert shipped_variants(103) == shipped_variants(100)
-    for sm in (100, 103):
+    for sm in (100, 103, 107):
         for variant in _SM100_VARIANTS:
             for bucket in buckets(sm, variant):
                 assert transition_config.kernel_abi(sm, variant, bucket) == "sm100", (sm, variant, bucket)
@@ -978,7 +979,7 @@ def test_sm100_configs_fit_shared_memory():
     except ImportError:
         pytest.skip("kernel sources are stripped from this build")
 
-    for sm in (100, 103):
+    for sm in (100, 103, 107):
         for variant in _SM100_VARIANTS:
             for bucket in buckets(sm, variant):
                 tile = get_tile_params(sm, variant, bucket)
@@ -1298,11 +1299,15 @@ def _dual_gemm_mlp(layer: ConditionedTransitionBlock, a: torch.Tensor) -> torch.
 # rest run two (238), and pairs running three or four (421).
 @pytest.mark.parametrize("windows", [7, 91, 238, 421])
 def test_sm100_atom_conditioned_transition_runs_the_fused_mlp(windows):
-    """The atom transformer's SwiGLU MLP takes the fused op on SM100 and matches fp32 as closely as the dual GEMM
-    path it replaces, which rounds the hidden activation to bf16 the same way."""
+    """The atom MLP keeps its fp32 error bound against the existing fallback.
+
+    SM100/103 use the dual GEMM fallback; SM107 uses separate projection and SwiGLU when the fused MLP is disabled.
+    """
     _require_sm100()
     layer = _atom_block()
-    assert layer._fused_mlp_op is not None and layer._dual_gemm_silu_op is not None
+    assert layer._fused_mlp_op is not None
+    if SM_VERSION != 107:
+        assert layer._dual_gemm_silu_op is not None
     a = torch.randn(1, 5, windows, 32, 128, device="cuda", dtype=torch.bfloat16)
     weight, projection = layer.fused_swl_a_to_b.weight, layer.b_to_a.weight
     with torch.inference_mode():

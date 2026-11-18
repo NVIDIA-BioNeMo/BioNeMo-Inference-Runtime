@@ -91,7 +91,7 @@ EXTERNAL_RE = re.compile(r"^(?:https?:|mailto:|tel:|ftp:)")
 INTERNAL_GITHUB_RE = re.compile(rf"^https://{re.escape(GITHUB_REPOSITORY)}/(?:blob|tree)/main/")
 ALLOWED_INTERNAL_GITHUB_LINKS = frozenset(
     {
-        f"https://{GITHUB_REPOSITORY}/blob/main/.agents/skills/model-onboard/SKILL.md",
+        f"https://{GITHUB_REPOSITORY}/blob/main/skills/model-onboard/SKILL.md",
     }
 )
 GITHUB_CONTENT_RE = re.compile(rf"^https://{re.escape(GITHUB_REPOSITORY)}/(?:blob|tree)/[^/]+/(?P<relative>[^?#]+)")

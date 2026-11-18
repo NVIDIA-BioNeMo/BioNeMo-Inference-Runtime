@@ -17,7 +17,7 @@ name: model-onboard
 description: Implement an upstream pretrained model natively in BioIR using its optimized components, with checkpoint conversion and numerical validation. Use when adding a new model or architecture to BioIR; includes data pipeline integration when requested.
 license: Apache-2.0
 metadata:
-  author: NVIDIA Corporation
+  author: Tien Pham
 ---
 
 # Model Onboarding
@@ -27,10 +27,15 @@ BioIR checkout, and the requested model features. **Output:** a native BioIR
 implementation, checkpoint conversion, tests and validation evidence, and
 data pipeline integration when in scope.
 
+When the request is an offline decision about a recorded input, write
+that decision and stop. Do not clone, implement, or run a model.
+
 The procedure lives in the BioIR checkout, written `$BIOIR` below. Read
 `$BIOIR/docs/advanced/port-model.md` in full and follow it. Without a
 checkout, clone `https://github.com/NVIDIA-BioNeMo/BioNeMo-Inference-Runtime`
-and work on a branch. Reuse BioIR's modules where their math matches
+and work on a branch. The guides and the `bench-perf-oss` skill named below
+are in that checkout, so stop and report if you can reach neither a checkout
+nor the clone. Reuse BioIR's modules where their math matches
 upstream, and implement the architecture's differences. An adapter that
 only swaps one module into the upstream model does not complete a native
 model port; for that task, follow

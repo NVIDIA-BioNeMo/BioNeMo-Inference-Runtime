@@ -34,7 +34,7 @@ from bionemo_ir.logger import logger
 
 _CONFIGS_DIR = os.path.join(os.path.dirname(__file__), "configs")
 
-_TUNED_SMS: tuple[int, ...] = (80, 86, 89, 90, 100, 103)
+_TUNED_SMS: tuple[int, ...] = (80, 86, 89, 90, 100, 103, 107)
 _FALLBACK_SM = 80
 #: SM90/Blackwell kernel that keeps each CTA's weight slice resident and multicasts X across a cluster.
 RESIDENT_VARIANT = "resident"

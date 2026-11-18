@@ -34,13 +34,23 @@ _SOURCE_MODULE = "bionemo_ir._torch.custom_ops.dual_gemm_x0_x1._source"
 _MODES = cutedsl_test_modes(_SOURCE_MODULE)
 # Configs select Ampere split-K, Hopper ping-pong, or Blackwell 2-SM UMMA by
 # device, and every one of these SMs ships only the fused-residual CUBINs.
-_CUBIN_SMS = (80, 86, 89, 90, 100, 103)
+_CUBIN_SMS = (80, 86, 89, 90, 100, 103, 107)
 _RESIDUAL_ONLY_SMS = _CUBIN_SMS
-_BLACKWELL_SMS = (100, 103)
+_BLACKWELL_SMS = (100, 103, 107)
 _OP = "dual_gemm_x0_x1"
 _MODE_CACHES: dict[str, dict] = {"source": {}, "cubin": {}}
 
 CONFIG_DIR = Path(dg_config._CONFIGS_DIR)
+_CUBIN_INDEX = Path(__file__).resolve().parents[2] / "cpp/kernels/cutedsl_dual_gemm_x0_x1/cubins/index.json"
+
+
+def _require_published_cubin_pack() -> None:
+    """Skip a CUBIN-library test on an SM the committed pack has no image for yet (SM107 until the CUBIN refresh)."""
+    packs = json.loads(_CUBIN_INDEX.read_text())["packs"]
+    if f"sm_{SM_VERSION}" not in packs and f"sm_{SM_VERSION}a" not in packs:
+        pytest.skip(f"the dual-GEMM x0_x1 CUBIN pack has no image for SM{SM_VERSION} yet")
+
+
 _SYMMETRIC_CONFIG_RE = re.compile(r"K(\d+)_N(\d+)_sm(\d+)\.json")
 _ASYMMETRIC_CONFIG_RE = re.compile(r"K0(\d+)_K1(\d+)_N(\d+)_sm(\d+)\.json")
 
@@ -510,6 +520,7 @@ def test_asymmetric_rejects_unsafe_operand_metadata():
 def test_cubin_mode_selects_the_cubin_adapter(monkeypatch):
     """CUBIN mode must actually reach the library, not a cached source kernel."""
     skip_if_no_cutedsl(_OP)
+    _require_published_cubin_pack()
     _configure_mode("cubin", monkeypatch)
     torch.manual_seed(0)
     op = DualGemmX0X1CuTe()
@@ -539,6 +550,7 @@ def test_cubin_mode_selects_the_cubin_adapter(monkeypatch):
 def test_cubin_and_python_agree_on_the_bucket(monkeypatch):
     """Nearest-anchor selection is implemented twice; they must not diverge."""
     skip_if_no_cutedsl(_OP)
+    _require_published_cubin_pack()
     _configure_mode("cubin", monkeypatch)
     library = require_cubin_library()
     launcher = library.dual_gemm_x0_x1
@@ -562,6 +574,7 @@ def test_cubin_and_python_agree_on_the_bucket(monkeypatch):
 def test_every_shipped_config_is_reachable_through_the_cubin_path(monkeypatch):
     """A tuned entry the CUBIN path cannot select is a variant nobody runs."""
     skip_if_no_cutedsl(_OP)
+    _require_published_cubin_pack()
     _configure_mode("cubin", monkeypatch)
     library = require_cubin_library()
     launcher = library.dual_gemm_x0_x1
@@ -604,6 +617,7 @@ def test_every_shipped_config_is_reachable_through_the_cubin_path(monkeypatch):
 def test_production_cubin_corpus_excludes_plain_variants():
     """Production packs ship only the triangle-multiplication residual ABI."""
     skip_if_no_cutedsl(_OP)
+    _require_published_cubin_pack()
     if SM_VERSION not in _RESIDUAL_ONLY_SMS:
         pytest.skip(f"residual-only corpus policy does not apply to SM{SM_VERSION}")
     library = require_cubin_library()
@@ -618,6 +632,7 @@ def test_production_cubin_corpus_excludes_plain_variants():
 def test_unavailable_variant_raises_instead_of_falling_back(monkeypatch):
     """An unsupported shape must fail loudly, not silently pick another kernel."""
     skip_if_no_cutedsl(_OP)
+    _require_published_cubin_pack()
     _configure_mode("cubin", monkeypatch)
     library = require_cubin_library()
     launcher = library.dual_gemm_x0_x1
@@ -666,7 +681,7 @@ def test_blackwell_residual_needs_no_mask(cutedsl_mode, has_bias, masked, K0, K1
     """Blackwell reads the mask through a nullable pointer, so a residual comes with or without one."""
     skip_if_no_cutedsl(_OP)
     if SM_VERSION not in _BLACKWELL_SMS:
-        pytest.skip(f"the nullable Blackwell mask requires SM100/103 (current SM{SM_VERSION})")
+        pytest.skip(f"the nullable Blackwell mask requires SM100/103/107 (current SM{SM_VERSION})")
     _configure_mode(cutedsl_mode, monkeypatch)
     if cutedsl_mode == "cubin":
         _skip_unless_cubin_has_x0_x1(K0, N, K1, has_bias=has_bias, fused_residual=True)
@@ -690,7 +705,7 @@ def test_blackwell_source_and_cubin_agree_bitwise(has_bias, masked, K0, K1, N, m
     """The direct launcher must reproduce the CuTe host launch exactly."""
     skip_if_no_cutedsl(_OP)
     if SM_VERSION not in _BLACKWELL_SMS:
-        pytest.skip(f"the Blackwell launcher requires SM100/103 (current SM{SM_VERSION})")
+        pytest.skip(f"the Blackwell launcher requires SM100/103/107 (current SM{SM_VERSION})")
     operands, actual_seqlen, residual, _ = _blackwell_residual_case(K0, K1, N, has_bias, masked)
     with monkeypatch.context() as source_patch:
         _configure_mode("source", source_patch)

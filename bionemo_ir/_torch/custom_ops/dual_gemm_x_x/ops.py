@@ -24,10 +24,10 @@ from bionemo_ir.dsl_kernels.triton.zero_masked_rows import zero_masked_rows_
 from bionemo_ir.utils import get_sm_version
 
 from ._config import _has_direct_config_for_gate, get_min_rows
-from .cutedsl import DualGemmXxCuTe
+from .cutedsl import DualGemmXxCuTe, ships
 
 _GATES = ("sigmoid", "silu")
-_CUTE_SMS = (80, 86, 89, 90, 100, 103)
+_CUTE_SMS = (80, 86, 89, 90, 100, 103, 107)
 _CUEQUIV_FALLBACK_SHAPES = {(128, 128), (256, 128)}
 
 
@@ -135,14 +135,17 @@ def get_dual_gemm_x_x_op(
 
     ``gate`` selects the epilogue activation. Every backend here accepts it,
     but only the CuTe kernels and the torch fallback implement ``"silu"``, so
-    a silu request never routes to cuEquivariance.
+    a silu request never routes to cuEquivariance. A source-free build takes
+    CuTe only where it packages an image for the shape.
     """
     if gate not in _GATES:
         raise ValueError(f"Unsupported dual_gemm x_x gate {gate!r}; expected one of {_GATES}")
     if dtype not in (torch.float16, torch.bfloat16):
         return _invoke_vanilla_dual_gemm_x_x
     sm = get_sm_version()
-    has_cute_config = sm in _CUTE_SMS and _has_direct_config_for_gate(sm, K, N, gate)
+    has_cute_config = (
+        sm in _CUTE_SMS and _has_direct_config_for_gate(sm, K, N, gate) and ships(sm, dtype, K, N, transpose_out, gate)
+    )
     if has_cute_config:
         return _invoke_cute_dual_gemm_x_x if pair_mask_left_aligned else _invoke_cute_dual_gemm_x_x_masked
     if gate != "sigmoid":

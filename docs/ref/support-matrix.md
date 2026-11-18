@@ -104,32 +104,33 @@ measured results for each in [Benchmarks](benchmark.md). The
 rest of the table works and is not part of that set.
 
 Optimized CuTeDSL kernels cover Ampere through Hopper, plus SM100 / SM103 for
-outer-product mean, the attention epilogue and both dual GEMMs, plus SM100 /
-SM103 / SM107 / SM120 / SM121 for pair-weighted averaging and AdaLN; the kernel
-table below lists the exact SMs per kernel. On SM90, pair-weighted averaging
-runs Hopper TMA + WGMMA kernels at `D=32` and `D=8` and fuses at every size in
-bf16 and fp16. On a 96 GB H100 the fused layer beats eager at every size
-measured, through 12288 tokens, where eager runs out of memory at `D=32` and on
-Protenix. On SM100, both shapes run tcgen05 kernels and fuse at every size in
-bf16 and fp16, as on SM90. The Boltz shape (`D=32`, `c_m=64`) gives a CTA 1, 2
-or 4 MSA rows. `D=8` uses CTA pairs and thread-block clusters that multicast `w`
-and `v`. The layer writes `v` transposed for it, so the kernel loads each head's
-values in 128-byte rows. On B200 the fused layer beats eager at 128-16384 tokens
-with 1-4096 MSA rows, for both shapes and both dtypes, wherever eager fits in
-memory. SM103 runs the SM100 kernels and tables, also at every size; they were
-tuned on B200 and are not measured on B300. SM107 (Vera Rubin) compiles the same
-tcgen05 kernels for `sm_107a` and has its own tile tables, tuned on a Rubin GPU,
-which has 212 SMs against 148 on B200; they were measured on one device. The
-shipped CUBIN pack has no SM107 image until the protected refresh publishes it,
-so a source-free launch there uses PyTorch. SM120 and SM121 fuse D=32 bf16
-through 2048 tokens, where the tables record a win. The committed CUBIN packs
-still have the previous SM90, SM100 and SM103 tiles and no SM120 or SM121 image,
-so a source-free launch with a missing or stale image uses PyTorch. Every SM120
-and SM121 shape stays on the Ampere kernel. Outer-product mean runs CuTeDSL only
-where it has a native kernel and Triton on every other SM80+ SKU. On **SM100**
-and **SM103**, triangle attention falls back to cuEquivariance; on **SM120** and
-**SM121**, triangle attention and both dual GEMMs do. The PyTorch backend still
-*runs* on any of these SKUs; rows below describe which fused kernels apply.
+outer-product mean and the attention epilogue, plus SM100 / SM103 / SM107 for
+both dual GEMMs, plus SM100 / SM103 / SM107 / SM120 / SM121 for pair-weighted
+averaging and AdaLN; the kernel table below lists the exact SMs per kernel. On
+SM90, pair-weighted averaging runs Hopper TMA + WGMMA kernels at `D=32` and
+`D=8` and fuses at every size in bf16 and fp16. On a 96 GB H100 the fused layer
+beats eager at every size measured, through 12288 tokens, where eager runs out
+of memory at `D=32` and on Protenix. On SM100, both shapes run tcgen05 kernels
+and fuse at every size in bf16 and fp16, as on SM90. The Boltz shape (`D=32`,
+`c_m=64`) gives a CTA 1, 2 or 4 MSA rows. `D=8` uses CTA pairs and thread-block
+clusters that multicast `w` and `v`. The layer writes `v` transposed for it, so
+the kernel loads each head's values in 128-byte rows. On B200 the fused layer
+beats eager at 128-16384 tokens with 1-4096 MSA rows, for both shapes and both
+dtypes, wherever eager fits in memory. SM103 runs the SM100 kernels and tables,
+also at every size; they were tuned on B200 and are not measured on B300. SM107
+(Vera Rubin) compiles the same tcgen05 kernels for `sm_107a` and has its own
+tile tables, tuned on a Rubin GPU, which has 212 SMs against 148 on B200; they
+were measured on one device. The shipped CUBIN pack has no SM107 image until the
+protected refresh publishes it, so a source-free launch there uses PyTorch.
+SM120 and SM121 fuse D=32 bf16 through 2048 tokens, where the tables record a
+win. The committed CUBIN packs still have the previous SM90, SM100 and SM103
+tiles and no SM120 or SM121 image, so a source-free launch with a missing or
+stale image uses PyTorch. Every SM120 and SM121 shape stays on the Ampere
+kernel. Outer-product mean runs CuTeDSL only where it has a native kernel and
+Triton on every other SM80+ SKU. On **SM100** and **SM103**, triangle attention
+falls back to cuEquivariance; on **SM120** and **SM121**, triangle attention and
+both dual GEMMs do. The PyTorch backend still *runs* on any of these SKUs; rows
+below describe which fused kernels apply.
 
 | Architecture       | Compute capability | Datacenter / client GPUs     | Optimized kernels                                                                                         |
 | ------------------ | ------------------ | ---------------------------- | --------------------------------------------------------------------------------------------------------- |
@@ -141,7 +142,7 @@ and **SM103**, triangle attention falls back to cuEquivariance; on **SM120** and
 | **Blackwell**      | SM103              | B300, GB300                  | CuTeDSL CUBIN (PWA, OPM, AdaLN, both dual GEMMs, attention epilogue); cuEquivariance (triangle attention) |
 | **Blackwell**      | SM120              | RTX 5090, RTX 6000 Blackwell | CuTeDSL CUBIN (PWA, AdaLN); cuEquivariance (triangle attention, dual GEMM); Triton (OPM)                  |
 | **Blackwell**      | SM121              | DGX Spark (GB10)             | CuTeDSL CUBIN (PWA, AdaLN); cuEquivariance (triangle attention, dual GEMM); Triton (OPM)                  |
-| **Rubin**          | SM107              | Vera Rubin                   | CuTeDSL (PWA, AdaLN, TriMul KF; the CUBIN packs ship after merge); Triton (OPM)                           |
+| **Rubin**          | SM107              | Vera Rubin                   | CuTeDSL (PWA, AdaLN, TriMul KF, both dual GEMMs; the CUBIN packs ship after merge); Triton (OPM)          |
 
 Check the device:
 
@@ -181,24 +182,24 @@ and `bionemo_ir._torch.custom_ops`). Layers wrap the same ops:
 `PairWeightedAveraging`, `OuterProductMean`, `AdaLN`, `LNProjMoveaxisPad`,
 `Transition`, `ConditionedTransitionBlock`, `PairTransition`, `MSATransition`.
 
-| Kernel                              | Used for                                      | Implementation                                                  | SM (optimized)                                | Calling interface                                                                                                                                                                           |
-| ----------------------------------- | --------------------------------------------- | --------------------------------------------------------------- | --------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Triangle attention                  | Pairformer / Evoformer triangle attn          | Heuristic → ClaudeKit CUDA / CuTeDSL CUBIN; else CUEQUIV / SDPA | 80, 86, 89, 90, 100, 103, 107                 | [`create_attention`](../../bionemo_ir/_torch/attention_backend/utils.py) (`AttentionType.TRIANGLE`)                                                                                         |
-| Pairwise attention                  | Token / atom attention with pair bias         | CuTeDSL source (when present) / CUBIN; else SDPA                | 80, 86, 89, 90, 100, 103, 107                 | [`create_attention`](../../bionemo_ir/_torch/attention_backend/utils.py) (`AttentionType.PAIRWISE`)                                                                                         |
-| Windowed atom attention             | Diffusion atom encoder / decoder attention    | CuTeDSL → CUBIN; else SDPA                                      | 80, 86, 89, 90, 100, 103                      | [`auto_select_window_attention_backend`](../../bionemo_ir/_torch/attention_backend/utils.py) → [`create_window_attention`](../../bionemo_ir/_torch/attention_backend/utils.py)              |
-| Dual-GEMM `x_x`                     | Triangle multiplication; SwiGLU projection    | CuTeDSL → CUBIN; else CUEQUIV / PyTorch                         | 80, 86, 89, 90, 100, 103; CUEQUIV on 120, 121 | [`get_dual_gemm_x_x_op`](../../bionemo_ir/_torch/custom_ops/dual_gemm_x_x/ops.py) / [`get_cute_dual_gemm_x_x_op`](../../bionemo_ir/_torch/custom_ops/dual_gemm_x_x/ops.py)                  |
-| Dual-GEMM `x0_x1`                   | Triangle multiplication                       | CuTeDSL → CUBIN; else CUEQUIV                                   | 80, 86, 89, 90, 100, 103; CUEQUIV on 120, 121 | [`get_dual_gemm_x0_x1_op`](../../bionemo_ir/_torch/custom_ops/dual_gemm_x0_x1/ops.py)                                                                                                       |
-| TriMul KF chain                     | Triangle multiplication on padded tokens      | CuTeDSL → CUBIN (bf16)                                          | 90, 100, 103, 107                             | [`get_trimul_kf_k1_op`](../../bionemo_ir/_torch/custom_ops/trimul_kf_k1/ops.py) → `get_trimul_kf_k2_op` → `get_trimul_kf_k3_op`                                                             |
-| Pair-weighted averaging (PWA)       | Pair → single update                          | CuTeDSL → CUBIN                                                 | 80, 90, 100, 103, 107, 120, 121               | [`get_pair_weighted_averaging_op`](../../bionemo_ir/_torch/custom_ops/pair_weighted_averaging/ops.py)                                                                                       |
-| Outer-product mean (OPM)            | Single → pair update                          | CuTeDSL → CUBIN on native SMs (90: bf16); else Triton / PyTorch | 80, 86, 89, 90, 100, 103; Triton on other 80+ | [`get_outer_product_mean_op`](../../bionemo_ir/_torch/custom_ops/outer_product_mean/ops.py)                                                                                                 |
-| Gated sigmoid                       | Attention output gate                         | CuTeDSL → CUBIN                                                 | 80, 86, 89, 90, 100, 103, 107, 120, 121       | [`get_gated_sigmoid_op`](../../bionemo_ir/_torch/custom_ops/gated_sigmoid/ops.py)                                                                                                           |
-| Attention epilogue                  | Attention gate + output projection + residual | CuTeDSL → CUBIN (bf16)                                          | 80, 86, 89, 90, 100, 103                      | [`get_attn_epilogue_op`](../../bionemo_ir/_torch/custom_ops/attn_epilogue/ops.py)                                                                                                           |
-| AdaLN (LayerNorm/RMSNorm + sigmoid) | Diffusion adaptive normalization              | CuTeDSL → CUBIN                                                 | 80, 86, 89, 90, 100, 103, 120, 121            | [`get_adaln_layernorm_sigmoid_op`](../../bionemo_ir/_torch/custom_ops/adaln_layernorm_sigmoid/ops.py)                                                                                       |
-| Fused LN + proj + moveaxis/pad      | Pair-bias LayerNorm + linear + layout         | Triton                                                          | all CUDA                                      | [`LNProjMoveaxisPad`](../../bionemo_ir/_torch/custom_ops/fused_ln_proj_moveaxis_pad.py) / [`fused_ln_proj_moveaxis_pad`](../../bionemo_ir/dsl_kernels/triton/fused_ln_proj_moveaxis_pad.py) |
-| Transition MLP                      | SwiGLU / ReLU transition, hidden kept on chip | CuTeDSL → CUBIN (bf16)                                          | 80, 86, 89, 90, 100, 103                      | [`get_transition_mlp_op`](../../bionemo_ir/_torch/custom_ops/transition_mlp/ops.py)                                                                                                         |
-| Transition with LayerNorm           | ReLU and SwiGLU transitions, C 64 to 384      | CuTeDSL → CUBIN (bf16)                                          | 90, 100, 103                                  | [`get_transition_mlp_w_norm_op`](../../bionemo_ir/_torch/custom_ops/transition_mlp_w_norm/ops.py)                                                                                           |
-| Conditioned transition MLP          | Atom AdaLN + 2-/3-way SwiGLU + gate           | CuTeDSL → CUBIN (bf16); else AdaLN + transition MLP             | 100, 103, 107                                 | [`get_conditioned_transition_mlp_op`](../../bionemo_ir/_torch/custom_ops/conditioned_transition_mlp/ops.py)                                                                                 |
-| Fused SwiGLU                        | Transition / FFN                              | Triton                                                          | all CUDA                                      | [`FusedSwiGLU`](../../bionemo_ir/dsl_kernels/triton/fused_swiglu.py) / [`fused_swiglu`](../../bionemo_ir/dsl_kernels/triton/fused_swiglu.py)                                                |
+| Kernel                              | Used for                                      | Implementation                                                  | SM (optimized)                                     | Calling interface                                                                                                                                                                           |
+| ----------------------------------- | --------------------------------------------- | --------------------------------------------------------------- | -------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Triangle attention                  | Pairformer / Evoformer triangle attn          | Heuristic → ClaudeKit CUDA / CuTeDSL CUBIN; else CUEQUIV / SDPA | 80, 86, 89, 90, 100, 103, 107                      | [`create_attention`](../../bionemo_ir/_torch/attention_backend/utils.py) (`AttentionType.TRIANGLE`)                                                                                         |
+| Pairwise attention                  | Token / atom attention with pair bias         | CuTeDSL source (when present) / CUBIN; else SDPA                | 80, 86, 89, 90, 100, 103, 107                      | [`create_attention`](../../bionemo_ir/_torch/attention_backend/utils.py) (`AttentionType.PAIRWISE`)                                                                                         |
+| Windowed atom attention             | Diffusion atom encoder / decoder attention    | CuTeDSL → CUBIN; else SDPA                                      | 80, 86, 89, 90, 100, 103                           | [`auto_select_window_attention_backend`](../../bionemo_ir/_torch/attention_backend/utils.py) → [`create_window_attention`](../../bionemo_ir/_torch/attention_backend/utils.py)              |
+| Dual-GEMM `x_x`                     | Triangle multiplication; SwiGLU projection    | CuTeDSL → CUBIN; else CUEQUIV / PyTorch                         | 80, 86, 89, 90, 100, 103, 107; CUEQUIV on 120, 121 | [`get_dual_gemm_x_x_op`](../../bionemo_ir/_torch/custom_ops/dual_gemm_x_x/ops.py) / [`get_cute_dual_gemm_x_x_op`](../../bionemo_ir/_torch/custom_ops/dual_gemm_x_x/ops.py)                  |
+| Dual-GEMM `x0_x1`                   | Triangle multiplication                       | CuTeDSL → CUBIN; else CUEQUIV                                   | 80, 86, 89, 90, 100, 103, 107; CUEQUIV on 120, 121 | [`get_dual_gemm_x0_x1_op`](../../bionemo_ir/_torch/custom_ops/dual_gemm_x0_x1/ops.py)                                                                                                       |
+| TriMul KF chain                     | Triangle multiplication on padded tokens      | CuTeDSL → CUBIN (bf16)                                          | 90, 100, 103, 107                                  | [`get_trimul_kf_k1_op`](../../bionemo_ir/_torch/custom_ops/trimul_kf_k1/ops.py) → `get_trimul_kf_k2_op` → `get_trimul_kf_k3_op`                                                             |
+| Pair-weighted averaging (PWA)       | Pair → single update                          | CuTeDSL → CUBIN                                                 | 80, 90, 100, 103, 107, 120, 121                    | [`get_pair_weighted_averaging_op`](../../bionemo_ir/_torch/custom_ops/pair_weighted_averaging/ops.py)                                                                                       |
+| Outer-product mean (OPM)            | Single → pair update                          | CuTeDSL → CUBIN on native SMs (90: bf16); else Triton / PyTorch | 80, 86, 89, 90, 100, 103; Triton on other 80+      | [`get_outer_product_mean_op`](../../bionemo_ir/_torch/custom_ops/outer_product_mean/ops.py)                                                                                                 |
+| Gated sigmoid                       | Attention output gate                         | CuTeDSL → CUBIN                                                 | 80, 86, 89, 90, 100, 103, 107, 120, 121            | [`get_gated_sigmoid_op`](../../bionemo_ir/_torch/custom_ops/gated_sigmoid/ops.py)                                                                                                           |
+| Attention epilogue                  | Attention gate + output projection + residual | CuTeDSL → CUBIN (bf16)                                          | 80, 86, 89, 90, 100, 103                           | [`get_attn_epilogue_op`](../../bionemo_ir/_torch/custom_ops/attn_epilogue/ops.py)                                                                                                           |
+| AdaLN (LayerNorm/RMSNorm + sigmoid) | Diffusion adaptive normalization              | CuTeDSL → CUBIN                                                 | 80, 86, 89, 90, 100, 103, 120, 121                 | [`get_adaln_layernorm_sigmoid_op`](../../bionemo_ir/_torch/custom_ops/adaln_layernorm_sigmoid/ops.py)                                                                                       |
+| Fused LN + proj + moveaxis/pad      | Pair-bias LayerNorm + linear + layout         | Triton                                                          | all CUDA                                           | [`LNProjMoveaxisPad`](../../bionemo_ir/_torch/custom_ops/fused_ln_proj_moveaxis_pad.py) / [`fused_ln_proj_moveaxis_pad`](../../bionemo_ir/dsl_kernels/triton/fused_ln_proj_moveaxis_pad.py) |
+| Transition MLP                      | SwiGLU / ReLU transition, hidden kept on chip | CuTeDSL → CUBIN (bf16)                                          | 80, 86, 89, 90, 100, 103                           | [`get_transition_mlp_op`](../../bionemo_ir/_torch/custom_ops/transition_mlp/ops.py)                                                                                                         |
+| Transition with LayerNorm           | ReLU and SwiGLU transitions, C 64 to 384      | CuTeDSL → CUBIN (bf16)                                          | 90, 100, 103                                       | [`get_transition_mlp_w_norm_op`](../../bionemo_ir/_torch/custom_ops/transition_mlp_w_norm/ops.py)                                                                                           |
+| Conditioned transition MLP          | Atom AdaLN + 2-/3-way SwiGLU + gate           | CuTeDSL → CUBIN (bf16); else AdaLN + transition MLP             | 100, 103, 107                                      | [`get_conditioned_transition_mlp_op`](../../bionemo_ir/_torch/custom_ops/conditioned_transition_mlp/ops.py)                                                                                 |
+| Fused SwiGLU                        | Transition / FFN                              | Triton                                                          | all CUDA                                           | [`FusedSwiGLU`](../../bionemo_ir/dsl_kernels/triton/fused_swiglu.py) / [`fused_swiglu`](../../bionemo_ir/dsl_kernels/triton/fused_swiglu.py)                                                |
 
 The conditioned transition MLP runs from source on SM107. Source-free builds
 fall back to AdaLN and transition MLP until the SM107 CUBIN pack is refreshed.
@@ -262,10 +263,17 @@ transition MLP where it ships for the call, else by the layer's own linears. On
 SM90 the transition MLP ships only for ReLU at 256 → 512 and for SwiGLU at
 128 → 256 without the residual.
 
+SM107 (Vera Rubin) runs both dual GEMMs on the SM100 kernels, compiled for
+`sm_107a`. Its tables keep SM103's anchors, gates and `min_rows`. The `x_x`
+tiles are tuned on Rubin; the `x0_x1` tiles stay SM103's, which a sweep on
+Rubin did not beat. The
+CUBIN packs have no SM107 dual-GEMM image until the protected refresh publishes
+them, so a source-free install there keeps cuEquivariance or PyTorch.
+
 An `x_x` tuning bundle may declare `min_rows`, below which the dual GEMM's fixed
-cost outweighs a separate projection and SwiGLU pass. On SM100 / SM103 the
-768-wide diffusion-token `ConditionedTransitionBlock` therefore takes the Triton
-fused SwiGLU path below 2305 rows (samples × tokens).
+cost outweighs a separate projection and SwiGLU pass. On SM100 / SM103 / SM107
+the 768-wide diffusion-token `ConditionedTransitionBlock` therefore takes the
+Triton fused SwiGLU path below 2305 rows (samples × tokens).
 
 `TriangleMultiplicationNode` runs the TriMul KF chain when its model pads tokens
 (`enable_token_pad`, on by default) and the node is bf16 with a

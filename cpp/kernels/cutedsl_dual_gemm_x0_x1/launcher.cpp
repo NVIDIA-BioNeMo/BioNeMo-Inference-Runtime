@@ -161,7 +161,8 @@ void validate_launch(KernelConfig const& config, LaunchParams const& params)
     throw std::invalid_argument("dual-GEMM x0_x1 residual flag disagrees with its launch ABI");
   if (config.spec.kernel_sm != config.cubin.kernel_sm)
     throw std::invalid_argument("dual-GEMM x0_x1 spec disagrees with its CUBIN about the kernel ABI generation");
-  bool const is_blackwell_target = config.spec.target_sm == 100 || config.spec.target_sm == 103;
+  bool const is_blackwell_target
+    = config.spec.target_sm == 100 || config.spec.target_sm == 103 || config.spec.target_sm == 107;
   if (is_blackwell_target != is_sm100)
     throw std::invalid_argument("dual-GEMM x0_x1 target SM and kernel SM are inconsistent");
   if (config.cubin.non_portable_cluster_size_allowed != (is_sm90 || is_sm100))

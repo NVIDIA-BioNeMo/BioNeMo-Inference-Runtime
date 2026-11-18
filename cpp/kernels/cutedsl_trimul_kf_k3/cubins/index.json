@@ -1,15 +1,19 @@
 {
-  "compile_fingerprint": "dafc91b7158db68af26caf6dd5ddc6a4afdd8057792f9bd5259f60476db34dbb",
+  "compile_fingerprint": "d047be58ae76dabf60e873750820edda936984ad8006624ac1407cc0e2f80712",
   "family": "trimul_kf_k3",
   "format": "bioir-cubin-pack-v2",
   "packs": {
     "sm_100a": {
-      "sha256": "1ca0b4f65441ca7a3b4cc69e4a9d07ec63f3655881606e9bb278bc5000535e20",
-      "size": 109320
+      "sha256": "03a75365ede5efcb82c9f052a8c7ebbcc703c48f42fa7c4aef19831b2033a468",
+      "size": 109288
     },
     "sm_103a": {
-      "sha256": "15c75ecc963dabeea88e3125e05cd17fee99825c5e8755d818e6576174708b2a",
-      "size": 109044
+      "sha256": "885881676d84cbd09a3bfed9dbfdd50c9a7b19624bdd088742eb118a4d9ee5ea",
+      "size": 109376
+    },
+    "sm_107a": {
+      "sha256": "f78e18d0d763af1bb7f66121a31d10ec1a72a754ebd62498948cc45fd4f5dd3b",
+      "size": 103676
     },
     "sm_90a": {
       "sha256": "52ff5732f7f2b498254713fd5fe4af8e97944f536515dc5d1cf7e2cb4667f570",
@@ -19,68 +23,68 @@
   "registry_version": 2,
   "shards": {
     "0": {
-      "sha256": "3966ab8c027f647f691c038212985f1fd8b94f99139bc7c65931756d19132e5b",
-      "size": 8850
+      "sha256": "704b6cf01b26162fa026c3be0e11ba45d4252fbc7828e70835365316ea089830",
+      "size": 12761
     },
     "1": {
-      "sha256": "7bc0c27c30d2184e1d0cb314a2b00e618adc08d1b64214492e4f822b01de13ea",
-      "size": 6249
+      "sha256": "82a62e78eba751dfdb168cbfbe024a96a44e1aaf5147a832eda641826254d219",
+      "size": 6770
     },
     "2": {
-      "sha256": "287ac80983b71b85bbb7d0a0e7c8fd810bf0bb63bd967e333f7913d377ae53e2",
-      "size": 6553
+      "sha256": "e869cc3c4d6b175f24c7ff55e885ae91d4b10d810b2e750cbc249cc73df42a4c",
+      "size": 14382
     },
     "3": {
       "sha256": "dab00d73cee9040763c7ac40293848d9452d54e20e9509d396e12936d0ee3531",
       "size": 13395
     },
     "4": {
-      "sha256": "8dc6e373ce4bc9de6b30c425afd4df23b1a175cbc093a354c5919b47f4ed087e",
-      "size": 3909
+      "sha256": "ef5508e0f6b7f8b47af4c2022415208744270b65534c0bf72356f3480b6a3b9f",
+      "size": 4432
     },
     "5": {
-      "sha256": "741467424e6187638da81b3bfa4c7d2984f328d0b16d60bde4926b3361788065",
+      "sha256": "2f287d0fac6bccd678b67f999ee769494a50b500341f230af134bc3be8939d93",
       "size": 13390
     },
     "6": {
-      "sha256": "d27525477f5e60648fbc87ae3343c13a34c8d7a2c72b073781c603fcafbc2be2",
-      "size": 7767
+      "sha256": "90df3ca360f266af4979bb68af33cb02ed7ec7a8bd52fcc213ec74843ddf76f2",
+      "size": 8289
     },
     "7": {
-      "sha256": "243ea98e40df7e70427363dce0487f2ab98805df98ec3f1bb24ba663c7343433",
-      "size": 3431
+      "sha256": "12f2cb52bd5a81d7c0357f103bda891903c75a1602c33c315505002612c86e9c",
+      "size": 6828
     },
     "8": {
       "sha256": "83ef65c5757520538512eeeb81282e81cf18ea685ec7e9daa3f2fae1f3f6c670",
       "size": 5533
     },
     "9": {
-      "sha256": "43844722c653bee0a76ebb466919de9e055e0e52c6ebd58d99223ba84063b89f",
-      "size": 7603
+      "sha256": "9123144ad9018603b2540bb39bf9b19acee6794f89ce97f705ae49634eba8fd6",
+      "size": 12560
     },
     "a": {
-      "sha256": "87ead70019f4feea46a94be3ac4ac4957412fa802b16b914d3187bbd63f36a9b",
-      "size": 18915
+      "sha256": "44027d0177086289b034c7b7ebb29451023ea9ebd340d867403708a9cc671ebe",
+      "size": 22314
     },
     "b": {
-      "sha256": "554df05b7b65e4c55a1d90a611657853395ebef8a7e373d431973a10e7ae77a3",
-      "size": 11265
+      "sha256": "3efe5d8d1655082e196d6c33abfed75b4ff6189c7243ac8d5b7027589ef6b3c9",
+      "size": 18057
     },
     "c": {
-      "sha256": "16117a707158fbaa037123a96b2881303482eeb5d70171ad109425f34681230a",
-      "size": 4847
+      "sha256": "00ba11435885abce9cadeed6f07a89f9f9fdff3c73f265e69c7e6a0281d33f32",
+      "size": 8240
     },
     "d": {
-      "sha256": "52d2307051ed0b1e71826792d66ed3521936ab0624cd69dc6721adbabc2de34e",
-      "size": 8760
+      "sha256": "d22c6fe44f97e06ab645bd886f176c94ec113f247f6e3b83d88633c09dfe3360",
+      "size": 8761
     },
     "e": {
-      "sha256": "0029a3c6d22b77a03cc64316fc5ef728fd18fa452898d4b1661d08d59ca5952f",
-      "size": 9974
+      "sha256": "6a34fb0997ae578cbc969643a6c1482283860cf66b96a84ed888cf1b95e1f989",
+      "size": 14934
     },
     "f": {
-      "sha256": "bd1f401321a4e52b6aeeb5870f5f4be73509f968e98504961d041488af4c2362",
-      "size": 8406
+      "sha256": "3fa79c5f9549032cb0c15f74040c6ef352217dff56d346bbf4b63e1f9bfb9c1c",
+      "size": 15202
     }
   },
   "toolchain": {

@@ -1,10 +1,35 @@
 {
-  "executables": {},
+  "executables": {
+    "a452286d48f106f6567c3915921010fbf830d41c4a91e72cb61e5246236eddc8": {
+      "dtype": "bf16",
+      "dynamic_smem_bytes": 230400,
+      "image_sha256": "4d3a324016e061625209c2edc58ae60915ed07ddbbcce6a9f24c8c0459b2e9de",
+      "image_size": 229680,
+      "kernel_sm": 100,
+      "kernel_symbol": "8d45277b8d8efed798b22037c19cdfe6af745627fb3c00d7c630e50d87c93f6b",
+      "launch_abi": "conditioned_transition_mlp_sm100_v1",
+      "non_portable_cluster_size_allowed": true,
+      "target_arch": "sm_107a",
+      "target_sm": 107
+    },
+    "a90612693cd9d77579ce855cd72878fc043ae551f5b2bf6afca6b46e7a14adc2": {
+      "dtype": "bf16",
+      "dynamic_smem_bytes": 214016,
+      "image_sha256": "53bfeb33a3fa0cd815e031e9d3b2ab4780762ee06bd8e75248ea45a122f576c6",
+      "image_size": 207608,
+      "kernel_sm": 100,
+      "kernel_symbol": "8d45277b8d8efed798b22037c19cdfe6af745627fb3c00d7c630e50d87c93f6b",
+      "launch_abi": "conditioned_transition_mlp_sm100_v1",
+      "non_portable_cluster_size_allowed": true,
+      "target_arch": "sm_107a",
+      "target_sm": 107
+    }
+  },
   "kernel_symbols": {},
   "sm90_launches": {},
   "variants": [
     {
-      "executable": "fb3fed739879b382e200cce8c873d9c301e5b475049c284785f711c569f97f0a",
+      "executable": "5c78de1f38ce5fed243ee7bc59d18759d678493c2ad16151c9642fbba60b15e6",
       "runtime_metadata": {
         "cond_stage": true,
         "hidden": 256,
@@ -122,7 +147,7 @@
         "tile_m": 256,
         "width": 128
       },
-      "variant_id": "c55bcbefbcb649dc98e4"
+      "variant_id": "a855e71a08ab91e4b7ed"
     }
   ]
 }

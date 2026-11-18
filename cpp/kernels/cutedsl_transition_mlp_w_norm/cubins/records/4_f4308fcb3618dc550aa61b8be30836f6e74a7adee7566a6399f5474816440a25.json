@@ -12,14 +12,14 @@
       "target_arch": "sm_100a",
       "target_sm": 100
     },
-    "46903d78bfa2eaa47a88679a1d1de1ae1256f294278aedb213b7e03a17e30331": {
+    "4ba4302f3aa3c828e7a0904f7091409f083538c89aa089bdd6c3b8c871d17ddc": {
       "dtype": "bf16",
-      "dynamic_smem_bytes": 231424,
-      "image_sha256": "df54faba163638830a6ba728d44e16980e55ce513692a20489ac2d9315ae2c8c",
-      "image_size": 226760,
+      "dynamic_smem_bytes": 135168,
+      "image_sha256": "b6d11ed003b886fb288ece361af3ea57bf25d1946bf91df27b1f37e7d6fa9289",
+      "image_size": 122144,
       "kernel_sm": 100,
       "kernel_symbol": "d8d26e80619e41475890b8f1afd825b2e2343fea5d466d02155bdbcaedaeaf11",
-      "launch_abi": "transition_mlp_w_norm_sm100_v1",
+      "launch_abi": "transition_mlp_w_norm_sm100_output_v2",
       "non_portable_cluster_size_allowed": true,
       "target_arch": "sm_103a",
       "target_sm": 103

@@ -22,6 +22,18 @@
       "target_arch": "sm_90a",
       "target_sm": 90
     },
+    "2415ac8d68e7c773f404d413deced886e7c61005cffa2a3d06f302dc1542dc31": {
+      "dtype": "bf16",
+      "dynamic_smem_bytes": 219136,
+      "image_sha256": "b808fef726793251b0a3aa09432937daac3c7880f4cfe534fc8767c33fb73959",
+      "image_size": 124400,
+      "kernel_sm": 100,
+      "kernel_symbol": "d8d26e80619e41475890b8f1afd825b2e2343fea5d466d02155bdbcaedaeaf11",
+      "launch_abi": "transition_mlp_w_norm_sm100_output_v2",
+      "non_portable_cluster_size_allowed": true,
+      "target_arch": "sm_100a",
+      "target_sm": 100
+    },
     "255942eb2d276031ce776346d83bfb8ca2eb13e7e3e8b07969f64ef3b23f22e8": {
       "dtype": "bf16",
       "dynamic_smem_bytes": 203776,
@@ -30,18 +42,6 @@
       "kernel_sm": 100,
       "kernel_symbol": "37de5e40b1dc650a0657319fd29ab7d9a83d99a9d1780cc5710e1723394ca17a",
       "launch_abi": "transition_mlp_w_norm_sm100_v1",
-      "non_portable_cluster_size_allowed": true,
-      "target_arch": "sm_103a",
-      "target_sm": 103
-    },
-    "26f62dcf85db3af83495cbdc5edb97dc171d9894772464c7fc4b772162fdc495": {
-      "dtype": "bf16",
-      "dynamic_smem_bytes": 135168,
-      "image_sha256": "02f6fa41732b6eee1611178a91b548cd92ba162cddf90c8afe26f65dae50fc84",
-      "image_size": 127680,
-      "kernel_sm": 100,
-      "kernel_symbol": "d8d26e80619e41475890b8f1afd825b2e2343fea5d466d02155bdbcaedaeaf11",
-      "launch_abi": "transition_mlp_w_norm_sm100_output_v2",
       "non_portable_cluster_size_allowed": true,
       "target_arch": "sm_103a",
       "target_sm": 103
@@ -81,7 +81,7 @@
       "variant_id": "21a43708b6ae7198adf3"
     },
     {
-      "executable": "d33cd95ef96a9c064b202ee1b18b9e301314e35049dce2f4eb7fd58dc27f669c",
+      "executable": "72e6522e46913648f6478755a455d7731e6ddc610074d281593e02add71f2a15",
       "runtime_metadata": {
         "ctas_per_sm": 1,
         "hidden": 256,

@@ -21,6 +21,7 @@ from typing import Any
 
 import torch
 
+from bionemo_ir._torch.custom_ops.transition_mlp_w_norm._config import f16_gemm2
 from bionemo_ir._torch.utils.kernel import (
     CuTeDSLKernelLibraryExecutable,
     CuTeDSLKernelVariantUnavailable,
@@ -33,6 +34,8 @@ from bionemo_ir._torch.utils.kernel import (
 LAUNCH_ABI = "transition_mlp_w_norm_sm90_v3"
 SM100_LAUNCH_ABI = "transition_mlp_w_norm_sm100_v1"
 SM100_OUTPUT_LAUNCH_ABI = "transition_mlp_w_norm_sm100_output_v2"
+#: The ReLU whose GEMM2 runs in fp16 (``_config.F16_WIDTHS``): its pack holds W2 in fp16.
+SM100_F16_LAUNCH_ABI = "transition_mlp_w_norm_sm100_f16_v1"
 
 
 class TransitionMlpWNormCubinExecutable(CuTeDSLKernelLibraryExecutable):
@@ -62,6 +65,8 @@ class TransitionMlpWNormCubinExecutable(CuTeDSLKernelLibraryExecutable):
         expected_abi = SM100_LAUNCH_ABI if target_sm in (100, 103) else LAUNCH_ABI
         if target_sm in (100, 103) and activation == "silu_gate" and width <= 128:
             abi_attribute, expected_abi = "SM100_OUTPUT_LAUNCH_ABI", SM100_OUTPUT_LAUNCH_ABI
+        if target_sm in (100, 103) and f16_gemm2(width, activation, "sm100"):
+            abi_attribute, expected_abi = "SM100_F16_LAUNCH_ABI", SM100_F16_LAUNCH_ABI
         if activations is None or getattr(launcher, abi_attribute, None) != expected_abi:
             raise CuTeDSLKernelVariantUnavailable(
                 f"this fused transition CUBIN library predates launch ABI {expected_abi}"

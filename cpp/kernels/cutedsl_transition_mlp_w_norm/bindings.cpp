@@ -79,6 +79,7 @@ void bind(nb::module_& parent)
   module.attr("LAUNCH_ABI") = "transition_mlp_w_norm_sm90_v3";
   module.attr("SM100_LAUNCH_ABI") = "transition_mlp_w_norm_sm100_v1";
   module.attr("SM100_OUTPUT_LAUNCH_ABI") = "transition_mlp_w_norm_sm100_output_v2";
+  module.attr("SM100_F16_LAUNCH_ABI") = "transition_mlp_w_norm_sm100_f16_v1";
   module.def("kernel_specs", &kernel_specs, "Return every registered fused transition image.");
   module.def(
     "supports_layout",

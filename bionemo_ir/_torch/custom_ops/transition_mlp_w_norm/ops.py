@@ -57,6 +57,8 @@ A_REGS_WIDTH = {"relu": 128}
 SM100_WIDTHS = {"relu": (64, 128, 256, 384), "silu_gate": (64, 128, 256)}
 # The kernel bulk-copies z and the weight image and stores the output 16 bytes at a time.
 _ALIGNMENT_BYTES = 16
+# fp16's largest finite value, where an fp16 GEMM2's hidden activations and released updates saturate.
+_F16_MAX = torch.finfo(torch.float16).max
 # One backend per SM version, so a process that drives GPUs of different SMs gets each its own configs.
 _transition_mlp_w_norm_instances: dict[int, TransitionMlpWNormCuTe] = {}
 # SM version per CUDA device index, read once: an op runs only on devices of its backend's SM.
@@ -210,8 +212,13 @@ def pack_weights(
     :func:`~bionemo_ir._torch.custom_ops.trimul_kf_k3.ops.centre_rows_bf16` so that the bf16 row still sums to about
     zero and the mean of ``z`` drops out, and ``b1' = b1 + W1 beta``. SwiGLU folds both halves of W1 alike and then
     halves the gate rows and their bias, exactly in bf16 and fp32: the kernel takes ``g / 2`` for
-    ``silu(g) = (g / 2) (1 + tanh(g / 2))``. The fold is fixed for fixed weights, keeps no autograd history and
-    records no host synchronization, so it can run under graph capture. A missing bias is zero.
+    ``silu(g) = (g / 2) (1 + tanh(g / 2))``. The fold is fixed for fixed weights and keeps no autograd history. Where
+    GEMM2 runs in fp16, it bounds every hidden activation and update from the weights alone, for any ``z`` and a mask
+    in ``[-1, 1]``: LayerNorm leaves a row with zero sum and a norm below ``sqrt(C)``, so a hidden activation is at
+    most ``sqrt(C) |W1'_j| + |b1'_j|`` and an update at most ``|W2|`` times those bounds plus ``|b2|``. It refuses
+    weights whose bound passes half of fp16's largest value (65504), the rest left for rounding, and a W2 that fp16
+    cannot hold. The check costs one host synchronization; under graph capture, where it cannot run, the fold raises.
+    A missing bias is zero.
 
     Args:
         norm_weight: ``[C]`` LayerNorm weight ``gamma``.
@@ -262,7 +269,32 @@ def pack_weights(
             exact = exact - exact.mean(dim=-1, keepdim=True)
             correction = (exact - folded.double()).to(_SUPPORTED_DTYPE)
             folded = torch.cat([folded, correction], dim=-1)
-        image = torch.cat([folded.reshape(-1), w2.to(_SUPPORTED_DTYPE).reshape(-1)]).contiguous()
+        # Where GEMM2 runs in fp16, W2 goes in fp16 (exact for bf16 weights in its normal range) as bf16-typed bits.
+        w2_image = w2.to(_SUPPORTED_DTYPE)
+        if _config.f16_gemm2(width, activation, kernel_abi):
+            w2_half = w2.to(torch.float16)
+            # One host sync checks both: graph capture cannot sync.
+            if w2.is_cuda and torch.cuda.is_current_stream_capturing():
+                raise ValueError(f"the fused transition cannot check its fp16 range at C = {width} under graph capture")
+            # ``exact`` holds the centred rows of W1 diag(gamma), so a LayerNorm row x (sum 0, |x| < sqrt(C)) gives
+            # |exact_j x| <= sqrt(C) |exact_j|.
+            hidden_bound = width**0.5 * exact.norm(dim=-1) + folded_bias.double().abs()
+            update_bound = w2.double().abs() @ hidden_bound + bias2.double().abs()
+            w2_overflow, bound = torch.stack(
+                [(w2_half.isinf() & w2.isfinite()).any().double(), update_bound.max().maximum(hidden_bound.max())]
+            ).tolist()
+            if w2_overflow:
+                raise ValueError(
+                    f"the fused transition runs GEMM2 in fp16 at C = {width}, but W2 holds finite values beyond "
+                    f"fp16's range (|w| > {_F16_MAX:g})"
+                )
+            if not bound <= _F16_MAX / 2:
+                raise ValueError(
+                    f"the fused transition runs GEMM2 in fp16 at C = {width}, but these weights bound a hidden "
+                    f"activation or update only by {bound:g}, past half of fp16's range ({_F16_MAX / 2:g})"
+                )
+            w2_image = w2_half.view(_SUPPORTED_DTYPE)
+        image = torch.cat([folded.reshape(-1), w2_image.reshape(-1)]).contiguous()
         folded_bias = _sm100_bias_order(folded_bias, hidden, activation)
     else:
         image = _weight_image(folded, w2.to(_SUPPORTED_DTYPE), activation)
@@ -315,7 +347,12 @@ def _overlaps(a: torch.Tensor, b: torch.Tensor) -> bool:
 
 @dataclass(frozen=True)
 class TransitionMlpWNormOp:
-    """The fused transition bound to one ``(width, hidden, activation)``; see :func:`get_transition_mlp_w_norm_op`."""
+    """The fused transition bound to one ``(width, hidden, activation)``; see :func:`get_transition_mlp_w_norm_op`.
+
+    On Blackwell, ReLU at a width in ``_config.F16_WIDTHS`` (C = 384) runs GEMM2 in fp16. :func:`pack_weights`
+    refuses weights that could drive a hidden activation or update past half of fp16's largest value (65504) for any
+    ``z`` and a mask in ``[-1, 1]``, so neither reaches the kernel's saturation at 65504.
+    """
 
     backend: TransitionMlpWNormCuTe
     width: int

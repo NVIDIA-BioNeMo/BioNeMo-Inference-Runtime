@@ -208,7 +208,9 @@ class _Sm100Spec:
     (for example 2-SM ``tcgen05`` UMMA) needs; ``rank`` is the TMA rank.
     ``ranks`` and ``optional`` work as in :class:`_Sm90Spec`. ``kernels``, when
     set, lists each kernel's cluster shape with its descriptors' ranks in
-    ``operands`` order; an image must match one of them.
+    ``operands`` order; an image must match one of them. ``fp16_operands``
+    pairs an operand with the launch ABI under which its map is FP16 whatever
+    the variant dtype, as for a GEMM that a BF16 image runs in FP16.
     """
 
     enabled_field: str
@@ -218,6 +220,7 @@ class _Sm100Spec:
     ranks: tuple[int | tuple[int, ...], ...] = ()
     optional: tuple[tuple[str, int | tuple[int, ...]], ...] = ()
     kernels: tuple[tuple[tuple[int, int, int], tuple[int, ...]], ...] = ()
+    fp16_operands: tuple[tuple[str, str], ...] = ()
 
     @property
     def declared_operands(self) -> tuple[str, ...]:
@@ -475,7 +478,15 @@ _FAMILY_SPECS: dict[str, _FamilySpec] = {
             _Field("is_persistent", _BOOL, "bool is_persistent;", default=False),
         ),
         runtime_key=("is_bfloat16", "width", "hidden", "is_silu_gate", "is_persistent"),
-        sm100=_Sm100Spec("enabled", ("x", "w1", "w2"), clusters=True, ranks=(2, (3, 4), 2), optional=(("output", 2),)),
+        # The C384 ReLU image runs GEMM2 in FP16, so it reads W2 as FP16.
+        sm100=_Sm100Spec(
+            "enabled",
+            ("x", "w1", "w2"),
+            clusters=True,
+            ranks=(2, (3, 4), 2),
+            optional=(("output", 2),),
+            fp16_operands=(("w2", "transition_mlp_w_norm_sm100_f16_v1"),),
+        ),
     ),
     # A sample-major image maps x and the output as [atoms, C, samples] (rank 3), the others as rows (rank 2).
     "conditioned_transition_mlp": _FamilySpec(
@@ -998,7 +1009,9 @@ def _validate_sm90_launch(spec: _Sm90Spec, value: object, where: str, dtype: str
             _validate_tma_descriptor(descriptors[name], f"{where}.tma_descriptors.{name}", dtype, rank)
 
 
-def _validate_sm100_launch(spec: _Sm100Spec, value: object, where: str, dtype: str, kernel_sm: int) -> None:
+def _validate_sm100_launch(
+    spec: _Sm100Spec, value: object, where: str, dtype: str, kernel_sm: int, launch_abi: str
+) -> None:
     if kernel_sm != 100:
         if value is not None:
             _fail(f"{where} must be null for a non-SM100 kernel ABI")
@@ -1026,7 +1039,8 @@ def _validate_sm100_launch(spec: _Sm100Spec, value: object, where: str, dtype: s
     ranks = spec.ranks or (spec.rank,) * len(spec.operands)
     for name, rank in (*zip(spec.operands, ranks, strict=True), *spec.optional):
         if name in descriptors:
-            _validate_tma_descriptor(descriptors[name], f"{where}.tma_descriptors.{name}", dtype, rank)
+            operand_dtype = "f16" if (name, launch_abi) in spec.fp16_operands else dtype
+            _validate_tma_descriptor(descriptors[name], f"{where}.tma_descriptors.{name}", operand_dtype, rank)
     recorded_ranks = tuple(descriptors[name]["rank"] for name in spec.operands)
     if spec.kernels and (cluster, recorded_ranks) not in spec.kernels:
         expected = " or ".join(f"cluster {list(c)} with ranks {list(r)}" for c, r in spec.kernels)
@@ -1160,6 +1174,7 @@ def _validate_metadata(family: str, variant: VariantRecord, where: str) -> None:
             f"{where}.sm100_launch",
             variant.dtype,
             variant.kernel_sm,
+            variant.launch_abi,
         )
     if "num_threads" in metadata and cast(int, metadata["num_threads"]) > 1024:
         _fail(f"{where}.num_threads exceeds 1024")

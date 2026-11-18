@@ -937,6 +937,28 @@ def test_normalized_transition_optional_output_map_materializes(
     assert source.count("CU_TENSOR_MAP_DATA_TYPE_BFLOAT16") == 3 + int(with_output)
 
 
+@pytest.mark.parametrize("f16_abi", (False, True), ids=("bf16_abi", "f16_abi"))
+def test_transition_mlp_w_norm_fp16_gemm2_abi_takes_an_fp16_w2_map(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, f16_abi: bool
+) -> None:
+    """The launcher encodes W2 as FP16 under the FP16 GEMM2 ABI, so only that ABI's record may type W2 as FP16."""
+    metadata = _normalized_transition_blackwell_metadata(False)
+    w2 = metadata["sm100_launch"]["tma_descriptors"]["w2"]
+    metadata["sm100_launch"]["tma_descriptors"]["w2"] = {**w2, "data_type": "float16"}
+    monkeypatch.setattr(sys.modules[__name__], "_metadata", lambda *_args: metadata.copy())
+    family = "transition_mlp_w_norm"
+    abi = "transition_mlp_w_norm_sm100_f16_v1" if f16_abi else None
+    index = _write_case(tmp_path / "source", family, kernel_sm=100, launch_abi=abi)
+    if not f16_abi:
+        with pytest.raises(materializer.MaterializationError, match=r"w2\.data_type does not match"):
+            materializer.verify_packs([(family, index)])
+        return
+    result = materializer.materialize([(family, index)], tmp_path / "build")
+    source = (result.output_dir / f"{family}_registry.cpp").read_text()
+    assert source.count("CU_TENSOR_MAP_DATA_TYPE_BFLOAT16") == 2
+    assert source.count("CU_TENSOR_MAP_DATA_TYPE_FLOAT16") == 1
+
+
 @pytest.mark.parametrize("is_silu_gate", (False, True), ids=("relu", "swiglu"))
 @pytest.mark.parametrize("change", ("missing_launch", "missing_map", "wrong_rank", "missing_cluster", "output_rank"))
 def test_transition_mlp_w_norm_blackwell_registry_rejects_incomplete_descriptor_groups(

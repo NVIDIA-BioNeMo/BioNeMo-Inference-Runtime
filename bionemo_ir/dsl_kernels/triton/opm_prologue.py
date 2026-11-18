@@ -34,6 +34,7 @@ import triton
 import triton.language as tl
 
 from bionemo_ir.dsl_kernels.triton_cache import CachedKernel, TritonKernelCache
+from bionemo_ir.utils import get_sm_version
 
 __all__ = ["OpmPrologue"]
 
@@ -41,6 +42,8 @@ __all__ = ["OpmPrologue"]
 # P S173 N960 and S1024 N768. A sequence-last store wants many sequences of one token; a
 # plain store wants many tokens of one sequence.
 _TILES = {False: (1, 128, 4), True: (256, 1, 4)}
+# Triton 3.7 cannot compile for sm_107a (its LLVM does not know the target).
+_NO_TRITON_SMS = (107,)
 
 
 @triton.jit(do_not_specialize=["S", "I", "I_PAD", "PITCH", "eps"])
@@ -134,13 +137,19 @@ class OpmPrologue(TritonKernelCache):
     _global_cache: dict[tuple, CachedKernel] = {}
 
     @staticmethod
-    def serves(dtype: torch.dtype, K: int, c_hidden: int) -> bool:
-        """Whether the kernel serves a 16-bit ``m`` of ``K`` channels (a power of two) projected to ``c_hidden``."""
+    def serves(dtype: torch.dtype, K: int, c_hidden: int, device: torch.device | int | None = None) -> bool:
+        """Whether the kernel serves a 16-bit ``m`` of ``K`` channels (a power of two) projected to ``c_hidden``.
+
+        Not on an SM Triton cannot compile for (:data:`_NO_TRITON_SMS`): the layer then normalizes and projects in
+        PyTorch and still hands ``a``/``b`` to the fused op. ``device`` is the GPU ``m`` lives on (default: the
+        current one).
+        """
         return (
             dtype in (torch.float16, torch.bfloat16)
             and 16 <= K <= 256
             and K & (K - 1) == 0
             and c_hidden in (16, 32, 64)
+            and not (torch.cuda.is_available() and get_sm_version(device) in _NO_TRITON_SMS)
         )
 
     @staticmethod
@@ -151,7 +160,7 @@ class OpmPrologue(TritonKernelCache):
             and m.dim() == 4
             and mask.dtype == m.dtype
             and mask.shape == m.shape[:-1]
-            and OpmPrologue.serves(m.dtype, m.shape[-1], c_hidden)
+            and OpmPrologue.serves(m.dtype, m.shape[-1], c_hidden, m.device)
         )
 
     def prepare(self, dtype: torch.dtype, K: int, c_hidden: int, has_bias: bool, chunks: tuple[int, ...] = ()) -> None:

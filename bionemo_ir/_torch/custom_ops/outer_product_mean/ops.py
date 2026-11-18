@@ -39,6 +39,7 @@ _CUTE_NATIVE = {
     90: (torch.bfloat16,),
     100: (torch.float16, torch.bfloat16),
     103: (torch.float16, torch.bfloat16),
+    107: (torch.float16, torch.bfloat16),
 }
 # Deepest MSA the SM100 kernel serves; past it the Triton kernel is faster or unmeasured. On B200, with
 # sm100.json's cc = 8 streaming tiles and the prologue's sequence-last a, timed interleaved with Triton at either
@@ -47,6 +48,9 @@ _CUTE_NATIVE = {
 # this has not been remeasured on B300.
 _SM100_MAX_S_BY_SIDE = ((320, 16384), (0, 8192))
 _SM103_MAX_S = {128: 1536, 256: 1024}
+# Triton 3.7 cannot compile for sm_107a (its LLVM does not know the target). There the SM100 kernel serves every MSA
+# depth, and the calls it does not take (an empty MSA, a kernel library without the SM's CUBIN) run in PyTorch.
+_NO_TRITON_SMS = (107,)
 # Triton's BF16 dot needs SM80.
 _TRITON_MIN_SM = 80
 _TRITON_DTYPES = (torch.float16, torch.bfloat16)
@@ -83,7 +87,9 @@ def _invoke_triton_opm(
     bias: torch.Tensor | None = None,
     norm_before: bool = True,
 ) -> torch.Tensor:
-    """Run the Triton backend."""
+    """Run the Triton backend, or PyTorch on an SM Triton cannot compile for."""
+    if get_sm_version() in _NO_TRITON_SMS:
+        return _invoke_vanilla_opm(a, b, num_mask, W_o, bias, norm_before)
     return dense_outer_product(a, b, num_mask, W_o, bias, norm_before)
 
 
@@ -130,6 +136,8 @@ def _cute_serves_call(sm: int, S: int, C_z: int, I: int, J: int) -> bool:
         return True
     if C_z not in _SUPPORTED_CZ:
         return False
+    if sm in _NO_TRITON_SMS:
+        return True
     if sm == 103:
         return S <= _SM103_MAX_S[C_z]
     side = math.sqrt(float(I) * float(J))

@@ -60,7 +60,7 @@ from tests._torch import (
     source_module_available,
 )
 
-_CUTEDSL_SM = (80, 86, 89, 90, 100, 103)
+_CUTEDSL_SM = (80, 86, 89, 90, 100, 103, 107)
 _SOURCE_MODULE = "bionemo_ir._torch.custom_ops.outer_product_mean._source"
 _CUTEDSL_MODES = cutedsl_test_modes(_SOURCE_MODULE)
 
@@ -297,7 +297,7 @@ def test_outer_product_mean_cute_unaligned(mode, dtype, B, S, I, J, C_z, has_bia
     _assert_matches_fp32_reference(result, a, b, num_mask, weight, bias, norm_before)
 
 
-@pytest.mark.skipif(SM_VERSION not in (100, 103), reason="the SM100 kernel runs on SM100 and SM103")
+@pytest.mark.skipif(SM_VERSION not in (100, 103, 107), reason="the SM100 kernel runs on SM100, SM103 and SM107")
 @pytest.mark.parametrize("norm_before", [False, True], ids=["norm_after", "norm_before"])
 @pytest.mark.parametrize("C_z", [128, 256], ids=["cz128", "cz256"])
 def test_outer_product_mean_sm100_empty_msa(C_z, norm_before):
@@ -340,7 +340,7 @@ def test_outer_product_mean_cubin_rejects_wrong_static_tail(operand, tail):
     library = require_cubin_library()
     _require_cutedsl_mode("cubin")
 
-    sm100 = SM_VERSION in (100, 103)
+    sm100 = SM_VERSION in (100, 103, 107)
     if sm100 and operand == "a":
         pytest.skip("the SM100 kernel takes a relaid, with no static channel tail")
 
@@ -429,9 +429,9 @@ def test_outer_product_mean_op_selector():
 
 
 @pytest.mark.parametrize("force_cubin", [False, True], ids=["auto", "force_cubin"])
-@pytest.mark.parametrize("sm", [100, 103])
+@pytest.mark.parametrize("sm", [100, 103, 107])
 def test_outer_product_mean_blackwell_selection(monkeypatch, sm, force_cubin):
-    """SM100/103 select the tcgen05 CuTe kernel, which runs from source or from its CUBINs alike."""
+    """SM100/103/107 select the tcgen05 CuTe kernel, which runs from source or from its CUBINs alike."""
     # Public backend selection lives in ops.py; patch it where it is defined.
     monkeypatch.setattr(opm_ops.ops, "get_sm_version", lambda: sm)
     monkeypatch.setenv(FORCE_CUBIN_ENV, "1" if force_cubin else "0")
@@ -450,9 +450,9 @@ def _route_cute_call(monkeypatch, sm: int, S: int, C_z: int, side: int = 1) -> s
     return opm_ops.ops._invoke_cute_opm(a, a, None, torch.empty(C_z, 1024, device="meta"), None, False)
 
 
-@pytest.mark.parametrize("sm", [100, 103])
+@pytest.mark.parametrize("sm", [100, 103, 107])
 def test_outer_product_mean_sm100_forced_cubin_at_call_time(monkeypatch, sm):
-    """A layer built before CUBINs are forced still runs the CuTe op on SM100/103: the CUBINs serve its call."""
+    """A layer built before CUBINs are forced still runs the CuTe op on SM100/103/107: the CUBINs serve its call."""
     monkeypatch.setenv(FORCE_CUBIN_ENV, "1")
     for C_z in (128, 256):
         assert _route_cute_call(monkeypatch, sm, 173, C_z) == "cute"
@@ -462,12 +462,43 @@ def test_outer_product_mean_sm100_forced_cubin_at_call_time(monkeypatch, sm):
 @pytest.mark.parametrize("C_z,sm103_max_s", [(128, 1536), (256, 1024)], ids=["cz128", "cz256"])
 def test_outer_product_mean_sm100_deep_msa_takes_triton(monkeypatch, C_z, sm103_max_s, force_cubin):
     """Past its measured crossover depth the SM100 kernel hands the call to Triton in either mode: on SM100 at a
-    depth set by the pair side, on SM103 per C_z. Other SMs have no cap."""
+    depth set by the pair side, on SM103 per C_z. SM107, where Triton cannot compile, and other SMs have no cap."""
     monkeypatch.setenv(FORCE_CUBIN_ENV, "1" if force_cubin else "0")
     for sm, side, max_s in ((100, 320, 16384), (100, 319, 8192), (103, 384, sm103_max_s), (103, 256, sm103_max_s)):
         assert _route_cute_call(monkeypatch, sm, max_s, C_z, side) == "cute"
         assert _route_cute_call(monkeypatch, sm, max_s + 1, C_z, side) == "triton"
     assert _route_cute_call(monkeypatch, 90, 16384, C_z, 256) == "cute"
+    for side in (64, 960):
+        assert _route_cute_call(monkeypatch, 107, 1 << 20, C_z, side) == "cute"
+
+
+def test_outer_product_mean_triton_fallback_runs_pytorch_on_sm107(monkeypatch):
+    """Triton cannot compile for sm_107a, so the calls SM107 hands to Triton (an empty MSA, a library without its
+    CUBIN) run the PyTorch reference there instead; other SMs keep Triton."""
+
+    def triton(*_args):
+        return "triton"
+
+    monkeypatch.setattr(opm_ops.ops, "dense_outer_product", triton)
+    monkeypatch.setattr(opm_ops.ops, "_invoke_vanilla_opm", lambda *args: "pytorch")
+    for sm, expected in ((107, "pytorch"), (103, "triton"), (90, "triton")):
+        monkeypatch.setattr(opm_ops.ops, "get_sm_version", lambda sm=sm: sm)
+        assert opm_ops.ops._invoke_triton_opm(None, None, None, None, None, False) == expected
+
+
+def test_outer_product_mean_prologue_steps_aside_on_sm107(monkeypatch):
+    """The layer's Triton prologue declines SM107, so the layer normalizes and projects in PyTorch there and still
+    reaches the CuTe op, instead of compiling a kernel Triton cannot build."""
+    from bionemo_ir.dsl_kernels.triton import opm_prologue
+
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    for sm, served in ((107, False), (103, True), (90, True)):
+        monkeypatch.setattr(opm_prologue, "get_sm_version", lambda device=None, sm=sm: sm)
+        assert opm_prologue.OpmPrologue.serves(torch.bfloat16, 128, 32) == served, sm
+    # The check reads the SM of the operand's GPU, not the current one.
+    monkeypatch.setattr(opm_prologue, "get_sm_version", lambda device=None: 107 if device == 1 else 103)
+    assert opm_prologue.OpmPrologue.serves(torch.bfloat16, 128, 32)
+    assert not opm_prologue.OpmPrologue.serves(torch.bfloat16, 128, 32, 1)
 
 
 def test_outer_product_mean_config_selects_n_bucket_before_s():
@@ -497,11 +528,11 @@ def test_outer_product_mean_sm90_config_selection(C_z):
     assert not isinstance(select_opm_config(90, 824, 824, 600, True, True, "fp16", C_z=C_z), Sm90KernelConfig)
 
 
-@pytest.mark.parametrize("sm", [100, 103])
+@pytest.mark.parametrize("sm", [100, 103, 107])
 @pytest.mark.parametrize("dtype_str", ["bf16", "fp16"])
 @pytest.mark.parametrize("C_z", [128, 256], ids=["cz128", "cz256"])
 def test_outer_product_mean_sm100_config_selection(sm, dtype_str, C_z):
-    """SM100/103 select the tcgen05 tile for their C_z; the bf16-tuned tiles serve fp16 and every flag."""
+    """SM100/103/107 select the tcgen05 tile for their C_z; the bf16-tuned tiles serve fp16 and every flag."""
     for I, S, norm_before, has_bias in ((960, 173, False, True), (37, 5, True, False), (4000, 2000, True, True)):
         config, variants = _select_opm_config_bucket(sm, I, I, S, norm_before, has_bias, dtype_str, C_z=C_z)
         assert isinstance(config, Sm100KernelConfig)
@@ -540,7 +571,7 @@ def test_outer_product_mean_sm100_selects_nearest_tile_that_holds_s(sm):
             assert config == sm100_default_config("bf16", C_z), (S, C_z)
 
 
-@pytest.mark.parametrize("sm", [100, 103])
+@pytest.mark.parametrize("sm", [100, 103, 107])
 @pytest.mark.parametrize("C_z", [128, 256], ids=["cz128", "cz256"])
 def test_outer_product_mean_a_chunks_cover_every_selectable_tile(monkeypatch, sm, C_z):
     """Every tile the SM100 selector can pick takes ``a`` in a chunk that ``outer_product_mean_a_chunks`` lists, so a
@@ -555,7 +586,7 @@ def test_outer_product_mean_a_chunks_cover_every_selectable_tile(monkeypatch, sm
     assert opm_ops.outer_product_mean_a_chunks(C_z, torch.bfloat16) == ()
 
 
-def _sm100_configs(sms: tuple[int, ...] = (100, 103)) -> list[Sm100KernelConfig]:
+def _sm100_configs(sms: tuple[int, ...] = (100, 103, 107)) -> list[Sm100KernelConfig]:
     """Every tile the interface can select on ``sms``: the bundles' entries and the per-C_z defaults."""
     import json
 
@@ -574,14 +605,20 @@ def _sm100_configs(sms: tuple[int, ...] = (100, 103)) -> list[Sm100KernelConfig]
 
 
 def _require_sm100():
-    if SM_VERSION not in (100, 103):
-        pytest.skip("the SM100 OPM kernel runs on SM100/103")
+    if SM_VERSION not in (100, 103, 107):
+        pytest.skip("the SM100 OPM kernel runs on SM100/103/107")
+
+
+def _require_triton():
+    """The layer's prologue (and the Triton OPM) cannot compile on an SM Triton's LLVM does not know."""
+    if SM_VERSION in opm_ops.ops._NO_TRITON_SMS:
+        pytest.skip(f"Triton cannot compile for sm_{SM_VERSION}a")
 
 
 def _require_cutedsl_mode(mode: str):
     if SM_VERSION not in _CUTEDSL_SM:
         pytest.skip(f"OPM CUBINs do not target SM{SM_VERSION}")
-    if mode == "cubin" and SM_VERSION in (100, 103):
+    if mode == "cubin" and SM_VERSION in (100, 103, 107):
         _require_sm100_cubins(SM_VERSION)
 
 
@@ -631,8 +668,7 @@ def test_outer_product_mean_sm100_every_tile(config, monkeypatch):
     if not _runs_from_source():
         _require_sm100_cubins(SM_VERSION)
     if not _runs_from_source() and config not in _sm100_configs((SM_VERSION,)):
-        other_sm = 103 if SM_VERSION == 100 else 100
-        pytest.skip(f"SM{SM_VERSION} ships no CUBIN for this SM{other_sm} tile")
+        pytest.skip(f"SM{SM_VERSION} ships no CUBIN for this other SM's tile")
     monkeypatch.setattr(opm_cutedsl, "_select_opm_config_bucket", lambda *args, **kwargs: (config, (config,)))
     # S at the resident b capacity (its last box full) and inside it (zero fill past S).
     for S in sorted({config.b_res * config.tile_s or 150, 150 if config.b_res * config.tile_s >= 150 else 1}):
@@ -665,7 +701,8 @@ def test_outer_product_mean_sm100_split_relayout(config, monkeypatch):
     a, b, num_mask, weight, bias = _unaligned_operands(torch.bfloat16, 2, 150, 200, 75, config.C_z, True)
     for norm_before in (False, True):
         result = OuterProductMeanCuTe()(a, b, num_mask, weight, bias, norm_before)
-        assert torch.equal(result, _invoke_triton_opm(a, b, num_mask, weight, bias, norm_before))
+        if SM_VERSION not in opm_ops.ops._NO_TRITON_SMS:  # there _invoke_triton_opm runs PyTorch
+            assert torch.equal(result, _invoke_triton_opm(a, b, num_mask, weight, bias, norm_before))
         _assert_matches_fp32_reference(result, a, b, num_mask, weight, bias, norm_before)
 
 
@@ -688,6 +725,7 @@ def test_outer_product_mean_sm100_layer_runs_with_cubins_forced_later(monkeypatc
     """A layer built on the CuTe op runs the SM100 CUBIN once CUTEDSL_FORCE_CUBIN=1 is set (as model tests do),
     bitwise equal to the kernel compiled from source."""
     _require_sm100()
+    _require_triton()
     if not source_module_available(_SOURCE_MODULE):
         pytest.skip("compares against the CuTeDSL source kernel")
     _require_sm100_cubins(SM_VERSION)
@@ -748,6 +786,7 @@ def test_outer_product_mean_layer_prologue_feeds_the_kernel_in_place(mode, C_z, 
     """On every SM the fused op serves, the layer's prologue writes ``a`` and ``b`` in the layout that SM's
     kernel loads: the op launches on the prologue's own tensors, with no copy or relayout in between."""
     _require_cutedsl_mode(mode)
+    _require_triton()
     from bionemo_ir.dsl_kernels.triton.opm_prologue import OpmPrologue
 
     produced, launched = [], []
@@ -783,8 +822,8 @@ def test_outer_product_mean_layer_prologue_feeds_the_kernel_in_place(mode, C_z, 
         for made, used in ((a, launched_a), (b, launched_b)):
             assert used.data_ptr() == made.data_ptr()
             assert (used.shape, used.stride()) == (made.shape, made.stride())
-        # SM100/SM103 take a sequence-last; every other SM reads a and b as [B, S, I, C].
-        assert a.dim() == (6 if SM_VERSION in (100, 103) else 4)
+        # SM100/SM103/SM107 take a sequence-last; every other SM reads a and b as [B, S, I, C].
+        assert a.dim() == (6 if SM_VERSION in (100, 103, 107) else 4)
         assert b.is_contiguous() and (a.dim() == 6 or a.is_contiguous())
 
 
@@ -792,6 +831,7 @@ def test_outer_product_mean_layer_prologue_feeds_the_kernel_in_place(mode, C_z, 
 def test_outer_product_mean_sm100_layer_prologue_feeds_the_cubin(monkeypatch, C_z):
     """The layer's fused prologue writes ``a`` sequence-last; the forced CUBIN takes it bitwise like the source."""
     _require_sm100()
+    _require_triton()
     if not source_module_available(_SOURCE_MODULE):
         pytest.skip("compares against the CuTeDSL source kernel")
     _require_sm100_cubins(SM_VERSION)
@@ -1017,7 +1057,7 @@ def test_in_place_copies_only_operands_off_the_kernel_contract():
     assert opm_cutedsl._in_place(counts, align=4) is counts
 
 
-@pytest.mark.parametrize("sm", [100, 103])
+@pytest.mark.parametrize("sm", [100, 103, 107])
 @pytest.mark.parametrize("depth", [0, 17])
 def test_outer_product_mean_unsupported_direct_width(monkeypatch: pytest.MonkeyPatch, sm: int, depth: int) -> None:
     """Direct internal routing rejects an unsupported output width without a KeyError."""

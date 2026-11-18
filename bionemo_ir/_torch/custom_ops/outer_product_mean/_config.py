@@ -167,8 +167,11 @@ _SUPPORTED_CZ = (128, 256)
 # (SM clock locked at 1500 MHz) at every pair N of the 17 benchmark samples and the four tuned depths. SM100's tiles
 # stay within 1.3% of the best from N = 768 up, but run up to 13% slower from N = 336 to 656, where one 2-SM pair
 # per cluster (C_z = 128) or rastered j tiles (S = 597, up to N = 640) win. The N = 640 and N = 656 buckets hold
-# those; N = 768 and up keep SM100's tiles.
-_SM100_FAMILY = (100, 103)
+# those; N = 768 and up keep SM100's tiles. SM107 (Vera Rubin, 212 SMs) runs it too, from configs/sm107.json: every
+# anchor (N 256, 640, 960 and 1536; S 48 to 1536 at C_z = 128, 64 to 1024 at C_z = 256) starts from the tile SM103's
+# table selects and keeps it unless a swept tile wins by more than 2% with norm_before 0 and 1 alike. The sweep also
+# covered N = 192, 384, 512, 768 and 1144; those rows do not ship, so their N take the nearest shipped row's tiles.
+_SM100_FAMILY = (100, 103, 107)
 
 _OPM_CONFIGS_DIR = os.path.join(os.path.dirname(__file__), "configs")
 

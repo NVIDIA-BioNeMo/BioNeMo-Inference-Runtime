@@ -19,8 +19,8 @@ import torch.nn as nn
 
 from bionemo_ir._torch.layers.linear import Linear
 from bionemo_ir._torch.layers.position_encoders import FourierEmbedding
+from bionemo_ir._torch.layers.relpos import relpos_complex
 from bionemo_ir._torch.layers.transition import Transition
-from bionemo_ir._torch.modules.openfold3.utils.relpos import relpos_complex
 from bionemo_ir._torch.utils import (
     CHUNK_REGISTRY,
     DIFFUSION_CONDITIONING_PROJECTION,

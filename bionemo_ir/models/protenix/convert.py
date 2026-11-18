@@ -28,7 +28,7 @@ import math
 import torch
 
 from bionemo_ir.configs import BaseConfig
-from bionemo_ir.models.boltz1.convert import (
+from bionemo_ir.models.convert_utils import (
     get_transition_weights,
     get_tri_attn_node_weights,
     get_tri_mul_node_weights,

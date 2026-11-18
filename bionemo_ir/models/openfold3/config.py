@@ -27,8 +27,8 @@ from bionemo_ir._torch.sampling.frame_reuse import FrameReuseSetting
 from bionemo_ir.configs import (
     BaseConfig,
     DiffusionTransformerConfig,
-    EvoformerStackConfig,
     FeatureDictPadSpec,
+    MSAModuleStackConfig,
     PairformerConfig,
     TrunkPadSpec,
 )
@@ -155,26 +155,6 @@ class TemplateEmbedderConfig(BaseConfig):
         # ending-node triangle attention uses the untransposed pair bias.
         tri_attn_transposed_bias=False,
     )
-
-
-class MSAModuleStackConfig(EvoformerStackConfig):
-    c_m: int = 64
-    c_z: int = 128
-    c_hidden_msa_att: int = 8
-    c_hidden_opm: int = 32
-    c_hidden_mul: int = 128
-    c_hidden_pair_att: int = 32
-    transition_type: str = "swiglu"
-    transition_n: int = 4
-    no_blocks: int = 4
-    no_heads_msa: int = 8
-    no_heads_pair: int = 4
-    opm_first: bool = True
-    last_block: bool = False
-    inf: float = 1e9
-    support_batch: bool = True
-    msa_att_row_chunk_size: int = 4
-    trimul_high_precision: bool = False
 
 
 class MSAModuleEmbedderConfig(BaseConfig):

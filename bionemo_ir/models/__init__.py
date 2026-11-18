@@ -13,11 +13,30 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from .boltz1 import Boltz1
-from .boltz2 import Boltz2, Boltz2Affinity
-from .openfold2 import OpenFold2
-from .openfold3 import OpenFold3
-from .rfproteina import RFProteina
+"""Model classes, loaded on first access.
+
+Each attribute imports only its own model package, so a process that uses one
+model does not pay for the others.
+"""
+
+from importlib import import_module
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from .boltz1 import Boltz1
+    from .boltz2 import Boltz2, Boltz2Affinity
+    from .openfold2 import OpenFold2
+    from .openfold3 import OpenFold3
+    from .rfproteina import RFProteina
+
+_EXPORTS = {
+    "Boltz1": ".boltz1",
+    "Boltz2": ".boltz2",
+    "Boltz2Affinity": ".boltz2",
+    "OpenFold2": ".openfold2",
+    "OpenFold3": ".openfold3",
+    "RFProteina": ".rfproteina",
+}
 
 __all__ = [
     "Boltz1",
@@ -27,3 +46,16 @@ __all__ = [
     "OpenFold3",
     "RFProteina",
 ]
+
+
+def __getattr__(name: str) -> Any:
+    module_name = _EXPORTS.get(name)
+    if module_name is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    value = getattr(import_module(module_name, __name__), name)
+    globals()[name] = value
+    return value
+
+
+def __dir__() -> list[str]:
+    return sorted(set(globals()) | set(__all__))

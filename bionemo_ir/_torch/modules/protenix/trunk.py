@@ -27,9 +27,9 @@ from bionemo_ir._torch.attention_backend.utils import PrecomputedPairMasks, prec
 from bionemo_ir._torch.graph_optimization.region import GraphRegion
 from bionemo_ir._torch.layers.linear import Linear
 from bionemo_ir._torch.layers.token_padding import pad_trunk_tokens, unpad_trunk_tokens
+from bionemo_ir._torch.layers.transformers.msa_module import MSAModuleStack
 from bionemo_ir._torch.layers.transformers.pairformer import PairformerModule
 from bionemo_ir._torch.layers.triangle_nodes import set_trimul_token_padding
-from bionemo_ir._torch.modules.openfold3.trunk import MSAModuleStack
 from bionemo_ir._torch.modules.protenix.template import ProtenixTemplateEmbedder
 from bionemo_ir.configs import BaseConfig
 from bionemo_ir.utils import str_dtype_to_torch

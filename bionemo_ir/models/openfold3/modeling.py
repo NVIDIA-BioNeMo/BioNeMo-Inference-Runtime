@@ -33,6 +33,7 @@ from bionemo_ir._torch.layers.normalization import (
 from bionemo_ir._torch.layers.pair_averaging import PairWeightedAveraging
 from bionemo_ir._torch.layers.sequence_local_atom import build_local_attn_metadata
 from bionemo_ir._torch.layers.token_padding import pad_trunk_tokens, unpad_trunk_tokens
+from bionemo_ir._torch.layers.transformers.msa_module import MSAModuleStack
 from bionemo_ir._torch.layers.transformers.pairformer import PairformerModule
 from bionemo_ir._torch.layers.triangle_nodes import (
     TriangleAttentionNode,
@@ -49,7 +50,6 @@ from bionemo_ir._torch.modules.openfold3.embedders import (
     MSAModuleEmbedder,
     TemplateEmbedderAllAtom,
 )
-from bionemo_ir._torch.modules.openfold3.trunk import MSAModuleStack
 from bionemo_ir._torch.modules.openfold3.utils.atomize_utils import prepare_atom_reduction
 from bionemo_ir._torch.sampling import EDMScheduleConfig
 from bionemo_ir._torch.sampling.frame_reuse import require_forced_reuse

@@ -24,10 +24,10 @@ import bionemo_ir._torch.layers.conditioning as conditioning_module
 from bionemo_ir._torch.attention_backend.interface import AttentionMetadata
 from bionemo_ir._torch.layers.conditioning import DiffusionConditioning
 from bionemo_ir._torch.layers.normalization import replace_with_fused_layernorm
+from bionemo_ir._torch.layers.relpos import relpos_complex
 from bionemo_ir._torch.layers.sequence_local_atom import create_gather_indices, query_to_keys_optimized
 from bionemo_ir._torch.modules.openfold3.diffusion_module import DiffusionModule
 from bionemo_ir._torch.modules.openfold3.utils.atomize_utils import compute_atom_broadcast_index
-from bionemo_ir._torch.modules.openfold3.utils.relpos import relpos_complex
 from bionemo_ir._torch.utils import (
     CHUNK_REGISTRY,
     DIFFUSION_CONDITIONING_PROJECTION,

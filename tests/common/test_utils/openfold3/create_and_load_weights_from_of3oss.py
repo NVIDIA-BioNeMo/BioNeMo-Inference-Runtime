@@ -15,7 +15,7 @@
 
 import torch
 
-from bionemo_ir._torch.modules.openfold2.template import TemplatePairBlock
+from bionemo_ir._torch.layers.transformers.template_pair import TemplatePairBlock
 from tests.common.test_utils.boltz.create_and_load_weights import (
     load_outer_product_mean_weights_torch,
     load_triangle_attention_node_weights_torch,

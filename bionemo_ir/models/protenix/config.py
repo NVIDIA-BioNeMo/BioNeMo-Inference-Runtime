@@ -33,11 +33,11 @@ from bionemo_ir.configs import (
     BaseConfig,
     DiffusionTransformerConfig,
     FeatureDictPadSpec,
+    MSAModuleStackConfig,
     PairformerConfig,
     TrunkPadSpec,
 )
 from bionemo_ir.hubs import FoldingSupportMatrix as SupMat
-from bionemo_ir.models.openfold3.config import MSAModuleStackConfig
 
 
 def _diffusion_graph_config() -> CUDAGraphOptimizationConfig:
@@ -373,7 +373,7 @@ class ConfidenceHeadConfig(BaseConfig):
 
 
 class ProtenixMSAModuleConfig(MSAModuleStackConfig):
-    """MSA module wrapping OF3 ``MSAModuleStack``; embed uses ``c_s_inputs``/``msa_input_dim``."""
+    """MSA module wrapping the shared ``MSAModuleStack``; embed uses ``c_s_inputs``/``msa_input_dim``."""
 
     c_m: int = _Default.c_m
     c_z: int = _Default.c_z

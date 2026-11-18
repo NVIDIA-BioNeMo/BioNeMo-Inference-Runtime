@@ -226,6 +226,11 @@ class MSAModule(nn.Module):
         Returns:
             Tensor: The output tensor of shape (B, N, N, token_z).
         """
+        # MSALayer updates z in place (z += outer_product_mean(...)), and the trunk calls this module as
+        # ``z = z + self.msa_module(z, ...)``. Without a copy the call mutates the caller's z and the sum
+        # then reads the modified z: the pairformer is fed z + OPM0 + msa_out instead of z + msa_out.
+        z = z.clone()
+
         if self.version == "v2":
             msa = torch.nn.functional.one_hot(msa, num_classes=self.num_tokens)
         has_deletion = has_deletion.unsqueeze(-1)

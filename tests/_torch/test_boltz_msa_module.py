@@ -201,6 +201,7 @@ def test_msa_module(sc: Scenario):
 
     with torch.inference_mode():
         z = z.to(dtype)
+        z_before = z.clone()
         emb = emb.to(dtype)
         has_deletion = has_deletion.to(dtype)
         deletion_value = deletion_value.to(dtype)
@@ -214,6 +215,8 @@ def test_msa_module(sc: Scenario):
 
     assert ref_z.shape == output_z.shape
     torch.testing.assert_close(ref_z, output_z, atol=1e-3, rtol=1e-4)
+    # The trunk computes ``z = z + msa_module(z, ...)``: the module must not modify the z it is given.
+    torch.testing.assert_close(z, z_before, atol=0, rtol=0)
 
 
 # ---------------------------------------------------------------------------

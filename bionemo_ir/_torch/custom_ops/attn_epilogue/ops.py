@@ -413,7 +413,7 @@ def get_attn_epilogue_op(
     and on SM80, SM86 and SM89 the channel-tiled one. Each call takes the
     tuning whose ``R=<rows>`` anchor is nearest its folded rows.
 
-    SM100 and SM103 run their own kernels, at any head split: a 2-SM kernel
+    SM100, SM103 and SM107 run their own kernels, at any head split: a 2-SM kernel
     for the residual epilogues whose ``H*D`` equals ``C`` of 128 or 256, with
     or without the output-projection bias and, at ``C`` of 128, with or
     without an output gate, and one for the token transformers', with a
@@ -424,7 +424,8 @@ def get_attn_epilogue_op(
 
     With ``has_residual=False`` the op writes the bare projection and takes no
     output gate; packaged CUBINs cover such layers at ``H*D`` in
-    ``NO_RESIDUAL_WIDTHS``, and a source checkout compiles the rest.
+    ``NO_RESIDUAL_WIDTHS``, and a source checkout compiles the rest. SM100,
+    SM103 and SM107 fuse only residual epilogues: there it returns ``None``.
     """
     width = num_heads * head_dim
     if not torch.cuda.is_available() or dtype != torch.bfloat16 or (has_output_gate and not has_residual):

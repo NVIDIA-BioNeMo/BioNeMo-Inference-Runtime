@@ -34,6 +34,7 @@ from tests._torch import (
     _CUTEDSL_MODE_CACHES,
     SM_VERSION,
     cutedsl_test_modes,
+    gated_sigmoid_cubin_sms,
     require_cubin_library,
     run_cutedsl_test_mode,
     skip_if_no_cutedsl,
@@ -44,7 +45,7 @@ _CUTEDSL_MODES = cutedsl_test_modes("bionemo_ir._torch.custom_ops.gated_sigmoid.
 
 def _skip_cubin_without_an_image(mode: str) -> None:
     """CUBIN mode needs an image for this SM. The Blackwell packs are not published yet."""
-    if mode == "cubin" and SM_VERSION not in gated_cutedsl.published_cubin_sms():
+    if mode == "cubin" and SM_VERSION not in gated_sigmoid_cubin_sms():
         pytest.skip(f"the gated-sigmoid CUBIN pack has no image for SM{SM_VERSION}")
 
 

@@ -187,6 +187,15 @@ def require_cubin_family(family: str) -> None:
         pytest.skip(f"this _cutedsl_kernels extension carries no {family} family yet")
 
 
+def gated_sigmoid_cubin_sms() -> frozenset[int]:
+    """SMs with a gated-sigmoid image in the installed kernel library.
+
+    Asks the extension, so it also works from a wheel, which has no ``cpp/`` source tree.
+    """
+    launcher = getattr(require_cubin_library(), "gated_sigmoid", None)
+    return frozenset(spec.target_sm for spec in launcher.kernel_specs()) if launcher is not None else frozenset()
+
+
 def run_cutedsl_test_mode(
     mode: str,
     monkeypatch: pytest.MonkeyPatch,

@@ -1449,6 +1449,8 @@ def test_sm100_library_covers_every_tuned_config():
     # One image per variant without its mask state and bucket; each records no compile-time mask.
     specs = [spec for spec in launcher.kernel_specs() if spec.kernel_sm == 100]
     assert not any(spec.has_mask for spec in specs)
+    # SM107 also runs SM100-kernel images; this test covers only SM100 and SM103.
+    specs = [spec for spec in specs if spec.target_sm in (100, 103)]
     keys = [(s.target_sm, s.width, s.hidden, s.bucket, s.is_three_way, s.has_residual) for s in specs]
     assert len(keys) == len(set(keys)) == len(images)
 

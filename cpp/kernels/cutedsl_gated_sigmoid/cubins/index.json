@@ -1,5 +1,5 @@
 {
-  "compile_fingerprint": "921ee3e9386d4e6f67cfe31bf858a22df083b680f2b739aac37c895abef3442f",
+  "compile_fingerprint": "e3d5e4ceb9a6262270188870dd764fa1224fba0edcea38c6a87f2e935fcb95e9",
   "family": "gated_sigmoid",
   "format": "bioir-cubin-pack-v2",
   "packs": {

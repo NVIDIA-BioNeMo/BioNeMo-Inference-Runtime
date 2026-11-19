@@ -1,0 +1,18 @@
+{
+  "executables": {
+    "9ae143e0c54d8e818724368d826f5312276b0b3258b932144c84c60039d0e614": {
+      "dtype": "fp16",
+      "dynamic_smem_bytes": 26624,
+      "image_sha256": "bb2592a6874473a2407e78fd2b63d25c8a43725c03dd493b0a45fa4fd30172ed",
+      "image_size": 31040,
+      "kernel_sm": 80,
+      "kernel_symbol": "5d11df7357e2ddbf8446284a81e25f883e0bef8f63e61093bdaf3289a83f06aa",
+      "launch_abi": "window_attention_sm80_v1",
+      "target_arch": "sm_107a",
+      "target_sm": 107
+    }
+  },
+  "kernel_symbols": {},
+  "sm90_launches": {},
+  "variants": []
+}

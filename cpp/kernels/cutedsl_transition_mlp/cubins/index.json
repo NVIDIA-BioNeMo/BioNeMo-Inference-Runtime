@@ -1,5 +1,5 @@
 {
-  "compile_fingerprint": "3c443f65e908ccd15bd4f5be712baae9809dce9284e1cb5a8f3eeb26b834b257",
+  "compile_fingerprint": "dce660809593a06469e41ca1a691ec87d9756883404d44554efc5d388fb3cac0",
   "family": "transition_mlp",
   "format": "bioir-cubin-pack-v2",
   "packs": {

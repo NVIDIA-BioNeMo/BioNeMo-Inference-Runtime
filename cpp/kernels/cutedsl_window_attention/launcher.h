@@ -34,7 +34,7 @@ namespace bioir::cutedsl::window_attention::embedded
 struct CubinImage;
 }
 
-/* Both parameter banks were read from EIATTR_KPARAM_INFO. They are the
+/* The three parameter banks were read from EIATTR_KPARAM_INFO. They are the
  * device-kernel ABIs, not the high-level CuTeDSL callable signature. Every
  * stride is a 64-bit element count, so no offset wraps past 2^31 elements.
  */
@@ -174,6 +174,57 @@ static_assert(offsetof(SM90Params, output_row_stride) == 0x90);
 static_assert(offsetof(SM90Params, softmax_scale) == 0x98);
 static_assert(offsetof(SM90Params, qk_tiled_mma) == 0x9c);
 static_assert(offsetof(SM90Params, pv_tiled_mma) == 0x9d);
+
+/* The SM107 tcgen05 kernel (BF16, D = 32, 32-query windows over 128 keys)
+ * takes five TMA descriptors by value (q, k, v, the bias and the output; see
+ * launch_sm107 for their boxes), then the head, sample and window counts, the
+ * samples per bias batch item, the step count (4-window groups x heads x
+ * samples), the persistent CTA count, and the softmax scale in log2 and
+ * natural units. CTA b runs steps [b * steps / ctas, (b + 1) * steps / ctas).
+ */
+inline constexpr std::size_t kSM107ParameterCount = 13;
+
+struct SM107Params
+{
+  CUtensorMap q;
+  CUtensorMap k;
+  CUtensorMap v;
+  CUtensorMap bias;
+  CUtensorMap output;
+  std::int32_t heads;
+  std::int32_t samples;
+  std::int32_t windows;
+  std::int32_t samples_per_item;
+  std::int32_t steps;
+  std::int32_t ctas;
+  float softmax_scale_log2;
+  float softmax_scale;
+};
+
+inline void pack_sm107_kernel_params(SM107Params* params, void* kernel_params[kSM107ParameterCount])
+{
+  kernel_params[0] = &params->q;
+  kernel_params[1] = &params->k;
+  kernel_params[2] = &params->v;
+  kernel_params[3] = &params->bias;
+  kernel_params[4] = &params->output;
+  kernel_params[5] = &params->heads;
+  kernel_params[6] = &params->samples;
+  kernel_params[7] = &params->windows;
+  kernel_params[8] = &params->samples_per_item;
+  kernel_params[9] = &params->steps;
+  kernel_params[10] = &params->ctas;
+  kernel_params[11] = &params->softmax_scale_log2;
+  kernel_params[12] = &params->softmax_scale;
+}
+
+static_assert(kSM107ParameterCount == 13);
+static_assert(sizeof(CUtensorMap) == 128);
+static_assert(std::is_standard_layout_v<SM107Params>);
+static_assert(offsetof(SM107Params, output) == 512);
+static_assert(offsetof(SM107Params, heads) == 640);
+static_assert(offsetof(SM107Params, ctas) == 660);
+static_assert(offsetof(SM107Params, softmax_scale) == 668);
 
 } // namespace bioir::cutedsl::window_attention::abi
 

@@ -144,7 +144,7 @@ any of these SKUs; rows below describe which fused kernels apply.
 | **Blackwell**      | SM103              | B300, GB300                  | CuTeDSL CUBIN (PWA, OPM, AdaLN, both dual GEMMs, attention epilogue); cuEquivariance (triangle attention) |
 | **Blackwell**      | SM120              | RTX 5090, RTX 6000 Blackwell | CuTeDSL CUBIN (PWA, AdaLN); cuEquivariance (triangle attention, dual GEMM); Triton (OPM)                  |
 | **Blackwell**      | SM121              | DGX Spark (GB10)             | CuTeDSL CUBIN (PWA, AdaLN); cuEquivariance (triangle attention, dual GEMM); Triton (OPM)                  |
-| **Rubin**          | SM107              | Vera Rubin                   | CuTeDSL (PWA, OPM, AdaLN, TriMul KF, both dual GEMMs; the CUBIN packs ship after merge)                   |
+| **Rubin**          | SM107              | Vera Rubin                   | CuTeDSL (PWA, OPM, AdaLN, TriMul KF, both dual GEMMs, window attention; the CUBIN packs ship after merge) |
 
 Check the device:
 
@@ -188,7 +188,7 @@ and `bionemo_ir._torch.custom_ops`). Layers wrap the same ops:
 | ----------------------------------- | --------------------------------------------- | --------------------------------------------------------------- | -------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Triangle attention                  | Pairformer / Evoformer triangle attn          | Heuristic → ClaudeKit CUDA / CuTeDSL CUBIN; else CUEQUIV / SDPA | 80, 86, 89, 90, 100, 103, 107                      | [`create_attention`](../../bionemo_ir/_torch/attention_backend/utils.py) (`AttentionType.TRIANGLE`)                                                                                         |
 | Pairwise attention                  | Token / atom attention with pair bias         | CuTeDSL source (when present) / CUBIN; else SDPA                | 80, 86, 89, 90, 100, 103, 107                      | [`create_attention`](../../bionemo_ir/_torch/attention_backend/utils.py) (`AttentionType.PAIRWISE`)                                                                                         |
-| Windowed atom attention             | Diffusion atom encoder / decoder attention    | CuTeDSL → CUBIN; else SDPA                                      | 80, 86, 89, 90, 100, 103                           | [`auto_select_window_attention_backend`](../../bionemo_ir/_torch/attention_backend/utils.py) → [`create_window_attention`](../../bionemo_ir/_torch/attention_backend/utils.py)              |
+| Windowed atom attention             | Diffusion atom encoder / decoder attention    | CuTeDSL → CUBIN; else SDPA                                      | 80, 86, 89, 90, 100, 103, 107                      | [`auto_select_window_attention_backend`](../../bionemo_ir/_torch/attention_backend/utils.py) → [`create_window_attention`](../../bionemo_ir/_torch/attention_backend/utils.py)              |
 | Dual-GEMM `x_x`                     | Triangle multiplication; SwiGLU projection    | CuTeDSL → CUBIN; else CUEQUIV / PyTorch                         | 80, 86, 89, 90, 100, 103, 107; CUEQUIV on 120, 121 | [`get_dual_gemm_x_x_op`](../../bionemo_ir/_torch/custom_ops/dual_gemm_x_x/ops.py) / [`get_cute_dual_gemm_x_x_op`](../../bionemo_ir/_torch/custom_ops/dual_gemm_x_x/ops.py)                  |
 | Dual-GEMM `x0_x1`                   | Triangle multiplication                       | CuTeDSL → CUBIN; else CUEQUIV                                   | 80, 86, 89, 90, 100, 103, 107; CUEQUIV on 120, 121 | [`get_dual_gemm_x0_x1_op`](../../bionemo_ir/_torch/custom_ops/dual_gemm_x0_x1/ops.py)                                                                                                       |
 | TriMul KF chain                     | Triangle multiplication on padded tokens      | CuTeDSL → CUBIN (bf16)                                          | 90, 100, 103, 107                                  | [`get_trimul_kf_k1_op`](../../bionemo_ir/_torch/custom_ops/trimul_kf_k1/ops.py) → `get_trimul_kf_k2_op` → `get_trimul_kf_k3_op`                                                             |
@@ -223,7 +223,10 @@ Protenix run windowed atom attention on the pair biases they prepare once per
 sampling rollout, which carry the key mask. The kernel serves bf16 and fp16
 atom transformers (the shipped presets run them in bf16) with 32-dim heads in
 32-query windows over 128 keys; other calls, dtypes, and GPUs, including
-SM120 / SM121, take SDPA.
+SM120 / SM121, take SDPA. SM107 (Vera Rubin) runs bf16 on a native tcgen05
+kernel for that window shape and fp16 on the warp-MMA kernel. Builds with the
+kernel sources run them from source; source-free builds use SDPA on SM107
+until the post-merge CUBIN refresh ships its pack.
 
 A normalizing `Transition` first tries the fused LayerNorm route described
 below. Its SwiGLU MLP otherwise takes the first path that ships for its shape:

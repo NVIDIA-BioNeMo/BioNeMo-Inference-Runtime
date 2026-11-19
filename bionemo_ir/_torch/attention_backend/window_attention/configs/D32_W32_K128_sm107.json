@@ -1,0 +1,6 @@
+{
+  "kernel_abi": "sm107",
+  "configs": {
+    "default": {}
+  }
+}

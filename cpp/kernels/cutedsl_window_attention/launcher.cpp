@@ -22,6 +22,7 @@
 #include <cuda.h>
 
 #include <algorithm>
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -36,12 +37,20 @@ namespace
 
 constexpr char kSM80LaunchAbi[] = "window_attention_sm80_v1";
 constexpr char kSM90LaunchAbi[] = "window_attention_sm90_v1";
+constexpr char kSM107LaunchAbi[] = "window_attention_sm107_v1";
 constexpr std::int32_t kSM80KernelSM = 80;
 constexpr std::int32_t kSM90KernelSM = 90;
-// Both images were compiled for sample, row, and bias strides divisible by 8 elements (16 bytes).
+constexpr std::int32_t kSM107KernelSM = 107;
+// Every image was compiled for sample, row, and bias strides divisible by 8 elements (16 bytes).
 constexpr std::int64_t kStrideAlignment = 8;
-// Samples and windows sit on the grid's y and z axes.
+// The warp-MMA and WGMMA kernels put samples and windows on the grid's y and z axes.
 constexpr std::int32_t kMaxGridYZ = 65535;
+// The SM107 kernel: one step is 4 consecutive windows (128 query rows, a 224-row key union) of one head and sample,
+// and each SM runs two persistent CTAs. Its shape is fixed: D = 32, 32-query windows over 128 keys.
+constexpr std::int64_t kSM107WindowsPerStep = 4;
+constexpr std::int64_t kSM107CtasPerSM = 2;
+constexpr std::uint32_t kSM107QueryRows = 128;
+constexpr std::uint32_t kSM107KeyRows = 224;
 
 bool dtype_is_bfloat16(DType dtype)
 {
@@ -68,10 +77,18 @@ bool is_sm80_abi(EmbeddedCubinImage const& cubin)
   return cubin.kernel_sm == kSM80KernelSM && equal_c_strings(cubin.launch_abi, kSM80LaunchAbi);
 }
 
+bool is_sm107_abi(EmbeddedCubinImage const& cubin)
+{
+  return cubin.kernel_sm == kSM107KernelSM && equal_c_strings(cubin.launch_abi, kSM107LaunchAbi);
+}
+
 bool has_launch_metadata(embedded::CubinImage const& image)
 {
-  // The WGMMA image runs only on the SM90 it was built for.
-  bool const abi_matches = is_sm80_abi(image.cubin) || (is_sm90_abi(image.cubin) && image.cubin.target_sm == 90);
+  // The WGMMA image runs only on the SM90 it was built for, the tcgen05 one only on SM107 for its one BF16 shape.
+  bool const sm107_matches = is_sm107_abi(image.cubin) && image.cubin.target_sm == 107 && image.is_bfloat16
+    && image.head_dim == 32 && image.n_queries == 32 && image.n_keys == 128;
+  bool const abi_matches
+    = is_sm80_abi(image.cubin) || (is_sm90_abi(image.cubin) && image.cubin.target_sm == 90) || sm107_matches;
   return abi_matches && !image.cubin.non_portable_cluster_size_allowed && image.cubin.dynamic_smem_bytes > 0
     && image.head_dim > 0 && image.n_queries > 0 && image.n_keys > 0 && image.num_threads > 0
     && image.num_threads <= 1024;
@@ -188,8 +205,16 @@ void validate_launch(KernelConfig const& config, LaunchParams const& params)
     if (stride % kStrideAlignment != 0)
       throw std::invalid_argument("bias outer strides must be multiples of 8 elements");
   }
-  if (S > kMaxGridYZ || T > kMaxGridYZ)
+  if (is_sm107_abi(config.cubin))
+  {
+    std::int64_t const steps = (T + kSM107WindowsPerStep - 1) / kSM107WindowsPerStep * std::int64_t{H} * S;
+    if (steps > std::numeric_limits<std::int32_t>::max())
+      throw std::invalid_argument("window_attention SM107 launches at most 2^31 - 1 steps");
+  }
+  else if (S > kMaxGridYZ || T > kMaxGridYZ)
+  {
     throw std::invalid_argument("window_attention launches at most 65535 samples and 65535 windows");
+  }
 }
 
 void validate_operand_devices(LaunchParams const& params, std::int32_t device)
@@ -321,6 +346,123 @@ void launch_sm90(cubin_kernel_t loaded, KernelConfig const& config, LaunchParams
     launch_cubin_kernel(loaded, &launch_config, kernel_params, nullptr), "launch_cubin_kernel(window_attention_sm90)");
 }
 
+TmaDescriptorInfo
+sm107_descriptor_info(std::uint32_t rank, std::array<std::uint32_t, kTmaMaxRank> box, CUtensorMapSwizzle swizzle)
+{
+  TmaDescriptorInfo info{};
+  info.data_type = CU_TENSOR_MAP_DATA_TYPE_BFLOAT16;
+  info.rank = rank;
+  for (std::uint32_t index = 0; index < rank; ++index)
+  {
+    info.global_dim_order[index] = index;
+    info.box_dims[index] = box[index];
+    info.element_strides[index] = 1;
+  }
+  info.interleave = CU_TENSOR_MAP_INTERLEAVE_NONE;
+  info.swizzle = swizzle;
+  info.l2_promotion = CU_TENSOR_MAP_L2_PROMOTION_NONE;
+  // Rows outside [0, N) load as zeros: the kernel's key union reaches 48 rows past each end.
+  info.oob_fill = CU_TENSOR_MAP_FLOAT_OOB_FILL_NONE;
+  return info;
+}
+
+// An [S, N, H, 32] view as the kernel's (d, h, row, s) map, innermost first.
+TmaTensorSource sm107_rows_source(Tensor4View const& view)
+{
+  return TmaTensorSource{
+    view.data,
+    {
+      static_cast<std::uint64_t>(view.shape[3]),
+      static_cast<std::uint64_t>(view.shape[2]),
+      static_cast<std::uint64_t>(view.shape[1]),
+      static_cast<std::uint64_t>(view.shape[0]),
+      0,
+    },
+    {
+      1,
+      static_cast<std::uint64_t>(view.strides[2]),
+      static_cast<std::uint64_t>(view.strides[1]),
+      static_cast<std::uint64_t>(view.strides[0]),
+      0,
+    },
+  };
+}
+
+// The [B, T, H, 32, 128] bias as the kernel's (key, query, h, t, b) map, innermost first.
+TmaTensorSource sm107_bias_source(Tensor5View const& view)
+{
+  return TmaTensorSource{
+    view.data,
+    {
+      static_cast<std::uint64_t>(view.shape[4]),
+      static_cast<std::uint64_t>(view.shape[3]),
+      static_cast<std::uint64_t>(view.shape[2]),
+      static_cast<std::uint64_t>(view.shape[1]),
+      static_cast<std::uint64_t>(view.shape[0]),
+    },
+    {
+      1,
+      static_cast<std::uint64_t>(view.strides[3]),
+      static_cast<std::uint64_t>(view.strides[2]),
+      static_cast<std::uint64_t>(view.strides[1]),
+      static_cast<std::uint64_t>(view.strides[0]),
+    },
+  };
+}
+
+/* The descriptors match the source build's ``launch`` in sm107_window_attn.py: SWIZZLE_64B boxes of 32 dims by 128
+ * query rows (q, the output) or 224 key rows (k, v), and a SWIZZLE_128B bias box of 64 keys by 32 queries by 4
+ * windows. The grid is min(steps, 2 CTAs per SM) persistent CTAs.
+ */
+void launch_sm107(cubin_kernel_t loaded, CUcontext context, KernelConfig const& config, LaunchParams const& params)
+{
+  std::int32_t const S = params.q.shape[0];
+  std::int32_t const H = params.q.shape[2];
+  std::int32_t const B = params.bias.shape[0];
+  std::int32_t const T = params.bias.shape[1];
+  std::int64_t const steps = (T + kSM107WindowsPerStep - 1) / kSM107WindowsPerStep * std::int64_t{H} * S;
+  // Each CTA finds its steps as b * steps / ctas in 32 bits: keep ctas * steps below 2^31.
+  std::int64_t const ctas = std::min(
+    {steps,
+     kSM107CtasPerSM * std::int64_t{cuda_multiprocessor_count_for_context(context)},
+     std::int64_t{std::numeric_limits<std::int32_t>::max()} / steps});
+
+  abi::SM107Params device_params{};
+  CUtensorMapDataType const dtype = CU_TENSOR_MAP_DATA_TYPE_BFLOAT16;
+  TmaDescriptorInfo const query_rows
+    = sm107_descriptor_info(4, {32, 1, kSM107QueryRows, 1, 0}, CU_TENSOR_MAP_SWIZZLE_64B);
+  TmaDescriptorInfo const key_rows = sm107_descriptor_info(4, {32, 1, kSM107KeyRows, 1, 0}, CU_TENSOR_MAP_SWIZZLE_64B);
+  TmaDescriptorInfo const bias_tile = sm107_descriptor_info(5, {64, 32, 1, 4, 1}, CU_TENSOR_MAP_SWIZZLE_128B);
+  encode_tma_descriptor(device_params.q, query_rows, dtype, sm107_rows_source(params.q), "q");
+  encode_tma_descriptor(device_params.k, key_rows, dtype, sm107_rows_source(params.k), "k");
+  encode_tma_descriptor(device_params.v, key_rows, dtype, sm107_rows_source(params.v), "v");
+  encode_tma_descriptor(device_params.bias, bias_tile, dtype, sm107_bias_source(params.bias), "bias");
+  encode_tma_descriptor(device_params.output, query_rows, dtype, sm107_rows_source(params.output), "output");
+  device_params.heads = H;
+  device_params.samples = S;
+  device_params.windows = T;
+  device_params.samples_per_item = S / B;
+  device_params.steps = static_cast<std::int32_t>(steps);
+  device_params.ctas = static_cast<std::int32_t>(ctas);
+  device_params.softmax_scale_log2 = params.softmax_scale_log2;
+  device_params.softmax_scale = params.softmax_scale;
+
+  void* kernel_params[abi::kSM107ParameterCount]{};
+  abi::pack_sm107_kernel_params(&device_params, kernel_params);
+
+  cubin_launch_config_t launch_config{};
+  launch_config.grid_x = checked_u32(static_cast<std::uint64_t>(ctas), "window_attention_sm107 grid.x");
+  launch_config.grid_y = 1;
+  launch_config.grid_z = 1;
+  launch_config.block_x = config.embedded_image->num_threads;
+  launch_config.block_y = 1;
+  launch_config.block_z = 1;
+  launch_config.dynamic_smem_bytes = config.cubin.dynamic_smem_bytes;
+  launch_config.stream = reinterpret_cast<CUstream>(static_cast<std::uintptr_t>(params.stream));
+  check_cuda_driver(
+    launch_cubin_kernel(loaded, &launch_config, kernel_params, nullptr), "launch_cubin_kernel(window_attention_sm107)");
+}
+
 bool is_preload_compatible(embedded::CubinImage const& image, std::int32_t device_sm)
 {
   return image.cubin.target_sm == device_sm && cubin_supports_sm(image.cubin, device_sm) && has_launch_metadata(image);
@@ -367,7 +509,9 @@ void launch(KernelConfig const& config, LaunchParams const& params)
   validate_operand_devices(params, cuda_device_for_context(context));
 
   cubin_kernel_t const loaded = load_embedded_kernel(context, config.cubin);
-  if (is_sm90_abi(config.cubin))
+  if (is_sm107_abi(config.cubin))
+    launch_sm107(loaded, context, config, params);
+  else if (is_sm90_abi(config.cubin))
     launch_sm90(loaded, config, params);
   else
     launch_sm80(loaded, config, params);

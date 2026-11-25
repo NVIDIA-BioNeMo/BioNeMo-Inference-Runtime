@@ -35,9 +35,9 @@ authors = [{ name = "NVIDIA-BioNeMo team" }]
 dependencies = [
   "cuda-python>=13",
   "torch>=2.11",
-  "cuequivariance>=0.11.1,<0.14",
-  "cuequivariance-ops-cu13>=0.11.1,<0.14",
-  "cuequivariance-ops-torch-cu13>=0.11.1,<0.14",
+  "cuequivariance>=0.11.1,<0.15",
+  "cuequivariance-ops-cu13>=0.11.1,<0.15",
+  "cuequivariance-ops-torch-cu13>=0.11.1,<0.15",
   "triton>=3.6.0,<3.9",
   "biopython>=1.87",
   "ray[serve,data]==2.56.1",  # Installs pandas and pyarrow.
@@ -54,12 +54,10 @@ dependencies = [
   # 0.21.0 has no cp314 wheels; Python 3.14 takes the release the wheel jobs test.
   "uvloop==0.21.0; python_version < '3.14'",
   "uvloop==0.23.0; python_version >= '3.14'",
-  "modelcif==1.6",  # Needed for CIFWriter.
+  "modelcif==1.6",  # Needed for CIFWriter. The bulk CIF writer checks for exactly modelcif 1.6.
   "rdkit==2025.9.6",  # Needed for the Boltz2 data pipeline.
-  "biotite==1.6.0",
-  # https://github.com/huggingface/datasets/issues/7344
-  "datasets==5.0.1",
-  # hf_hub_download(), currently transitive through datasets.
+  "biotite>=1.6.0,<3",
+  # hf_hub_download()
   "huggingface_hub>=0.25,<2",
   "PyYAML>=6.0.1,<7",  # The NGC PyTorch image's apt copy is 6.0.1 and pip cannot uninstall it.
   "lru-dict==1.4.1",

@@ -260,11 +260,6 @@ wheel. Their package-provided license and notice files remain authoritative.
     [`LICENSES/BSD-3-Clause.txt`][bsd-3-clause]
   - Source and license: [Biotite][biotite]
 
-- **datasets**
-  - Copyright: Hugging Face and contributors
-  - License: Apache-2.0; see [`LICENSE`][bioir-license]
-  - Source and license: [Datasets][datasets]
-
 - **huggingface-hub**
   - Copyright: Hugging Face and contributors
   - License: Apache-2.0; see [`LICENSE`][bioir-license]
@@ -406,7 +401,6 @@ resolved operating-system and base-image package closure.
 [cutlass]: https://github.com/NVIDIA/cutlass
 [cutlass-commit]: https://github.com/NVIDIA/cutlass/tree/db1c288993354c88e551c40c19a8fb93a774a241
 [cutlass-dsl-license]: https://docs.nvidia.com/cutlass/latest/media/docs/pythonDSL/license.html
-[datasets]: https://github.com/huggingface/datasets
 [einops]: https://github.com/arogozhnikov/einops
 [filelock]: https://raw.githubusercontent.com/tox-dev/filelock/main/LICENSE
 [flash-attention-cute]: https://github.com/Dao-AILab/flash-attention/tree/main/flash_attn/cute

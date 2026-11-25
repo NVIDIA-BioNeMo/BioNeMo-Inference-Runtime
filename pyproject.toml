@@ -44,12 +44,15 @@ dependencies = [
   # Security floors for transitive runtime dependencies.
   "aiohttp>=3.14.5,<4",
   "certifi>=2026.10.23",
-  "filelock>=3.32.7,<4",
+  "filelock>=4.2.1,<5",
   "fsspec>=2026.6.0",
+  "msgpack>=1.2.3,<2",
   "multidict>=6.9.1",
-  "opentelemetry-api>=1.45.1",
+  "opentelemetry-api>=1.45.2",
+  "pillow>=13.0.0",
+  "pyasn1>=0.6.5",
   "urllib3>=2.8.0",
-  "virtualenv>=21.14.5",
+  "virtualenv>=21.14.10",
   # uvloop 0.22 breaks Ray Serve: https://github.com/ray-project/ray/issues/57992
   # 0.21.0 has no cp314 wheels; Python 3.14 takes the release the wheel jobs test.
   "uvloop==0.21.0; python_version < '3.14'",
@@ -65,7 +68,7 @@ dependencies = [
   "scipy>=1.13.1,<2",
   "gemmi==0.7.5",  # First release with cp313/cp314 and aarch64 wheels; README links its source.
   "einops>=0.8",  # rearrange() and einsum() are imported directly.
-  "pydantic>=2,<3",
+  "pydantic>=2.14.2,<3",
 ]
 # readme is dynamic because setup.py rewrites it for a package index: an index
 # renders it standalone, resolving no relative path and stripping no frontmatter.
@@ -110,8 +113,8 @@ release = [
   "abi3audit==0.0.26",
   "auditwheel==6.8.0",
   "build==1.5.0",
-  # Match the digest-pinned NGC base: DALI 2.1.0 requires packaging<=26.0.
-  "packaging==26.0",
+  # Patched virtualenv requires packaging>=26.3; the image removes unused DALI.
+  "packaging>=26.3",
   "pip==26.2.2",
   "wheel==0.47.0",
 ]

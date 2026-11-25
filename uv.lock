@@ -912,7 +912,7 @@ nvtx = [
 
 [[package]]
 name = "cuequivariance"
-version = "0.13.0"
+version = "0.14.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "networkx" },
@@ -923,14 +923,14 @@ dependencies = [
     { name = "scipy", version = "1.18.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.13'" },
     { name = "sympy" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/ee/91/c78169c11dfe89c8a200f9eab178b7f637dde39673be6815af3007fa8922/cuequivariance-0.13.0.tar.gz", hash = "sha256:4227705313bdd89650077c5b723416381e76add1bec4aa103a26347946f53efd", size = 219499, upload-time = "2026-10-15T19:53:14.687Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/98/21/029606168bceb0be7a98bc1b4aef327916c798e0385e2b9c2b53d432a12d/cuequivariance-0.14.0.tar.gz", hash = "sha256:67c59c01a9902b020ddf2cba7cd289d65ec7fa8435660ecc3bd46cee2016c20e", size = 223134, upload-time = "2026-11-25T03:49:58.521Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/df/e1/40915811975b95dc31dde5c227e3a1e4a6af264cf01b32cd2ea05d2f0e58/cuequivariance-0.13.0-py3-none-any.whl", hash = "sha256:72cc774e2f74bb2666c431fb6b5e6e612317474d38b9114240fc78585f8c1f81", size = 250801, upload-time = "2026-10-15T19:53:13.402Z" },
+    { url = "https://files.pythonhosted.org/packages/ff/31/b0ba8a4df9db06fc9c5d433878af562f4010170f2a701ccdffb220ae400e/cuequivariance-0.14.0-py3-none-any.whl", hash = "sha256:27ee361aabdbc3a91b67e6fa34840b018997c378e634ba7307bfa219e8fe974b", size = 252696, upload-time = "2026-11-25T03:49:57.471Z" },
 ]
 
 [[package]]
 name = "cuequivariance-ops-cu13"
-version = "0.13.0"
+version = "0.14.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "nvidia-cublas" },
@@ -939,13 +939,13 @@ dependencies = [
     { name = "tqdm" },
 ]
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/29/ff/7d956b9bb5cee909f7ac2b653fcf69572bb0658a808b556d2970b16415bc/cuequivariance_ops_cu13-0.13.0-py3-none-manylinux_2_24_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:62d267f500919231f964384762e4eddef2f5bd260608e3932cc3f95b84249fc0", size = 44889148, upload-time = "2026-10-15T19:22:15.7Z" },
-    { url = "https://files.pythonhosted.org/packages/7b/07/f5319a6039b9ef5d05ee11125ad2378e4da099117fd35b24e24a787dc960/cuequivariance_ops_cu13-0.13.0-py3-none-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:12b0d8b736bb195447946771a0092d69f9c597789a917d8609dcaa16220ffa34", size = 44958162, upload-time = "2026-10-15T19:22:20.411Z" },
+    { url = "https://files.pythonhosted.org/packages/15/fe/595f2f339bbf1955e87e93f8938fe36dd102aa5e010964e6eb8e2cfed871/cuequivariance_ops_cu13-0.14.0-py3-none-manylinux_2_24_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:037269b6e5214cb1554b38f20482d483c12b307cccbf7001ef90fafb0fac2ba2", size = 50289351, upload-time = "2026-11-25T00:19:54.949Z" },
+    { url = "https://files.pythonhosted.org/packages/1d/59/7a9016f1db7e7be348ab2dde0f9babea6076689b37bbc41f3d2f503325f3/cuequivariance_ops_cu13-0.14.0-py3-none-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:ac5b0394d71200874667fa0273e3da3acdec2f019de9489c1fff1ba583ffe0d8", size = 50378129, upload-time = "2026-11-25T00:20:02.583Z" },
 ]
 
 [[package]]
 name = "cuequivariance-ops-torch-cu13"
-version = "0.13.0"
+version = "0.14.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "cuequivariance-ops-cu13" },
@@ -954,12 +954,12 @@ dependencies = [
     { name = "torch" },
 ]
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/cb/bd/7740b6bd8ab680d3ba9edb7d6bc90bcee60aa2f4e2bff4ed4ef1dca53f33/cuequivariance_ops_torch_cu13-0.13.0-cp312-cp312-manylinux_2_26_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:28121445776a9a268f55a5a38c9f48f76512cdd051300a7574d9c2eaf82d7507", size = 28512268, upload-time = "2026-10-15T19:23:25.913Z" },
-    { url = "https://files.pythonhosted.org/packages/c4/8d/176e83eb4fb411e6b5ff5bda06e5a7799bc6369aea19112277319ced1f8a/cuequivariance_ops_torch_cu13-0.13.0-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:181e22ab2644b2ac0020aa0654ff5a1468b99d7d6409a8a82269dd6e8941ca09", size = 28530554, upload-time = "2026-10-15T19:23:33.065Z" },
-    { url = "https://files.pythonhosted.org/packages/f6/07/eaf4cc05406feb02c07f0b62fb2bf4acc3478d6c0d36001d185a2b9f011f/cuequivariance_ops_torch_cu13-0.13.0-cp313-cp313-manylinux_2_26_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:9f88ec6f6662e50a6fae82818ca7a790ef0fa26a504bf556aa68c2f6a140814f", size = 28512126, upload-time = "2026-10-15T19:23:45.074Z" },
-    { url = "https://files.pythonhosted.org/packages/5d/1c/72ed2a57fd03b37263e339f070926a84ba142039f58cff7d41fe99fd55e8/cuequivariance_ops_torch_cu13-0.13.0-cp313-cp313-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:723430d0d787d53d54ef22ece8807509e8c3f0299ba321c7ae2c2c80ae7293f4", size = 28530506, upload-time = "2026-10-15T19:24:01.77Z" },
-    { url = "https://files.pythonhosted.org/packages/84/dd/97ebf543ee39fd10c378a19352dfd12d2c04ce591b570eb86fede46d4c6b/cuequivariance_ops_torch_cu13-0.13.0-cp314-cp314-manylinux_2_26_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:80619fff14de2709af4fb3a551c689481c98fb28cb8495e4e204f3b5c4f19cb8", size = 28512207, upload-time = "2026-10-15T19:24:16.965Z" },
-    { url = "https://files.pythonhosted.org/packages/d9/b6/ee8cfc38b78fdca54e6bc6f6f87ce496cd1f7d3200bb0dfee7f82de514a3/cuequivariance_ops_torch_cu13-0.13.0-cp314-cp314-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:435082023dbd906bb0570dbdf7b5ad940ac0390726e5b7ab06a8156c98eca596", size = 28530258, upload-time = "2026-10-15T19:24:29.736Z" },
+    { url = "https://files.pythonhosted.org/packages/39/01/cdb1d1765d564a261cba2ccaf09f5a82d3b1c057abe9e1012b40e98c90af/cuequivariance_ops_torch_cu13-0.14.0-cp312-cp312-manylinux_2_26_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:a4297eb9c7ad1cce7f56a170b6a5838fd89c543546a524b6e717b018b3fc2f5a", size = 43806729, upload-time = "2026-11-25T00:20:53.271Z" },
+    { url = "https://files.pythonhosted.org/packages/69/27/202007ee5b9de56f12645349d83c85afc3b8a9847ccf0d8b02d219e827b6/cuequivariance_ops_torch_cu13-0.14.0-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:ec89c7b8635ef225c549d71466dccfdaacc82d4ee88350e8754dc4346ff6f272", size = 43878111, upload-time = "2026-11-25T00:21:05.696Z" },
+    { url = "https://files.pythonhosted.org/packages/d8/ea/4eca524098ed60ed63bb2536fd14deb6e3ddb8d8e35e61e074f1da7d3fb9/cuequivariance_ops_torch_cu13-0.14.0-cp313-cp313-manylinux_2_26_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:42cd72be811f395327ef268dbaeba8367235dbbc84d0f4b7b16f587a2c9b568c", size = 43806697, upload-time = "2026-11-25T00:21:17.075Z" },
+    { url = "https://files.pythonhosted.org/packages/5e/d5/374c10f9bc2abad324ff09c6870084d6b40f2fcfc1aca5116fb56fca5c88/cuequivariance_ops_torch_cu13-0.14.0-cp313-cp313-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:d39ee13a1205574df7882c5abdf815f9a12bc5f43e8191f1e0123145820506cf", size = 43878134, upload-time = "2026-11-25T00:21:29.025Z" },
+    { url = "https://files.pythonhosted.org/packages/45/d5/aa1dff8f74a1dd3ecda8f971425f8555886c194d1e1afede8207dc50e1de/cuequivariance_ops_torch_cu13-0.14.0-cp314-cp314-manylinux_2_26_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:ae98bf0c107bfa33b42215c6363ee9bbe2f3175aa459b99aa8ea6e9d8e2f1e7b", size = 43806282, upload-time = "2026-11-25T00:21:39.866Z" },
+    { url = "https://files.pythonhosted.org/packages/a1/1a/f9f086515090b342d25f7951cd7cf24b61562fbe1ce4b6619dd604de7f62/cuequivariance_ops_torch_cu13-0.14.0-cp314-cp314-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:aab6f49ca8f16418565cd6d5a07c449c1fafeb112f2e0a05545838ecb925235e", size = 43877779, upload-time = "2026-11-25T00:21:52.548Z" },
 ]
 
 [[package]]

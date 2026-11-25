@@ -13,6 +13,9 @@ candidates are not listed.
 
 ### Compatibility
 
+- **Dependencies.** PyTorch 2.13 and setuptools 84.1.0 are now the minimum
+  versions required to include security fixes.
+
 - **RFProteína backends.** Select the execution backend with
   `inference_backend`: `eager`, `compile`, or `bioir`. `compile` remains
   the default, so existing compiled runs keep their behavior.

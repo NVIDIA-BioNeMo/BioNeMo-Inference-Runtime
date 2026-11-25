@@ -3,7 +3,7 @@
 ####################################################################################################
 [build-system]
 # CUTLASS headers come from the 3rdparty/cutlass submodule, not a wheel.
-requires = ["cmake>=3.27", "nanobind==2.10.2", "setuptools>=77"]
+requires = ["cmake>=3.27", "nanobind==2.10.2", "setuptools>=84.1.0"]
 build-backend = "setuptools.build_meta"
 
 
@@ -34,7 +34,7 @@ requires-python = ">=3.12,<3.15"
 authors = [{ name = "NVIDIA-BioNeMo team" }]
 dependencies = [
   "cuda-python>=13",
-  "torch>=2.11",
+  "torch>=2.13",
   "cuequivariance>=0.11.1,<0.15",
   "cuequivariance-ops-cu13>=0.11.1,<0.15",
   "cuequivariance-ops-torch-cu13>=0.11.1,<0.15",
@@ -51,6 +51,7 @@ dependencies = [
   "opentelemetry-api>=1.45.2",
   "pillow>=13.0.0",
   "pyasn1>=0.6.5",
+  "setuptools>=84.1.0",
   "urllib3>=2.8.0",
   "virtualenv>=21.14.10",
   # uvloop 0.22 breaks Ray Serve: https://github.com/ray-project/ray/issues/57992
@@ -92,7 +93,7 @@ build = [
   # build-system floors below.
   "cmake==4.4.2",
   "nanobind==2.10.2",
-  "setuptools==81.0.0",
+  "setuptools==84.1.0",
 ]
 coverage = [
   "coverage[toml]>=7.10.6",
@@ -127,7 +128,7 @@ test = [
   "pytest-cov>=7.1.0,<8",
   "pytest-xdist>=3.8.0,<4",
   # tests/contract runs setup.py.
-  "setuptools>=77,<82",
+  "setuptools>=84.1.0",
   "parameterized>=0.9,<1",
   "biotraj==1.2.2",
   "ml_collections==1.1.0",
@@ -169,7 +170,7 @@ exclude-dependencies = ["nvidia-cutlass-dsl-libs-cu12"]
 build-constraint-dependencies = [
   "cmake==4.4.2",
   "nanobind==2.10.2",
-  "setuptools==81.0.0",
+  "setuptools==84.1.0",
 ]
 # BioIR only supports Linux. Keep both release architectures in every lock
 # update so an x86_64 developer cannot silently break aarch64 resolution.

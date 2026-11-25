@@ -247,6 +247,12 @@ wheel. Their package-provided license and notice files remain authoritative.
   - License: Apache-2.0; see [`LICENSE`][bioir-license]
   - Source and license: [multidict][multidict]
 
+- **setuptools**
+  - Copyright: Python Packaging Authority and contributors
+  - License: MIT; see [`LICENSES/MIT.txt`][mit]
+  - Source and license: [setuptools][setuptools]
+  - Use: wheel runtime dependency and build backend
+
 - **virtualenv**
   - Copyright: The virtualenv developers
   - License: MIT; see [`LICENSES/MIT.txt`][mit]
@@ -377,7 +383,6 @@ These tools are used to build or test BioIR. They do not ship in the wheel or
 runtime container unless an artifact-specific SBOM states otherwise.
 
 - **CMake** — BSD-3-Clause; [source and license][cmake]
-- **setuptools** — MIT; [source and license][setuptools]
 - **prek** — MIT; [source and license][prek]
 - **pytest** — MIT; [source and license][pytest]
 - **pytest-cov** — MIT; [source and license][pytest-cov]

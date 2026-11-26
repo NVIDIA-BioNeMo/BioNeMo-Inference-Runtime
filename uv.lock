@@ -222,6 +222,7 @@ all = [
     { name = "msgpack" },
     { name = "multidict" },
     { name = "opentelemetry-api" },
+    { name = "opentelemetry-proto" },
     { name = "pillow" },
     { name = "pyasn1" },
     { name = "ray", extra = ["data", "serve"] },
@@ -301,6 +302,7 @@ requires-dist = [
     { name = "multidict", marker = "extra == 'all'", specifier = ">=6.9.1" },
     { name = "numpy" },
     { name = "opentelemetry-api", marker = "extra == 'all'", specifier = ">=1.45.2" },
+    { name = "opentelemetry-proto", marker = "extra == 'all'", specifier = ">=1.45.2" },
     { name = "pillow", marker = "extra == 'all'", specifier = ">=13.0.0" },
     { name = "pyasn1", marker = "extra == 'all'", specifier = ">=0.6.5" },
     { name = "pydantic", specifier = ">=2.14.2,<3" },
@@ -1630,14 +1632,14 @@ wheels = [
 
 [[package]]
 name = "opentelemetry-proto"
-version = "1.44.0"
+version = "1.45.2"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "protobuf" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/64/01/40ac4ae9a149263cc52c2cee200ddd80cb6d8db1a4610abf8eabce0fe771/opentelemetry_proto-1.44.0.tar.gz", hash = "sha256:c547a79c2f8c0c515d31509154682e5921c7cfd5ca67b70e1f9266e2c3e103f3", size = 46488, upload-time = "2026-07-16T15:25:45.34Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/24/9c/1aa4ce60e9bc72af20dc49c92cc0566825092d92b3d6a277439fb5fb7c01/opentelemetry_proto-1.45.2.tar.gz", hash = "sha256:bd8d23cf770605b0af9b7be2071d26a464fea289d35429abfd2a66226114ad64", size = 46486, upload-time = "2026-10-29T17:29:53.007Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/d1/7c/8be563d68e93bbefa5c8affb82ddcff91b3ad858ce49957ba7b16fd3e0ab/opentelemetry_proto-1.44.0-py3-none-any.whl", hash = "sha256:898b155a0e1557afd867478fb6158e8122a46329ca0bb8dc53cc55e98f017f56", size = 72483, upload-time = "2026-07-16T15:25:28.429Z" },
+    { url = "https://files.pythonhosted.org/packages/7e/0d/a0b8f2b9efe2ec1abdf639d3696db9b1563ebeb11d91aac08ba7341e9122/opentelemetry_proto-1.45.2-py3-none-any.whl", hash = "sha256:03a7ca1b43f89fd5b965d5975902bb2515c0c86e2428b456836e9a6149c6235a", size = 72484, upload-time = "2026-10-29T17:29:31.403Z" },
 ]
 
 [[package]]

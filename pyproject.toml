@@ -79,6 +79,7 @@ all = [
   "msgpack>=1.2.3,<2",
   "multidict>=6.9.1",
   "opentelemetry-api>=1.45.2",
+  "opentelemetry-proto>=1.45.2",
   "pillow>=13.0.0",
   "pyasn1>=0.6.5",
   "virtualenv>=21.14.10",

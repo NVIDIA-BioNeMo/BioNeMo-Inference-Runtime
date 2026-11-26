@@ -58,7 +58,7 @@ from bionemo_ir._torch.layers.triangle_nodes import (
 from bionemo_ir._torch.modules.rfproteina.contracts import RFProteinaConversionReport
 from bionemo_ir._torch.modules.rfproteina.representation_builder import RFProteinaRepresentationBuilder
 from bionemo_ir.hubs import resolve_rfproteina_autoencoder_checkpoint, resolve_rfproteina_checkpoint
-from bionemo_ir.hubs.local import LOCAL_CHECKPOINTS
+from bionemo_ir.hubs.local import LOCAL_CHECKPOINTS, load_local_weights
 from bionemo_ir.hubs.support_matrix import FoldingSupportMatrix
 from bionemo_ir.hubs.support_matrix import GenerativeSupportMatrix as SupMat
 from bionemo_ir.models.rfproteina import (
@@ -3183,14 +3183,56 @@ def test_released_checkpoint_metadata_does_not_block_weight_loading(tmp_path: Pa
         torch.testing.assert_close(state[key], value)
 
 
-def test_checkpoint_metadata_globals_are_never_resolved(tmp_path: Path) -> None:
+def test_legacy_non_zip_checkpoint_still_loads(tmp_path: Path) -> None:
+    checkpoint = tmp_path / "legacy.ckpt"
+    state = {"nn.weight": torch.arange(6, dtype=torch.float32).reshape(2, 3)}
+    # A legacy file cannot be memory-mapped; the restricted loader must read it instead.
+    torch.save({"state_dict": state}, checkpoint, _use_new_zipfile_serialization=False)
+
+    loaded = load_rfproteina_checkpoint_state(checkpoint)
+
+    assert set(loaded) == set(state)
+    torch.testing.assert_close(loaded["nn.weight"], state["nn.weight"])
+
+
+def _hide_never_constructed(monkeypatch: pytest.MonkeyPatch) -> type[_NeverConstructed]:
+    """Remove ``_NeverConstructed`` from this module so a lookup by name fails.
+
+    The checkpoint is written first, so it still names the class. A loader
+    that resolves that global now raises ``AttributeError``; one that stubs it
+    never looks it up. Constructing it is a second, separate failure.
+    """
+    cls = _NeverConstructed
+    cls.constructed = False
+    monkeypatch.delitem(globals(), "_NeverConstructed")
+    return cls
+
+
+def test_checkpoint_metadata_globals_are_never_resolved(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     checkpoint = tmp_path / "chk-ema.ckpt"
     _write_lightning_checkpoint(checkpoint)
-    _NeverConstructed.constructed = False
+    cls = _hide_never_constructed(monkeypatch)
+
+    # An unrestricted load looks the class up, so hiding it must be detectable.
+    with pytest.raises(AttributeError, match="_NeverConstructed"):
+        torch.load(checkpoint, map_location="cpu", weights_only=False)
 
     load_rfproteina_checkpoint_state(checkpoint)
 
-    assert not _NeverConstructed.constructed
+    assert not cls.constructed
+
+
+def test_local_hub_loads_rfproteina_without_resolving_globals(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    checkpoint = tmp_path / "chk-ema.ckpt"
+    expected = _write_lightning_checkpoint(checkpoint)
+    cls = _hide_never_constructed(monkeypatch)
+
+    state = load_local_weights(SupMat.RFProteina, cache_path=checkpoint)
+
+    assert not cls.constructed
+    assert set(state) == set(expected)
+    for key, value in expected.items():
+        torch.testing.assert_close(state[key], value)
 
 
 def test_checkpoint_without_tensors_is_rejected(tmp_path: Path) -> None:

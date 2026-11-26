@@ -173,7 +173,7 @@ LOCAL_CHECKPOINTS = {
     ),
     GenSupMat.RFProteina: LocalCheckpoint(
         env=["RFPROTEINA_LDM_CKPT", "RFPROTEINA_AE_CKPT"],
-        weights_only=False,
+        weights_only=True,
         state_dict_key="state_dict",
     ),
 }
@@ -389,6 +389,12 @@ def load_local_weights(
             state_dict = state_dict[state_dict_key]
     elif name in PROTENIX_MODEL_NAMES:
         state_dict = _load_protenix_state_dict(filepath)
+    elif name == GenSupMat.RFProteina:
+        # Lightning metadata in these checkpoints fails weights-only unpickling;
+        # this loader rebuilds the tensors and imports no other global.
+        from bionemo_ir.models.rfproteina.convert import load_rfproteina_checkpoint_state
+
+        state_dict = load_rfproteina_checkpoint_state(filepath)
     else:
         # Always land on CPU: a checkpoint saved from GPU otherwise restores
         # onto CUDA, which fails outright on a CPU-only host and silently

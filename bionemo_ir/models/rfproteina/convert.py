@@ -47,6 +47,7 @@ import importlib
 import io
 import pickle
 import re
+import zipfile
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
@@ -1333,7 +1334,7 @@ def load_rfproteina_checkpoint_state(checkpoint: str | Path | Mapping[str, torch
     loaded = torch.load(
         str(checkpoint),
         map_location="cpu",
-        mmap=True,
+        mmap=zipfile.is_zipfile(checkpoint),  # A legacy, non-zip file cannot be mapped.
         weights_only=False,  # Guarded by _RestrictedPickleModule, not by torch.
         pickle_module=_RestrictedPickleModule,
     )

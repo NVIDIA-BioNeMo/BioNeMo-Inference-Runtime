@@ -22,6 +22,22 @@ candidates are not listed.
   scripts that run the data pipelines must change their install command to
   `bionemo-ir[all]`.
 
+### Compatibility
+
+- **Dependencies.** The `all` extra now requires opentelemetry-proto
+  1.45.2 or newer to include security fixes.
+
+### Fixed Issues
+
+- **RFProteína checkpoint loading.** `load_local_weights("rfproteina")`
+  no longer unpickles the checkpoint with the default pickle module. It
+  reads the tensors through the same restricted unpickler as
+  `RFProteina`, which resolves only the tensor-rebuilding globals and
+  stubs every other one, so a crafted checkpoint cannot run code when it
+  is loaded. This is not PyTorch's `weights_only` mode: the loader still
+  passes `weights_only=False` together with that restricted pickle
+  module.
+
 ## 0.2.2
 
 ### Compatibility

@@ -236,6 +236,11 @@ wheel. Their package-provided license and notice files remain authoritative.
   - License: Apache-2.0; see [`LICENSE`][bioir-license]
   - Source and license: [OpenTelemetry Python][opentelemetry-api]
 
+- **opentelemetry-proto**
+  - Copyright: OpenTelemetry Authors
+  - License: Apache-2.0; see [`LICENSE`][bioir-license]
+  - Source and license: [OpenTelemetry Python][opentelemetry-api]
+
 - **fsspec**
   - Copyright: Martin Durant and fsspec contributors
   - License: BSD-3-Clause; see

@@ -22,11 +22,14 @@ import traceback
 from collections.abc import AsyncIterator
 from typing import Any
 
-import pyarrow
 from pydantic import BaseModel, ConfigDict, Field
 
+from bionemo_ir._extras import pipeline_extra
 from bionemo_ir.logger import logger
 from bionemo_ir.pipeline.utils import STAGE_TIMING_COLUMN
+
+with pipeline_extra():
+    import pyarrow
 
 
 def unpack_pipeline_row(row: dict[str, Any]) -> dict[str, Any]:

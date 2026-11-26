@@ -96,10 +96,12 @@ WORKDIR /opt/bioir-deps
 # The pinned base includes unused DALI 2.3.0, whose packaging<=26.2 conflicts
 # with patched virtualenv. No installed distribution requires DALI. Remove it
 # while preserving the Torch, Triton, and CUDA stack and the base digest.
+# Both runtime exports take every extra: the images run the data pipelines,
+# which the base install leaves out.
 COPY pyproject.toml uv.lock ./
 RUN --mount=type=cache,target=/cache/uv \
     uv pip uninstall --system nvidia-dali-cuda130 \
-    && uv export --quiet --locked --no-dev --no-emit-project \
+    && uv export --quiet --locked --no-dev --all-extras --no-emit-project \
         --prune torch --prune triton --prune nvidia-cublas \
         --output-file /tmp/bioir-runtime.txt \
     && uv export --quiet --locked --only-group build --no-emit-project \
@@ -118,7 +120,7 @@ FROM base AS runtime-dependencies
 WORKDIR /opt/bioir-runtime-dependencies
 COPY pyproject.toml uv.lock ./
 RUN --mount=type=cache,target=/cache/uv \
-    uv export --quiet --locked --no-dev --no-emit-project \
+    uv export --quiet --locked --no-dev --all-extras --no-emit-project \
         --output-file /tmp/bioir-runtime.txt
 
 # ------------------------------------------------------------------ devdeps
@@ -133,9 +135,11 @@ FROM deps AS devdeps
 ENV BIOIR_CUBIN_COMPILE_ENVIRONMENT=sha256:6e8ccc607fc2a51e3741667b86316a0889418ba8b78ed0ba96e8d282b648a7a6
 # The dev group carries the CuTeDSL compiler. pyproject.toml excludes the
 # CUDA 12 libraries wheel; 4.8.0 would otherwise install it next to cu13.
+# The dev group includes bionemo-ir[all] (the extras group), so this export also lists the runtime
+# closure the deps stage installed. Prune nvidia-cublas for the same reason as there.
 RUN --mount=type=cache,target=/cache/uv \
     uv export --quiet --locked --only-group dev --no-emit-project \
-        --prune torch --prune triton \
+        --prune torch --prune triton --prune nvidia-cublas \
         --output-file /tmp/bioir-dev.txt \
     && uv pip install --system --no-deps --require-hashes \
         --requirements /tmp/bioir-dev.txt \

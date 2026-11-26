@@ -321,6 +321,13 @@ wheel. Their package-provided license and notice files remain authoritative.
   - License: MIT; see [`LICENSES/MIT.txt`][mit]
   - Source and license: [einops][einops]
 
+- **numpy**
+  - Copyright: NumPy Developers
+  - License: BSD-3-Clause with bundled third-party notices
+  - Source and license: [NumPy][numpy]
+  - Notice: preserve the package-provided license bundle from the installed
+    distribution
+
 - **pydantic**
   - Copyright: Pydantic contributors
   - License: MIT; see [`LICENSES/MIT.txt`][mit]
@@ -444,6 +451,7 @@ resolved operating-system and base-image package closure.
 [prek]: https://github.com/j178/prek
 [protenix]: https://github.com/bytedance/Protenix/tree/2475421477ab414b571149ad4a875c390ff8a35d
 [rfd4-proteina]: https://github.com/RosettaCommons/RFD4-Proteina/tree/9b9177c3bcd083cb9f6d0d022e948e3169b86b93
+[numpy]: https://github.com/numpy/numpy
 [pydantic]: https://github.com/pydantic/pydantic
 [pytest]: https://github.com/pytest-dev/pytest
 [pytest-cov]: https://github.com/pytest-dev/pytest-cov

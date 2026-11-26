@@ -15,15 +15,18 @@
 
 """Translate parsed requests into Protenix atom and token context."""
 
-import biotite.structure as struc
 import numpy as np
 
+from bionemo_ir._extras import pipeline_extra
 from bionemo_ir.configs import BaseConfig
 from bionemo_ir.pipeline.base import ContextGeneratorBase
 from bionemo_ir.pipeline.models.boltz2.const import res_to_center_atom
 
 from .const import MOL_TYPES, RES_ATOMS_DICT, RESTYPES
 from .structure import ComponentStore, polymer_atoms, preload_ccd, smiles_atoms
+
+with pipeline_extra():
+    import biotite.structure as struc
 
 
 class ProtenixContextGenerator(ContextGeneratorBase):

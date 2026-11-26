@@ -24,18 +24,21 @@ import tempfile
 from collections import Counter
 from pathlib import Path
 
-import biotite.structure as struc
-import biotite.structure.info as ccd
-import biotite.structure.io.pdbx as pdbx
 import numpy as np
-from rdkit import Chem
-from rdkit.Chem import AllChem
 
+from bionemo_ir._extras import pipeline_extra
 from bionemo_ir.data.utils import MoleculeUnpickler, is_component_id, load_component_mol
 from bionemo_ir.hubs.metadata import PROTENIX_MOLS_SHA256
 from bionemo_ir.pipeline.utils._rng import _python_rng
 
 from .const import DNA_CODES, PROTEIN_CODES, RNA_CODES
+
+with pipeline_extra():
+    import biotite.structure as struc
+    import biotite.structure.info as ccd
+    import biotite.structure.io.pdbx as pdbx
+    from rdkit import Chem
+    from rdkit.Chem import AllChem
 
 logger = logging.getLogger(__name__)
 

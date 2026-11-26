@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import BaseModel, Field, field_validator
 
+from bionemo_ir._extras import pipeline_extra
 from bionemo_ir.pipeline.stages.base import StatefulStage, StatefulStageUDF
 
 if TYPE_CHECKING:
@@ -187,8 +188,9 @@ class Processor(_ProcessorBase):
     """Ray-based distributed processor."""
 
     def __init__(self, config: ProcessorConfig, stages: list[StatefulStage]):
-        import ray as _ray
-        from ray.data import Dataset  # noqa: F401
+        with pipeline_extra():
+            import ray as _ray
+            from ray.data import Dataset  # noqa: F401
 
         super().__init__(config, stages)
 

@@ -346,11 +346,13 @@ python -m venv --system-site-packages /tmp/venv
 ```
 
 An empty environment instead makes pip resolve the whole dependency closure —
-torch, ray, and the rest — from PyPI, which takes a while on a cold pip cache:
+torch, ray, and the rest — from PyPI, which takes a while on a cold pip cache.
+The demo runs the data pipeline, so ask for the `all` extra. Without it, pip
+installs the models only:
 
 ```bash
 python -m venv /tmp/venv
-/tmp/venv/bin/pip install dist/bionemo_ir-*.whl
+/tmp/venv/bin/pip install "$(echo dist/bionemo_ir-*.whl)[all]"
 ```
 
 That is the slower path and the stricter one: `--no-deps` above says nothing

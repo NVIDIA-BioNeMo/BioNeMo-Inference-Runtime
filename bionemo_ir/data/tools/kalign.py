@@ -22,10 +22,13 @@ from __future__ import annotations
 
 from functools import lru_cache
 
+from bionemo_ir._extras import pipeline_extra
+
 
 @lru_cache(maxsize=512)
 def _run_kalign_cached(sequences: tuple[str, ...]) -> tuple[str, ...]:
-    import kalign  # pip: kalign-python (same lib OSS run_kalign imports)
+    with pipeline_extra():
+        import kalign  # pip: kalign-python (same lib OSS run_kalign imports)
 
     return tuple(kalign.align(list(sequences)))
 

@@ -24,8 +24,8 @@ from typing import Any
 
 import numpy as np
 import torch
-from rdkit import Chem
 
+from bionemo_ir._extras import pipeline_extra
 from bionemo_ir.pipeline.base import FeatureGeneratorBase
 
 from .const import Structure, Token, TokenBond, max_msa_seqs, max_paired_seqs
@@ -40,6 +40,9 @@ from .featurizer import (
     process_token_features,
 )
 from .template_logic import build_template_features_from_row
+
+with pipeline_extra():
+    from rdkit import Chem
 
 
 def _row(context: dict[str, Any]) -> dict[str, Any]:

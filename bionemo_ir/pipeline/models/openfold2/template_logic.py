@@ -35,6 +35,7 @@ from typing import Any
 
 import numpy as np
 
+from bionemo_ir._extras import pipeline_extra
 from bionemo_ir.data.tools.kalign import run_kalign
 from bionemo_ir.data.tools.template_alignment import calculate_ids_hit, seq_identity_and_coverage
 from bionemo_ir.data.utils import pdb_to_cif_file
@@ -287,7 +288,8 @@ def extract_template_chains(content: str, fmt: str = "cif") -> dict[str, ChainTe
         raise ValueError(f"Unsupported template format: {fmt!r}")
     if not content or not content.strip():
         raise ValueError("Template content must not be empty")
-    from biotite.structure.io.pdbx import CIFFile, get_structure
+    with pipeline_extra():
+        from biotite.structure.io.pdbx import CIFFile, get_structure
 
     if fmt.lower() == "pdb":
         cif = pdb_to_cif_file(content)

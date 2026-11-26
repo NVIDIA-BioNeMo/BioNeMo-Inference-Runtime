@@ -17,9 +17,11 @@ from io import StringIO
 from pathlib import Path
 from typing import TextIO
 
-from Bio import SeqIO
-
+from bionemo_ir._extras import pipeline_extra
 from bionemo_ir.data.schemas import Polymer, PolymerType
+
+with pipeline_extra():
+    from Bio import SeqIO
 
 _alphabetical_order = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
 

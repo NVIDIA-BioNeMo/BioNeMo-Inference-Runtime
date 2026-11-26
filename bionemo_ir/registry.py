@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING, Any, ClassVar
 
 import torch.nn as nn
 
+from bionemo_ir._extras import pipeline_extra
 from bionemo_ir.configs import BaseConfig
 from bionemo_ir.hubs import FoldingSupportMatrix as SupMat
 from bionemo_ir.logger import logger
@@ -106,15 +107,18 @@ class ModelRegistry:
 
     @classmethod
     def get_tokenizer(cls, model_name: str) -> "TokenizerBase":
-        return cls.get_factory(model_name).get_tokenizer()
+        with pipeline_extra():
+            return cls.get_factory(model_name).get_tokenizer()
 
     @classmethod
     def get_feature_factory(cls, model_name: str) -> "FeatureFactoryBase":
-        return cls.get_factory(model_name).get_feature_factory()
+        with pipeline_extra():
+            return cls.get_factory(model_name).get_feature_factory()
 
     @classmethod
     def get_postprocessor(cls, model_name: str) -> type["PostProcessorBase"]:
-        return cls.get_factory(model_name).get_postprocessor()
+        with pipeline_extra():
+            return cls.get_factory(model_name).get_postprocessor()
 
     @classmethod
     def get_default_runtime_args(cls, model_name: str) -> dict[str, Any]:

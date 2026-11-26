@@ -32,6 +32,9 @@ name = "bionemo-ir"
 description = "BioNeMo Inference Runtime: GPU accelerated framework for protein folding"
 requires-python = ">=3.12,<3.15"
 authors = [{ name = "NVIDIA-BioNeMo team" }]
+# The base install is the model side only: the modules outside bionemo_ir/pipeline
+# and bionemo_ir/data import nothing else. The data pipelines need the `all` extra.
+# An extra can only add requirements, so pipeline packages cannot live here.
 dependencies = [
   "cuda-python>=13",
   "torch>=2.13",
@@ -39,35 +42,20 @@ dependencies = [
   "cuequivariance-ops-cu13>=0.11.1,<0.15",
   "cuequivariance-ops-torch-cu13>=0.11.1,<0.15",
   "triton>=3.6.0,<3.9",
-  "biopython>=1.87",
-  "ray[serve,data]==2.56.1",  # Installs pandas and pyarrow.
-  # Security floors for transitive runtime dependencies.
-  "aiohttp>=3.14.5,<4",
+  "numpy",  # Imported directly. Before the split it came only through other packages.
+  # Security floors for transitive runtime dependencies of torch and huggingface_hub.
+  # The floors for ray's dependencies are in the `all` extra.
   "certifi>=2026.10.23",
   "filelock>=4.2.1,<5",
   "fsspec>=2026.6.0",
-  "msgpack>=1.2.3,<2",
-  "multidict>=6.9.1",
-  "opentelemetry-api>=1.45.2",
-  "pillow>=13.0.0",
-  "pyasn1>=0.6.5",
-  "setuptools>=84.1.0",
-  "urllib3>=2.8.0",
-  "virtualenv>=21.14.10",
-  # uvloop 0.22 breaks Ray Serve: https://github.com/ray-project/ray/issues/57992
-  # 0.21.0 has no cp314 wheels; Python 3.14 takes the release the wheel jobs test.
-  "uvloop==0.21.0; python_version < '3.14'",
-  "uvloop==0.23.0; python_version >= '3.14'",
-  "modelcif==1.6",  # Needed for CIFWriter. The bulk CIF writer checks for exactly modelcif 1.6.
-  "rdkit==2025.9.6",  # Needed for the Boltz2 data pipeline.
-  "biotite>=1.6.0,<3",
-  # hf_hub_download()
+  "setuptools>=84.1.0",  # torch depends on it.
+  # hf_hub_download(). 0.x is allowed so that environments pinned to
+  # transformers<5 still resolve.
   "huggingface_hub>=0.25,<2",
+  # Floor for huggingface_hub 0.x, which pulls requests and urllib3 (1.x uses httpx).
+  "urllib3>=2.8.0",
   "PyYAML>=6.0.1,<7",  # The NGC PyTorch image's apt copy is 6.0.1 and pip cannot uninstall it.
   "lru-dict==1.4.1",
-  "kalign-python==3.6.0",
-  "scipy>=1.13.1,<2",
-  "gemmi==0.7.5",  # First release with cp313/cp314 and aarch64 wheels; README links its source.
   "einops>=0.8",  # rearrange() and einsum() are imported directly.
   "pydantic>=2.14.2,<3",
 ]
@@ -76,6 +64,35 @@ dependencies = [
 dynamic = ["version", "readme"]
 license = "Apache-2.0"
 license-files = ["LICENSE", "THIRD_PARTY_NOTICES.md", "LICENSES/*.txt"]
+
+[project.optional-dependencies]
+# The same as the base install. It exists so that `pip install "bionemo-ir[core]"`
+# names the model-only install explicitly.
+core = []
+# The data pipelines: parsing, featurization, Ray serving and CIF writing.
+# bionemo_ir/_extras.py lists the import names of these packages; keep it in sync.
+all = [
+  "biopython>=1.87",
+  "ray[serve,data]==2.56.1",  # Installs pandas and pyarrow.
+  # Security floors for transitive runtime dependencies of ray.
+  "aiohttp>=3.14.5,<4",
+  "msgpack>=1.2.3,<2",
+  "multidict>=6.9.1",
+  "opentelemetry-api>=1.45.2",
+  "pillow>=13.0.0",
+  "pyasn1>=0.6.5",
+  "virtualenv>=21.14.10",
+  # uvloop 0.22 breaks Ray Serve: https://github.com/ray-project/ray/issues/57992
+  # 0.21.0 has no cp314 wheels; Python 3.14 takes the release the wheel jobs test.
+  "uvloop==0.21.0; python_version < '3.14'",
+  "uvloop==0.23.0; python_version >= '3.14'",
+  "modelcif==1.6",  # Needed for CIFWriter. The bulk CIF writer checks for exactly modelcif 1.6.
+  "rdkit==2025.9.6",  # Needed for the Boltz2 data pipeline.
+  "biotite>=1.6.0,<3",
+  "kalign-python==3.6.0",
+  "scipy>=1.13.1,<2",
+  "gemmi==0.7.5",  # First release with cp313/cp314 and aarch64 wheels; README links its source.
+]
 
 # Rendered as the sidebar links on the PyPI project page, which is built from
 # this metadata alone -- a published version's page cannot be edited afterwards.
@@ -149,7 +166,14 @@ test = [
   "anarcii>=2.0.8,<3",
   "assertpy>=1.1,<2",
 ]
+# The data pipelines for a development environment: the suite runs them. A group,
+# not a line in `test`: `uv run --only-group test` (scripts/ci/contract.sh) must
+# not build the project, and naming the project here makes uv build it.
+extras = [
+  "bionemo-ir[all]",
+]
 dev = [
+  { include-group = "extras" },
   { include-group = "cutedsl" },
   { include-group = "lint" },
   { include-group = "test" },

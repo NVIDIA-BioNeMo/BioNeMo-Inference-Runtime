@@ -28,15 +28,18 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import numpy as np
-from Bio import Align
-from scipy.optimize import linear_sum_assignment
 
+from bionemo_ir._extras import pipeline_extra
 from bionemo_ir.data.utils import normalize_gemmi_structure, read_gemmi_structure
 
 from . import const
 from .const import Atom, Chain, EnsembleDtype, Residue, Structure, Token, chain_type_ids
 from .structure import _parse_modified_residue
 from .tokenizer_logic import _IDENTITY_ROT, _ZERO_T, compute_frame
+
+with pipeline_extra():
+    from Bio import Align
+    from scipy.optimize import linear_sum_assignment
 
 
 @dataclass(frozen=True)
@@ -243,7 +246,8 @@ def _parse_template_polymer(polymer, polymer_type, sequence: list, chain_id: str
     CIF coordinate (present) or mark absent. Applies the OSS MSE->MET and
     ARG NH1/NH2 quirks (harmless for the emitted tensors but kept for fidelity).
     """
-    import gemmi
+    with pipeline_extra():
+        import gemmi
 
     sequence = [gemmi.Entity.first_mon(item) for item in sequence]
     result = gemmi.align_sequence_to_polymer(sequence, polymer, polymer_type, gemmi.AlignmentScoring())

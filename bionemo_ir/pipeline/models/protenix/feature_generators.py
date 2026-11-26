@@ -15,19 +15,22 @@
 
 """Protenix token, atom, bond, and reference-frame features."""
 
-import biotite.structure as struc
 import numpy as np
 import torch
 import torch.nn.functional as F
-from rdkit import Chem
-from scipy.spatial import KDTree
-from scipy.spatial.transform import Rotation
 
+from bionemo_ir._extras import pipeline_extra
 from bionemo_ir.pipeline.base import FeatureGeneratorBase
 from bionemo_ir.pipeline.models.boltz2.const import res_to_disto_atom
 from bionemo_ir.pipeline.utils.atom import encode_atom_name_chars_one_hot, one_hot_host
 
 from .const import MOL_TYPES, RESTYPES
+
+with pipeline_extra():
+    import biotite.structure as struc
+    from rdkit import Chem
+    from scipy.spatial import KDTree
+    from scipy.spatial.transform import Rotation
 
 _ELEMENT_INDEX = {Chem.GetPeriodicTable().GetElementSymbol(z).upper(): z - 1 for z in range(1, 119)}
 

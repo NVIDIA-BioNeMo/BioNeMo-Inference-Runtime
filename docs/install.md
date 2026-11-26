@@ -182,6 +182,12 @@ differ; source builds add minutes to the install.
 pip builds `ihm` from source on every host. Its C extension is optional, so
 `ihm` installs without a compiler.
 
+All of these come only with the `all` extra, which installs the data pipelines.
+The model-only install, `pip install bionemo-ir`, needs none of them. See
+[Install the Package][install-package] for the two options.
+
+[install-package]: #install-the-package
+
 uv-managed and conda Pythons include `Python.h`. A Python from the
 distribution's package manager needs its matching development package as well.
 Check the environment's interpreter:
@@ -220,17 +226,25 @@ sudo dnf install --assumeyes python3.12-devel
 </Tab>
 </Tabs>
 
-To list the dependencies that build from source on this host, run the
-following check before installing BioIR. It compiles nothing:
+To list the dependencies that build from source on this host, run the check
+that matches the install you plan before installing BioIR. It compiles nothing.
+
+For the models and the data pipelines:
 
 ```bash
-python -m pip install --dry-run --only-binary=:all: --no-binary=ihm bionemo-ir
+python -m pip install --dry-run --only-binary=:all: --no-binary=ihm "bionemo-ir[all]"
+```
+
+For the models only:
+
+```bash
+python -m pip install --dry-run --only-binary=:all: bionemo-ir
 ```
 
 The result means:
 
-- **Ends with `Would install`:** Every dependency except `ihm` installs from a
-  wheel.
+- **Ends with `Would install`:** Every dependency installs from a wheel. With
+  `[all]`, `ihm` is the one exception.
 - **`ResolutionImpossible`:** The lines under `The conflict is caused by:`
   name a dependency that builds from source, such as `kalign-python`.
 - **`No matching distribution found for bionemo-ir`:** The Python version or
@@ -250,15 +264,32 @@ downloaded separately by pip.
 
 [external-materials]: overview.mdx#notice-and-disclaimer
 
-Install BioIR into the active environment:
+Install BioIR with its data pipelines into the active environment:
 
 ```bash
-python -m pip install bionemo-ir
+python -m pip install "bionemo-ir[all]"
 ```
 
 pip resolves PyTorch, the CUDA libraries, and the remaining dependencies from
 the same index. The wheel carries the GPU kernels precompiled, so neither
 installing nor running BioIR needs `nvcc` or the CUDA Toolkit.
+
+BioIR has two install options:
+
+| Command                         | Installs                                                                                                                 |
+| ------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| `pip install "bionemo-ir[all]"` | The models and the data pipelines: input parsing, featurization, Ray serving, and CIF output. The Quickstart needs this. |
+| `pip install bionemo-ir`        | The models only. Use it when your own code prepares the input tensors and handles the output, as RFD4-Proteina does.     |
+
+`pip install "bionemo-ir[core]"` is the same as `pip install bionemo-ir`. A pip
+extra can only add packages, so the model-only install is the default and the
+data pipelines are the extra. The model-only install leaves out Ray, RDKit,
+Biotite, Biopython, gemmi, kalign, and modelcif. If code needs one of those
+packages, the error names the command to run:
+
+```text
+ModuleNotFoundError: The 'rdkit' package is not installed. It is part of the BioIR data pipeline. Install it with: pip install "bionemo-ir[all]"
+```
 
 If pip fails to build a dependency, or the first prediction fails to compile
 Triton's launcher, match the error to the [build tools][build-tools] it needs:

@@ -21,9 +21,12 @@ import collections
 from collections.abc import Iterable, Mapping, Sequence
 
 import numpy as np
-import scipy.linalg
 
 import bionemo_ir.pipeline.models.openfold2.const as rc
+from bionemo_ir._extras import pipeline_extra
+
+with pipeline_extra():
+    import scipy.linalg
 
 # Note: these pairing thresholds and pad values are module-level constants
 # rather than config fields — they match the OpenFold-2 multimer pairing

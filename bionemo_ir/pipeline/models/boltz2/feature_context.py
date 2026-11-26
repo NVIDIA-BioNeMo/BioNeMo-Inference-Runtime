@@ -34,8 +34,8 @@ from pathlib import Path
 from typing import Any
 
 import torch
-from rdkit import Chem
 
+from bionemo_ir._extras import pipeline_extra
 from bionemo_ir.data.schemas.basic import InputParsed
 from bionemo_ir.data.utils import load_component_mol
 from bionemo_ir.pipeline.base import ContextGeneratorBase
@@ -44,6 +44,9 @@ from bionemo_ir.pipeline.base import ContextGeneratorBase
 from .const import canonical_tokens
 from .structure import build_structure_from_input
 from .tokenizer_logic import tokenize_structure
+
+with pipeline_extra():
+    from rdkit import Chem
 # isort: on
 
 

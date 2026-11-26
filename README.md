@@ -72,7 +72,16 @@ A100, L40S, GB200, and GB300.
 
 ### Install
 
-BioIR is published on PyPI, one wheel per CPU architecture:
+BioIR is published on PyPI, one wheel per CPU architecture. Choose one of the
+two installs.
+
+The models and the data pipelines, which the examples need:
+
+```bash
+pip install "bionemo-ir[all]"
+```
+
+The models only, for code that prepares its own input tensors:
 
 ```bash
 pip install bionemo-ir

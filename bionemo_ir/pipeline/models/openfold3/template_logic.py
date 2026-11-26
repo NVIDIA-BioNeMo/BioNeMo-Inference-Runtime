@@ -32,6 +32,7 @@ from typing import Literal
 
 import numpy as np
 
+from bionemo_ir._extras import pipeline_extra
 from bionemo_ir.data.tools.kalign import run_kalign
 from bionemo_ir.data.tools.template_alignment import calculate_ids_hit, seq_identity_and_coverage
 from bionemo_ir.data.utils import pdb_to_cif_file
@@ -230,7 +231,8 @@ def extract_template_chains(
         fmt: Template format, ``"cif"`` or ``"pdb"``.
         parsing: Atoms, sequence spelling and altloc rule to apply.
     """
-    from biotite.structure.io.pdbx import CIFFile, get_structure
+    with pipeline_extra():
+        from biotite.structure.io.pdbx import CIFFile, get_structure
 
     if fmt.lower() not in {"cif", "pdb"}:
         raise ValueError(f"Unsupported template format: {fmt!r}")

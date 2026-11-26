@@ -31,15 +31,9 @@ from concurrent.futures import ThreadPoolExecutor
 from functools import lru_cache, partial
 from typing import Any
 
-import biotite.structure as struc
-import biotite.structure.info as struc_info
 import numpy as np
-from biotite.interface.rdkit import to_mol as biotite_to_mol
-from rdkit import Chem, rdBase
-from rdkit.Chem import AllChem
-from rdkit.Chem.rdDistGeom import EmbedParameters
-from rdkit.Geometry import Point3D
 
+from bionemo_ir._extras import pipeline_extra
 from bionemo_ir.data.schemas.basic import InputParsed
 from bionemo_ir.pipeline.base import ContextGeneratorBase
 from bionemo_ir.pipeline.utils._rng import _python_rng
@@ -58,6 +52,15 @@ from .const import (
     RNA_RESTYPE_1TO3,
     UNK_IDX,
 )
+
+with pipeline_extra():
+    import biotite.structure as struc
+    import biotite.structure.info as struc_info
+    from biotite.interface.rdkit import to_mol as biotite_to_mol
+    from rdkit import Chem, rdBase
+    from rdkit.Chem import AllChem
+    from rdkit.Chem.rdDistGeom import EmbedParameters
+    from rdkit.Geometry import Point3D
 
 _logger = logging.getLogger(__name__)
 

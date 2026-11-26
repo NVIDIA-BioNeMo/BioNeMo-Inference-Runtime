@@ -21,6 +21,8 @@ from typing import TYPE_CHECKING, Any
 import torch
 import torch.nn.functional as F
 
+from bionemo_ir._extras import pipeline_extra
+
 from .schemas import AtomType, AtomTypes, ResType, ResTypes
 
 if TYPE_CHECKING:
@@ -156,7 +158,8 @@ def load_component_mol(mol_dir: str | Path, name: str) -> Any | None:
     """
     if not is_component_id(name):
         return None
-    from rdkit import Chem
+    with pipeline_extra():
+        from rdkit import Chem
 
     Chem.SetDefaultPickleProperties(Chem.PropertyPickleOptions.AllProps)
     base = Path(mol_dir).resolve()
@@ -178,7 +181,8 @@ def read_gemmi_structure(source: str, fmt: str, from_content: bool):
     ``fmt`` is ``"cif"``/``"mmcif"`` or ``"pdb"``; ``from_content`` selects raw
     text vs a filesystem path.
     """
-    import gemmi
+    with pipeline_extra():
+        import gemmi
 
     fmt = fmt.lower()
     if fmt in ("mmcif", "cif"):
@@ -211,7 +215,9 @@ def pdb_to_cif_file(content: str) -> "CIFFile":
         Biotite CIF file retaining canonical positions and missing-value masks.
     """
     import numpy as np
-    from biotite.structure.io.pdbx import CIFBlock, CIFCategory, CIFColumn, CIFData, CIFFile
+
+    with pipeline_extra():
+        from biotite.structure.io.pdbx import CIFBlock, CIFCategory, CIFColumn, CIFData, CIFFile
 
     source = _pdb_to_document(content)[0]
     block = CIFBlock()

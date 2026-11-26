@@ -28,6 +28,7 @@ from typing import Any
 import numpy as np
 import torch
 
+from bionemo_ir._extras import pipeline_extra
 from bionemo_ir.pipeline.base import FeatureGeneratorBase
 from bionemo_ir.pipeline.utils._template_transfer import record_template_slots
 from bionemo_ir.pipeline.utils.atom import one_hot_host
@@ -256,7 +257,8 @@ class ConformerFeatureGenerator(FeatureGeneratorBase):
         # 118 elements. RDKit's periodic table is the source of truth here: a
         # short hardcoded element table silently encodes metals (MG, NI, ZN,
         # FE, ...) as carbon (index 5).
-        from rdkit.Chem import GetPeriodicTable
+        with pipeline_extra():
+            from rdkit.Chem import GetPeriodicTable
 
         _pt = GetPeriodicTable()
         element_indices = []

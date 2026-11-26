@@ -23,6 +23,7 @@ from typing import NamedTuple
 import numpy as np
 import torch
 
+from bionemo_ir._extras import pipeline_extra
 from bionemo_ir.data.schemas.basic import AtomTypes
 from bionemo_ir.logger import logger
 
@@ -188,7 +189,8 @@ def _has_class(encoded: torch.Tensor | np.ndarray) -> np.ndarray:
 
 @cache
 def _periodic_symbols() -> np.ndarray:
-    from rdkit.Chem import GetPeriodicTable
+    with pipeline_extra():
+        from rdkit.Chem import GetPeriodicTable
 
     table = GetPeriodicTable()
     return np.asarray([""] + [table.GetElementSymbol(number) for number in range(1, 119)], dtype="<U2")

@@ -9,6 +9,19 @@
 Each final release of BioNeMo Inference Runtime, newest first. Release
 candidates are not listed.
 
+## 0.3.0
+
+### Breaking Changes
+
+- **Model-only base install.** `pip install bionemo-ir` now installs the
+  models only. The data pipelines (input parsing, featurization, Ray
+  serving, and CIF output) need `pip install "bionemo-ir[all]"`, which
+  installs the same packages as a plain install did before.
+  `bionemo-ir[core]` names the model-only install. Without the extra, a
+  pipeline import fails with an error that names the command. Images and
+  scripts that run the data pipelines must change their install command to
+  `bionemo-ir[all]`.
+
 ## 0.2.2
 
 ### Compatibility

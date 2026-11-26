@@ -322,9 +322,6 @@ wheels = [
 name = "bionemo-ir"
 source = { editable = "." }
 dependencies = [
-    { name = "aiohttp" },
-    { name = "biopython" },
-    { name = "biotite" },
     { name = "certifi" },
     { name = "cuda-python" },
     { name = "cuequivariance" },
@@ -333,26 +330,35 @@ dependencies = [
     { name = "einops" },
     { name = "filelock" },
     { name = "fsspec" },
-    { name = "gemmi" },
     { name = "huggingface-hub" },
-    { name = "kalign-python" },
     { name = "lru-dict" },
+    { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.14'" },
+    { name = "numpy", version = "2.5.4", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.14'" },
+    { name = "pydantic" },
+    { name = "pyyaml" },
+    { name = "setuptools" },
+    { name = "torch" },
+    { name = "triton" },
+    { name = "urllib3" },
+]
+
+[package.optional-dependencies]
+all = [
+    { name = "aiohttp" },
+    { name = "biopython" },
+    { name = "biotite" },
+    { name = "gemmi" },
+    { name = "kalign-python" },
     { name = "modelcif" },
     { name = "msgpack" },
     { name = "multidict" },
     { name = "opentelemetry-api" },
     { name = "pillow" },
     { name = "pyasn1" },
-    { name = "pydantic" },
-    { name = "pyyaml" },
     { name = "ray", extra = ["data", "serve"] },
     { name = "rdkit" },
     { name = "scipy", version = "1.13.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.13'" },
     { name = "scipy", version = "1.18.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.13'" },
-    { name = "setuptools" },
-    { name = "torch" },
-    { name = "triton" },
-    { name = "urllib3" },
     { name = "uvloop", version = "0.21.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.14'" },
     { name = "uvloop", version = "0.23.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.14'" },
     { name = "virtualenv" },
@@ -377,6 +383,7 @@ dev = [
     { name = "assertpy" },
     { name = "atomworks" },
     { name = "beartype" },
+    { name = "bionemo-ir", extra = ["all"] },
     { name = "biotraj" },
     { name = "environs" },
     { name = "fire" },
@@ -395,6 +402,9 @@ dev = [
     { name = "rootutils" },
     { name = "setuptools" },
     { name = "toolz" },
+]
+extras = [
+    { name = "bionemo-ir", extra = ["all"] },
 ]
 lint = [
     { name = "prek" },
@@ -438,9 +448,9 @@ test = [
 
 [package.metadata]
 requires-dist = [
-    { name = "aiohttp", specifier = ">=3.14.5,<4" },
-    { name = "biopython", specifier = ">=1.87" },
-    { name = "biotite", specifier = ">=1.6.0,<3" },
+    { name = "aiohttp", marker = "extra == 'all'", specifier = ">=3.14.5,<4" },
+    { name = "biopython", marker = "extra == 'all'", specifier = ">=1.87" },
+    { name = "biotite", marker = "extra == 'all'", specifier = ">=1.6.0,<3" },
     { name = "certifi", specifier = ">=2026.10.23" },
     { name = "cuda-python", specifier = ">=13" },
     { name = "cuequivariance", specifier = ">=0.11.1,<0.15" },
@@ -449,29 +459,31 @@ requires-dist = [
     { name = "einops", specifier = ">=0.8" },
     { name = "filelock", specifier = ">=4.2.1,<5" },
     { name = "fsspec", specifier = ">=2026.6.0" },
-    { name = "gemmi", specifier = "==0.7.5" },
+    { name = "gemmi", marker = "extra == 'all'", specifier = "==0.7.5" },
     { name = "huggingface-hub", specifier = ">=0.25,<2" },
-    { name = "kalign-python", specifier = "==3.6.0" },
+    { name = "kalign-python", marker = "extra == 'all'", specifier = "==3.6.0" },
     { name = "lru-dict", specifier = "==1.4.1" },
-    { name = "modelcif", specifier = "==1.6" },
-    { name = "msgpack", specifier = ">=1.2.3,<2" },
-    { name = "multidict", specifier = ">=6.9.1" },
-    { name = "opentelemetry-api", specifier = ">=1.45.2" },
-    { name = "pillow", specifier = ">=13.0.0" },
-    { name = "pyasn1", specifier = ">=0.6.5" },
+    { name = "modelcif", marker = "extra == 'all'", specifier = "==1.6" },
+    { name = "msgpack", marker = "extra == 'all'", specifier = ">=1.2.3,<2" },
+    { name = "multidict", marker = "extra == 'all'", specifier = ">=6.9.1" },
+    { name = "numpy" },
+    { name = "opentelemetry-api", marker = "extra == 'all'", specifier = ">=1.45.2" },
+    { name = "pillow", marker = "extra == 'all'", specifier = ">=13.0.0" },
+    { name = "pyasn1", marker = "extra == 'all'", specifier = ">=0.6.5" },
     { name = "pydantic", specifier = ">=2.14.2,<3" },
     { name = "pyyaml", specifier = ">=6.0.1,<7" },
-    { name = "ray", extras = ["data", "serve"], specifier = "==2.56.1" },
-    { name = "rdkit", specifier = "==2025.9.6" },
-    { name = "scipy", specifier = ">=1.13.1,<2" },
+    { name = "ray", extras = ["data", "serve"], marker = "extra == 'all'", specifier = "==2.56.1" },
+    { name = "rdkit", marker = "extra == 'all'", specifier = "==2025.9.6" },
+    { name = "scipy", marker = "extra == 'all'", specifier = ">=1.13.1,<2" },
     { name = "setuptools", specifier = ">=84.1.0" },
     { name = "torch", specifier = ">=2.13" },
     { name = "triton", specifier = ">=3.6.0,<3.9" },
     { name = "urllib3", specifier = ">=2.8.0" },
-    { name = "uvloop", marker = "python_full_version < '3.14'", specifier = "==0.21.0" },
-    { name = "uvloop", marker = "python_full_version >= '3.14'", specifier = "==0.23.0" },
-    { name = "virtualenv", specifier = ">=21.14.10" },
+    { name = "uvloop", marker = "python_full_version >= '3.14' and extra == 'all'", specifier = "==0.23.0" },
+    { name = "uvloop", marker = "python_full_version < '3.14' and extra == 'all'", specifier = "==0.21.0" },
+    { name = "virtualenv", marker = "extra == 'all'", specifier = ">=21.14.10" },
 ]
+provides-extras = ["core", "all"]
 
 [package.metadata.requires-dev]
 build = [
@@ -490,6 +502,7 @@ dev = [
     { name = "assertpy", specifier = ">=1.1,<2" },
     { name = "atomworks", specifier = ">=3.0.4,<4" },
     { name = "beartype", specifier = ">=0.18.0,<1" },
+    { name = "bionemo-ir", extras = ["all"] },
     { name = "biotraj", specifier = "==1.2.2" },
     { name = "environs", specifier = ">=11.0.0,<12" },
     { name = "fire", specifier = ">=0.7,<1" },
@@ -509,6 +522,7 @@ dev = [
     { name = "setuptools", specifier = ">=84.1.0" },
     { name = "toolz", specifier = ">=1.0,<2" },
 ]
+extras = [{ name = "bionemo-ir", extras = ["all"] }]
 lint = [{ name = "prek", specifier = "==0.4.12" }]
 release = [
     { name = "abi3audit", specifier = "==0.0.26" },

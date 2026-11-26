@@ -20,10 +20,13 @@ from typing import TextIO
 
 import numpy as np
 import torch
-from Bio import SeqIO
 
+from bionemo_ir._extras import pipeline_extra
 from bionemo_ir.data.schemas.basic import MSAParsed
 from bionemo_ir.logger import logger
+
+with pipeline_extra():
+    from Bio import SeqIO
 
 
 def generate_deletion_matrix(sequences: list[str]) -> torch.Tensor:

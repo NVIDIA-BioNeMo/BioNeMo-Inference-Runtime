@@ -20,13 +20,9 @@ from collections.abc import Callable, Sequence
 from itertools import chain, repeat
 from typing import NamedTuple
 
-import ihm
-import ihm.dumper
-import ihm.format
-import modelcif
 import numpy as np
-from modelcif import dumper, model, qa_metric  # noqa: F401
 
+from bionemo_ir._extras import pipeline_extra
 from bionemo_ir.data.schemas.basic import FoldingOutput
 from bionemo_ir.data.writers import _text
 from bionemo_ir.data.writers.base_writer import (
@@ -38,6 +34,13 @@ from bionemo_ir.data.writers.base_writer import (
     _OccupiedAtoms,
 )
 from bionemo_ir.logger import logger
+
+with pipeline_extra():
+    import ihm
+    import ihm.dumper
+    import ihm.format
+    import modelcif
+    from modelcif import dumper, model, qa_metric  # noqa: F401
 
 
 def _chain_id_from_index(idx: int) -> str:

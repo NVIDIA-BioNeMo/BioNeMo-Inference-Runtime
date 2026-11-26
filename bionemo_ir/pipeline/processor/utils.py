@@ -19,6 +19,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+from bionemo_ir._extras import pipeline_extra
 from bionemo_ir.pipeline.stages.configs import _StageConfigBase
 
 if TYPE_CHECKING:
@@ -54,7 +55,8 @@ def normalize_cpu_stage_concurrency(concurrency: int | tuple[int, int] | None) -
     Returns:
         ray.data.ActorPoolStrategy configured based on the input specification
     """
-    from ray.data import ActorPoolStrategy
+    with pipeline_extra():
+        from ray.data import ActorPoolStrategy
 
     if concurrency is None:
         return ActorPoolStrategy(min_size=1, max_size=1)

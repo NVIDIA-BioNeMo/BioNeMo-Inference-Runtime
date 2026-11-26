@@ -18,7 +18,6 @@ import datetime
 import inspect
 import math
 import pickle
-import sys
 from pathlib import Path
 
 import numpy as np
@@ -98,14 +97,11 @@ from bionemo_ir.models.rfproteina.convert import (
 )
 from tests._torch import SM_VERSION, init_module_weights, skip_if_cutedsl, skip_if_no_cutedsl
 from tests._torch.rfproteina_utils import get_residue_atom_mask
-
-# The parity tests below import the upstream ``rfproteina`` package. Read it from
-# the 3rdparty/RFD4-Proteina submodule when it is checked out, and leave the path
-# alone otherwise so those tests keep skipping. Appended, not prepended, so an
-# installed copy still wins.
-_RFD4_PROTEINA_SRC = Path(__file__).resolve().parents[2] / "3rdparty" / "RFD4-Proteina" / "src"
-if _RFD4_PROTEINA_SRC.is_dir() and str(_RFD4_PROTEINA_SRC) not in sys.path:
-    sys.path.append(str(_RFD4_PROTEINA_SRC))
+from tests.common.test_utils.rfproteina.ref_layers_from_oss import (
+    load_rfproteina_checkpoint_for_oss,
+    load_upstream_encoder_transformer,
+    load_upstream_noise_alignment,
+)
 
 
 def _rfproteina_attention(
@@ -810,7 +806,7 @@ def test_chirality_alignment_matches_a_frame_by_frame_reference(rotate: bool, tr
 
 @pytest.mark.parametrize("rotate, translate", [(True, False), (True, True), (False, True)])
 def test_chirality_alignment_matches_the_upstream_function(rotate: bool, translate: bool) -> None:
-    upstream = pytest.importorskip("rfproteina.nn.noise_alignment")
+    upstream = load_upstream_noise_alignment()
     scene = _random_chirality_scene(torch.Generator().manual_seed(4))
     batch = {
         "x_t": {"bb_ca": scene["anchors"]},
@@ -2893,7 +2889,7 @@ def test_rfproteina_encoder_conversion_folds_the_released_chemistry_exactly() ->
     checkpoint = resolve_rfproteina_autoencoder_checkpoint()
     if checkpoint is None or not checkpoint.is_file():
         pytest.skip("RFPROTEINA_AE_CKPT is not set to the released autoencoder checkpoint")
-    state = torch.load(checkpoint, map_location="cpu", weights_only=False, mmap=True)["state_dict"]
+    state = load_rfproteina_checkpoint_state(checkpoint)
     config = rfproteina_encoder_config_from_weights(state)
     if not config.atom_chemistry:
         pytest.skip("the released autoencoder does not read per-atom chemistry")
@@ -2984,18 +2980,13 @@ def test_rfproteina_autoencoder_encoder_conversion(transformer_dtype: str) -> No
     torch.testing.assert_close(output["z_latent"], output["mean"])
 
 
-def test_rfproteina_encoder_matches_oss_release(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_rfproteina_encoder_matches_oss_release() -> None:
     checkpoint = resolve_rfproteina_autoencoder_checkpoint()
     if checkpoint is None or not checkpoint.is_file():
         pytest.skip("RFPROTEINA_AE_CKPT is not set to the released autoencoder checkpoint")
-    monkeypatch.setenv("CLUSTER", "local")
-    try:
-        import rfproteina  # noqa: F401
-        from rfproteina.partial_autoencoder.encoder import EncoderTransformer
-    except ImportError:
-        pytest.skip("the optional OSS RFProteína validation package is absent")
+    EncoderTransformer = load_upstream_encoder_transformer()
 
-    checkpoint_data = torch.load(checkpoint, map_location="cpu", weights_only=False, mmap=True)
+    checkpoint_data = load_rfproteina_checkpoint_for_oss(checkpoint)
     oss = EncoderTransformer(**checkpoint_data["hyper_parameters"]["cfg_ae"]["nn_ae"])
     oss.load_state_dict(
         {

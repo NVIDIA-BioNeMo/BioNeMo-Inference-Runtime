@@ -19,10 +19,10 @@ from dataclasses import dataclass
 
 import pytest
 import torch
-from ml_collections.config_dict import ConfigDict
 
 from bionemo_ir._torch.modules.protenix import ProtenixConfidenceSummary
 from bionemo_ir.models.protenix.config import ConfidenceSummaryConfig
+from tests.common.test_utils.ml_collections_stub import ConfigDict
 from tests.common.test_utils.protenix.ref_layers_from_oss import (
     oss_compute_contact_prob,
     oss_compute_full_data_and_summary,

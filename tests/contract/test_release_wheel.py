@@ -17,7 +17,9 @@
 
 import hashlib
 import importlib.util
+import shutil
 import struct
+import sysconfig
 from pathlib import Path
 from zipfile import ZipFile
 
@@ -118,3 +120,57 @@ def test_cubin_identity(tmp_path: Path) -> None:
         _CHECK.check_cubins(b"no images", tmp_path)
     with pytest.raises(ValueError, match="1 duplicated"):
         _CHECK.check_cubins(bytes(cubin) * 2, tmp_path)
+
+
+def test_parse_limited_api_declarations() -> None:
+    preprocessed = """
+    __BIOIR_ABI3_SYM__ PyObject * PyModuleDef_Init(PyModuleDef *);
+    __BIOIR_ABI3_SYM__ PyTypeObject PyLong_Type;
+    __BIOIR_ABI3_SYM__ PyObject * __attribute__((deprecated)) PyExc_ValueError;
+    __BIOIR_ABI3_SYM__ int Py_AtExit(void (*func)(void));
+    __BIOIR_ABI3_SYM__ int (*PyOS_InputHook)(void);
+    __BIOIR_ABI3_SYM__ PyObject _Py_NoneStruct;
+    __BIOIR_ABI3_SYM__ const char * _Py_Array[1];
+    """
+    assert _CHECK.parse_limited_api_declarations(preprocessed) == frozenset(
+        {
+            "PyModuleDef_Init",
+            "PyLong_Type",
+            "PyExc_ValueError",
+            "Py_AtExit",
+            "PyOS_InputHook",
+            "_Py_NoneStruct",
+            "_Py_Array",
+        }
+    )
+
+
+def test_check_abi3_accepts_and_rejects_symbols() -> None:
+    allowed = frozenset({"PyModuleDef_Init", "PyObject_GetTypeData", "_Py_NoneStruct"})
+    valid_dynsyms = (
+        "     0: 0000000000000000     0 NOTYPE  LOCAL  DEFAULT  UND \n"
+        "     1: 0000000000000000     0 FUNC    GLOBAL DEFAULT  UND cuModuleLoadData\n"
+        "     2: 0000000000000000     0 NOTYPE  GLOBAL DEFAULT  UND PyModuleDef_Init\n"
+        "     3: 0000000000000000     0 NOTYPE  GLOBAL DEFAULT [VARIANT_PCS] UND PyObject_GetTypeData\n"
+        "     4: 0000000000000000     0 NOTYPE  GLOBAL DEFAULT  UND _Py_NoneStruct@PYTHON_3.12\n"
+        "     5: 0000000000001234    16 FUNC    GLOBAL DEFAULT   12 PyInit__cutedsl_kernels\n"
+    )
+    _CHECK.check_abi3(valid_dynsyms, allowed)
+
+    with pytest.raises(ValueError, match="no Python C API symbols"):
+        _CHECK.check_abi3("     1: 0000000000000000     0 FUNC    GLOBAL DEFAULT  UND cuInit\n", allowed)
+
+    invalid_dynsyms = valid_dynsyms + "     6: 0000000000000000     0 NOTYPE  GLOBAL DEFAULT  UND PyRun_SimpleString\n"
+    with pytest.raises(ValueError, match="PyRun_SimpleString"):
+        _CHECK.check_abi3(invalid_dynsyms, allowed)
+
+
+def test_load_limited_api_symbols_from_headers() -> None:
+    include = Path(sysconfig.get_path("include"))
+    if shutil.which("g++") is None or not (include / "Python.h").is_file():
+        pytest.skip("g++ or Python.h unavailable in this environment.")
+    symbols = _CHECK.load_limited_api_symbols()
+    assert {"PyModuleDef_Init", "PyObject_GetTypeData", "Py_AtExit", "PyOS_InputHook", "_Py_NoneStruct"} <= symbols
+    assert not (
+        {"PyRun_SimpleString", "PyEval_SetTrace", "PyCode_GetCode", "PyUnstable_Object_IsUniquelyReferenced"} & symbols
+    )

@@ -21,6 +21,7 @@ from unittest.mock import MagicMock
 
 import tests
 from tests.common.test_utils.basic import path_for_package_in_repo, require_vendored_submodule
+from tests.common.test_utils.ml_collections_stub import stub_ml_collections
 
 # Resolved before the gemmi stub below: skipping once that is installed
 # would leave the MagicMock in sys.modules for every later test.
@@ -38,16 +39,17 @@ sys.modules["gemmi"] = _gemmi_stub
 sys.path.insert(0, _VENDORED_ROOT)
 
 try:
-    import openfold3.core.config.default_linear_init_config as lin_init
-    from openfold3.core.model.latent.msa_module import MSAModuleBlock as OF3OSS_MSAModuleBlock
-    from openfold3.core.model.latent.template_module import TemplatePairBlock as OF3OSS_TemplatePairBlock
-    from openfold3.core.model.layers.msa import MSAPairWeightedAveraging as OF3OSS_MSAPairWeightedAveraging
-    from openfold3.core.model.layers.outer_product_mean import OuterProductMean as OF3OSS_OuterProductMean
-    from openfold3.core.model.layers.transition import SwiGLUTransition as OF3OSS_SwiGLUTransition
-    from openfold3.core.model.layers.triangular_attention import TriangleAttention as OF3OSS_TriangleAttention
-    from openfold3.core.model.layers.triangular_multiplicative_update import (
-        TriangleMultiplicativeUpdate as OF3OSS_TriangleMultiplicativeUpdate,
-    )
+    with stub_ml_collections():
+        import openfold3.core.config.default_linear_init_config as lin_init
+        from openfold3.core.model.latent.msa_module import MSAModuleBlock as OF3OSS_MSAModuleBlock
+        from openfold3.core.model.latent.template_module import TemplatePairBlock as OF3OSS_TemplatePairBlock
+        from openfold3.core.model.layers.msa import MSAPairWeightedAveraging as OF3OSS_MSAPairWeightedAveraging
+        from openfold3.core.model.layers.outer_product_mean import OuterProductMean as OF3OSS_OuterProductMean
+        from openfold3.core.model.layers.transition import SwiGLUTransition as OF3OSS_SwiGLUTransition
+        from openfold3.core.model.layers.triangular_attention import TriangleAttention as OF3OSS_TriangleAttention
+        from openfold3.core.model.layers.triangular_multiplicative_update import (
+            TriangleMultiplicativeUpdate as OF3OSS_TriangleMultiplicativeUpdate,
+        )
 finally:
     if _previous_gemmi is _MISSING_MODULE:
         sys.modules.pop("gemmi", None)

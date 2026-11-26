@@ -394,10 +394,6 @@ runtime container unless an artifact-specific SBOM states otherwise.
 - **pytest** — MIT; [source and license][pytest]
 - **pytest-cov** — MIT; [source and license][pytest-cov]
 - **pytest-xdist** — MIT; [source and license][pytest-xdist]
-- **parameterized** — BSD-2-Clause; [source and license][parameterized]
-- **biotraj** — LGPL-2.1-or-later; [source and license][biotraj]
-- **ml-collections** — Apache-2.0;
-  [source and license][ml-collections]
 
 ## Base Images
 
@@ -416,7 +412,6 @@ resolved operating-system and base-image package closure.
 [biopython]: https://github.com/biopython/biopython
 [biopython-license]: LICENSES/Biopython-License-Agreement.txt
 [biotite]: https://github.com/biotite-dev/biotite
-[biotraj]: https://github.com/biotite-dev/biotraj
 [bsd-2-clause]: LICENSES/BSD-2-Clause.txt
 [bsd-3-clause]: LICENSES/BSD-3-Clause.txt
 [cccl]: https://github.com/NVIDIA/cccl
@@ -439,7 +434,6 @@ resolved operating-system and base-image package closure.
 [licenses]: LICENSES
 [lru-dict]: https://github.com/amitdev/lru-dict
 [mit]: LICENSES/MIT.txt
-[ml-collections]: https://github.com/google/ml_collections
 [modelcif]: https://github.com/ihmwg/python-modelcif
 [mpl-2]: LICENSES/MPL-2.0.txt
 [multidict]: https://github.com/aio-libs/multidict
@@ -447,7 +441,6 @@ resolved operating-system and base-image package closure.
 [openfold]: https://github.com/aqlaboratory/openfold
 [openfold3]: https://github.com/aqlaboratory/openfold-3/tree/0bb17be5199846e806b6347b6e17c6249c88ff1b
 [opentelemetry-api]: https://raw.githubusercontent.com/open-telemetry/opentelemetry-python/main/LICENSE
-[parameterized]: https://github.com/wolever/parameterized
 [prek]: https://github.com/j178/prek
 [protenix]: https://github.com/bytedance/Protenix/tree/2475421477ab414b571149ad4a875c390ff8a35d
 [rfd4-proteina]: https://github.com/RosettaCommons/RFD4-Proteina/tree/9b9177c3bcd083cb9f6d0d022e948e3169b86b93

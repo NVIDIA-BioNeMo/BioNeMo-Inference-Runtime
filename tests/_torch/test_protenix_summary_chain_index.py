@@ -18,11 +18,11 @@ import os
 
 import pytest
 import torch
-from ml_collections.config_dict import ConfigDict
 
 from bionemo_ir._torch.modules.protenix import ProtenixConfidenceSummary
 from bionemo_ir._torch.modules.protenix.summary import ChainIndex
 from bionemo_ir.models.protenix.config import ConfidenceSummaryConfig
+from tests.common.test_utils.ml_collections_stub import ConfigDict
 
 _OSS_CONFIGS = ConfigDict(
     {

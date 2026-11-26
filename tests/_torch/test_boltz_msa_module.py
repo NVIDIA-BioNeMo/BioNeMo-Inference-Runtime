@@ -25,11 +25,12 @@ from test_utils.boltz.create_and_load_weights import (
 )
 from test_utils.boltz.ref_layers import RefMSALayer, RefMSAModule
 
-from bionemo_ir._torch.attention_backend import AttentionType, get_attention_backend
+from bionemo_ir._torch.attention_backend import AttentionMetadata, AttentionType, get_attention_backend
 from bionemo_ir._torch.attention_backend.utils import precompute_pair_masks
+from bionemo_ir._torch.graph_optimization.graph_policy import trunk_graph_config
 from bionemo_ir._torch.layers.triangle_nodes import precompute_trimul_metadata
-from bionemo_ir._torch.modules.boltz.trunk import MSALayer, MSAModule
-from bionemo_ir.models.boltz2.config import MSAModuleConfig
+from bionemo_ir._torch.modules.boltz.trunk import MSALayer, MSAModule, Trunk
+from bionemo_ir.models.boltz2.config import MSAModuleConfig, TrunkConfig
 from bionemo_ir.utils import str_dtype_to_torch
 from tests._torch import make_left_aligned_mask
 from tests._torch import skip_if_cutedsl as _skip_if_cutedsl
@@ -96,6 +97,7 @@ def test_msa_layer(sc: Scenario):
 
         ref_mod = ref_mod.to(dtype)
         ref_z, ref_m = ref_mod(z, m, token_mask, msa_mask)
+        z_before = z.clone()
         output_z, output_m = msa_layer(
             z,
             m,
@@ -107,6 +109,8 @@ def test_msa_layer(sc: Scenario):
 
     assert ref_z.shape == output_z.shape
     assert ref_m.shape == output_m.shape
+    # MSALayer accumulates z into the fresh OPM output instead of mutating its input z.
+    torch.testing.assert_close(z, z_before, atol=0, rtol=0)
 
     # With a real left-aligned mask, padded query rows in
     # ``pair_weighted_averaging`` softmax over fully-masked keys -> NaN in
@@ -201,6 +205,7 @@ def test_msa_module(sc: Scenario):
 
     with torch.inference_mode():
         z = z.to(dtype)
+        z_before = z.clone()
         emb = emb.to(dtype)
         has_deletion = has_deletion.to(dtype)
         deletion_value = deletion_value.to(dtype)
@@ -214,6 +219,8 @@ def test_msa_module(sc: Scenario):
 
     assert ref_z.shape == output_z.shape
     torch.testing.assert_close(ref_z, output_z, atol=1e-3, rtol=1e-4)
+    # The trunk computes ``z = z + msa_module(z, ...)``: the module must not modify the z it is given.
+    torch.testing.assert_close(z, z_before, atol=0, rtol=0)
 
 
 # ---------------------------------------------------------------------------
@@ -275,12 +282,12 @@ def test_msa_layer_precomputed_masks(sc: Scenario):
         precomputed.mask_bias_transposed if precomputed.mask_bias_transposed.dtype == torch.int32 else None,
     )
 
-    # MSALayer accumulates into z/m *in place* (memory opt), so it consumes its inputs. Give each
-    # call its own copy, otherwise the second call would run on the first call's mutated z/m rather
-    # than the same inputs -- the two mask paths must be compared on identical inputs.
+    # MSALayer accumulates into m *in place* (memory opt), while preserving its input z.
+    # Give each call its own copy of m so both mask paths run on identical inputs.
+    z_before = z.clone()
     with torch.inference_mode():
         out_z, out_m = msa_layer(
-            z.clone(),
+            z,
             m.clone(),
             token_mask,
             msa_mask,
@@ -288,7 +295,7 @@ def test_msa_layer_precomputed_masks(sc: Scenario):
             attn_metadata=triangle_metadata_cls(),
         )
         out_z_pre, out_m_pre = msa_layer(
-            z.clone(),
+            z,
             m.clone(),
             token_mask,
             msa_mask,
@@ -297,5 +304,145 @@ def test_msa_layer_precomputed_masks(sc: Scenario):
             precomputed_masks=precomputed,
         )
 
+    torch.testing.assert_close(z, z_before, atol=0, rtol=0)
     torch.testing.assert_close(out_z_pre, out_z, atol=0, rtol=0)
     torch.testing.assert_close(out_m_pre, out_m, atol=0, rtol=0)
+
+
+# ---------------------------------------------------------------------------
+# Regression tests for Trunk._recycle_step residual preservation
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("dtype_str", ["float32", "bfloat16"])
+def test_trunk_recycle_step_preserves_pre_msa_residual(dtype_str: str) -> None:
+    """Trunk._recycle_step must feed pairformer ``z_pre_msa + msa_out`` without mutating ``z_init``."""
+    torch.manual_seed(0)
+    dtype = str_dtype_to_torch(dtype_str)
+    device = torch.device("cuda")
+
+    B, N, N_msa = 1, 16, 8
+    config = TrunkConfig(dtype=dtype_str, graph_optimization_config=None)
+    config.msa_module.dtype = dtype_str
+    config.msa_module.msa_blocks = 2
+    config.msa_module.triangle_attention_backend = "VANILLA"
+    config.pairformer.dtype = dtype_str
+    config.pairformer.s_path_dtype = dtype_str
+    config.pairformer.num_blocks = 1
+    config.pairformer.enable_token_pad = False
+    config.pairformer.triangle_attention_backend = "VANILLA"
+    config.pairformer.pairwise_attention_backend = "VANILLA"
+
+    trunk = Trunk(config).to(device).eval()
+    with torch.no_grad():
+        for p in trunk.parameters():
+            p.normal_(0.0, 0.02)
+
+    s_init = torch.randn(B, N, config.pairformer.token_s, dtype=dtype, device=device)
+    z_init = torch.randn(B, N, N, config.pairformer.token_z, dtype=dtype, device=device)
+    s_inputs = torch.randn(B, N, config.pairformer.token_s, dtype=dtype, device=device)
+    msa = torch.randint(0, config.msa_module.num_tokens, (B, N_msa, N), dtype=torch.int64, device=device)
+    has_deletion = torch.randint(0, 2, (B, N_msa, N), dtype=dtype, device=device)
+    deletion_value = torch.randn(B, N_msa, N, dtype=dtype, device=device)
+    msa_paired = torch.randint(0, 2, (B, N_msa, N), dtype=dtype, device=device)
+    msa_mask = torch.ones(B, N_msa, N, dtype=dtype, device=device)
+    token_pad_mask = make_left_aligned_mask(B, N, dtype=dtype, device=device, min_valid=12)
+
+    s_init_before = s_init.clone()
+    z_init_before = z_init.clone()
+
+    # Capture the exact z entering pairformer_module on each recycle and compare against an explicit
+    # out-of-place computation of z_pre_msa + msa_module(z_pre_msa, ...).
+    observed_pf_z: list[torch.Tensor] = []
+    expected_pf_z: list[torch.Tensor] = []
+    orig_msa_forward = trunk.msa_module.forward
+    orig_pf_forward = trunk.pairformer_module.forward
+
+    def spy_msa(
+        z_in: torch.Tensor,
+        emb: torch.Tensor,
+        msa_in: torch.Tensor,
+        has_deletion_in: torch.Tensor,
+        deletion_value_in: torch.Tensor,
+        msa_paired_in: torch.Tensor,
+        msa_mask: torch.Tensor,
+        token_pad_mask: torch.Tensor,
+        attn_metadata: AttentionMetadata | None = None,
+    ) -> torch.Tensor:
+        z_snapshot = z_in.clone()
+        msa_out = orig_msa_forward(
+            z_in,
+            emb,
+            msa_in,
+            has_deletion_in,
+            deletion_value_in,
+            msa_paired_in,
+            msa_mask=msa_mask,
+            token_pad_mask=token_pad_mask,
+            attn_metadata=attn_metadata,
+        )
+        torch.testing.assert_close(z_in, z_snapshot, atol=0, rtol=0)
+        expected_pf_z.append(z_snapshot + msa_out)
+        return msa_out
+
+    def spy_pf(
+        s_in: torch.Tensor,
+        z_in: torch.Tensor,
+        mask: torch.Tensor,
+        pair_mask: torch.Tensor,
+        attn_metadata: AttentionMetadata | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        observed_pf_z.append(z_in.clone())
+        return orig_pf_forward(s_in, z_in, mask=mask, pair_mask=pair_mask, attn_metadata=attn_metadata)
+
+    trunk.msa_module.forward = spy_msa
+    trunk.pairformer_module.forward = spy_pf
+
+    with torch.inference_mode():
+        s_eager, z_eager = trunk(
+            s_init=s_init,
+            z_init=z_init,
+            s_inputs=s_inputs,
+            msa=msa,
+            has_deletion=has_deletion,
+            deletion_value=deletion_value,
+            msa_paired=msa_paired,
+            msa_mask=msa_mask,
+            token_pad_mask=token_pad_mask,
+            recycling_steps=2,
+        )
+
+    assert len(observed_pf_z) == 3
+    for step, (obs, exp) in enumerate(zip(observed_pf_z, expected_pf_z, strict=True)):
+        torch.testing.assert_close(obs, exp, atol=0, rtol=0, msg=f"recycle {step} mismatch")
+    torch.testing.assert_close(s_init, s_init_before, atol=0, rtol=0)
+    torch.testing.assert_close(z_init, z_init_before, atol=0, rtol=0)
+
+    # Verify CUDA-graph replay matches eager output identically.
+    trunk.msa_module.forward = orig_msa_forward
+    trunk.pairformer_module.forward = orig_pf_forward
+    graph_config = TrunkConfig(
+        dtype=dtype_str,
+        graph_optimization_config=trunk_graph_config(),
+    )
+    graph_config.msa_module = config.msa_module.model_copy()
+    graph_config.pairformer = config.pairformer.model_copy()
+    trunk_graph = Trunk(graph_config).to(device).eval()
+    trunk_graph.load_state_dict(trunk.state_dict())
+
+    with torch.inference_mode():
+        s_graph, z_graph = trunk_graph(
+            s_init=s_init,
+            z_init=z_init,
+            s_inputs=s_inputs,
+            msa=msa,
+            has_deletion=has_deletion,
+            deletion_value=deletion_value,
+            msa_paired=msa_paired,
+            msa_mask=msa_mask,
+            token_pad_mask=token_pad_mask,
+            recycling_steps=2,
+        )
+
+    torch.testing.assert_close(s_graph, s_eager, atol=1e-4, rtol=1e-4)
+    torch.testing.assert_close(z_graph, z_eager, atol=1e-4, rtol=1e-4)

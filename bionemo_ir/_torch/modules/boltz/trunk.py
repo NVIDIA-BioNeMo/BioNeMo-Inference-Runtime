@@ -110,6 +110,7 @@ class MSALayer(nn.Module):
         trimul_metadata: TriangleMultiplicationMetadata,
         attn_metadata: AttentionMetadata | None = None,
         precomputed_masks: PrecomputedPairMasks | None = None,
+        inplace_z: bool = False,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """
         Args:
@@ -118,13 +119,23 @@ class MSALayer(nn.Module):
             token_mask(Tensor): The mask tensor of shape (B, N, N).
             msa_mask(Tensor): The mask tensor of shape (B, S, N).
             precomputed_masks: Precomputed mask biases for triangle attention.
+            inplace_z: Whether ``z`` is a private buffer that can be updated in place.
         Returns:
             Tuple[Tensor, Tensor]: The output tensor of shape (B, N, N, token_z), (B, S, N, msa_s).
         """
         # PWA and msa_transition auto-chunk internally via their registry policies at large N/S.
         m += self.pair_weighted_averaging(m, z, token_mask)
         m = self.msa_transition(m, residual=True, inplace=True)
-        z += self.outer_product_mean(m, msa_mask)
+        # Preserve the caller's z by default (accumulating z into the fresh OPM output), because
+        # callers such as Trunk._recycle_step and Boltz1ConfidenceModule add msa_module(z, ...)
+        # back to z. Subsequent MSAModule layers pass inplace_z=True on their private z buffer so
+        # MSAModule's loop variable does not pin the previous z across pairformer_layer.
+        opm = self.outer_product_mean(m, msa_mask)
+        if inplace_z:
+            z.add_(opm)
+        else:
+            z = opm.add_(z) if opm.dtype == z.dtype else z + opm
+        del opm
 
         z = self.pairformer_layer(
             z,
@@ -267,6 +278,7 @@ class MSAModule(nn.Module):
                 trimul_metadata,
                 attn_metadata,
                 precomputed_masks=precomputed,
+                inplace_z=i > 0,
             )
         return z
 
@@ -463,16 +475,18 @@ class Trunk(nn.Module):
         s = s_init + self.s_recycle(self.s_norm(s))
         z = z_init + self.z_recycle(self.z_norm(z))
         if self.template_module is not None and template_feats is not None:
-            z = z + self.template_module(z, template_feats, pair_mask, attn_metadata=attn_metadata).to(self.dtype)
-        z = z + self.msa_module(
-            z,
-            s_inputs,
-            msa,
-            has_deletion,
-            deletion_value,
-            msa_paired,
-            msa_mask=msa_mask,
-            token_pad_mask=pair_mask,
-            attn_metadata=attn_metadata,
+            z.add_(self.template_module(z, template_feats, pair_mask, attn_metadata=attn_metadata).to(self.dtype))
+        z.add_(
+            self.msa_module(
+                z,
+                s_inputs,
+                msa,
+                has_deletion,
+                deletion_value,
+                msa_paired,
+                msa_mask=msa_mask,
+                token_pad_mask=pair_mask,
+                attn_metadata=attn_metadata,
+            )
         )
         return self.pairformer_module(s, z, mask=mask, pair_mask=pair_mask, attn_metadata=attn_metadata)

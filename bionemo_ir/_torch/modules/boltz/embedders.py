@@ -359,9 +359,7 @@ class AtomEmbedding(nn.Module):
             c = c + s_to_c.to(c)
 
             atom_to_token_queries = atom_to_token.view(B, K, W, atom_to_token.shape[-1])
-            atom_to_token_keys = query_to_keys(atom_to_token)
-            # squeeze the multiplicity dimension
-            atom_to_token_keys = atom_to_token_keys.squeeze(1)
+            atom_to_token_keys = query_to_keys(atom_to_token).view(B, K, H, atom_to_token.shape[-1])
             z_to_p = self.z_to_p_trans(z.float())
             z_to_p = torch.einsum(
                 "bijd,bwki,bwlj->bwkld",

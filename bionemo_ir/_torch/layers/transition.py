@@ -123,7 +123,8 @@ class _LayerNormFusedPath:
 
     @torch.no_grad()
     def _fold_w_norm_weights(self, device: torch.device | None = None) -> TransitionMlpWNormPack | None:
-        """The weights folded on ``device`` (default: the first linear's), or ``None`` off the kernel or without them.
+        """The weights folded on ``device`` (default: the first linear's), or ``None`` off the kernel, without them,
+        or for weights the kernel cannot hold.
 
         The LayerNorm may still be on the CPU while the linears are on the GPU; the fold reads every weight on
         ``device``.
@@ -137,15 +138,20 @@ class _LayerNormFusedPath:
         def on(weight: torch.Tensor | None) -> torch.Tensor | None:
             return None if weight is None else weight.to(device)
 
-        return pack_weights(
-            on(norm.weight),
-            on(norm.bias),
-            on(linear_1.weight),
-            on(linear_1.bias),
-            on(linear_2.weight),
-            on(linear_2.bias),
-            activation=self._w_norm_activation,
-        )
+        try:
+            return pack_weights(
+                on(norm.weight),
+                on(norm.bias),
+                on(linear_1.weight),
+                on(linear_1.bias),
+                on(linear_2.weight),
+                on(linear_2.bias),
+                activation=self._w_norm_activation,
+            )
+        except ValueError:
+            # A W2 the kernel cannot hold (beyond fp16's range where GEMM2 runs in fp16), or one it cannot check
+            # under graph capture: the unfused path.
+            return None
 
     def post_load_weights(self) -> None:
         """Refold the LayerNorm-fused kernel's weights from the loaded ones."""

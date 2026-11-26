@@ -1,0 +1,6 @@
+{
+  "kernel_abi": "sm100",
+  "configs": {
+    "S=128": {"kernel_variant": "K3_B2"}
+  }
+}

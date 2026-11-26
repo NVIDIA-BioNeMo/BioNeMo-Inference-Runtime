@@ -216,6 +216,21 @@ wheel. Their package-provided license and notice files remain authoritative.
   - License: MIT; see [`LICENSES/MIT.txt`][mit]
   - Source and license: [filelock][filelock]
 
+- **msgpack**
+  - Copyright: MessagePack contributors
+  - License: Apache-2.0; see [`LICENSE`][bioir-license]
+  - Source and license: [msgpack-python][msgpack]
+
+- **Pillow**
+  - Copyright: Secret Labs AB, Fredrik Lundh, and Pillow contributors
+  - License: MIT-CMU; preserve the package-provided license
+  - Source and license: [Pillow][pillow]
+
+- **pyasn1**
+  - Copyright: Ilya Etingof and contributors
+  - License: BSD-2-Clause; see [`LICENSES/BSD-2-Clause.txt`][bsd-2-clause]
+  - Source and license: [pyasn1][pyasn1]
+
 - **opentelemetry-api**
   - Copyright: OpenTelemetry Authors
   - License: Apache-2.0; see [`LICENSE`][bioir-license]
@@ -231,6 +246,12 @@ wheel. Their package-provided license and notice files remain authoritative.
   - Copyright: aio-libs contributors
   - License: Apache-2.0; see [`LICENSE`][bioir-license]
   - Source and license: [multidict][multidict]
+
+- **setuptools**
+  - Copyright: Python Packaging Authority and contributors
+  - License: MIT; see [`LICENSES/MIT.txt`][mit]
+  - Source and license: [setuptools][setuptools]
+  - Use: wheel runtime dependency and build backend
 
 - **virtualenv**
   - Copyright: The virtualenv developers
@@ -259,11 +280,6 @@ wheel. Their package-provided license and notice files remain authoritative.
   - License: BSD-3-Clause; see
     [`LICENSES/BSD-3-Clause.txt`][bsd-3-clause]
   - Source and license: [Biotite][biotite]
-
-- **datasets**
-  - Copyright: Hugging Face and contributors
-  - License: Apache-2.0; see [`LICENSE`][bioir-license]
-  - Source and license: [Datasets][datasets]
 
 - **huggingface-hub**
   - Copyright: Hugging Face and contributors
@@ -367,7 +383,6 @@ These tools are used to build or test BioIR. They do not ship in the wheel or
 runtime container unless an artifact-specific SBOM states otherwise.
 
 - **CMake** — BSD-3-Clause; [source and license][cmake]
-- **setuptools** — MIT; [source and license][setuptools]
 - **prek** — MIT; [source and license][prek]
 - **pytest** — MIT; [source and license][pytest]
 - **pytest-cov** — MIT; [source and license][pytest-cov]
@@ -395,6 +410,7 @@ resolved operating-system and base-image package closure.
 [biopython-license]: LICENSES/Biopython-License-Agreement.txt
 [biotite]: https://github.com/biotite-dev/biotite
 [biotraj]: https://github.com/biotite-dev/biotraj
+[bsd-2-clause]: LICENSES/BSD-2-Clause.txt
 [bsd-3-clause]: LICENSES/BSD-3-Clause.txt
 [cccl]: https://github.com/NVIDIA/cccl
 [certifi]: https://raw.githubusercontent.com/certifi/python-certifi/master/LICENSE
@@ -406,7 +422,6 @@ resolved operating-system and base-image package closure.
 [cutlass]: https://github.com/NVIDIA/cutlass
 [cutlass-commit]: https://github.com/NVIDIA/cutlass/tree/db1c288993354c88e551c40c19a8fb93a774a241
 [cutlass-dsl-license]: https://docs.nvidia.com/cutlass/latest/media/docs/pythonDSL/license.html
-[datasets]: https://github.com/huggingface/datasets
 [einops]: https://github.com/arogozhnikov/einops
 [filelock]: https://raw.githubusercontent.com/tox-dev/filelock/main/LICENSE
 [flash-attention-cute]: https://github.com/Dao-AILab/flash-attention/tree/main/flash_attn/cute
@@ -450,3 +465,6 @@ resolved operating-system and base-image package closure.
 [virtualenv]: https://github.com/pypa/virtualenv
 [vllm]: https://github.com/vllm-project/vllm
 [cuda-eula]: https://docs.nvidia.com/cuda/eula/index.html
+[msgpack]: https://github.com/msgpack/msgpack-python
+[pillow]: https://github.com/python-pillow/Pillow
+[pyasn1]: https://github.com/pyasn1/pyasn1

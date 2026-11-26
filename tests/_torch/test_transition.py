@@ -27,7 +27,7 @@ from test_utils.boltz.ref_layers import RefConditionedTransitionBlock
 
 from bionemo_ir._torch.custom_ops.dual_gemm_x_x import cutedsl as dual_gemm_x_x_cutedsl
 from bionemo_ir._torch.custom_ops.dual_gemm_x_x import ops as dual_gemm_x_x_ops
-from bionemo_ir._torch.custom_ops.gated_sigmoid.cutedsl import GatedSigmoidCuTe, published_cubin_sms
+from bionemo_ir._torch.custom_ops.gated_sigmoid.cutedsl import GatedSigmoidCuTe
 from bionemo_ir._torch.graph_optimization.config import CUDAGraphOptimizationConfig, GraphOptimizationMode
 from bionemo_ir._torch.graph_optimization.region import GraphRegion
 from bionemo_ir._torch.graph_optimization.tensor_copy_utils import _copy_tensors_into
@@ -36,7 +36,13 @@ from bionemo_ir._torch.utils import ChunkPolicy
 from bionemo_ir._torch.utils.kernel import CuTeDSLKernelLibraryExecutable
 from bionemo_ir._torch.utils.kernel import _cutedsl_kernel_library as library_runtime
 from bionemo_ir.utils import str_dtype_to_torch
-from tests._torch import SM_VERSION, init_module_weights, skip_if_not_sm90, skip_if_not_sm100_family
+from tests._torch import (
+    SM_VERSION,
+    gated_sigmoid_cubin_sms,
+    init_module_weights,
+    skip_if_not_sm90,
+    skip_if_not_sm100_family,
+)
 
 
 @dataclass(kw_only=True, frozen=True)
@@ -599,7 +605,7 @@ def test_transition_layer_import_leaves_the_cutedsl_compiler_unloaded() -> None:
 
 def _leave_gated_sigmoid_unforced_without_an_image(monkeypatch: pytest.MonkeyPatch) -> None:
     """FORCE_CUBIN must not demand a gated-sigmoid image this pack does not publish."""
-    if SM_VERSION in published_cubin_sms():
+    if SM_VERSION in gated_sigmoid_cubin_sms():
         return
     monkeypatch.setattr(GatedSigmoidCuTe, "force_cubin", lambda self: False)
 

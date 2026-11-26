@@ -84,9 +84,9 @@ void validate_launch(KernelConfig const& config, LaunchParams const& params)
   if (config.cubin.kernel_symbol == nullptr || config.cubin.kernel_symbol[0] == '\0')
     throw std::invalid_argument("kernel_symbol must not be empty");
   KernelSpec const& spec = config.spec;
-  /* SM100 and SM103 both run the SM100 kernel's images. */
+  /* SM100, SM103 and SM107 run the SM100 kernel's images. */
   if (
-    config.cubin.kernel_sm != 100 || (spec.target_sm != 100 && spec.target_sm != 103)
+    config.cubin.kernel_sm != 100 || (spec.target_sm != 100 && spec.target_sm != 103 && spec.target_sm != 107)
     || config.cubin.launch_abi == nullptr || std::strcmp(config.cubin.launch_abi, kSM100LaunchAbi) != 0)
   {
     throw std::invalid_argument("conditioned transition MLP CUBIN has an incompatible launch ABI");

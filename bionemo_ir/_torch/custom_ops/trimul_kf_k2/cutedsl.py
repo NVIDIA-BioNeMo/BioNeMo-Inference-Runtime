@@ -12,7 +12,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Source-or-CUBIN interface for the TriMul KF K2: SM90 from source or packaged CUBINs, SM100/SM103 from source."""
+"""Source-or-CUBIN interface for the TriMul KF K2: SM90 from source or packaged CUBINs, SM100/103/107 from source."""
 
 from __future__ import annotations
 
@@ -182,7 +182,7 @@ class TrimulKFK2CuTe(CuteKernelCache):
         it; launches that share one must be stream-ordered. A CUBIN library built before the tile's dynamic image
         runs its static image, which ignores the counter.
 
-        An SM100/SM103 tile writes a dense product only, so it takes neither ``prod_pitch`` nor a counter.
+        An SM100/SM103/SM107 tile writes a dense product only, so it takes neither ``prod_pitch`` nor a counter.
         """
         B, D, N, _ = a.shape
         prod_pitch = N if prod_pitch is None else prod_pitch

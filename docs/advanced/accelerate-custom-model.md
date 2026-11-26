@@ -388,7 +388,7 @@ converter loops over blocks, mapping `pairformer_stack.{i}` to `layers.{i}`.
 If your checkpoint uses Boltz key names, such as `mha.linear_q` and `fc1`,
 reuse BioIR's helpers instead of writing your own:
 `get_tri_attn_node_weights`, `get_tri_mul_node_weights`, and
-`get_transition_weights` in `bionemo_ir/models/boltz1/convert.py`. They map
+`get_transition_weights` in `bionemo_ir/models/convert_utils.py`. They map
 weights only. OpenFold's triangle attention also has gate and output biases.
 Those need your own mapping and the node rebuild from
 [Options the Config Does Not Expose](#options-the-config-does-not-expose).

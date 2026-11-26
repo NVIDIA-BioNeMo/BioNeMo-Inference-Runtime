@@ -37,10 +37,62 @@ def _module_path(repo_root: Path, module: str) -> Path | None:
     return package_file if package_file.is_file() else None
 
 
-def _top_level_names(path: Path) -> set[str]:
-    """Return names defined or imported at the top level of a Python file."""
-    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+def _relative_module_path(path: Path, module: str) -> Path | None:
+    """Return the source of ``module``, a relative import made from the package that ``path`` defines."""
+    if not module.startswith("."):
+        return None
+    stripped = module.lstrip(".")
+    base = path.parent if path.name == "__init__.py" else path.with_suffix("")
+    for _ in range(len(module) - len(stripped) - 1):
+        base = base.parent
+    relative = Path(*stripped.split("."))
+    module_file = (base / relative).with_suffix(".py")
+    if module_file.is_file():
+        return module_file
+    package_file = base / relative / "__init__.py"
+    return package_file if package_file.is_file() else None
+
+
+def _module_constant(tree: ast.Module, name: str) -> ast.expr | None:
+    """Return the value of a top-level ``name = ...`` assignment."""
+    for node in tree.body:
+        if isinstance(node, ast.Assign) and any(isinstance(t, ast.Name) and t.id == name for t in node.targets):
+            return node.value
+    return None
+
+
+def _lazy_exports(path: Path, tree: ast.Module) -> set[str]:
+    """Return the ``__all__`` names that a module-level ``__getattr__`` resolves.
+
+    A lazy module maps each export to a relative submodule in an ``_EXPORTS`` dict. A name counts only when
+    it is listed in ``__all__``, mapped in ``_EXPORTS``, and defined or re-exported by the mapped submodule.
+    """
+    if not any(isinstance(node, ast.FunctionDef) and node.name == "__getattr__" for node in tree.body):
+        return set()
+    all_node = _module_constant(tree, "__all__")
+    exports_node = _module_constant(tree, "_EXPORTS")
+    if not isinstance(all_node, (ast.List, ast.Tuple)) or not isinstance(exports_node, ast.Dict):
+        return set()
+    listed = {elt.value for elt in all_node.elts if isinstance(elt, ast.Constant)}
     names: set[str] = set()
+    for key, value in zip(exports_node.keys, exports_node.values, strict=True):
+        if not (
+            isinstance(key, ast.Constant)
+            and key.value in listed
+            and isinstance(value, ast.Constant)
+            and isinstance(value.value, str)
+        ):
+            continue
+        target = _relative_module_path(path, value.value)
+        if target is not None and key.value in _top_level_names(target):
+            names.add(key.value)
+    return names
+
+
+def _top_level_names(path: Path) -> set[str]:
+    """Return names defined, imported or lazily exported at the top level of a Python file."""
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    names: set[str] = _lazy_exports(path, tree)
     for node in tree.body:
         if isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
             names.add(node.name)

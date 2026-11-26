@@ -19,7 +19,7 @@ import torch.nn as nn
 
 from bionemo_ir._torch.attention_backend import AttentionMetadata
 from bionemo_ir._torch.layers.linear import Linear
-from bionemo_ir._torch.modules.openfold3.utils.atomize_utils import prepare_atom_reduction
+from bionemo_ir._torch.layers.sequence_local_atom import prepare_atom_reduction
 from bionemo_ir.configs import BaseConfig
 from bionemo_ir.dsl_kernels.triton.atom_gather_kernel import reduce_atom_slots
 from bionemo_ir.runtime.buffers import PreallocatedBuffers

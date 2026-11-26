@@ -64,10 +64,10 @@ __all__ = [
 ]
 
 # SMs with shipped CUBINs. SM86/89 use a smaller tile to fit their shared-memory limit.
-_SUPPORTED_SM = (80, 86, 89, 90, 100, 103)
+_SUPPORTED_SM = (80, 86, 89, 90, 100, 103, 107)
 # SMs whose CUBINs shipped after earlier kernel libraries: a library without
 # them runs the call on Triton rather than failing.
-_TRITON_FALLBACK_SMS = frozenset({100, 103})
+_TRITON_FALLBACK_SMS = frozenset({100, 103, 107})
 _DTYPE_STR = {torch.float16: "fp16", torch.bfloat16: "bf16"}
 
 

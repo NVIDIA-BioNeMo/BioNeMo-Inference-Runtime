@@ -12,7 +12,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""SM100/SM103 TriMul KF K3: every shipped ``(C, D)`` against the fp32 reference, graph replay, the CUBINs against
+"""SM100/SM103/SM107 TriMul KF K3: every shipped ``(C, D)`` against the fp32 reference, graph replay, the CUBINs against
 the source, and configs."""
 
 from __future__ import annotations
@@ -32,6 +32,9 @@ from .test_trimul_kf import _ATOL, _EPS, _float, _k1_reference, _k2_reference, _
 _VARIANTS = {(32, 32): "K3_B0", (64, 64): "K3_B0", (128, 128): "K3_B0", (256, 256): "K3_B1", (384, 256): "K3_B2"}
 # (variant, largest token count) a width runs below its _VARIANTS entry: K3_B0 with the two-tile x ring
 _SMALL_N_VARIANTS = {(128, 128): ("K3_B3", 192)}
+#: Vera Rubin measured K3_B3 ahead of K3_B0 through 192 tokens and behind from 208; the nearest-anchor rule gives
+#: 200 tokens, between the anchors, to K3_B3.
+_SM107_SMALL_N_VARIANTS = {(128, 128): ("K3_B3", 200)}
 _requires_source = pytest.mark.skipif(
     not source_module_available("bionemo_ir._torch.custom_ops.trimul_kf_k3._source"),
     reason="needs the K3 kernel sources",
@@ -99,7 +102,7 @@ def _run(op, prod, problem, fold, residual: bool, out: torch.Tensor | None = Non
 
 
 def _skip_unless_sm100_source() -> None:
-    skip_if_not_sm100_family()
+    skip_if_not_sm100_family(sm107=True)
     if not source_module_available("bionemo_ir._torch.custom_ops.trimul_kf_k3._source"):
         pytest.skip("needs the K3 kernel sources")
 
@@ -244,7 +247,7 @@ def test_k3_writes_the_given_out_and_takes_no_row_statistics():
 def test_k3_ships_from_the_library_on_sm100_under_force_cubin(monkeypatch):
     """Under CUTEDSL_FORCE_CUBIN=1 the op exists exactly when the CUBIN library carries this SM's images; otherwise
     the layer keeps its regular path."""
-    skip_if_not_sm100_family()
+    skip_if_not_sm100_family(sm107=True)
     from tests._torch import SM_VERSION
 
     monkeypatch.setattr(TrimulKFK3CuTe, "_compiled_cache", {})
@@ -295,7 +298,7 @@ def test_cubin_matches_source_on_this_gpu(B, N, C, D, residual, monkeypatch):
 def test_cubin_launcher_rejects_an_output_overlapping_x(monkeypatch):
     """The CUBIN launcher, which callers can reach without the op's checks, refuses an output sharing any bytes with
     x, and writes the neighbouring range of the same buffer as the op does."""
-    skip_if_not_sm100_family()
+    skip_if_not_sm100_family(sm107=True)
     from tests._torch import SM_VERSION
 
     if not library_carries("trimul_kf_k3", SM_VERSION):
@@ -329,13 +332,14 @@ def test_cubin_launcher_rejects_an_output_overlapping_x(monkeypatch):
 # ---------------------------------------------------------------------------------------------- CPU
 
 
-@pytest.mark.parametrize("sm", [100, 103])
+@pytest.mark.parametrize("sm", [100, 103, 107])
 def test_sm100_configs_select_the_tuned_variant_for_every_token_count(sm):
     assert k3_config.KERNEL_ABIS[sm] == "sm100"
     assert k3_config.shipped_shapes(sm) == set(_VARIANTS)
+    small_n_variants = _SM107_SMALL_N_VARIANTS if sm == 107 else _SMALL_N_VARIANTS
     for (C, D), variant in _VARIANTS.items():
         assert (C, D) in k3_config.SM100_VARIANT_SHAPES[variant]
-        small_variant, small_n = _SMALL_N_VARIANTS.get((C, D), (variant, 0))
+        small_variant, small_n = small_n_variants.get((C, D), (variant, 0))
         assert (C, D) in k3_config.SM100_VARIANT_SHAPES[small_variant]
         for n in range(8, 4097, 8):
             selection = k3_config.select(sm, C, D, n)
@@ -376,7 +380,7 @@ def test_sm100_variant_for_another_width_is_rejected(tmp_path, monkeypatch):
         k3_config.anchors(100, 384, 256)
 
 
-@pytest.mark.parametrize("sm", [100, 103])
+@pytest.mark.parametrize("sm", [100, 103, 107])
 def test_force_cubin_ships_sm100_from_the_library(sm, monkeypatch):
     backend = TrimulKFK3CuTe(sm)
     monkeypatch.setattr(TrimulKFK3CuTe, "_compiled_cache", {})
@@ -391,7 +395,7 @@ def test_force_cubin_ships_sm100_from_the_library(sm, monkeypatch):
 
 
 @_requires_source
-@pytest.mark.parametrize("sm", [100, 103])
+@pytest.mark.parametrize("sm", [100, 103, 107])
 def test_sm100_ships_from_source(sm, monkeypatch):
     monkeypatch.delenv("CUTEDSL_FORCE_CUBIN", raising=False)
     backend = TrimulKFK3CuTe(sm)

@@ -30,7 +30,7 @@ from bionemo_ir._torch.utils.kernel import (
 from bionemo_ir.dsl_kernels.cute_cache import FORCE_CUBIN_ENV, CuteKernelCache
 from bionemo_ir.logger import logger
 
-from ._config import config_kernel_abi
+from ._config import config_kernel_abi, dtype_kernel_abi
 from ._cubin import WindowAttentionCubinExecutable
 
 __all__ = ["WindowAttentionCuTe"]
@@ -78,21 +78,32 @@ class WindowAttentionCuTe(CuteKernelCache):
 
     def _load_or_compile_source(self, key: tuple) -> Any:
         source = load_source_module(__package__)
-        kernel_abi = config_kernel_abi(self._sm_version, *self._shape)
-        if kernel_abi is None:
+        config_abi = config_kernel_abi(self._sm_version, *self._shape)
+        if config_abi is None:
             raise ImportError(f"no window attention config for {self._describe()}")
+        kernel_abi = dtype_kernel_abi(config_abi, self._dtype_str)
         if not source.can_implement(kernel_abi, self._dtype_str, *self._shape, self._sm_version):
             raise RuntimeError(f"the {kernel_abi} window attention kernel cannot serve {self._describe()}")
+        # The persistent sm107 kernel sizes its grid from the SM count, which its compiled host code bakes in.
+        num_sms = None
+        if kernel_abi == "sm107":
+            num_sms = torch.cuda.get_device_properties(torch.cuda.current_device()).multi_processor_count
+        grid_key = () if num_sms is None else (num_sms,)
         # Bump the tag when the call ABI changes.
-        disk_key = ("window_attention_cute", 2, self._sm_version, kernel_abi, self._dtype_str, *self._shape)
+        disk_key = ("window_attention_cute", 2, self._sm_version, kernel_abi, self._dtype_str, *self._shape, *grid_key)
         executable = self.load_from_cache(disk_key)
         if executable is None:
             from cutlass.cute.runtime import make_fake_stream
 
             logger.info(f"CuTeDSL window attention: compiling the {kernel_abi} kernel for {self._describe()}")
-            kernel = source.make_kernel(kernel_abi, *self._shape)
+            kernel = source.make_kernel(kernel_abi, *self._shape, num_sms=num_sms)
+            options = source.compile_options(kernel_abi, "--enable-tvm-ffi")
+
+            def compile_kernel(*args: Any) -> Any:
+                return self.compile(*args, options=options)
+
             executable = source.compile_window_attention_source(
-                self.compile, kernel, self._dtype_str, *self._shape, make_fake_stream(use_tvm_ffi_env_stream=True)
+                compile_kernel, kernel, self._dtype_str, *self._shape, make_fake_stream(use_tvm_ffi_env_stream=True)
             )
             self.save_to_cache(disk_key, executable)
         WindowAttentionCuTe._compiled_cache[key] = executable

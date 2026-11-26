@@ -52,10 +52,11 @@ PUBLIC_MAIN = f"{PUBLIC_REMOTE_PREFIX}/main"
 PUBLIC_TAGS = f"{PUBLIC_REMOTE_PREFIX}/tags"
 # GitHub tags whose published targets differ from the internal ancestry map.
 # v0.1.0 points at a standalone snapshot commit outside public main.
-# v0.2.1 points at the main commit cherry-picked onto the release branch.
+# v0.2.1 and v0.2.2 point at the main commits cherry-picked onto their release branches.
 PUBLIC_TAG_EXCEPTIONS = {
     "0.1.0": "a768bda05e51855b70193e70310ad80a312e942c",
     "0.2.1": "dc63a0990eefdf10f779d51b034c3ba6473bd6fd",
+    "0.2.2": "a7ab1d6455c2776a6f0f790da798555ac5d80bdb",
 }
 CHANGELOG_HEADER = (
     "---\n"

@@ -344,7 +344,7 @@ class TriangleMultiplicationNode(nn.Module):
         """Triangle multiplication node.
 
         Supported BF16 shapes may dispatch to the TriMul KF chain on SM90,
-        SM100 and SM103 when the model pads tokens. A node on the chain folds
+        SM100, SM103 and SM107 when the model pads tokens. A node on the chain folds
         its weights for it once they exist: here, on :meth:`set_token_padding`,
         and on :meth:`post_load_weights`, which ``load_state_dict`` also runs.
 

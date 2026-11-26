@@ -1,0 +1,7 @@
+{
+  "kernel_abi": "sm100",
+  "configs": {
+    "act=silu_gate|bias=0|mask=0": {"x_stages": 2, "w1_stages": 8, "w2_stages": 2, "gemm2_lag": 1, "min_seqlen": 72},
+    "act=silu_gate|bias=0|mask=1": {"x_stages": 2, "w1_stages": 8, "w2_stages": 2, "gemm2_lag": 1, "min_seqlen": 56}
+  }
+}

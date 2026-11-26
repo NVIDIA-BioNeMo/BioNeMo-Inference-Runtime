@@ -116,7 +116,7 @@ def auto_select_window_attention_backend(
 ) -> str | None:
     """Return the windowed attention backend for this configuration, or ``None`` to keep the pairwise backend.
 
-    **CuTeDSL** serves fp16 and bf16 ``D=32`` heads in 32-query windows over 128 keys on SM80/86/89/90/100/103.
+    **CuTeDSL** serves fp16 and bf16 ``D=32`` heads in 32-query windows over 128 keys on SM80/86/89/90/100/103/107.
     Its kernel is loaded here, so the forward pass neither compiles nor loads it.
 
     Args:

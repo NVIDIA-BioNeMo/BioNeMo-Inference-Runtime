@@ -215,19 +215,24 @@ claim a complete bench.
 
 Some BioIR options are approximate: they change the sampled coordinates
 instead of reproducing the exact path bit for bit. Frame-aware prediction
-reuse, `edm_sampling_config.frame_reuse_period`, is one; Protenix-v2 and
-OpenFold3 P2 have it. A profile marks each such option as **default on**
-when the locked config is the one the option was evaluated with. Rules:
+reuse, `frame_reuse_period`, is one; Protenix-v2, OpenFold3 P2 and Boltz-2
+have it. Its pretrained default is `"auto"` for Protenix-v2 and OpenFold3 P2,
+which reuses at the step counts they were evaluated with, and 0 (exact) for
+Boltz-2. Rules:
 
 1. **Default on for Protenix-v2 and OpenFold3 P2.** Both profiles lock 200
-   diffusion steps, a schedule the option was evaluated with, so the BioIR
-   arm runs with `frame_reuse_period = 4`. Build the config from the model's
-   pretrained config (the profile shows how), change only that field, pass
-   it as the engine config (`engine_kwargs["config"]`), and record the
-   exception and the value in `bench_config.json`. The harness written in
-   Phase 3 takes an `--exact` switch that leaves the pretrained config
-   unchanged. Step counts other than 100, 150, 200 and 400 must run exact:
-   the option rejects them.
+   diffusion steps, a count the option was evaluated with, so their BioIR arm
+   runs with `frame_reuse_period = 4`. Set 4 explicitly rather than relying on
+   `"auto"`: a forced 4 raises where `"auto"` would quietly run exact. Build
+   the config from the model's pretrained config (the profile shows how),
+   change only that field, pass it as the engine config
+   (`engine_kwargs["config"]`), and record the value in `bench_config.json`.
+   Boltz-2 keeps the option off; add its approximate column only when the
+   user asks (its profile shows how).
+1. **The exact arm sets `frame_reuse_period = 0`.** Build it the same way.
+   The pretrained Protenix-v2 and OpenFold3 P2 configs reuse, so leaving them
+   unchanged does not give an exact column. The harness written in Phase 3
+   takes an `--exact` switch that sets 0.
 1. **Run the exact arm as well.** Add one BioIR column with the option off
    (same seed, same inputs, same GPU), time it like every other column, and
    report the approximate column's speedup against it and against OSS.

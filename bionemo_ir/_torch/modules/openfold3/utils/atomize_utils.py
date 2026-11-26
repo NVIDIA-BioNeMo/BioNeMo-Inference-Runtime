@@ -21,6 +21,7 @@ from typing import Literal
 
 import torch
 
+from bionemo_ir._torch.layers.sequence_local_atom import ATOM_GATHER_KEYS as ATOM_GATHER_KEYS
 from bionemo_ir._torch.layers.sequence_local_atom import (
     aggregate_atom_features_to_tokens as _aggregate_atom_features_to_tokens,
 )
@@ -30,6 +31,7 @@ from bionemo_ir._torch.layers.sequence_local_atom import (
 from bionemo_ir._torch.layers.sequence_local_atom import (
     compute_atom_broadcast_index as _compute_atom_broadcast_index,
 )
+from bionemo_ir._torch.layers.sequence_local_atom import prepare_atom_reduction as prepare_atom_reduction
 from bionemo_ir._torch.layers.sequence_local_atom import (
     select_atoms_from_padded_tokens as _select_atoms_from_padded_tokens,
 )
@@ -39,10 +41,6 @@ from bionemo_ir._torch.modules.openfold3.utils.token_atom_constants import (
     atom_name_to_index_by_restype,
 )
 from bionemo_ir._torch.utils.common import _deterministic_algorithms as _shared_deterministic_algorithms
-from bionemo_ir.dsl_kernels.triton.atom_gather_kernel import MAX_ORDERED_ATOMS
-
-# The gather tables :func:`prepare_atom_reduction` adds to a batch.
-ATOM_GATHER_KEYS: tuple[str, ...] = ("atom_gather_index", "atom_gather_mask", "atom_gather_counts")
 
 
 def _deterministic_algorithms():
@@ -109,71 +107,6 @@ def broadcast_token_feat_to_atoms(
         max_num_atoms_per_token=max_num_atoms_per_token,
         expand_index=expand_index,
     )
-
-
-def prepare_atom_reduction(batch: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
-    """Prepare validated atom slots before embedding or graph capture.
-
-    Args:
-        batch: OF3 features with token counts/starts, atom owners, and binary
-            masks. Shapes are ``[B, T/A]`` or ``[B, 1, T/A]``.
-
-    Returns:
-        A shallow copy with reusable reduction metadata, or a batch without
-        incomplete metadata when its layout requires deterministic scatter.
-    """
-    if all(key in batch for key in ATOM_GATHER_KEYS):
-        return batch
-    if any(key in batch for key in ATOM_GATHER_KEYS):
-        batch = {key: value for key, value in batch.items() if key not in ATOM_GATHER_KEYS}
-    required = ("num_atoms_per_token", "start_atom_index", "atom_mask", "atom_to_token_index", "token_mask")
-    if any(key not in batch for key in required):
-        return batch
-    mask = batch["atom_mask"]
-    counts = batch["num_atoms_per_token"].long()
-    starts = batch["start_atom_index"].long()
-    owners = batch["atom_to_token_index"]
-    if (
-        mask.dtype not in (torch.bool, torch.float32)
-        or counts.numel() == 0
-        or counts.shape != starts.shape
-        or counts.shape != batch["token_mask"].shape
-        or counts.shape[:-1] != mask.shape[:-1]
-        or mask.shape != owners.shape
-        or (mask.is_cuda and torch.cuda.is_current_stream_capturing())
-    ):
-        return batch
-    max_atoms = int(counts.max().item())
-    # Long segments use different scatter accumulation order.
-    if max_atoms < 0 or max_atoms > MAX_ORDERED_ATOMS:
-        return batch
-    total = counts.sum(-1, keepdim=True)
-    expected_starts = counts.cumsum(-1) - counts
-    padding = torch.arange(mask.shape[-1], device=mask.device) >= total
-    layout_ok = (
-        (counts >= 0).all()
-        & (total <= mask.shape[-1]).all()
-        & ((counts == 0) | (starts == expected_starts)).all()
-        & ((mask == 0) | (mask == 1)).all()
-        & ~(padding & mask.bool()).any()
-    )
-    if not bool(layout_ok):
-        return batch
-    offsets = torch.arange(max_atoms, device=mask.device)
-    valid = offsets < counts[..., None]
-    index = torch.where(valid, starts[..., None] + offsets, 0)
-    flat_index = index.flatten(-2)
-    valid = valid & mask.gather(-1, flat_index).reshape_as(index).bool()
-    token = torch.arange(counts.shape[-1], device=mask.device)
-    mapped = owners.gather(-1, flat_index).reshape_as(index)
-    if not bool(((mapped == token[:, None]) | ~valid).all()):
-        return batch
-    return {
-        **batch,
-        "atom_gather_index": flat_index,
-        "atom_gather_mask": valid,
-        "atom_gather_counts": valid.sum(-1),
-    }
 
 
 def aggregate_atom_feat_to_tokens(

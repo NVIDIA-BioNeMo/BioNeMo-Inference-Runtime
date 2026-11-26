@@ -21,7 +21,7 @@ to replace one module inside your existing model, follow [Accelerate a
 Custom Model][modules]. If the network already exists and you need its data
 path, follow [Port a Data Pipeline][pipeline].
 
-[skill]: ../../.agents/skills/model-onboard/SKILL.md
+[skill]: ../../skills/model-onboard/SKILL.md
 [modules]: accelerate-custom-model.md
 [pipeline]: port-data-pipeline.md
 

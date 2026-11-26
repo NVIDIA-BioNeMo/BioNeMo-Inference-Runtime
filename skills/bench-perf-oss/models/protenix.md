@@ -169,16 +169,16 @@ processor's stages up to `FoldingEngineStage` and reading `__data__`.
 
 ## Approximate option: frame-aware prediction reuse (default on)
 
-The option was evaluated with 100, 200 and 400 steps on Protenix; the
+The option was evaluated with 100, 150, 200 and 400 steps on Protenix; the
 200-step lock above is the one this profile uses, so the BioIR column runs with
-`edm_sampling_config.frame_reuse_period = 4` by default (about 3-12 percent
-faster, less on large inputs), and a second, exact BioIR column
-(`frame_reuse_period = 0`) runs for the paired comparison.
-Follow [Approximate options](../SKILL.md#approximate-options): construct from
-`Protenix.get_pretrained_config("protenix-v2")`, set only that field, record
-it in `bench_config.json`, and report the paired lDDT/DockQ difference. The
-harness's `--exact` switch disables it. See `docs/ref/sampling.md` for what it
-does.
+`edm_sampling_config.frame_reuse_period = 4` (about 3-12 percent faster, less
+on large inputs), and a second, exact BioIR column (`frame_reuse_period = 0`)
+runs for the paired comparison. Follow
+[Approximate options](../SKILL.md#approximate-options):
+construct from `Protenix.get_pretrained_config("protenix-v2")`, set only that
+field in each column, record both values in `bench_config.json`, and report
+the paired lDDT/DockQ difference. The harness's `--exact` switch sets it to 0.
+See `docs/ref/sampling.md` for what it does.
 
 ## OSS inference path and effective config
 

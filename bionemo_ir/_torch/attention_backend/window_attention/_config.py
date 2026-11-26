@@ -16,8 +16,12 @@
 
 One file per ``(head_dim, n_queries, n_keys, sm)``, named ``D{head_dim}_W{n_queries}_K{n_keys}_sm{sm}.json``; a
 window shape and GPU without one is not served. Its ``kernel_abi`` names the kernel the GPU runs: ``sm90``
-(cp.async and WGMMA) on SM90, ``sm80`` (cp.async and warp-level MMA) on the others. The kernels derive their
-tiling from the window shape, so the file's single ``default`` entry holds no tile parameters.
+(cp.async and WGMMA) on SM90, ``sm107`` (tcgen05 and TMA) for the one window shape SM107 has a native kernel for,
+and ``sm80`` (cp.async and warp-level MMA) on the others. The kernels derive their tiling from the window shape, so
+the file's single ``default`` entry holds no tile parameters.
+
+The ``sm107`` kernel is BF16-only: an FP16 call on the same window shape runs the ``sm80`` kernel
+(:func:`dtype_kernel_abi`).
 """
 
 from __future__ import annotations
@@ -28,9 +32,14 @@ from typing import Any
 
 from bionemo_ir._torch.utils.kernel import get_config_file_name, load_kernel_configs
 
-CONFIGS_DIR = Path(__file__).resolve().parent / "configs"
+# Keep package data beside the import path, including when modules are symlinked.
+CONFIGS_DIR = Path(__file__).absolute().parent / "configs"
 CONFIG_KEY = "default"
-KERNEL_ABIS = ("sm80", "sm90")
+KERNEL_ABIS = ("sm80", "sm90", "sm107")
+# The dtypes each kernel ABI serves; an ABI not named here serves both.
+_ABI_DTYPES = {"sm107": ("bf16",)}
+# The kernel a dtype the configured ABI does not serve runs instead.
+_DTYPE_FALLBACK_ABI = "sm80"
 
 
 def config_file_name(sm: int, head_dim: int, n_queries: int, n_keys: int) -> str:
@@ -47,6 +56,13 @@ def validate_config(kernel_abi: str, kernel_variant: str | None, configs: Mappin
     if dict(configs) != {CONFIG_KEY: {}}:
         raise ValueError(f"{name}: window attention configs must be {{{CONFIG_KEY!r}: {{}}}}")
     return kernel_abi
+
+
+def dtype_kernel_abi(kernel_abi: str, dtype_str: str) -> str:
+    """The kernel ABI that runs ``dtype_str`` for a config naming ``kernel_abi``."""
+    if dtype_str in _ABI_DTYPES.get(kernel_abi, (dtype_str,)):
+        return kernel_abi
+    return _DTYPE_FALLBACK_ABI
 
 
 def config_kernel_abi(sm: int, head_dim: int, n_queries: int, n_keys: int) -> str | None:

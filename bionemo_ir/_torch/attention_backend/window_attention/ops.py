@@ -116,5 +116,7 @@ def window_attention(
     if not _aligned(bias, 4):
         bias = bias.contiguous()
     out = torch.empty((S, N, H, D), device=q.device, dtype=q.dtype)
+    if out.numel() == 0:
+        return out
     with torch.cuda.device(q.device):
         return op(q, k, v, bias, out, D**-0.5 if scale is None else float(scale))

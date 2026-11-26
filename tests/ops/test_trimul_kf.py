@@ -150,8 +150,9 @@ def library_carries(family: str, sm: int) -> bool:
 
 
 def _skip_unless_chain_runs(mode: str) -> None:
-    """Skip unless this GPU runs the chain in ``mode``: SM100 and SM103 run CUBINs once the corpus carries them."""
-    if SM_VERSION in (100, 103):
+    """Skip unless this GPU runs the chain in ``mode``: SM100, SM103 and SM107 run CUBINs once the corpus carries
+    them."""
+    if SM_VERSION in (100, 103, 107):
         if mode == "cubin" and not all(library_carries(f"trimul_kf_k{k}", SM_VERSION) for k in (1, 2, 3)):
             pytest.skip(f"this build's CUBIN library carries no SM{SM_VERSION} TriMul KF images")
         return

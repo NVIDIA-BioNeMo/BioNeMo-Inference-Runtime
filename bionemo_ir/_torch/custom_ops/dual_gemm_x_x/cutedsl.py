@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import functools
 import json
 import math
 from dataclasses import dataclass, replace
@@ -75,6 +76,52 @@ def _dtype_str(dtype: torch.dtype) -> str:
         return _TORCH_TO_DTYPE_STR[dtype]
     except KeyError as error:
         raise TypeError(f"Unsupported dtype: {dtype}") from error
+
+
+@functools.cache
+def _source_available() -> bool:
+    """Whether this build carries the kernel source. Checked once: a failed import is slow to repeat."""
+    try:
+        load_source_module(__package__)
+    except ImportError:
+        return False
+    return True
+
+
+@functools.cache
+def _library_has_image(sm_version: int, dtype: torch.dtype, K: int, N: int, transpose_out: bool, gate: str) -> bool:
+    """Whether the packaged library holds an image for this shape, at any anchor, with or without bias or mask.
+
+    The launcher falls back to the nearest anchor, so one probe per axis it matches exactly is enough.
+    """
+    for has_bias in (False, True):
+        for runtime_mask in (False, True):
+            try:
+                populate_compiled_cache_from_library(
+                    {},
+                    (),
+                    "dual_gemm_x_x",
+                    lambda library, launcher, has_bias=has_bias, runtime_mask=runtime_mask: DualGemmXxCubinExecutable(
+                        library, launcher, sm_version, K, N, 0, dtype, transpose_out, has_bias, runtime_mask, gate
+                    ),
+                )
+            except CuTeDSLKernelLibraryError:
+                continue
+            return True
+    return False
+
+
+def ships(
+    sm_version: int, dtype: torch.dtype, K: int, N: int, transpose_out: bool = False, gate: str = "sigmoid"
+) -> bool:
+    """Whether this build can run the shape on ``sm_version``: from source, or from a packaged CUBIN.
+
+    A source-free build, or one under ``CUTEDSL_FORCE_CUBIN``, needs a packaged image. A newly tuned SM gets its
+    images only from the protected CUBIN refresh after merge; until then the caller keeps its previous path.
+    """
+    if not CuteKernelCache.force_cubin() and _source_available():
+        return True
+    return _library_has_image(sm_version, dtype, K, N, transpose_out, gate)
 
 
 class DualGemmXxCuTe(CuteKernelCache):

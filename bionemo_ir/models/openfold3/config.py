@@ -13,7 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from pydantic import Field, field_validator
+from pydantic import ConfigDict, Field
 
 from bionemo_ir._torch.graph_optimization.config import CUDAGraphOptimizationConfig, NamedDimTies
 from bionemo_ir._torch.graph_optimization.graph_policy import (
@@ -23,12 +23,12 @@ from bionemo_ir._torch.graph_optimization.graph_policy import (
     trunk_graph_config,
 )
 from bionemo_ir._torch.modules.openfold3.utils.atomize_utils import ATOM_GATHER_KEYS
-from bionemo_ir._torch.sampling.frame_reuse import require_evaluated_period
+from bionemo_ir._torch.sampling.frame_reuse import FrameReuseSetting
 from bionemo_ir.configs import (
     BaseConfig,
     DiffusionTransformerConfig,
-    EvoformerStackConfig,
     FeatureDictPadSpec,
+    MSAModuleStackConfig,
     PairformerConfig,
     TrunkPadSpec,
 )
@@ -157,26 +157,6 @@ class TemplateEmbedderConfig(BaseConfig):
     )
 
 
-class MSAModuleStackConfig(EvoformerStackConfig):
-    c_m: int = 64
-    c_z: int = 128
-    c_hidden_msa_att: int = 8
-    c_hidden_opm: int = 32
-    c_hidden_mul: int = 128
-    c_hidden_pair_att: int = 32
-    transition_type: str = "swiglu"
-    transition_n: int = 4
-    no_blocks: int = 4
-    no_heads_msa: int = 8
-    no_heads_pair: int = 4
-    opm_first: bool = True
-    last_block: bool = False
-    inf: float = 1e9
-    support_batch: bool = True
-    msa_att_row_chunk_size: int = 4
-    trimul_high_precision: bool = False
-
-
 class MSAModuleEmbedderConfig(BaseConfig):
     c_m_feats: int = 34
     c_m: int = 64
@@ -267,25 +247,23 @@ class DiffusionModuleConfig(BaseConfig):
 
 
 class EDMSamplingConfig(BaseConfig):
+    # Check assignments too: the documented way to change ``frame_reuse_period`` is to assign it.
+    model_config = ConfigDict(validate_assignment=True)
+
     gamma_0: float = 0.8
     gamma_min: float = 1.0
     noise_scale: float = 1.003
     step_scale: float = 1.5
     use_conditioning: bool = True
-    frame_reuse_period: int = Field(
-        default=0,
-        ge=0,
+    frame_reuse_period: FrameReuseSetting = Field(
+        default="auto",
         description=(
-            "Opt-in approximation: in the churn-free tail of the rollout, run the denoiser every this many steps and"
-            " map the previous prediction through each step's augmentation in between; 0 is off. Only evaluated with"
-            " period 4 and 100, 150, 200 or 400 rollout steps; other values are rejected."
+            "Approximation: in the churn-free tail of the rollout, run the denoiser every this many steps and map the"
+            ' previous prediction through each step\'s augmentation in between. "auto" (default) uses period 4 when'
+            " the rollout has 100, 150, 200 or 400 steps and runs exact otherwise; 0 is always exact; 4 forces reuse,"
+            " and the model rejects other step counts before it runs the trunk."
         ),
     )
-
-    @field_validator("frame_reuse_period")
-    @classmethod
-    def _frame_reuse_period_is_off_or_at_least_two(cls, period: int) -> int:
-        return require_evaluated_period(period)
 
 
 class AuxiliaryHeadsConfig(BaseConfig):

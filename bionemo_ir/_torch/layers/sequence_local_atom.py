@@ -29,6 +29,9 @@ from bionemo_ir._torch.utils.common import _deterministic_algorithms
 from bionemo_ir.dsl_kernels.triton.atom_gather_kernel import MAX_ORDERED_ATOMS, reduce_atom_slots
 from bionemo_ir.dsl_kernels.triton.query_to_keys import query_to_keys_triton
 
+# The gather tables :func:`prepare_atom_reduction` adds to a batch.
+ATOM_GATHER_KEYS: tuple[str, ...] = ("atom_gather_index", "atom_gather_mask", "atom_gather_counts")
+
 
 def pad_to_multiple_and_divide(tensor: torch.Tensor, multiple: int, dim: int = 1):
     """
@@ -372,6 +375,71 @@ def broadcast_token_features_to_atoms(
         dim=0,
     )
     return atom_features.reshape((*feat_batch_dims, max_num_atoms, *feat_dims))
+
+
+def prepare_atom_reduction(batch: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
+    """Prepare validated atom slots before embedding or graph capture.
+
+    Args:
+        batch: OF3 features with token counts/starts, atom owners, and binary
+            masks. Shapes are ``[B, T/A]`` or ``[B, 1, T/A]``.
+
+    Returns:
+        A shallow copy with reusable reduction metadata, or a batch without
+        incomplete metadata when its layout requires deterministic scatter.
+    """
+    if all(key in batch for key in ATOM_GATHER_KEYS):
+        return batch
+    if any(key in batch for key in ATOM_GATHER_KEYS):
+        batch = {key: value for key, value in batch.items() if key not in ATOM_GATHER_KEYS}
+    required = ("num_atoms_per_token", "start_atom_index", "atom_mask", "atom_to_token_index", "token_mask")
+    if any(key not in batch for key in required):
+        return batch
+    mask = batch["atom_mask"]
+    counts = batch["num_atoms_per_token"].long()
+    starts = batch["start_atom_index"].long()
+    owners = batch["atom_to_token_index"]
+    if (
+        mask.dtype not in (torch.bool, torch.float32)
+        or counts.numel() == 0
+        or counts.shape != starts.shape
+        or counts.shape != batch["token_mask"].shape
+        or counts.shape[:-1] != mask.shape[:-1]
+        or mask.shape != owners.shape
+        or (mask.is_cuda and torch.cuda.is_current_stream_capturing())
+    ):
+        return batch
+    max_atoms = int(counts.max().item())
+    # Long segments use different scatter accumulation order.
+    if max_atoms < 0 or max_atoms > MAX_ORDERED_ATOMS:
+        return batch
+    total = counts.sum(-1, keepdim=True)
+    expected_starts = counts.cumsum(-1) - counts
+    padding = torch.arange(mask.shape[-1], device=mask.device) >= total
+    layout_ok = (
+        (counts >= 0).all()
+        & (total <= mask.shape[-1]).all()
+        & ((counts == 0) | (starts == expected_starts)).all()
+        & ((mask == 0) | (mask == 1)).all()
+        & ~(padding & mask.bool()).any()
+    )
+    if not bool(layout_ok):
+        return batch
+    offsets = torch.arange(max_atoms, device=mask.device)
+    valid = offsets < counts[..., None]
+    index = torch.where(valid, starts[..., None] + offsets, 0)
+    flat_index = index.flatten(-2)
+    valid = valid & mask.gather(-1, flat_index).reshape_as(index).bool()
+    token = torch.arange(counts.shape[-1], device=mask.device)
+    mapped = owners.gather(-1, flat_index).reshape_as(index)
+    if not bool(((mapped == token[:, None]) | ~valid).all()):
+        return batch
+    return {
+        **batch,
+        "atom_gather_index": flat_index,
+        "atom_gather_mask": valid,
+        "atom_gather_counts": valid.sum(-1),
+    }
 
 
 def aggregate_atom_features_to_tokens(

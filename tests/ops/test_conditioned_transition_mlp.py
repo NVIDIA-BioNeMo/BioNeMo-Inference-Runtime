@@ -41,7 +41,7 @@ def _require_kernel_sm() -> int:
     major, minor = torch.cuda.get_device_capability()
     sm = major * 10 + minor
     if sm not in _config.KERNEL_ABIS:
-        pytest.skip("the conditioned transition runs on SM100 and SM103 only")
+        pytest.skip("the conditioned transition runs on SM100, SM103 and SM107 only")
     return sm
 
 
@@ -138,14 +138,14 @@ def test_config_choice_among_the_tiles_an_activation_ships(atoms: int, config: s
 
 
 def test_every_bundle_ships_both_activations() -> None:
-    """The SM100 and SM103 bundles ship ``(128, 256)`` with every tile of the 2-way SwiGLU and the 3-way SwiGLU's
-    unstaged tiles, its larger W1 leaving no room to stage; SM103's copy SM100's."""
+    """The bundles ship ``(128, 256)`` with every tile of the 2-way SwiGLU and the 3-way SwiGLU's
+    unstaged tiles, its larger W1 leaving no room to stage."""
     for sm in _config.KERNEL_ABIS:
         assert _config.shipped_shapes(sm) == {(_WIDTH, _HIDDEN, activation) for activation in _config.ACTIVATIONS}
         assert tuple(_config.configs(sm, _WIDTH, _HIDDEN, "silu_gate")) == _config.TILES
         assert tuple(_config.configs(sm, _WIDTH, _HIDDEN, "silu_gate_3way")) == ("base", "sample_stream")
-        for activation in _config.ACTIVATIONS:
-            assert _config.configs(sm, _WIDTH, _HIDDEN, activation) == _config.configs(100, _WIDTH, _HIDDEN, activation)
+    for activation in _config.ACTIVATIONS:
+        assert _config.configs(103, _WIDTH, _HIDDEN, activation) == _config.configs(100, _WIDTH, _HIDDEN, activation)
 
 
 @pytest.mark.parametrize(

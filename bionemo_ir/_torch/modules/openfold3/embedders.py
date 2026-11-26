@@ -23,9 +23,9 @@ import torch.nn as nn
 
 from bionemo_ir._torch.attention_backend import AttentionMetadata
 from bionemo_ir._torch.layers.linear import Linear, WeightMode, WeightsLoadingConfig
-from bionemo_ir._torch.modules.openfold2.template import TemplatePairStack
+from bionemo_ir._torch.layers.relpos import relpos_complex
+from bionemo_ir._torch.layers.transformers.template_pair import TemplatePairStack
 from bionemo_ir._torch.modules.openfold3.sequence_local_atom_attention import AtomAttentionEncoder
-from bionemo_ir._torch.modules.openfold3.utils.relpos import relpos_complex
 from bionemo_ir._torch.utils import (
     CHUNK_REGISTRY,
     INPUT_EMBEDDER_PAIR_BUILD,

@@ -12,7 +12,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Shipped TriMul KF K2 tiles and their sequence anchors, for SM90 and SM100/SM103.
+"""Shipped TriMul KF K2 tiles and their sequence anchors, for SM90 and SM100/SM103/SM107.
 
 One ``configs/D{D}_sm{sm}.json`` bundle per hidden width ``D`` declares the ``kernel_abi`` and maps
 ``S=<anchor>`` keys to the contraction tile tuned for that token count::
@@ -34,8 +34,8 @@ different widths share their machine code.
 A ``K2_1`` tile of 192 needs an even number of column tiles to fill its clusters; a call with an
 odd number runs :func:`fallback` instead, which every shipped bundle therefore also ships.
 
-SM100 and SM103 run the ``sm100`` ABI from identical ``D{D}_sm100.json`` and ``D{D}_sm103.json`` bundles,
-whose tiles (:class:`TrimulKFK2Sm100Tile`) name the Blackwell kernels instead::
+SM100, SM103 and SM107 run the ``sm100`` ABI from ``D{D}_sm100.json``, ``D{D}_sm103.json`` and ``D{D}_sm107.json``
+bundles (SM107's tuned on Vera Rubin), whose tiles (:class:`TrimulKFK2Sm100Tile`) name the Blackwell kernels instead::
 
     {"kernel_abi": "sm100", "configs": {"S=128": {"kernel_variant": "K2_B0", "tile_m": 128, "tile_n": 64},
                                         "S=512": {"kernel_variant": "K2_B1", "tile_n": 256, "cluster_n": 1,
@@ -63,7 +63,7 @@ from typing import Any, NamedTuple
 from bionemo_ir._torch.utils.kernel import get_config_file_name, load_kernel_configs
 
 CONFIGS_DIR = Path(__file__).with_name("configs")
-KERNEL_ABIS = {90: "sm90", 100: "sm100", 103: "sm100"}
+KERNEL_ABIS = {90: "sm90", 100: "sm100", 103: "sm100", 107: "sm100"}
 KERNEL_VARIANTS = ("K2_0", "K2_1", "K2_2")
 #: The ``sm100`` ABI's kernels: ``K2_B0`` sized to small planes, ``K2_B1`` on CTA pairs, ``K2_B2`` with tail tiles.
 SM100_KERNEL_VARIANTS = ("K2_B0", "K2_B1", "K2_B2")
@@ -118,7 +118,7 @@ class TrimulKFK2Tile(NamedTuple):
 
 
 class TrimulKFK2Sm100Tile(NamedTuple):
-    """Every axis that changes an SM100/SM103 K2 image's machine code, besides the direction."""
+    """Every axis that changes an SM100/SM103/SM107 K2 image's machine code, besides the direction."""
 
     kernel_variant: str
     tile_m: int = _PAIR_TILE
@@ -129,7 +129,7 @@ class TrimulKFK2Sm100Tile(NamedTuple):
 
     @property
     def dynamic(self) -> bool:
-        """SM100/SM103 tiles run a static schedule (or CLC), never the SM90 work counter."""
+        """SM100/SM103/SM107 tiles run a static schedule (or CLC), never the SM90 work counter."""
         return False
 
     def padded(self, n: int) -> int:

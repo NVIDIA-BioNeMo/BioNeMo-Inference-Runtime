@@ -12,7 +12,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Shipped TriMul KF K1 variants and their sequence anchors, for SM90 and SM100/SM103.
+"""Shipped TriMul KF K1 variants and their sequence anchors, for SM90 and SM100/SM103/SM107.
 
 One ``configs/C{C}_D{D}_sm{sm}.json`` bundle per input width ``C``, hidden width ``D`` and SM declares
 the ``kernel_abi`` that runs it and maps ``S=<anchor>`` keys to the K1 variant tuned for that token
@@ -30,7 +30,7 @@ and gate folds) and whether it hands its input-LayerNorm row statistics to K3
 fold carries the projection biases, so every variant serves projections with and without them.
 
 Each kernel ABI runs its own variants (:data:`ABI_VARIANTS`): SM90 the WGMMA kernels ``K1_0`` to
-``K1_2``, SM100 and SM103 (one ``sm100`` ABI, a bundle per SM) the tcgen05 kernels ``K1_B0``
+``K1_2``, SM100, SM103 and SM107 (one ``sm100`` ABI, a bundle per SM) the tcgen05 kernels ``K1_B0``
 (C >= 64) and ``K1_B1`` (C = 32). A ``K1_B0`` anchor also names its tile, every
 :class:`TrimulKFK1Tile` field::
 
@@ -58,7 +58,7 @@ from typing import Any, NamedTuple
 from bionemo_ir._torch.utils.kernel import get_config_file_name, load_kernel_configs
 
 CONFIGS_DIR = Path(__file__).with_name("configs")
-KERNEL_ABIS = {90: "sm90", 100: "sm100", 103: "sm100"}
+KERNEL_ABIS = {90: "sm90", 100: "sm100", 103: "sm100", 107: "sm100"}
 #: The variants each kernel ABI runs.
 ABI_VARIANTS = {"sm90": ("K1_0", "K1_1", "K1_2"), "sm100": ("K1_B0", "K1_B1")}
 KERNEL_VARIANTS = tuple(variant for variants in ABI_VARIANTS.values() for variant in variants)

@@ -20,8 +20,8 @@ import pytest
 import torch
 from test_utils.openfold3.ref_layers_from_oss import RefTemplatePairBlockFromOF3OSS
 
+from bionemo_ir._torch.layers.transformers.template_pair import TemplatePairBlock
 from bionemo_ir._torch.layers.triangle_nodes import precompute_trimul_metadata
-from bionemo_ir._torch.modules.openfold2.template import TemplatePairBlock
 from bionemo_ir.utils import str_dtype_to_torch
 from tests._torch import make_left_aligned_mask
 from tests._torch import skip_if_cutedsl as _skip_if_cutedsl

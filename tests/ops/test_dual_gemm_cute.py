@@ -38,6 +38,7 @@ from bionemo_ir._torch.custom_ops.dual_gemm_x0_x1 import (
     get_cute_dual_gemm_x0_x1_residual_op,
     get_dual_gemm_x0_x1_op,
 )
+from bionemo_ir._torch.custom_ops.dual_gemm_x0_x1 import cutedsl as dual_gemm_x0_x1_cutedsl
 from bionemo_ir._torch.custom_ops.dual_gemm_x0_x1 import ops as dual_gemm_x0_x1_ops
 from bionemo_ir._torch.custom_ops.dual_gemm_x_x import (
     DualGemmXxCuTe,
@@ -131,7 +132,7 @@ def test_x_x_arbitrary_mask_graph_refreshes_values() -> None:
     assert torch.count_nonzero(output.movedim(0, -1)[~mask]) == 0
 
 
-@pytest.mark.parametrize(("selected_sm", "device_sm"), [(80, 90), (90, 90), (100, 100), (103, 103)])
+@pytest.mark.parametrize(("selected_sm", "device_sm"), [(80, 90), (90, 90), (100, 100), (103, 103), (107, 107)])
 def test_x_x_nullable_mask_reuses_one_source_kernel(
     monkeypatch: pytest.MonkeyPatch, selected_sm: int, device_sm: int
 ) -> None:
@@ -824,11 +825,12 @@ def test_x_x_min_rows_rejects_a_non_count(tmp_path: Path, declared: int | bool |
         dual_gemm_x_x_config._declared_min_rows(str(path))
 
 
-@pytest.mark.parametrize("sm", [80, 86, 89, 90, 100, 103])
+@pytest.mark.parametrize("sm", [80, 86, 89, 90, 100, 103, 107])
 def test_x_x_token_swiglu_min_rows_ships_only_on_blackwell(sm: int) -> None:
-    """Only the SM100 family measured the dual GEMM losing to the unfused path on small token MLPs."""
+    """Only the SM100 family measured the dual GEMM losing to the unfused path on small token MLPs; SM107 keeps SM103's
+    threshold."""
     min_rows = dual_gemm_x_x_config.get_min_rows(sm, 768, 1536)
-    assert (min_rows > 0) == (sm in (100, 103))
+    assert (min_rows > 0) == (sm in (100, 103, 107))
 
 
 def test_x_x_min_rows_is_zero_off_the_tuned_targets(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -985,14 +987,14 @@ def test_x0_x1_protenix_plain_shape_uses_only_shipped_abi():
     assert op is _invoke_cuequiv_dual_gemm_x0_x1
 
 
-@pytest.mark.parametrize("sm", [80, 86, 89, 90, 100, 103])
+@pytest.mark.parametrize("sm", [80, 86, 89, 90, 100, 103, 107])
 def test_x_x_z12_shape_dispatches_cute_on_tuned_sms(monkeypatch: pytest.MonkeyPatch, sm: int) -> None:
     monkeypatch.setattr(dual_gemm_x_x_ops, "get_sm_version", lambda: sm)
     op = get_dual_gemm_x_x_op(torch.bfloat16, N=512, K=512, gate="sigmoid")
     assert op.__name__ == "_invoke_cute_dual_gemm_x_x"
 
 
-@pytest.mark.parametrize("sm", [80, 86, 89, 90, 100, 103])
+@pytest.mark.parametrize("sm", [80, 86, 89, 90, 100, 103, 107])
 @pytest.mark.parametrize(
     ("N", "K0", "K1", "expected"),
     [
@@ -1015,7 +1017,7 @@ def test_x0_x1_plain_calls_fallback_on_residual_only_sms(
     assert get_dual_gemm_x0_x1_op(torch.bfloat16, N=N, K0=K0, K1=K1) is expected
 
 
-@pytest.mark.parametrize("sm", [80, 86, 89, 90, 100, 103])
+@pytest.mark.parametrize("sm", [80, 86, 89, 90, 100, 103, 107])
 @pytest.mark.parametrize(
     ("N", "K0", "K1"),
     [(256, 256, 196), (256, 256, 200), (384, 384, 196), (384, 384, 200)],
@@ -1031,7 +1033,7 @@ def test_x0_x1_removed_trimul_shapes_dispatch_vanilla(
     assert get_dual_gemm_x0_x1_op(torch.bfloat16, N=N, K0=K0, K1=K1) is _invoke_vanilla_dual_gemm_x0_x1
 
 
-@pytest.mark.parametrize("sm", [80, 86, 89, 90, 100, 103])
+@pytest.mark.parametrize("sm", [80, 86, 89, 90, 100, 103, 107])
 def test_x0_x1_residual_dispatches_cute_on_tuned_sms(monkeypatch: pytest.MonkeyPatch, sm: int) -> None:
     monkeypatch.setattr(dual_gemm_x0_x1_ops, "get_sm_version", lambda: sm)
     op = get_cute_dual_gemm_x0_x1_residual_op(torch.bfloat16, N=384, K0=384, K1=256)
@@ -1041,6 +1043,76 @@ def test_x0_x1_residual_dispatches_cute_on_tuned_sms(monkeypatch: pytest.MonkeyP
 def test_x0_x1_residual_rejects_unshipped_sm(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(dual_gemm_x0_x1_ops, "get_sm_version", lambda: 120)
     assert get_cute_dual_gemm_x0_x1_residual_op(torch.bfloat16, N=384, K0=384, K1=256) is None
+
+
+# A source-free build runs CuTe only from packaged images. A newly tuned SM such
+# as SM107 has none until the protected CUBIN refresh after merge, so until then
+# its calls must keep the previous path instead of raising on the first launch.
+@pytest.mark.parametrize("packaged", [False, True], ids=["no-image", "image"])
+def test_x_x_source_free_build_takes_cute_only_with_a_packaged_image(
+    monkeypatch: pytest.MonkeyPatch, packaged: bool
+) -> None:
+    monkeypatch.setattr(dual_gemm_x_x_ops, "get_sm_version", lambda: 107)
+    monkeypatch.setattr(dual_gemm_x_x_cutedsl, "_source_available", lambda: False)
+    monkeypatch.setattr(dual_gemm_x_x_cutedsl, "_library_has_image", lambda *_args: packaged)
+    op = get_dual_gemm_x_x_op(torch.bfloat16, N=128, K=128)
+    assert op is (dual_gemm_x_x_ops._invoke_cute_dual_gemm_x_x if packaged else _invoke_cuequiv_dual_gemm_x_x)
+
+
+@pytest.mark.parametrize("packaged", [False, True], ids=["no-image", "image"])
+def test_x0_x1_residual_source_free_build_needs_a_packaged_image(
+    monkeypatch: pytest.MonkeyPatch, packaged: bool
+) -> None:
+    monkeypatch.setattr(dual_gemm_x0_x1_ops, "get_sm_version", lambda: 107)
+    monkeypatch.setattr(dual_gemm_x0_x1_cutedsl, "_source_available", lambda: False)
+    monkeypatch.setattr(dual_gemm_x0_x1_cutedsl, "_library_has_residual_image", lambda *_args: packaged)
+    op = get_cute_dual_gemm_x0_x1_residual_op(torch.bfloat16, N=384, K0=384, K1=256)
+    assert (op is not None) is packaged
+
+
+def test_dual_gemm_source_build_never_probes_the_library(monkeypatch: pytest.MonkeyPatch) -> None:
+    def no_probe(*_args):
+        raise AssertionError("a source build must not probe the CUBIN library")
+
+    monkeypatch.delenv("CUTEDSL_FORCE_CUBIN", raising=False)
+    monkeypatch.setattr(dual_gemm_x_x_cutedsl, "_source_available", lambda: True)
+    monkeypatch.setattr(dual_gemm_x_x_cutedsl, "_library_has_image", no_probe)
+    monkeypatch.setattr(dual_gemm_x0_x1_cutedsl, "_source_available", lambda: True)
+    monkeypatch.setattr(dual_gemm_x0_x1_cutedsl, "_library_has_residual_image", no_probe)
+    assert dual_gemm_x_x_cutedsl.ships(107, torch.bfloat16, 128, 128)
+    assert dual_gemm_x0_x1_cutedsl.ships_fused_residual(107, torch.bfloat16, 384, 384, 256)
+
+
+def test_dual_gemm_force_cubin_probes_the_library(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("CUTEDSL_FORCE_CUBIN", "1")
+    monkeypatch.setattr(dual_gemm_x_x_cutedsl, "_source_available", lambda: True)
+    monkeypatch.setattr(dual_gemm_x_x_cutedsl, "_library_has_image", lambda *_args: False)
+    monkeypatch.setattr(dual_gemm_x0_x1_cutedsl, "_source_available", lambda: True)
+    monkeypatch.setattr(dual_gemm_x0_x1_cutedsl, "_library_has_residual_image", lambda *_args: False)
+    assert not dual_gemm_x_x_cutedsl.ships(107, torch.bfloat16, 128, 128)
+    assert not dual_gemm_x0_x1_cutedsl.ships_fused_residual(107, torch.bfloat16, 384, 384, 256)
+
+
+@pytest.mark.parametrize("available", [False, True], ids=["missing", "present"])
+def test_dual_gemm_library_probe_reads_the_launcher(monkeypatch: pytest.MonkeyPatch, available: bool) -> None:
+    """The probe asks the launcher for the shape and treats a library error as no image."""
+    families: list[str] = []
+
+    def populate(_cache, _key, family, _factory):
+        families.append(family)
+        if not available:
+            raise CuTeDSLKernelVariantUnavailable("no image")
+        return object()
+
+    monkeypatch.setattr(dual_gemm_x_x_cutedsl, "populate_compiled_cache_from_library", populate)
+    monkeypatch.setattr(dual_gemm_x0_x1_cutedsl, "populate_compiled_cache_from_library", populate)
+    x_x = dual_gemm_x_x_cutedsl._library_has_image.__wrapped__(107, torch.bfloat16, 128, 128, False, "sigmoid")
+    x0_x1 = dual_gemm_x0_x1_cutedsl._library_has_residual_image.__wrapped__(107, torch.bfloat16, 384, 384, 256)
+    assert x_x is available and x0_x1 is available
+    # Without an image every bias and mask setting is tried before giving up.
+    assert families == (
+        ["dual_gemm_x_x"] * 4 + ["dual_gemm_x0_x1"] * 2 if not available else ["dual_gemm_x_x", "dual_gemm_x0_x1"]
+    )
 
 
 @pytest.mark.parametrize(

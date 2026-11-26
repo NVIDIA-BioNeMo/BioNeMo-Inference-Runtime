@@ -1,5 +1,5 @@
 {
-  "compile_fingerprint": "f45d7add0e5b609120d6db41c8d1765243ea88c1080eebd195dfd5dad5b25d7b",
+  "compile_fingerprint": "e272716d1e7169a4117169b5d2683eb7620827ecbdcc692a18dbfd42cf92ac8c",
   "family": "window_attention",
   "format": "bioir-cubin-pack-v2",
   "packs": {
@@ -10,6 +10,10 @@
     "sm_103a": {
       "sha256": "972cee4e988bbbac2637a30f047b89c2d243aaf89a92e08fe1a453144c7d8738",
       "size": 10868
+    },
+    "sm_107a": {
+      "sha256": "9a800d30a2546eff7e1999c5024e086c0cea1fb1d4ae44f14bc1f57f3ffa2f18",
+      "size": 20860
     },
     "sm_80": {
       "sha256": "d01eae3574dfb3bd9af5d83a4c4ce0c57b7a42612a73f4bc1aa3f9f39528e2df",
@@ -31,8 +35,8 @@
   "registry_version": 2,
   "shards": {
     "0": {
-      "sha256": "8e0026e2cf931e247211f87e6e6c47fd4f0ed20f9cbfdee78905355fb4eb80a1",
-      "size": 1312
+      "sha256": "9da2cecedf02cff99ce838ec42431d236d017910aac0b9e8c464f4cb525b49b5",
+      "size": 1858
     },
     "1": {
       "sha256": "ba1d02ece637fe3fc7b4d2bcf095ec26d5115bdc275530896df18d72a6c269ba",
@@ -47,8 +51,8 @@
       "size": 1112
     },
     "4": {
-      "sha256": "7e2aee65b8be06ff233c5f0be132dccea87f83ea4268cd6debafd4117fc00187",
-      "size": 828
+      "sha256": "a67a9852b4a235e880c1422612221364e8f529ac1f60d3b0e6f717f85e4282b9",
+      "size": 1304
     },
     "5": {
       "sha256": "7cba0346776333cb6714de25fe656c3a1b73e23321f5c6b352fbef86a0e0a6b0",
@@ -67,8 +71,8 @@
       "size": 89
     },
     "9": {
-      "sha256": "e58627c3effe463f7191f0b8e944244716d2a1e85e2347ee07afedf220507b34",
-      "size": 89
+      "sha256": "4f3f8e7e045d710f13a2cdf023ba41a2253d793afdb92c384d65d3ec9e6f8a6c",
+      "size": 564
     },
     "a": {
       "sha256": "b20e3ec50a14f09c97b9ac7cc64aaee115b3aa8d47c91b9a92f3fa9f21ba52bb",
@@ -79,8 +83,8 @@
       "size": 89
     },
     "c": {
-      "sha256": "a001e7c182e51bbb1f646868ac423da4bbc5d1aeadf1ce430edd9cc218c699b8",
-      "size": 2335
+      "sha256": "111f9b20129be77f57bce15c65538968a220a91e23ba68a1de468f8777b105c9",
+      "size": 2615
     },
     "d": {
       "sha256": "e58627c3effe463f7191f0b8e944244716d2a1e85e2347ee07afedf220507b34",

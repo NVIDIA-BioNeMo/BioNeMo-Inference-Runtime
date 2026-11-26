@@ -38,8 +38,9 @@ _CONFIGS_DIR = os.path.join(os.path.dirname(__file__), "configs")
 # N/K/SM are in the filename; keys are ``S=<anchor>[|b=<0|1>]``.
 _VARIANT_KEY_RE = re.compile(r"^S=(?P<s>\d+)(?:\|b=(?P<b>[01]))?$")
 
-# SM80/86/89 use Ampere split-K, SM90 Hopper ping-pong, and SM100/103 Blackwell 2-SM UMMA.
-_TUNED_SMS: tuple[int, ...] = (80, 86, 89, 90, 100, 103)
+# SM80/86/89 use Ampere split-K, SM90 Hopper ping-pong, and SM100/103/107 Blackwell 2-SM UMMA. SM107 (Vera Rubin)
+# keeps SM103's tiles: a sweep on Rubin found none that is 2% faster without slowing another shape.
+_TUNED_SMS: tuple[int, ...] = (80, 86, 89, 90, 100, 103, 107)
 _FALLBACK_SM: int = 80
 
 

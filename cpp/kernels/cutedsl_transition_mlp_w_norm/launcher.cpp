@@ -37,9 +37,18 @@ constexpr char kSM90LaunchAbi[] = "transition_mlp_w_norm_sm90_v3";
 constexpr std::int32_t kSM90KernelSM = 90;
 constexpr char kSM100LaunchAbi[] = "transition_mlp_w_norm_sm100_v1";
 constexpr char kSM100OutputLaunchAbi[] = "transition_mlp_w_norm_sm100_output_v2";
+/* Blackwell's ReLU at C = 384 runs GEMM2 in fp16, with W2 in fp16 in its pack (F16_WIDTHS). */
+constexpr char kSM100F16LaunchAbi[] = "transition_mlp_w_norm_sm100_f16_v1";
+
+bool sm100_f16_gemm2(std::int64_t width, Activation activation)
+{
+  return activation == Activation::kReLU && width == 384;
+}
 
 char const* sm100_launch_abi(std::int32_t width, Activation activation)
 {
+  if (sm100_f16_gemm2(width, activation))
+    return kSM100F16LaunchAbi;
   return activation == Activation::kSiLUGate && width <= 128 ? kSM100OutputLaunchAbi : kSM100LaunchAbi;
 }
 
@@ -126,7 +135,8 @@ void validate_image(KernelConfig const& config)
   if (config.cubin.kernel_symbol == nullptr || config.cubin.kernel_symbol[0] == '\0')
     throw std::invalid_argument("kernel_symbol must not be empty");
   bool const sm90 = config.cubin.kernel_sm == kSM90KernelSM && config.spec.target_sm == 90;
-  bool const sm100 = config.cubin.kernel_sm == 100 && (config.spec.target_sm == 100 || config.spec.target_sm == 103);
+  bool const sm100 = config.cubin.kernel_sm == 100
+    && (config.spec.target_sm == 100 || config.spec.target_sm == 103 || config.spec.target_sm == 107);
   char const* expected_abi = sm100 ? sm100_launch_abi(config.spec.width, config.spec.activation) : kSM90LaunchAbi;
   if (
     (!sm90 && !sm100) || config.cubin.launch_abi == nullptr || std::strcmp(config.cubin.launch_abi, expected_abi) != 0)
@@ -341,7 +351,10 @@ void launch_sm100(
   auto const dtype = CU_TENSOR_MAP_DATA_TYPE_BFLOAT16;
   encode_tma_descriptor(device_params.x_tma, metadata.x, dtype, x_source, "x");
   encode_tma_descriptor(device_params.w1_tma, metadata.w1, dtype, w1_source, "w1");
-  encode_tma_descriptor(device_params.w2_tma, metadata.w2, dtype, w2_source, "w2");
+  /* The image's launch ABI, which the kernel was built for, says whether W2 is fp16. */
+  bool const f16_w2 = std::strcmp(config.cubin.launch_abi, kSM100F16LaunchAbi) == 0;
+  auto const w2_dtype = f16_w2 ? CU_TENSOR_MAP_DATA_TYPE_FLOAT16 : dtype;
+  encode_tma_descriptor(device_params.w2_tma, metadata.w2, w2_dtype, w2_source, "w2");
   finalize_sm100_tma_atom(device_params.x_tma);
   finalize_sm100_tma_atom(device_params.w1_tma);
   finalize_sm100_tma_atom(device_params.w2_tma);

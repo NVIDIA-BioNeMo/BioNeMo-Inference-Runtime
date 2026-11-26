@@ -93,9 +93,13 @@ WORKDIR /opt/bioir-deps
 # remaining runtime and build package comes from the lock export with hashes.
 # Reinstall PyYAML because the base's distro-owned copy has no pip RECORD
 # metadata and cannot be upgraded in place.
+# The pinned base includes unused DALI 2.3.0, whose packaging<=26.2 conflicts
+# with patched virtualenv. No installed distribution requires DALI. Remove it
+# while preserving the Torch, Triton, and CUDA stack and the base digest.
 COPY pyproject.toml uv.lock ./
 RUN --mount=type=cache,target=/cache/uv \
-    uv export --quiet --locked --no-dev --no-emit-project \
+    uv pip uninstall --system nvidia-dali-cuda130 \
+    && uv export --quiet --locked --no-dev --no-emit-project \
         --prune torch --prune triton --prune nvidia-cublas \
         --output-file /tmp/bioir-runtime.txt \
     && uv export --quiet --locked --only-group build --no-emit-project \

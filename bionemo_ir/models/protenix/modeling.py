@@ -50,6 +50,7 @@ from bionemo_ir._torch.modules.protenix import (
 )
 from bionemo_ir.configs import BaseConfig
 from bionemo_ir._torch.modules.protenix.atom_attention import atom_windows
+from bionemo_ir._torch.sampling.frame_reuse import require_forced_reuse
 from bionemo_ir.hubs import FoldingSupportMatrix as SupMat
 from bionemo_ir.hubs import load_weights as load_weights_from_hubs
 
@@ -542,6 +543,10 @@ class Protenix(nn.Module, OptimizedModuleSetterMixin):
             Confidence-only (no summary masks): also ``plddt_logits`` /
             ``pae_logits`` / ``pde_logits`` / ``resolved_logits``.
         """
+        # A forced frame reuse period rejects a step count it was not evaluated with before the trunk runs.
+        require_forced_reuse(
+            self.diffusion_sampler.frame_reuse_period, num_sampling_steps or self.diffusion_sampler.n_step
+        )
         if compact_output is None:
             compact_output = self.config.compact_output
         num_cycles = recycling_steps + 1

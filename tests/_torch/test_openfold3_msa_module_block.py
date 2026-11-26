@@ -20,8 +20,8 @@ import pytest
 import torch
 
 from bionemo_ir._torch.attention_backend.utils import precompute_pair_masks
+from bionemo_ir._torch.layers.transformers.msa_module import MSAModuleBlock
 from bionemo_ir._torch.layers.triangle_nodes import precompute_trimul_metadata
-from bionemo_ir._torch.modules.openfold3.trunk import MSAModuleBlock
 from bionemo_ir.utils import str_dtype_to_torch
 from tests._torch import make_left_aligned_mask
 from tests._torch import skip_if_cutedsl as _skip_if_cutedsl

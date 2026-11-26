@@ -12,7 +12,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Tile selection and PyTorch reference for the TriMul KF K2 on SM90 and SM100/SM103."""
+"""Tile selection and PyTorch reference for the TriMul KF K2 on SM90 and SM100/SM103/SM107."""
 
 from __future__ import annotations
 
@@ -134,7 +134,7 @@ class TrimulKFK2Op:
 def get_trimul_kf_k2_op(dtype: torch.dtype | None, hidden_dim: int, outgoing: bool) -> TrimulKFK2Op | None:
     """Return K2 when this build ships it for ``hidden_dim`` and the direction on the current GPU, else ``None``.
 
-    SM90, SM100 and SM103 run it from source or packaged CUBINs; ``CUTEDSL_FORCE_CUBIN=1`` without an image for
+    SM90, SM100, SM103 and SM107 run it from source or packaged CUBINs; ``CUTEDSL_FORCE_CUBIN=1`` without an image for
     every tile the width's configs name leaves them without K2.
     """
     if dtype != _SUPPORTED_DTYPE or not torch.cuda.is_available():

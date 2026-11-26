@@ -345,9 +345,10 @@ class OpenFold3DiffusionSampler(nn.Module):
             )
         )
         self.runner = GenerativeRunner()
-        # Opt-in approximation: in the churn-free tail, evaluate the denoiser every ``frame_reuse_period``
-        # steps and map the previous prediction through each step's augmentation in between (0: off).
-        self._frame_reuse_period = getattr(config, "frame_reuse_period", 0)
+        # Approximation: in the churn-free tail, evaluate the denoiser every ``frame_reuse_period``
+        # steps and map the previous prediction through each step's augmentation in between
+        # (0: off; "auto": on for the evaluated step counts).
+        self.frame_reuse_period = getattr(config, "frame_reuse_period", 0)
 
     def denoise(
         self,
@@ -555,10 +556,8 @@ class OpenFold3DiffusionSampler(nn.Module):
                 prepared_token_conditioning_weights=prepared_token_conditioning_weights,
             )
 
-        integrator = self.integrator
-        if self._frame_reuse_period:
-            integrator, predict = wrap_for_frame_reuse(
-                self.integrator, self._frame_reuse_period, plan, predict, training=self.training
-            )
+        integrator, predict = wrap_for_frame_reuse(
+            self.integrator, self.frame_reuse_period, plan, predict, training=self.training
+        )
         with SamplingContext.graph_safe(atom_mask.device, seed) as context:
             return self.runner.run(integrator, plan, predict, context).final_state

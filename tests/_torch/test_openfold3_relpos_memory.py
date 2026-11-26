@@ -16,7 +16,7 @@
 import pytest
 import torch
 
-from bionemo_ir._torch.modules.openfold3.utils.relpos import relpos_complex
+from bionemo_ir._torch.layers.relpos import relpos_complex
 from bionemo_ir._torch.utils import dist_one_hot
 
 

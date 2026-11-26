@@ -51,8 +51,16 @@ CONFIGS_DIR = Path(__file__).with_name("configs")
 ACTIVATIONS = {"relu": 1, "silu_gate": 2, "silu_gate_3way": 3}
 # Each SM's own kernel ABI, and every ABI its bundles may declare. SM103 runs the SM100 kernel's images, built for
 # sm_103a; its bundles are copies of SM100's, tiles and small-call cutoffs alike, until a B300 retunes them.
-KERNEL_ABIS = {80: "sm80", 86: "sm80", 89: "sm80", 90: "sm90", 100: "sm100", 103: "sm100"}
-_RUNNABLE_ABIS = {80: {"sm80"}, 86: {"sm80"}, 89: {"sm80"}, 90: {"sm90", "sm80"}, 100: {"sm100"}, 103: {"sm100"}}
+KERNEL_ABIS = {80: "sm80", 86: "sm80", 89: "sm80", 90: "sm90", 100: "sm100", 103: "sm100", 107: "sm100"}
+_RUNNABLE_ABIS = {
+    80: {"sm80"},
+    86: {"sm80"},
+    89: {"sm80"},
+    90: {"sm90", "sm80"},
+    100: {"sm100"},
+    103: {"sm100"},
+    107: {"sm100"},
+}
 #: Kernel ABIs whose kernels take the row mask as a run-time address, 0 for none: one compile serves both mask states.
 RUNTIME_MASK_ABIS = frozenset({"sm100"})
 # The bucket of a size-independent entry.

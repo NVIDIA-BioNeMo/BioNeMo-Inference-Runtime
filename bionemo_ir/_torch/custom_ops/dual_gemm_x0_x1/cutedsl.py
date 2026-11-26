@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import functools
 from dataclasses import dataclass
 from typing import Any
 
@@ -63,6 +64,49 @@ def _dtype_str(dtype: torch.dtype) -> str:
     if name is None:
         raise TypeError(f"Unsupported dtype: {dtype}")
     return name
+
+
+@functools.cache
+def _source_available() -> bool:
+    """Whether this build carries the kernel source. Checked once: a failed import is slow to repeat."""
+    try:
+        load_source_module(__package__)
+    except ImportError:
+        return False
+    return True
+
+
+@functools.cache
+def _library_has_residual_image(sm_version: int, dtype: torch.dtype, K: int, N: int, K1: int) -> bool:
+    """Whether the packaged library holds a fused-residual image for this shape, at any anchor, with or without bias.
+
+    The launcher falls back to the nearest anchor, so one probe per bias setting is enough.
+    """
+    for has_bias in (False, True):
+        try:
+            populate_compiled_cache_from_library(
+                {},
+                (),
+                "dual_gemm_x0_x1",
+                lambda library, launcher, has_bias=has_bias: DualGemmX0X1CubinExecutable(
+                    library, launcher, sm_version, K, N, 0, dtype, has_bias, K1, True
+                ),
+            )
+        except CuTeDSLKernelLibraryError:
+            continue
+        return True
+    return False
+
+
+def ships_fused_residual(sm_version: int, dtype: torch.dtype, K: int, N: int, K1: int) -> bool:
+    """Whether this build can run the fused-residual epilogue on ``sm_version``: from source, or a packaged CUBIN.
+
+    A source-free build, or one under ``CUTEDSL_FORCE_CUBIN``, needs a packaged image. A newly tuned SM gets its
+    images only from the protected CUBIN refresh after merge; until then the caller keeps the unfused add.
+    """
+    if not CuteKernelCache.force_cubin() and _source_available():
+        return True
+    return _library_has_residual_image(sm_version, dtype, K, N, K1)
 
 
 @dataclass(frozen=True)

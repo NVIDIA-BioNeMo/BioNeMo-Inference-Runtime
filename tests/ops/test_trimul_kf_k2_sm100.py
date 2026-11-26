@@ -12,7 +12,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""SM100/SM103 TriMul KF K2: shipped tiles against the fp32 reference, graph replay, their CUBINs against the
+"""SM100/SM103/SM107 TriMul KF K2: shipped tiles against the fp32 reference, graph replay, their CUBINs against the
 source, and selection.
 
 Under ``CUTEDSL_FORCE_CUBIN=1``, or without kernel sources, these GPUs get K2 exactly when the CUBIN library carries
@@ -35,6 +35,8 @@ from .test_trimul_kf import _ATOL, _k1_reference, _k2_reference, _problem, libra
 
 _T = k2_config.TrimulKFK2Sm100Tile
 _SM100_FAMILY = (100, 103)
+#: Every SM on the ``sm100`` ABI; SM107 ships its own Vera Rubin tuning (see the SM107 tests below).
+_BLACKWELL = (100, 103, 107)
 _WIDTHS = (32, 64, 128, 256)
 _requires_source = pytest.mark.skipif(
     not source_module_available("bionemo_ir._torch.custom_ops.trimul_kf_k2._source"),
@@ -108,6 +110,21 @@ def test_sm100_and_sm103_ship_identical_bundles_for_every_width():
             assert all(isinstance(tile, _T) for tile in _shipped(100, D, outgoing))
     assert k2_config.shipped_widths(90) == frozenset(_WIDTHS)
     assert all(isinstance(tile, k2_config.TrimulKFK2Tile) for tile in _shipped(90, 128, True))
+
+
+def test_sm107_ships_its_own_vera_rubin_bundles_for_every_width() -> None:
+    """SM107 runs the ``sm100`` kernels from bundles tuned on Vera Rubin, separate from SM100's and SM103's: every
+    token count of either direction resolves to an SM100 tile, and each anchor names a tile the kernels accept."""
+    assert k2_config.KERNEL_ABIS[107] == "sm100"
+    assert k2_config.shipped_widths(107) == frozenset(_WIDTHS)
+    for D in _WIDTHS:
+        bundle = json.loads((k2_config.CONFIGS_DIR / f"D{D}_sm107.json").read_text())
+        assert bundle["kernel_abi"] == "sm100"
+        assert bundle != json.loads((k2_config.CONFIGS_DIR / f"D{D}_sm103.json").read_text())
+        for outgoing in (True, False):
+            assert all(isinstance(tile, _T) for tile in _shipped(107, D, outgoing))
+            for tiles in k2_config.anchors(107, D, outgoing).values():
+                assert all(tile.kernel_variant in k2_config.SM100_KERNEL_VARIANTS for tile in tiles)
 
 
 @pytest.mark.parametrize("D", _WIDTHS)
@@ -244,7 +261,7 @@ def test_sm100_anchors_take_tails_in_both_directions_and_keep_lists_distinct():
         k2_config.parse_tile(pair, "test", "sm90")
 
 
-@pytest.mark.parametrize("sm", _SM100_FAMILY)
+@pytest.mark.parametrize("sm", _BLACKWELL)
 def test_force_cubin_or_a_source_free_build_ships_sm100_k2_from_the_library(sm, monkeypatch):
     """``CUTEDSL_FORCE_CUBIN=1``, or missing sources, ship a width and direction exactly when the CUBIN library
     carries this SM's image for every tile it names or falls back to; otherwise the layer keeps its regular path."""
@@ -255,7 +272,7 @@ def test_force_cubin_or_a_source_free_build_ships_sm100_k2_from_the_library(sm, 
     assert all(backend.ships(D, outgoing) == carried for D in _WIDTHS for outgoing in (True, False))
     # a tile no config names has no image
     with pytest.raises(RuntimeError, match="no CUBIN is available"):
-        backend._get_or_compile(True, _T("K2_B0", 128, 96))
+        backend._get_or_compile(True, _T("K2_B0", 256, 32))
     monkeypatch.delenv("CUTEDSL_FORCE_CUBIN")
 
     def missing(package: str):
@@ -285,7 +302,7 @@ def test_source_builds_ship_sm100_k2_and_name_the_sm100_kernels(monkeypatch):
 
 
 def test_force_cubin_ships_the_op_from_the_library_on_this_gpu(monkeypatch):
-    skip_if_not_sm100_family()
+    skip_if_not_sm100_family(sm107=True)
     from tests._torch import SM_VERSION
 
     monkeypatch.setattr(k2_cutedsl.TrimulKFK2CuTe, "_compiled_cache", {})
@@ -318,7 +335,7 @@ _CUBIN_CASES = [
 @_requires_source
 def test_cubin_matches_source_on_this_gpu(N, D, outgoing, monkeypatch):
     """The packaged CUBIN writes the source tile's product bit for bit, on dense and padded planes."""
-    skip_if_not_sm100_family()
+    skip_if_not_sm100_family(sm107=True)
     from tests._torch import SM_VERSION
 
     if not library_carries("trimul_kf_k2", SM_VERSION):
@@ -351,7 +368,7 @@ def test_cubin_matches_source_on_this_gpu(N, D, outgoing, monkeypatch):
 def test_tiny_planes_match_reference(N, B, D, outgoing, monkeypatch):
     """Planes smaller than one tile (TMA boxes past the tensor, fewer tiles than SMs) are exact; graphed trunks run
     the KF chain at N = 16."""
-    skip_if_not_sm100_family()
+    skip_if_not_sm100_family(sm107=True)
     monkeypatch.delenv("CUTEDSL_FORCE_CUBIN", raising=False)
     a, b = _k1_planes(B, N, D, D, "full" if B == 1 else "random", seed=N)
     reference = _k2_reference(a, b, outgoing)
@@ -400,7 +417,7 @@ def _case_id(case) -> str:
 @pytest.mark.parametrize("case", _CASES, ids=_case_id)
 @_requires_source
 def test_shipped_tiles_match_reference(case, monkeypatch):
-    skip_if_not_sm100_family()
+    skip_if_not_sm100_family(sm107=True)
     monkeypatch.delenv("CUTEDSL_FORCE_CUBIN", raising=False)
     B, N, C, D, lengths = case
     a, b = _k1_planes(B, N, C, D, lengths, seed=N)
@@ -414,7 +431,7 @@ def test_shipped_tiles_match_reference(case, monkeypatch):
 @pytest.mark.parametrize("case", _LARGE_CASES, ids=_case_id)
 @_requires_source
 def test_large_n_tiles_match_reference(case, monkeypatch):
-    skip_if_not_sm100_family()
+    skip_if_not_sm100_family(sm107=True)
     monkeypatch.delenv("CUTEDSL_FORCE_CUBIN", raising=False)
     B, N, D, lengths = case
     a, b = _masked_planes(B, N, D, lengths, seed=N)
@@ -435,7 +452,7 @@ def test_large_n_tiles_match_reference(case, monkeypatch):
 def test_every_shipped_tile_handles_any_plane_size(N, outgoing, monkeypatch):
     """Every tile a bundle ships, run at sizes its anchor never sends it: planes below one tile, partial K blocks,
     fewer tiles than SMs or clusters, and K2_B2 with and without room for tails (N = 264: 256 + 8)."""
-    skip_if_not_sm100_family()
+    skip_if_not_sm100_family(sm107=True)
     monkeypatch.delenv("CUTEDSL_FORCE_CUBIN", raising=False)
     D = 32
     a, b = _k1_planes(2, N, D, D, "random", seed=N)
@@ -454,7 +471,7 @@ def test_every_shipped_tile_handles_any_plane_size(N, outgoing, monkeypatch):
 @_requires_source
 def test_graph_replay_matches_eager(outgoing, monkeypatch):
     """Captured calls of every kernel kind replay the eager products bit for bit on fresh inputs."""
-    skip_if_not_sm100_family()
+    skip_if_not_sm100_family(sm107=True)
     monkeypatch.delenv("CUTEDSL_FORCE_CUBIN", raising=False)
     shapes = [(2, 16, 32), (1, 200, 64), (1, 520, 128), (1, 1032, 32), (1, 2824, 32)]
     statics, inputs = [], []
@@ -500,7 +517,7 @@ def _prod_rows(a: torch.Tensor, b: torch.Tensor, outgoing: bool, rows: list[int]
 @pytest.mark.parametrize(("B", "N", "D", "outgoing"), [(2, 2904, 128, True), (1, 3096, 256, False)], ids=str)
 @_requires_source
 def test_past_int32_offsets_matches_reference_rows(B, N, D, outgoing, monkeypatch):
-    skip_if_not_sm100_family()
+    skip_if_not_sm100_family(sm107=True)
     monkeypatch.delenv("CUTEDSL_FORCE_CUBIN", raising=False)
     torch.cuda.empty_cache()
     pitch = -(-N // _PAD) * _PAD
@@ -521,7 +538,7 @@ def test_past_int32_offsets_matches_reference_rows(B, N, D, outgoing, monkeypatc
 @_requires_source
 def test_k2_reads_dense_and_padded_planes_and_refuses_others(outgoing, monkeypatch):
     """The pitch comes off the strides, as on SM90; a/b with different strides or unaligned rows are refused."""
-    skip_if_not_sm100_family()
+    skip_if_not_sm100_family(sm107=True)
     monkeypatch.delenv("CUTEDSL_FORCE_CUBIN", raising=False)
     D, N, P = 64, 136, 192
     op = _op(D, outgoing)

@@ -13,7 +13,38 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from .config import OpenFold3Config
-from .modeling import OpenFold3
+"""OpenFold3 model package.
 
-__all__ = ["OpenFold3", "OpenFold3Config"]
+Attributes load on first access, so importing ``config`` or ``convert`` alone
+does not build the model.
+"""
+
+from importlib import import_module
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from .config import OpenFold3Config
+    from .modeling import OpenFold3
+
+_EXPORTS = {
+    "OpenFold3": ".modeling",
+    "OpenFold3Config": ".config",
+}
+
+__all__ = [
+    "OpenFold3",
+    "OpenFold3Config",
+]
+
+
+def __getattr__(name: str) -> Any:
+    module_name = _EXPORTS.get(name)
+    if module_name is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    value = getattr(import_module(module_name, __name__), name)
+    globals()[name] = value
+    return value
+
+
+def __dir__() -> list[str]:
+    return sorted(set(globals()) | set(__all__))

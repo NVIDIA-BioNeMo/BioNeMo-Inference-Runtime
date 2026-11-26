@@ -14,7 +14,7 @@
 # limitations under the License.
 
 from .base import AcceleratedConfig, BackendType, BaseConfig, print_model_tree
-from .modules import DiffusionTransformerConfig, EvoformerStackConfig, PairformerConfig
+from .modules import DiffusionTransformerConfig, EvoformerStackConfig, MSAModuleStackConfig, PairformerConfig
 from .token_padding import FeatureDictPadSpec, TrunkPadSpec
 
 __all__ = [
@@ -23,6 +23,7 @@ __all__ = [
     "PairformerConfig",
     "DiffusionTransformerConfig",
     "EvoformerStackConfig",
+    "MSAModuleStackConfig",
     "print_model_tree",
     "AcceleratedConfig",
     "FeatureDictPadSpec",

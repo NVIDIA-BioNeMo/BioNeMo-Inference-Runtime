@@ -265,7 +265,7 @@ void validate_config(KernelConfig const& config)
   bool const is_sm100 = config.cubin.kernel_sm == 100;
   if (!is_sm80 && !is_sm90 && !is_sm100)
     throw std::invalid_argument("dual_gemm_x_x CUBIN has no registered kernel-SM launcher");
-  bool const is_blackwell_target = config.target_sm == 100 || config.target_sm == 103;
+  bool const is_blackwell_target = config.target_sm == 100 || config.target_sm == 103 || config.target_sm == 107;
   if ((config.target_sm == 90) != is_sm90 || is_blackwell_target != is_sm100)
     throw std::invalid_argument("dual_gemm_x_x target SM and kernel SM are inconsistent");
 

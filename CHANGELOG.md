@@ -9,6 +9,45 @@
 Each final release of BioNeMo Inference Runtime, newest first. Release
 candidates are not listed.
 
+## 0.2.2
+
+### Compatibility
+
+- **Dependencies.** PyTorch 2.13 and setuptools 84.1.0 are now the minimum
+  versions required to include security fixes.
+
+- **RFProteína backends.** Select the execution backend with
+  `inference_backend`: `eager`, `compile`, or `bioir`. `compile` remains
+  the default, so existing compiled runs keep their behavior.
+
+### Breaking Changes
+
+- **RFProteína is a numerical engine.** BioIR runs the encoder, the
+  velocity network, the integrator, and the decoder. The host application
+  owns generation, partial diffusion, search, scoring, sequence
+  constraints, motif assignment, and structure output. The same host code
+  runs on every backend.
+- **Public API.** `sample`, `sample_partial`, `redesign`, `inverse_fold`,
+  and `search` are removed. Advance a prepared state with
+  `partial_simulation`, which can resume from the previous clean
+  prediction. For custom feature preparation, integration, or readouts, use
+  `RFProteinaTrunk.forward_features`.
+- **Explicit sampler settings.** `from_reference_state_dicts` requires
+  `simulation_config`. The built-in defaults serve tests and toy examples
+  only. They do not match the released sampler settings, so a rollout that
+  relies on them follows a different trajectory.
+- **Batch lengths.** Sampling uses the actual length of each batch. Compiler
+  buckets stay inside the native trunk, so seeds that came from the older
+  bucket-padded path can produce different outputs.
+
+### Performance
+
+- **RFProteína sampling.** On an H200 with 60 steps and 180 trunk passes,
+  BioIR is faster than the compiled backend in every configuration we
+  measured. Single monomers run 2.3× to 4.7× faster, and batches of 8 and
+  32 run 1.4× to 1.9× faster. Peak memory stays within 1.7% of the
+  previous BioIR path.
+
 ## 0.2.1
 
 ### Compatibility

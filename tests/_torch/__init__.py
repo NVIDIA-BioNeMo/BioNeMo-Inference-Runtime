@@ -104,8 +104,8 @@ _CUTEDSL_SUPPORTED_SM = (80, 86, 89, 90)
 # op-support fact.)
 _CUTEDSL_OP_SUPPORTED_SM: "dict[str, tuple[int, ...]]" = {
     "gated_sigmoid": (80, 86, 89, 90, 100, 103, 107, 120, 121),
-    "dual_gemm_x0_x1": (80, 86, 89, 90, 100, 103),
-    "dual_gemm_x_x": (80, 86, 89, 90, 100, 103),
+    "dual_gemm_x0_x1": (80, 86, 89, 90, 100, 103, 107),
+    "dual_gemm_x_x": (80, 86, 89, 90, 100, 103, 107),
     "outer_product_mean": (80, 86, 89, 90, 100, 103),
     "pair_weighted_averaging": (80, 90, 100, 103),
     "pairwise_attention": (80, 86, 89, 90, 100, 103, 107),
@@ -185,6 +185,15 @@ def require_cubin_family(family: str) -> None:
     """
     if not hasattr(require_cubin_library(), family):
         pytest.skip(f"this _cutedsl_kernels extension carries no {family} family yet")
+
+
+def gated_sigmoid_cubin_sms() -> frozenset[int]:
+    """SMs with a gated-sigmoid image in the installed kernel library.
+
+    Asks the extension, so it also works from a wheel, which has no ``cpp/`` source tree.
+    """
+    launcher = getattr(require_cubin_library(), "gated_sigmoid", None)
+    return frozenset(spec.target_sm for spec in launcher.kernel_specs()) if launcher is not None else frozenset()
 
 
 def run_cutedsl_test_mode(
@@ -325,10 +334,14 @@ def skip_if_not_sm90():
         pytest.skip(f"requires SM90 (current SM{SM_VERSION})")
 
 
-def skip_if_not_sm100_family():
-    """Skip when the current GPU cannot run the native SM100 launch ABI."""
-    if SM_VERSION not in (100, 103):
-        pytest.skip(f"requires SM100/SM103 (current SM{SM_VERSION})")
+def skip_if_not_sm100_family(*, sm107: bool = False) -> None:
+    """Skip when the current GPU cannot run the native SM100 launch ABI.
+
+    ``sm107=True`` also admits Vera Rubin (SM107), for ops that ship SM107 configs for the ``sm100`` ABI.
+    """
+    supported = (100, 103, 107) if sm107 else (100, 103)
+    if SM_VERSION not in supported:
+        pytest.skip(f"requires SM{'/SM'.join(map(str, supported))} (current SM{SM_VERSION})")
 
 
 def skip_if_epilogue_tile_exceeds_smem(backend) -> None:

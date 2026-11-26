@@ -1,0 +1,93 @@
+{
+  "kernel_abi": "sm100",
+  "configs": {
+    "S=32": {"kernel_variant": "K2_B0", "tile_m": 128, "tile_n": 32},
+    "S=128": {"kernel_variant": "K2_B0", "tile_m": 128, "tile_n": 64},
+    "S=136": {
+      "out": {"kernel_variant": "K2_B0", "tile_m": 128, "tile_n": 160},
+      "in": {"kernel_variant": "K2_B0", "tile_m": 128, "tile_n": 64}
+    },
+    "S=256": {
+      "out": {"kernel_variant": "K2_B0", "tile_m": 256, "tile_n": 96},
+      "in": {"kernel_variant": "K2_B0", "tile_m": 128, "tile_n": 256}
+    },
+    "S=264": {"cluster_n": 2, "kernel_variant": "K2_B0", "tile_m": 128, "tile_n": 160},
+    "S=320": {"cluster_n": 2, "kernel_variant": "K2_B0", "tile_m": 128, "tile_n": 160},
+    "S=328": {"cluster_n": 2, "kernel_variant": "K2_B0", "tile_m": 128, "tile_n": 192},
+    "S=384": {"cluster_n": 2, "kernel_variant": "K2_B0", "tile_m": 128, "tile_n": 192},
+    "S=392": {
+      "out": {"kernel_variant": "K2_B0", "tile_m": 256, "tile_n": 224},
+      "in": {"kernel_variant": "K2_B0", "tile_m": 256, "tile_n": 256}
+    },
+    "S=504": {
+      "out": {"clc": false, "cluster_n": 1, "kernel_variant": "K2_B1", "tile_n": 160},
+      "in": {"kernel_variant": "K2_B2", "tail_w": 128}
+    },
+    "S=512": {"kernel_variant": "K2_B0", "tile_m": 256, "tile_n": 128},
+    "S=520": [
+      {"kernel_variant": "K2_B0", "tile_m": 256, "tile_n": 256},
+      {"kernel_variant": "K2_B2", "tail_w": 128},
+      {"kernel_variant": "K2_B2", "tail_w": 160},
+      {"kernel_variant": "K2_B2", "tail_w": 192},
+      {"kernel_variant": "K2_B2", "tail_w": 224},
+      {"kernel_variant": "K2_B2", "tail_w": 32},
+      {"kernel_variant": "K2_B2", "tail_w": 64},
+      {"kernel_variant": "K2_B2", "tail_w": 96}
+    ],
+    "S=576": [
+      {"kernel_variant": "K2_B0", "tile_m": 256, "tile_n": 256},
+      {"kernel_variant": "K2_B2", "tail_w": 128},
+      {"kernel_variant": "K2_B2", "tail_w": 160},
+      {"kernel_variant": "K2_B2", "tail_w": 192},
+      {"kernel_variant": "K2_B2", "tail_w": 224},
+      {"kernel_variant": "K2_B2", "tail_w": 32},
+      {"kernel_variant": "K2_B2", "tail_w": 64},
+      {"kernel_variant": "K2_B2", "tail_w": 96}
+    ],
+    "S=584": {
+      "out": [
+        {"clc": true, "cluster_n": 1, "kernel_variant": "K2_B1", "tile_n": 256},
+        {"kernel_variant": "K2_B2", "tail_w": 128},
+        {"kernel_variant": "K2_B2", "tail_w": 96},
+        {"clc": true, "cluster_n": 2, "kernel_variant": "K2_B1", "tile_n": 224}
+      ],
+      "in": {"kernel_variant": "K2_B2", "tail_w": 128}
+    },
+    "S=768": {
+      "out": {"clc": false, "cluster_n": 1, "kernel_variant": "K2_B1", "tile_n": 224},
+      "in": {"clc": true, "cluster_n": 1, "kernel_variant": "K2_B1", "tile_n": 256}
+    },
+    "S=1016": {"clc": false, "cluster_n": 1, "kernel_variant": "K2_B1", "tile_n": 256},
+    "S=1024": {
+      "out": {"clc": true, "cluster_n": 1, "kernel_variant": "K2_B1", "tile_n": 224},
+      "in": {"clc": true, "cluster_n": 1, "kernel_variant": "K2_B1", "tile_n": 256}
+    },
+    "S=2592": {
+      "out": {"clc": true, "cluster_n": 1, "kernel_variant": "K2_B1", "tile_n": 224},
+      "in": {"kernel_variant": "K2_B2", "tail_w": 32}
+    },
+    "S=2600": {
+      "out": {"clc": true, "cluster_n": 1, "kernel_variant": "K2_B1", "tile_n": 224},
+      "in": [
+        {"kernel_variant": "K2_B0", "tile_m": 256, "tile_n": 256},
+        {"kernel_variant": "K2_B2", "tail_w": 128},
+        {"kernel_variant": "K2_B2", "tail_w": 160},
+        {"kernel_variant": "K2_B2", "tail_w": 192},
+        {"kernel_variant": "K2_B2", "tail_w": 224},
+        {"kernel_variant": "K2_B2", "tail_w": 32},
+        {"kernel_variant": "K2_B2", "tail_w": 64},
+        {"kernel_variant": "K2_B2", "tail_w": 96}
+      ]
+    },
+    "S=2624": {
+      "out": [
+        {"clc": true, "cluster_n": 1, "kernel_variant": "K2_B1", "tile_n": 256},
+        {"clc": true, "cluster_n": 2, "kernel_variant": "K2_B1", "tile_n": 224}
+      ],
+      "in": [
+        {"clc": true, "cluster_n": 1, "kernel_variant": "K2_B1", "tile_n": 256},
+        {"kernel_variant": "K2_B2", "tail_w": 32}
+      ]
+    }
+  }
+}

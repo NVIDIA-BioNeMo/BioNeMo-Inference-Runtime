@@ -1,0 +1,8 @@
+{
+  "kernel_abi": "sm100",
+  "configs": {
+    "S=32": {"kernel_variant": "K1_B1"},
+    "S=744": {"kernel_variant": "K1_B1", "ab_layout": "pad_n_mod_16_8"},
+    "S=2624": {"kernel_variant": "K1_B1", "ab_layout": "pad_n_mod_16_8"}
+  }
+}

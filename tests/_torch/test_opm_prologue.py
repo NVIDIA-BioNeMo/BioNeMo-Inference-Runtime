@@ -20,9 +20,13 @@ import torch
 from bionemo_ir._torch.custom_ops.outer_product_mean import outer_product_mean_a_chunk, outer_product_mean_a_chunks
 from bionemo_ir._torch.custom_ops.outer_product_mean.cutedsl import _relayout_a
 from bionemo_ir._torch.layers.outer_product_mean import OuterProductMean
-from bionemo_ir.dsl_kernels.triton.opm_prologue import OpmPrologue
+from bionemo_ir.dsl_kernels.triton.opm_prologue import _NO_TRITON_SMS, OpmPrologue
+from tests._torch import SM_VERSION
 
-pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason="the OPM prologue needs CUDA")
+pytestmark = [
+    pytest.mark.skipif(not torch.cuda.is_available(), reason="the OPM prologue needs CUDA"),
+    pytest.mark.skipif(SM_VERSION in _NO_TRITON_SMS, reason=f"Triton cannot compile for sm_{SM_VERSION}a"),
+]
 
 
 def _eager(m, mask, ln_w, ln_b, eps, weight, bias):

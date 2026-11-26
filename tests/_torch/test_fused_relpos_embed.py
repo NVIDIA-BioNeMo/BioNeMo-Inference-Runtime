@@ -25,7 +25,7 @@ import torch
 import torch.nn.functional as F
 
 from bionemo_ir._torch.layers.position_encoders import RelativePositionEncoder
-from bionemo_ir._torch.modules.openfold3.utils.relpos import relpos_complex
+from bionemo_ir._torch.layers.relpos import relpos_complex
 from bionemo_ir._torch.utils import dist_one_hot
 from bionemo_ir.dsl_kernels.triton.fused_relpos_embed import fused_relpos_embed
 

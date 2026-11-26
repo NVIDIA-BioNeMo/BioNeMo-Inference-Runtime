@@ -23,7 +23,7 @@ import torch
 from bionemo_ir.utils import get_sm_version
 
 from ._config import _TUNED_SMS, supports_fused_residual
-from .cutedsl import DualGemmX0X1CuTe
+from .cutedsl import DualGemmX0X1CuTe, ships_fused_residual
 
 
 def _invoke_vanilla_dual_gemm_x0_x1(
@@ -190,10 +190,15 @@ def get_cute_dual_gemm_x0_x1_residual_op(
     K0: int,
     K1: int,
 ) -> Callable | None:
-    """Return the CuTe mask-residual epilogue for a tuned shape."""
+    """Return the CuTe mask-residual epilogue for a tuned shape that this build can run.
+
+    ``None`` keeps the caller's unfused add, as on a source-free build that packages no image for the shape.
+    """
     sm = get_sm_version()
     if dtype not in (torch.float16, torch.bfloat16):
         return None
     if not supports_fused_residual(sm, K0, N, K1):
+        return None
+    if not ships_fused_residual(sm, dtype, K0, N, K1):
         return None
     return _invoke_cute_dual_gemm_x0_x1

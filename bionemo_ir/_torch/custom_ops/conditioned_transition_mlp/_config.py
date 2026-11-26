@@ -39,7 +39,7 @@ from bionemo_ir._torch.utils.kernel import get_config_file_name, load_kernel_con
 CONFIGS_DIR = Path(__file__).with_name("configs")
 # SM103 runs the SM100 kernel ABI from images compiled for it. Its configs copy SM100's (B200-measured) until a B300
 # tunes them.
-KERNEL_ABIS = {100: "sm100", 103: "sm100"}
+KERNEL_ABIS = {100: "sm100", 103: "sm100", 107: "sm100"}
 #: W1 row blocks per activation: the SwiGLU's value and gate rows, then for the 3-way one its second value rows.
 W1_BLOCKS = {"silu_gate": 2, "silu_gate_3way": 3}
 ACTIVATIONS = tuple(W1_BLOCKS)

@@ -33,6 +33,7 @@ from bionemo_ir._torch.layers.normalization import (
 from bionemo_ir._torch.layers.pair_averaging import PairWeightedAveraging
 from bionemo_ir._torch.layers.sequence_local_atom import build_local_attn_metadata
 from bionemo_ir._torch.layers.token_padding import pad_trunk_tokens, unpad_trunk_tokens
+from bionemo_ir._torch.layers.transformers.msa_module import MSAModuleStack
 from bionemo_ir._torch.layers.transformers.pairformer import PairformerModule
 from bionemo_ir._torch.layers.triangle_nodes import (
     TriangleAttentionNode,
@@ -49,9 +50,9 @@ from bionemo_ir._torch.modules.openfold3.embedders import (
     MSAModuleEmbedder,
     TemplateEmbedderAllAtom,
 )
-from bionemo_ir._torch.modules.openfold3.trunk import MSAModuleStack
 from bionemo_ir._torch.modules.openfold3.utils.atomize_utils import prepare_atom_reduction
 from bionemo_ir._torch.sampling import EDMScheduleConfig
+from bionemo_ir._torch.sampling.frame_reuse import require_forced_reuse
 from bionemo_ir._torch.utils import (
     CHUNK_REGISTRY,
     RECYCLE_PAIR_UPDATE,
@@ -552,6 +553,9 @@ class OpenFold3(nn.Module, OptimizedModuleSetterMixin):
         #   num_sampling_steps  → no_rollout_steps   (diffusion rollout length)
         #   diffusion_samples   → no_rollout_samples (parallel rollout samples)
         num_cycles = recycling_steps + 1
+        num_sampling_steps = self.no_rollout_steps if num_sampling_steps is None else num_sampling_steps
+        # A forced frame reuse period rejects a step count it was not evaluated with before the trunk runs.
+        require_forced_reuse(self.diffusion_sampler.frame_reuse_period, num_sampling_steps)
 
         batch = prepare_atom_reduction(batch)
         attn_metadata = self.generate_attn_metadata(batch)

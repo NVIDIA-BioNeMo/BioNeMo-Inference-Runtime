@@ -48,9 +48,11 @@ W1_BLOCKS = {"relu": 1, "silu_gate": 2}
 #: The hidden activations: ReLU, and SwiGLU ``silu(gate) * value`` with W1's first ``hidden`` rows making ``value`` and
 #: the next ``hidden`` rows ``gate``.
 ACTIVATIONS = tuple(W1_BLOCKS)
-# SM103 runs the SM100 kernel ABI from images compiled for it. Its configs copy SM100's (B200-measured) until a B300
-# tunes them.
-KERNEL_ABIS = {90: "sm90", 100: "sm100", 103: "sm100"}
+#: Blackwell ReLU widths whose GEMM2 runs in fp16 (the SM100 kernel's ``F16_WIDTHS``): the pack holds W2 in fp16.
+F16_WIDTHS = (384,)
+# SM103 and SM107 run the SM100 kernel ABI from images compiled for them. SM103's configs copy SM100's (B200-measured)
+# until a B300 tunes them; SM107 has its own.
+KERNEL_ABIS = {90: "sm90", 100: "sm100", 103: "sm100", 107: "sm100"}
 _FILE_RE = re.compile(r"^C(?P<width>\d+)_H(?P<hidden>\d+)_sm(?P<sm>\d+)\.json$")
 _KEY_RE = re.compile(r"^act=(?P<activation>relu|silu_gate)$")
 # An entry's keys: whether it is a candidate, and its launch layouts for small calls.
@@ -79,6 +81,11 @@ def parse_config_key(key: str) -> str:
     if match is None:
         raise ValueError(f"invalid fused transition config key {key!r}; expected act=relu or act=silu_gate")
     return match["activation"]
+
+
+def f16_gemm2(width: int, activation: str, kernel_abi: str) -> bool:
+    """Whether the Blackwell ReLU at ``width`` runs GEMM2 in fp16, its pack holding W2 in fp16."""
+    return kernel_abi == "sm100" and activation == "relu" and width in F16_WIDTHS
 
 
 def image_elements(width: int, hidden: int, activation: str, *, kernel_abi: str = "sm90") -> int:

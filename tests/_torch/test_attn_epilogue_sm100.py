@@ -12,7 +12,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""The SM100 and SM103 attention epilogues: the CuTeDSL triangle and token kernels against the unfused layer."""
+"""The SM100, SM103 and SM107 attention epilogues: the CuTeDSL triangle and token kernels against the unfused layer."""
 
 import itertools
 import sys
@@ -51,7 +51,7 @@ from tests._torch import (
 pytestmark = [
     pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required"),
     pytest.mark.skipif(
-        torch.cuda.is_available() and SM_VERSION not in BLACKWELL_SMS, reason="the kernels are SM100/103"
+        torch.cuda.is_available() and SM_VERSION not in BLACKWELL_SMS, reason="the kernels are SM100/103/107"
     ),
 ]
 _SOURCE_MODULE = "bionemo_ir._torch.custom_ops.attn_epilogue._source"
@@ -328,6 +328,17 @@ GATE_IDS = ["broadcast", "partial", "rowwise", "partial_looping"]
 def _bias(channels: int) -> torch.Tensor:
     # As large as the update, so adding it before or after the update's rounding gives different outputs.
     return torch.randn(channels, **BF16)
+
+
+@pytest.mark.parametrize("sm", [100, 103, 107])
+@pytest.mark.parametrize("shape", [SHAPES[0], SHAPES[1], (12, 64, 768), (16, 48, 768)])
+@pytest.mark.parametrize("has_bias", [False, True], ids=["no_bias", "bias"])
+def test_blackwell_bare_projections_keep_the_unfused_path(
+    monkeypatch: pytest.MonkeyPatch, sm: int, shape: tuple[int, int, int], has_bias: bool
+) -> None:
+    """The tcgen05 SMs fuse only residual epilogues; a bare projection stays unfused on each of them."""
+    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda device=None: (sm // 10, sm % 10))
+    assert get_attn_epilogue_op(torch.bfloat16, *shape, has_bias=has_bias, has_residual=False) is None
 
 
 def _logits(batch: int, gate_rows: int, columns: int) -> torch.Tensor:
